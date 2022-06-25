@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "sector_accounting"
+version = "0.1"
+description = "Lost sector accounting for Destiny 2 with google sheets as a db"
+authors = ["GS <geolocatingshark@gmail.com>"]
+license = "GNU GPLv3"
+
+[tool.poetry.dependencies]
+python = "~3.10.1"
+gspread = "*"
+pytz = "*"
+
+[tool.poetry.dev-dependencies]
+pyflakes = "*"
+bandit = "*"
+black = "*"
+rope = "*"
+poetry-githooks = "^2.0.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.githooks]
+# Note: Run "poetry run githooks setup" every time you change this section
+# The without-hashes flag is necessary since private repos don't mix well
+# with pip hashes
+pre-commit = "poetry export -f requirements.txt -o requirements.txt --without-hashes && git add requirements.txt"
