@@ -14,6 +14,10 @@ from pytz import utc
 # omit the headings in the google sheets file
 
 
+class Minutes(int):
+    pass
+
+
 class Sector:
     def __init__(self, name: str, shortlink_gfx: str):
         self.name = name
@@ -50,7 +54,7 @@ class Rotation:
         url: str,
         credentials: dict,  # Google API credentials, see https://docs.gspread.org/en/latest/oauth2.html
         sheet_no: int = 0,
-        buffer: int = 10,  # buffer in minutes
+        buffer: Minutes = 10,  # buffer in minutes
     ) -> Rotation:
         # Instantiates the spreadsheet, only uses the first worksheet by default
         sheet = (
@@ -62,7 +66,7 @@ class Rotation:
 
     @classmethod
     def from_gspread(
-        cls, sheet: gspread.models.Worksheet, buffer: int = 10  # in minutes
+        cls, sheet: gspread.models.Worksheet, buffer: Minutes = 10  # in minutes
     ) -> Rotation:
         # Lost sector start date
         start_date = cls._start_date_from_gspread(sheet, buffer)
