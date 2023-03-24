@@ -27,6 +27,8 @@ class Sector:
         self.shields = None
         self.burn = None
         self.modifiers = None
+        self.overcharged_weapon = None
+        self.surge = None
 
 
 class Rotation:
@@ -39,6 +41,8 @@ class Rotation:
         shield_rotation: ShieldRotation,
         burn_rotation: BurnRotation,
         modifiers_rotation: ModifiersRotation,
+        overcharged_weapon_rotation: OverchargedWeaponRotation,
+        surge_rotation: SurgeRotation,
     ):
         self.start_date = start_date
         self._reward_rot = reward_rotation
@@ -47,6 +51,8 @@ class Rotation:
         self._shield_rot = shield_rotation
         self._burn_rot = burn_rotation
         self._modifiers_rot = modifiers_rotation
+        self._overcharged_wep_rot = overcharged_weapon_rotation
+        self._surge_rot = surge_rotation
 
     @classmethod
     def from_gspread_url(
@@ -78,6 +84,8 @@ class Rotation:
         shield_rot = ShieldRotation.from_gspread(sheet)
         burn_rot = BurnRotation.from_gspread(sheet)
         modifiers_rot = ModifiersRotation.from_gspread(sheet)
+        overcharged_wep_rot = OverchargedWeaponRotation.from_gspread(sheet)
+        surge_rot = SurgeRotation.from_gspread(sheet)
         return cls(
             start_date,
             reward_rot,
@@ -86,6 +94,8 @@ class Rotation:
             shield_rot,
             burn_rot,
             modifiers_rot,
+            overcharged_wep_rot,
+            surge_rot,
         )
 
     def __call__(self, date: Union[dt.datetime, None] = None) -> Sector:
@@ -100,6 +110,8 @@ class Rotation:
         sector.shields = self._shield_rot[days_since_ref_date]
         sector.burn = self._burn_rot[days_since_ref_date]
         sector.modifiers = self._modifiers_rot[days_since_ref_date]
+        sector.overcharged_weapon = self._overcharged_wep_rot[days_since_ref_date]
+        sector.surge = self._surge_rot[days_since_ref_date]
 
         return sector
 
@@ -192,6 +204,28 @@ class ModifiersRotation(EntityRotation):
         return cls(reward_list)
 
 
+class OverchargedWeaponRotation(EntityRotation):
+    def __init__(self, reward_list: List[str]):
+        super().__init__(reward_list)
+
+    @classmethod
+    def from_gspread(cls, sheet: gspread.models.Worksheet):
+        reward_list = sheet.col_values(9)[1:]
+        # reward_list = sheet.col_values(8)[1:]
+        return cls(reward_list)
+
+
+class SurgeRotation(EntityRotation):
+    def __init__(self, reward_list: List[str]):
+        super().__init__(reward_list)
+
+    @classmethod
+    def from_gspread(cls, sheet: gspread.models.Worksheet):
+        reward_list = sheet.col_values(10)[1:]
+        # reward_list = sheet.col_values(9)[1:]
+        return cls(reward_list)
+
+
 class RewardRotation(EntityRotation):
     def __init__(self, reward_list: List[str]):
         super().__init__(reward_list)
@@ -199,4 +233,5 @@ class RewardRotation(EntityRotation):
     @classmethod
     def from_gspread(cls, sheet: gspread.models.Worksheet):
         reward_list = sheet.col_values(8)[1:]
+        # reward_list = sheet.col_values(10)[1:]
         return cls(reward_list)
