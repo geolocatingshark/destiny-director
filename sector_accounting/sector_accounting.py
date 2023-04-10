@@ -3,8 +3,22 @@ from __future__ import annotations
 import datetime as dt
 from typing import List, Union
 
+import attr
 import gspread
 from pytz import utc
+
+from .utils import (
+    EntityRotation,
+    Minutes,
+    _parse_counts,
+    all_values_from_sheet,
+    SectorV1Compat,
+)
+
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
 
 # For future reference, this file pulls data from google sheets
 # The library used to pull this data is gspread
@@ -14,110 +28,257 @@ from pytz import utc
 # omit the headings in the google sheets file
 
 
-class Minutes(int):
-    pass
+@attr.s
+class DifficultySpecificSectorData:
+    """Represents sector data for specific difficulties
+
+    Note: for all counts, -1 means at least 1 and 0 means none
+
+    Attributes:
+        barrier_champions (int): Number of barrier champions in the lost sector.
+        overload_champions (int): Number of overload champions in the lost sector.
+        unstoppable_champions (int): Number of unstoppable champions in the lost sector.
+        arc_shields (int): Number of arc shields in the lost sector.
+        void_shields (int): Number of void shields in the lost sector.
+        solar_shields (int): Number of solar shields in the lost sector.
+        stasis_shields (int): Number of stasis shields in the lost sector.
+        strand_shields (int): Number of strand shields in the lost sector.
+        modifiers (str): Modifiers on the lost sector.
+        champions_list (List[str]): List of champions in the lost sector.
+        champions (str): Comma separated list of champions in the lost sector.
+        shields_list (List[str]): List of shields in the lost sector.
+        shields (str): Comma separated list of shields in the lost sector.
+    """
+
+    barrier_champions = attr.ib(0, converter=_parse_counts)
+    overload_champions = attr.ib(0, converter=_parse_counts)
+    unstoppable_champions = attr.ib(0, converter=_parse_counts)
+    arc_shields = attr.ib(0, converter=_parse_counts)
+    void_shields = attr.ib(0, converter=_parse_counts)
+    solar_shields = attr.ib(0, converter=_parse_counts)
+    stasis_shields = attr.ib(0, converter=_parse_counts)
+    strand_shields = attr.ib(0, converter=_parse_counts)
+    modifiers = attr.ib("")
+
+    @property
+    def champions_list(self) -> List[str]:
+        champions = []
+        if self.barrier_champions != 0:
+            champions.append("Barrier")
+        if self.overload_champions != 0:
+            champions.append("Overload")
+        if self.unstoppable_champions != 0:
+            champions.append("Unstoppable")
+        return champions
+
+    @property
+    def champions(self) -> str:
+        return ", ".join(self.champions_list) or "None"
+
+    @property
+    def shields_list(self) -> List[str]:
+        shields = []
+        if self.arc_shields != 0:
+            shields.append("Arc")
+        if self.void_shields != 0:
+            shields.append("Void")
+        if self.solar_shields != 0:
+            shields.append("Solar")
+        if self.stasis_shields != 0:
+            shields.append("Stasis")
+        if self.strand_shields != 0:
+            shields.append("Strand")
+        return shields
+
+    @property
+    def shields(self) -> str:
+        return ", ".join(self.shields_list) or "None"
+
+    def __bool__(self):
+        return bool(
+            self.barrier_champions
+            or self.overload_champions
+            or self.unstoppable_champions
+            or self.arc_shields
+            or self.void_shields
+            or self.solar_shields
+            or self.stasis_shields
+            or self.strand_shields
+            or self.modifiers
+        )
 
 
+@attr.s
 class Sector:
-    def __init__(self, name: str, shortlink_gfx: str):
-        self.name = name
-        self.shortlink_gfx = shortlink_gfx
-        self.reward = None
-        self.champions = None
-        self.shields = None
-        self.burn = None
-        self.modifiers = None
-        self.overcharged_weapon = None
-        self.surge = None
+    """Represents an in game lost sector.
+
+    Attributes:
+        name (str): Name of the lost sector.
+        reward (str): Name of the reward for the lost sector.
+        surge (str): Surge of the lost sector.
+        threat (str): Threat of the lost sector.
+        overcharged_weapon (str): Overcharged weapon of the lost sector.
+        shortlink_gfx (str): Shortlink to the lost sector's graphic.
+        legend_data (DifficultySpecificSectorData): Data for the lost sector
+            on legend difficulty.
+        master_data (DifficultySpecificSectorData): Data for the lost sector
+            on master difficulty.
+    """
+
+    # From "Lost Sectors (Internal)" sheet 0
+    name = attr.ib(type=str)
+    reward = attr.ib("")
+    surge = attr.ib("")
+    # From "Lost Sector Shield & Champion Counts" sheet 2
+    threat = attr.ib("")
+    overcharged_weapon = attr.ib("")
+    shortlink_gfx = attr.ib("")
+    # From "Lost Sector Shield & Champion Counts" sheet 0
+    legend_data = attr.ib(DifficultySpecificSectorData())
+    # From "Lost Sector Shield & Champion Counts" sheet 1
+    master_data = attr.ib(DifficultySpecificSectorData())
+
+    def __add__(self, other: Sector):
+        if not self.name == other.name:
+            raise ValueError("Cannot add sectors with different names")
+        return Sector(
+            self.name,
+            self.reward or other.reward,
+            self.surge or other.surge,
+            self.threat or other.threat,
+            self.overcharged_weapon or other.overcharged_weapon,
+            self.shortlink_gfx or other.shortlink_gfx,
+            self.legend_data or other.legend_data,
+            self.master_data or other.master_data,
+        )
+
+    def to_sector_v1(self) -> SectorV1Compat:
+        return SectorV1Compat(
+            name=self.name,
+            shortlink_gfx=self.shortlink_gfx,
+            reward=self.reward,
+            champions=self.legend_data.champions,
+            shields=self.legend_data.shields,
+            burn=self.threat,
+            modifiers=self.legend_data.modifiers
+            + " + "
+            + self.master_data.modifiers
+            + " on Master",
+            overcharged_weapon=self.overcharged_weapon,
+            surge=self.surge,
+        )
 
 
-class Rotation:
+class SectorData(dict):
     def __init__(
         self,
-        start_date: dt.datetime,
-        reward_rotation: RewardRotation,
-        lost_sector_rotation: SectorRotation,
-        champion_rotation: ChampionRotation,
-        shield_rotation: ShieldRotation,
-        burn_rotation: BurnRotation,
-        modifiers_rotation: ModifiersRotation,
-        overcharged_weapon_rotation: OverchargedWeaponRotation,
-        surge_rotation: SurgeRotation,
+        general: gspread.Spreadsheet,
+        legend: gspread.Spreadsheet,
+        master: gspread.Spreadsheet,
     ):
-        self.start_date = start_date
-        self._reward_rot = reward_rotation
-        self._sector_rot = lost_sector_rotation
-        self._champ_rot = champion_rotation
-        self._shield_rot = shield_rotation
-        self._burn_rot = burn_rotation
-        self._modifiers_rot = modifiers_rotation
-        self._overcharged_wep_rot = overcharged_weapon_rotation
-        self._surge_rot = surge_rotation
+        general = all_values_from_sheet(general, columns_are_major=False)[1:]
+        legend = all_values_from_sheet(legend, columns_are_major=False)[1:]
+        master = all_values_from_sheet(master, columns_are_major=False)[1:]
+
+        for general_row, legend_row, master_row in zip(general, legend, master):
+            sector: Sector = self.gspread_data_row_to_sector(
+                general_row, legend_row, master_row
+            )
+            self[sector.name] = sector
+
+    @staticmethod
+    def gspread_data_row_to_sector(
+        general_row: list, legend_row: list, master_row: list
+    ) -> Sector:
+        return Sector(
+            name=general_row[0],
+            threat=general_row[1],
+            overcharged_weapon=general_row[2],
+            shortlink_gfx=general_row[3],
+            legend_data=DifficultySpecificSectorData(
+                void_shields=legend_row[1],
+                solar_shields=legend_row[2],
+                arc_shields=legend_row[3],
+                stasis_shields=legend_row[4],
+                strand_shields=legend_row[5],
+                barrier_champions=legend_row[6],
+                overload_champions=legend_row[7],
+                unstoppable_champions=legend_row[8],
+                modifiers=legend_row[9],
+            ),
+            master_data=DifficultySpecificSectorData(
+                void_shields=master_row[1],
+                solar_shields=master_row[2],
+                arc_shields=master_row[3],
+                stasis_shields=master_row[4],
+                strand_shields=master_row[5],
+                barrier_champions=master_row[6],
+                overload_champions=master_row[7],
+                unstoppable_champions=master_row[8],
+                modifiers=master_row[9],
+            ),
+        )
+
+
+@attr.s
+class Rotation:
+    start_date = attr.ib(type=dt.datetime)
+    _reward_rot = attr.ib(type=EntityRotation)
+    _sector_rot = attr.ib(type=EntityRotation)
+    _surge_rot = attr.ib(type=EntityRotation)
+    _sector_data = attr.ib(SectorData)
 
     @classmethod
     def from_gspread_url(
         cls,
         url: str,
-        credentials: dict,  # Google API credentials, see https://docs.gspread.org/en/latest/oauth2.html
-        sheet_no: int = 0,
-        buffer: Minutes = 10,  # buffer in minutes
-    ) -> Rotation:
+        # Google API credentials, see https://docs.gspread.org/en/latest/oauth2.html
+        credentials: dict,
+        **kwargs,
+    ) -> Self:
         # Instantiates the spreadsheet, only uses the first worksheet by default
-        sheet = (
-            gspread.service_account_from_dict(credentials)
-            .open_by_url(url)
-            .get_worksheet(sheet_no)
-        )
-        return cls.from_gspread(sheet, buffer)
+        spreadsheet: gspread.Spreadsheet = gspread.service_account_from_dict(
+            credentials
+        ).open_by_url(url)
+        return cls.from_gspread(spreadsheet, **kwargs)
 
     @classmethod
     def from_gspread(
-        cls, sheet: gspread.models.Worksheet, buffer: Minutes = 10  # in minutes
+        cls, worksheet: gspread.Spreadsheet, buffer: Minutes = 10  # in minutes
     ) -> Rotation:
-        # Lost sector start date
-        start_date = cls._start_date_from_gspread(sheet, buffer)
-        # Rewards rotation in order starting on the above date
-        reward_rot = RewardRotation.from_gspread(sheet)
-        # Lost sector rotation in order start on the above date
-        sector_rot = SectorRotation.from_gspread(sheet)
-        champ_rot = ChampionRotation.from_gspread(sheet)
-        shield_rot = ShieldRotation.from_gspread(sheet)
-        burn_rot = BurnRotation.from_gspread(sheet)
-        modifiers_rot = ModifiersRotation.from_gspread(sheet)
-        overcharged_wep_rot = OverchargedWeaponRotation.from_gspread(sheet)
-        surge_rot = SurgeRotation.from_gspread(sheet)
-        return cls(
-            start_date,
-            reward_rot,
-            sector_rot,
-            champ_rot,
-            shield_rot,
-            burn_rot,
-            modifiers_rot,
-            overcharged_wep_rot,
-            surge_rot,
+        rotation_sheet = worksheet.get_worksheet(1)
+        legend_sheet = worksheet.get_worksheet(2)
+        master_sheet = worksheet.get_worksheet(3)
+        general_sheet = worksheet.get_worksheet(4)
+        values = all_values_from_sheet(rotation_sheet)
+
+        self = cls(
+            # Lost sector start date
+            cls._start_date_from_gspread(rotation_sheet, buffer),
+            reward_rot=EntityRotation.from_gspread(values, 1),
+            sector_rot=EntityRotation.from_gspread(values, 2),
+            surge_rot=EntityRotation.from_gspread(values, 3),
+            sector_data=SectorData(general_sheet, legend_sheet, master_sheet),
         )
+
+        return self
 
     def __call__(self, date: Union[dt.datetime, None] = None) -> Sector:
         # Returns the lost sector in rotation on date or for today by default
         date = date if date is not None else dt.datetime.now(tz=utc)
         days_since_ref_date = (date - self.start_date).days
 
-        sector = self._sector_rot[days_since_ref_date]
+        sector = Sector(
+            name=self._sector_rot[days_since_ref_date],
+            reward=self._reward_rot[days_since_ref_date],
+            surge=self._surge_rot[days_since_ref_date],
+        )
 
-        sector.reward = self._reward_rot[days_since_ref_date]
-        sector.champions = self._champ_rot[days_since_ref_date]
-        sector.shields = self._shield_rot[days_since_ref_date]
-        sector.burn = self._burn_rot[days_since_ref_date]
-        sector.modifiers = self._modifiers_rot[days_since_ref_date]
-        sector.overcharged_weapon = self._overcharged_wep_rot[days_since_ref_date]
-        sector.surge = self._surge_rot[days_since_ref_date]
-
-        return sector
+        return sector + self._sector_data[sector.name]
 
     @staticmethod
     def _start_date_from_gspread(
-        sheet: gspread.models.Worksheet, buffer: int = 10  # in minutes
+        sheet: gspread.Worksheet, buffer: int = 10  # in minutes
     ) -> dt.datetime:
         # Lost sector schedule start/reference date logic
         # Reset time is set to "buffer" minutes before destiny reset
@@ -137,101 +298,3 @@ class Rotation:
 
     def __len__(self):
         return len(self._sector_rot)
-
-
-class EntityRotation(list):
-    def __init__(self, entity_list: list):
-        self.extend(entity_list)
-
-    def __getitem__(self, days_since_reference_date: int) -> str:
-        # Returns the entity according to the rotation for
-        # the number of days_since_reference_date
-        # Use as follows:
-        # x[days_since_reference_date]
-        # where x is an EntityRotation instance
-        return super().__getitem__(days_since_reference_date % len(self))
-
-
-class SectorRotation(EntityRotation):
-    """Class that keeps track of the lost sector schedule"""
-
-    def __init__(self, ls_list: List[list]):
-        super().__init__(ls_list)
-
-    @classmethod
-    def from_gspread(cls, sheet: gspread.models.Worksheet):
-        ls_list = sheet.get("ls_list")[1:]
-        return cls([Sector(*ls) for ls in ls_list])
-
-
-class ChampionRotation(EntityRotation):
-    def __init__(self, reward_list: List[str]):
-        super().__init__(reward_list)
-
-    @classmethod
-    def from_gspread(cls, sheet: gspread.models.Worksheet):
-        reward_list = sheet.col_values(4)[1:]
-        return cls(reward_list)
-
-
-class ShieldRotation(EntityRotation):
-    def __init__(self, reward_list: List[str]):
-        super().__init__(reward_list)
-
-    @classmethod
-    def from_gspread(cls, sheet: gspread.models.Worksheet):
-        reward_list = sheet.col_values(5)[1:]
-        return cls(reward_list)
-
-
-class BurnRotation(EntityRotation):
-    def __init__(self, reward_list: List[str]):
-        super().__init__(reward_list)
-
-    @classmethod
-    def from_gspread(cls, sheet: gspread.models.Worksheet):
-        reward_list = sheet.col_values(6)[1:]
-        return cls(reward_list)
-
-
-class ModifiersRotation(EntityRotation):
-    def __init__(self, reward_list: List[str]):
-        super().__init__(reward_list)
-
-    @classmethod
-    def from_gspread(cls, sheet: gspread.models.Worksheet):
-        reward_list = sheet.col_values(7)[1:]
-        return cls(reward_list)
-
-
-class OverchargedWeaponRotation(EntityRotation):
-    def __init__(self, reward_list: List[str]):
-        super().__init__(reward_list)
-
-    @classmethod
-    def from_gspread(cls, sheet: gspread.models.Worksheet):
-        reward_list = sheet.col_values(9)[1:]
-        # reward_list = sheet.col_values(8)[1:]
-        return cls(reward_list)
-
-
-class SurgeRotation(EntityRotation):
-    def __init__(self, reward_list: List[str]):
-        super().__init__(reward_list)
-
-    @classmethod
-    def from_gspread(cls, sheet: gspread.models.Worksheet):
-        reward_list = sheet.col_values(10)[1:]
-        # reward_list = sheet.col_values(9)[1:]
-        return cls(reward_list)
-
-
-class RewardRotation(EntityRotation):
-    def __init__(self, reward_list: List[str]):
-        super().__init__(reward_list)
-
-    @classmethod
-    def from_gspread(cls, sheet: gspread.models.Worksheet):
-        reward_list = sheet.col_values(8)[1:]
-        # reward_list = sheet.col_values(10)[1:]
-        return cls(reward_list)
