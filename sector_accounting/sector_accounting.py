@@ -138,6 +138,10 @@ class Sector:
     # From "Lost Sector Shield & Champion Counts" sheet 1
     master_data = attr.ib(DifficultySpecificSectorData())
 
+    @property
+    def surges(self) -> List[str]:
+        return [s.strip() for s in self.surge.split("&")]
+
     def __add__(self, other: Sector):
         if not self.name == other.name:
             raise ValueError("Cannot add sectors with different names")
