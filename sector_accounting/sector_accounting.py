@@ -157,6 +157,14 @@ class Sector:
         )
 
     def to_sector_v1(self) -> SectorV1Compat:
+        modifiers = ""
+
+        if self.legend_data.modifiers:
+            modifiers += self.legend_data.modifiers
+
+        if self.master_data.modifiers:
+            modifiers += " + " + self.master_data.modifiers + " on Master"
+
         return SectorV1Compat(
             name=self.name,
             shortlink_gfx=self.shortlink_gfx,
@@ -164,10 +172,7 @@ class Sector:
             champions=self.legend_data.champions,
             shields=self.legend_data.shields,
             burn=self.threat,
-            modifiers=self.legend_data.modifiers
-            + " + "
-            + self.master_data.modifiers
-            + " on Master",
+            modifiers=modifiers,
             overcharged_weapon=self.overcharged_weapon,
             surge=self.surge,
         )

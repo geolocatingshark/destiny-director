@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sector_accounting"
-version = "0.2.0"
+version = "0.2.1"
 description = "Lost sector accounting for Destiny 2 with google sheets as a db"
 authors = ["GS <geolocatingshark@gmail.com>"]
 license = "GNU GPLv3"
