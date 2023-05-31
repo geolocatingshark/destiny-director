@@ -162,8 +162,11 @@ class Sector:
         if self.legend_data.modifiers:
             modifiers += self.legend_data.modifiers
 
+        if self.legend_data.modifiers and self.master_data.modifiers:
+            modifiers += " + " 
+
         if self.master_data.modifiers:
-            modifiers += " + " + self.master_data.modifiers + " on Master"
+            modifiers += self.master_data.modifiers + " on Master"
 
         return SectorV1Compat(
             name=self.name,
