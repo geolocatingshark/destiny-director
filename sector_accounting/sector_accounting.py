@@ -6,6 +6,7 @@ from typing import List, Union
 import attr
 import gspread
 from pytz import utc
+import warnings
 
 from .utils import (
     EntityRotation,
@@ -163,7 +164,7 @@ class Sector:
             modifiers += self.legend_data.modifiers
 
         if self.legend_data.modifiers and self.master_data.modifiers:
-            modifiers += " + " 
+            modifiers += " + "
 
         if self.master_data.modifiers:
             modifiers += self.master_data.modifiers + " on Master"
@@ -249,6 +250,15 @@ class Rotation:
         **kwargs,
     ) -> Self:
         # Instantiates the spreadsheet, only uses the first worksheet by default
+        # Ignore the client_factory deprecation warning
+        # it looks like gspread.http_client is not implmented as of 5.10
+        warnings.filterwarnings(
+            "ignore",
+            message=(
+                "\[Deprecated\]\[in version 6\.0\.0\]: client_factory "
+                + "will be replaced by gspread\.http_client types"
+            ),
+        )
         spreadsheet: gspread.Spreadsheet = gspread.service_account_from_dict(
             credentials
         ).open_by_url(url)
