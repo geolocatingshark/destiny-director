@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import datetime as dt
+import warnings
 from typing import List, Union
 
 import attr
 import gspread
 from pytz import utc
-import warnings
 
 from .utils import (
     EntityRotation,
     Minutes,
+    SectorV1Compat,
     _parse_counts,
     all_values_from_sheet,
-    SectorV1Compat,
 )
 
 try:
@@ -117,6 +117,7 @@ class Sector:
         name (str): Name of the lost sector.
         reward (str): Name of the reward for the lost sector.
         surge (str): Surge of the lost sector.
+        legendary_rewards (str): Legendary rewards for the lost sector.
         threat (str): Threat of the lost sector.
         overcharged_weapon (str): Overcharged weapon of the lost sector.
         shortlink_gfx (str): Shortlink to the lost sector's graphic.
@@ -130,6 +131,7 @@ class Sector:
     name = attr.ib(type=str)
     reward = attr.ib("")
     surge = attr.ib("")
+    legendary_rewards = attr.ib("")
     # From "Lost Sector Shield & Champion Counts" sheet 2
     threat = attr.ib("")
     overcharged_weapon = attr.ib("")
@@ -150,6 +152,7 @@ class Sector:
             self.name,
             self.reward or other.reward,
             self.surge or other.surge,
+            self.legendary_rewards or other.legendary_rewards,
             self.threat or other.threat,
             self.overcharged_weapon or other.overcharged_weapon,
             self.shortlink_gfx or other.shortlink_gfx,
@@ -239,6 +242,7 @@ class Rotation:
     _reward_rot = attr.ib(type=EntityRotation)
     _sector_rot = attr.ib(type=EntityRotation)
     _surge_rot = attr.ib(type=EntityRotation)
+    _legendary_rewards_rot = attr.ib(type=EntityRotation)
     _sector_data = attr.ib(SectorData)
 
     @classmethod
@@ -266,7 +270,9 @@ class Rotation:
 
     @classmethod
     def from_gspread(
-        cls, worksheet: gspread.Spreadsheet, buffer: Minutes = 10  # in minutes
+        cls,
+        worksheet: gspread.Spreadsheet,
+        buffer: Minutes = 10,  # in minutes
     ) -> Rotation:
         rotation_sheet = worksheet.get_worksheet(1)
         legend_sheet = worksheet.get_worksheet(2)
@@ -280,6 +286,7 @@ class Rotation:
             reward_rot=EntityRotation.from_gspread(values, 1),
             sector_rot=EntityRotation.from_gspread(values, 2),
             surge_rot=EntityRotation.from_gspread(values, 3),
+            legendary_rewards_rot=EntityRotation.from_gspread(values, 4),
             sector_data=SectorData(general_sheet, legend_sheet, master_sheet),
         )
 
@@ -294,13 +301,15 @@ class Rotation:
             name=self._sector_rot[days_since_ref_date],
             reward=self._reward_rot[days_since_ref_date],
             surge=self._surge_rot[days_since_ref_date],
+            legendary_rewards=self._legendary_rewards_rot[days_since_ref_date],
         )
 
         return sector + self._sector_data[sector.name]
 
     @staticmethod
     def _start_date_from_gspread(
-        sheet: gspread.Worksheet, buffer: int = 10  # in minutes
+        sheet: gspread.Worksheet,
+        buffer: int = 10,  # in minutes
     ) -> dt.datetime:
         # Lost sector schedule start/reference date logic
         # Reset time is set to "buffer" minutes before destiny reset
