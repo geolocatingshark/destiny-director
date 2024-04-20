@@ -57,6 +57,14 @@ class XurLocations(SpreadsheetBackedData, dict):
 
         return self
 
+    def __getitem__(self, key: str) -> XurLocation:
+        if key in self:
+            return super().__getitem__(key)
+        else:
+            return XurLocation(
+                api_location_name=key, friendly_location_name=None, link=None
+            )
+
 
 @attr.s
 class XurArmorSet:
@@ -105,3 +113,9 @@ class XurArmorSets(SpreadsheetBackedData, dict):
                 self[armor_set.api_name_warlock] = armor_set
 
         return self
+
+    def __getitem__(self, key: str) -> XurArmorSet:
+        if key in self:
+            return super().__getitem__(key)
+        else:
+            return XurArmorSet(friendly_name=key, link=None)
