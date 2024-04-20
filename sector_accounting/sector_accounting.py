@@ -236,15 +236,7 @@ class SectorData(dict):
         )
 
 
-@attr.s
-class Rotation:
-    start_date = attr.ib(type=dt.datetime)
-    _reward_rot = attr.ib(type=EntityRotation)
-    _sector_rot = attr.ib(type=EntityRotation)
-    _surge_rot = attr.ib(type=EntityRotation)
-    _legendary_rewards_rot = attr.ib(type=EntityRotation)
-    _sector_data = attr.ib(SectorData)
-
+class SpreadsheetBackedData:
     @classmethod
     def from_gspread_url(
         cls,
@@ -267,6 +259,23 @@ class Rotation:
             credentials
         ).open_by_url(url)
         return cls.from_gspread(spreadsheet, **kwargs)
+
+    @classmethod
+    def from_gspread(
+        cls,
+        worksheet: gspread.Spreadsheet,
+    ) -> Self:
+        raise NotImplementedError
+
+
+@attr.s
+class Rotation(SpreadsheetBackedData):
+    start_date = attr.ib(type=dt.datetime)
+    _reward_rot = attr.ib(type=EntityRotation)
+    _sector_rot = attr.ib(type=EntityRotation)
+    _surge_rot = attr.ib(type=EntityRotation)
+    _legendary_rewards_rot = attr.ib(type=EntityRotation)
+    _sector_data = attr.ib(SectorData)
 
     @classmethod
     def from_gspread(
