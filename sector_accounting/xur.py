@@ -28,7 +28,7 @@ class XurLocation:
             str_ += f"{self.api_location_name}"
 
         if self.link:
-            str_ += f"[{str_}]({self.link})"
+            str_ = f"[{str_}]({self.link})"
 
         return str_
 
@@ -77,7 +77,7 @@ class XurArmorSet:
     def __str__(self) -> str:
         str_ = f"{self.friendly_name}"
         if self.link:
-            str_ += f"[{str_}]({self.link})"
+            str_ = f"[{str_}]({self.link})"
 
         return str_
 
