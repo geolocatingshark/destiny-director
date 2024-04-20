@@ -17,8 +17,8 @@ except ImportError:
 @attr.s
 class XurLocation:
     api_location_name: str = attr.ib()
-    friendly_location_name: str = attr.ib()
-    link: str = attr.ib()
+    friendly_location_name: str = attr.ib(default=None)
+    link: str = attr.ib(default=None)
 
     def __str__(self) -> str:
         str_ = ""
@@ -41,7 +41,7 @@ class XurLocations(SpreadsheetBackedData, dict):
         api_location_name_col: int = 0,
         friendly_location_name_col: int = 1,
         link_col: int = 2,
-    ) -> XurLocation:
+    ) -> XurLocations:
         values = all_values_from_sheet(sheet.get_worksheet(7), columns_are_major=False)
         values = values[1:]
 
@@ -68,11 +68,11 @@ class XurLocations(SpreadsheetBackedData, dict):
 
 @attr.s
 class XurArmorSet:
-    api_name_hunter = attr.ib()
-    api_name_titan = attr.ib()
-    api_name_warlock = attr.ib()
     friendly_name = attr.ib()
-    link = attr.ib()
+    api_name_hunter = attr.ib(default=None)
+    api_name_titan = attr.ib(default=None)
+    api_name_warlock = attr.ib(default=None)
+    link = attr.ib(default=None)
 
     def __str__(self) -> str:
         str_ = f"{self.friendly_name}"
