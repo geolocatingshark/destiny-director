@@ -37,12 +37,12 @@ class XurLocations(SpreadsheetBackedData, dict):
     @classmethod
     def from_gspread(
         cls: Self,
-        sheet: gspread.Worksheet,
+        sheet: gspread.Spreadsheet,
         api_location_name_col: int = 0,
         friendly_location_name_col: int = 1,
         link_col: int = 2,
     ) -> XurLocation:
-        values = all_values_from_sheet(sheet, columns_are_major=False)
+        values = all_values_from_sheet(sheet.get_worksheet(7), columns_are_major=False)
         values = values[1:]
 
         self = cls()
@@ -78,14 +78,14 @@ class XurArmorSets(SpreadsheetBackedData, dict):
     @classmethod
     def from_gspread(
         cls: Self,
-        sheet: gspread.Worksheet,
+        sheet: gspread.Spreadsheet,
         api_name_hunter_col: int = 0,
         api_name_titan_col: int = 1,
         api_name_warlock_col: int = 2,
         friendly_name_col: int = 3,
         link_col: int = 4,
     ) -> XurArmorSet:
-        values = all_values_from_sheet(sheet, columns_are_major=False)
+        values = all_values_from_sheet(sheet.get_worksheet(6), columns_are_major=False)
         values = values[1:]
 
         self = cls()
