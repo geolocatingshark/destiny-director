@@ -6,6 +6,7 @@ from typing import List, Union
 
 import attr
 import gspread
+import regex as re
 from pytz import utc
 
 from .utils import (
@@ -27,6 +28,11 @@ except ImportError:
 # from our pulled data before being used
 # The [1:] slices in from_gspread methods
 # omit the headings in the google sheets file
+
+
+# Regex for splitting based on commands and ampersands
+# This is used to split the surge column in the lost sector sheet
+re_split_list = re.compile(r"[,&]")
 
 
 @attr.s
@@ -143,7 +149,9 @@ class Sector:
 
     @property
     def surges(self) -> List[str]:
-        return [s.strip() for s in self.surge.split("&")]
+        surges = re_split_list.split(self.surge)
+        surges = [surge.strip() for surge in surges]
+        return surges
 
     def __add__(self, other: Sector):
         if not self.name == other.name:

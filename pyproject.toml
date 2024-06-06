@@ -10,6 +10,7 @@ python = ">=3.8.0,<4.0"
 gspread = "^5.9"
 pytz = "*"
 attrs = ">=22.2.0"
+regex = "*"
 
 [tool.poetry.dev-dependencies]
 pyflakes = "*"
