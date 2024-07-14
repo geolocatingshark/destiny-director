@@ -159,7 +159,7 @@ default_url = _getenv("DEFAULT_URL")
 navigator_timeout = int(_getenv("NAVIGATOR_TIMEOUT") or 120)
 
 # Database URLs
-db_url, db_url_async = _db_urls("MYSQL_PRIVATE_URL", "MSQL_URL")
+db_url, db_url_async = _db_urls("MYSQL_PRIVATE_URL", "MYSQL_URL")
 
 # Sheets credentials & URLs
 gsheets_credentials = _sheets_credentials(
