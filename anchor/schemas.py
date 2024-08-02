@@ -25,7 +25,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.sql import insert, select, update
 from sqlalchemy.sql.schema import Column
 
-from polarity import cfg, utils
+from anchor import cfg, utils
 
 Base = declarative_base()
 db_engine = create_async_engine(

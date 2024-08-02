@@ -1,34 +1,34 @@
-deploy-conduction-dev:
+deploy-beacon-dev:
 	railway environment dev
-	railway service conduction-tines
+	railway service beacon
 	railway up -d
 
-deploy-polarity-dev:
+deploy-anchor-dev:
 	railway environment dev
-	railway service mortal-polarity
+	railway service anchor
 	railway up -d
 
-deploy-conduction-prod:
+deploy-beacon-prod:
 	railway environment production
-	railway service conduction-tines
+	railway service beacon
 	railway up -d
 
-deploy-polarity-prod:
+deploy-anchor-prod:
 	railway environment production
-	railway service mortal-polarity
+	railway service anchor
 	railway up -d
 
-run-conduction-local: .env
-	poetry run honcho start conduction
+run-beacon-local: .env
+	poetry run honcho start beacon
 
-run-polarity-local: .env
-	poetry run honcho start polarity
+run-anchor-local: .env
+	poetry run honcho start anchor
 
 destroy-schemas: .env
-	$(POETRY_CMD) honcho run python -m conduction.schemas --destroy-all
+	$(POETRY_CMD) honcho run python -m beacon.schemas --destroy-all
 
 create-schemas: .env
-	$(POETRY_CMD) honcho run python -m conduction.schemas --create-all
+	$(POETRY_CMD) honcho run python -m beacon.schemas --create-all
 
 atlas-migration-plan: .env
 	$(POETRY_CMD) honcho run atlas migrate diff --env sqlalchemy
@@ -45,7 +45,7 @@ test: .env
 	poetry run honcho run python -m pytest
 
 .env:
-	@echo "Please create a .env file with all variables as per conduction.cfg"
+	@echo "Please create a .env file with all variables as per beacon.cfg"
 	@echo "and .env-example to be able to run this locally. Note that all"
 	@echo "variables are required and the example values are not valid but"
 	@echo "are there to show the approximate format of values."

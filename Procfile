@@ -1,2 +1,2 @@
-conduction: atlas migrate apply -u ${MYSQL_URL} && python -OO -m conduction
-polarity: atlas migrate apply -u ${MYSQL_URL} && python -OO -m polarity
+beacon: atlas migrate apply -u ${MYSQL_URL} && python -OO -m beacon
+anchor: atlas migrate apply -u ${MYSQL_URL} && python -OO -m anchor

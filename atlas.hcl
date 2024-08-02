@@ -1,7 +1,7 @@
 data "external_schema" "sqlalchemy" {
   program = [
     "python",
-    "conduction/schemas.py",
+    "beacon/schemas.py",
     "--print-ddl"
   ]
 }

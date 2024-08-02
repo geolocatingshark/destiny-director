@@ -65,7 +65,7 @@ class XurPages(NavPages):
             .merge_attachements_into_embed(default_url=cfg.default_url)
         )
 
-        # Remove duplicate Arrives/Departs text from polarity embed
+        # Remove duplicate Arrives/Departs text from anchor embed
         for embed in msg_proto.embeds:
             embed.description = rgx_find_arrives_departs_text.sub(
                 "", embed.description or ""

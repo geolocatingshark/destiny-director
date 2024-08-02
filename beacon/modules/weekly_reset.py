@@ -47,7 +47,7 @@ class ResetPages(NavPages):
             .merge_attachements_into_embed(default_url=cfg.default_url)
         )
 
-        # Remove duplicate From/Till text from polarity embed
+        # Remove duplicate From/Till text from anchor embed
         for embed in msg_proto.embeds:
             embed.description = rgx_find_from_till_text.sub("", embed.description or "")
 

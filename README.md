@@ -5,7 +5,7 @@ Setting up the dev environment:
 1. Get a working [Poetry](https://python-poetry.org/) installation
 2. Run `poetry install` in the root of the git clone
 3. `poetry shell` to jump into the virtualenv
-4. [Optional] Set up the `.env` with environment variables refering to `polarity/cfg.py` & `.env-example`
+4. [Optional] Set up the `.env` with environment variables refering to `anchor/cfg.py` & `.env-example`
 
 Running code locally:
 
@@ -22,8 +22,8 @@ make test
 Running code locally with docker:
 
 ```
-docker build -t polarity .
-docker run --env-file=.env polarity
+docker build -t anchor .
+docker run --env-file=.env anchor
 ```
 
 Deploying code to [railway](https://railway.app/)
