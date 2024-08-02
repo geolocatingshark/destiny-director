@@ -1,15 +1,28 @@
-deploy-dev:
+deploy-conduction-dev:
 	railway environment dev
 	railway service conduction-tines
 	railway up -d
 
-deploy-prod:
+deploy-polarity-dev:
+	railway environment dev
+	railway service mortal-polarity
+	railway up -d
+
+deploy-conduction-prod:
 	railway environment production
 	railway service conduction-tines
 	railway up -d
 
-run-local: .env
-	poetry run honcho start
+deploy-polarity-prod:
+	railway environment production
+	railway service mortal-polarity
+	railway up -d
+
+run-conduction-local: .env
+	poetry run honcho start conduction
+
+run-polarity-local: .env
+	poetry run honcho start polarity
 
 destroy-schemas: .env
 	$(POETRY_CMD) honcho run python -m conduction.schemas --destroy-all

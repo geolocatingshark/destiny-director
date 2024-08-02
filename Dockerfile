@@ -27,6 +27,8 @@ FROM arigaio/atlas:latest-community-alpine AS atlas-base
 
 FROM base AS final
 
+ARG RAILWAY_SERVICE_NAME
+
 COPY --from=atlas-base /atlas /bin/atlas
 COPY --from=builder /venv /venv
 COPY --from=builder /app/dist .

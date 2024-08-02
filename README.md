@@ -1,4 +1,4 @@
-# conduction-tines
+# Destiny Director
 
 Setting up the dev environment:
 
