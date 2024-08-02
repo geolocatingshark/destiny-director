@@ -1,1 +1,1 @@
-main: python -OO -m conduction
+main: atlas migrate apply -u ${MYSQL_URL} && python -OO -m conduction

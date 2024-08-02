@@ -63,7 +63,7 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
             if len(limits) != 2:
                 raise ValueError("limits must be a tuple of length 2")
 
-            if not all(isinstance(l, dt.datetime) for l in limits):
+            if not all(isinstance(limit, dt.datetime) for limit in limits):
                 raise TypeError("limits must be a tuple of datetime.datetime")
 
             if limits[0] > limits[1]:

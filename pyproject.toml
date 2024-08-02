@@ -29,7 +29,7 @@ sector_accounting = {git = "https://github.com/gsfernandes81/sector_accounting.g
 sqlalchemy = "^2.0.1"
 uvloop = "^0.17.0"
 yarl = "^1.9.2"
-ruff = "^0.1.14"
+atlas-provider-sqlalchemy = "^0.2.2"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "*"

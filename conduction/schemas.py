@@ -15,22 +15,33 @@
 
 from __future__ import annotations
 
-import asyncio
+import asyncio as aio
 import datetime as dt
 import logging
-from collections import defaultdict
+import sys
+import typing as t
 from typing import List, Optional, Set, Tuple
 
 import regex as re
+from atlas_provider_sqlalchemy.ddl import print_ddl
 from pytz import utc
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, validates
-from sqlalchemy.sql.expression import and_, delete, desc, insert, select, update
+from sqlalchemy.sql import insert, select, text, update
+from sqlalchemy.sql.expression import and_, delete, desc
 from sqlalchemy.sql.functions import coalesce, func
 from sqlalchemy.sql.schema import CheckConstraint, Column, UniqueConstraint
-from sqlalchemy.sql.sqltypes import BigInteger, Boolean, DateTime, Integer, String, Text
+from sqlalchemy.sql.sqltypes import (
+    VARCHAR,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Integer,
+    String,
+    Text,
+)
 
-from . import cfg, utils
+from conduction import cfg, utils
 
 Base = declarative_base()
 db_engine = create_async_engine(
@@ -282,9 +293,7 @@ class MirroredChannel(Base):
         dest_id = int(dest_id)
         await session.execute(
             update(cls)
-            .where(
-                and_(cls.src_id == src_id, cls.dest_id == dest_id, cls.enabled == True)
-            )
+            .where(and_(cls.src_id == src_id, cls.dest_id == dest_id, cls.enabled))
             .values(enabled=False)
         )
 
@@ -301,10 +310,9 @@ class MirroredChannel(Base):
         cls, dest_id: int, session: Optional[AsyncSession] = None
     ) -> None:
         dest_id = int(dest_id)
-        src_ids = await cls.fetch_srcs(dest_id)
         await session.execute(
             update(cls)
-            .where(and_(cls.dest_id == dest_id, cls.enabled == True))
+            .where(and_(cls.dest_id == dest_id, cls.enabled))
             .values(enabled=False)
         )
 
@@ -332,8 +340,8 @@ class MirroredChannel(Base):
                 and_(
                     cls.src_id == src_id,
                     cls.dest_id == dest_id,
-                    cls.enabled == True,
-                    cls.legacy == True,
+                    cls.enabled,
+                    cls.legacy,
                 )
             )
             .values(legacy_error_rate=0)
@@ -356,8 +364,8 @@ class MirroredChannel(Base):
                 and_(
                     cls.src_id == src_id,
                     cls.dest_id.in_(dest_ids),
-                    cls.enabled == True,
-                    cls.legacy == True,
+                    cls.enabled,
+                    cls.legacy,
                 )
             )
             .values(legacy_error_rate=0)
@@ -380,8 +388,8 @@ class MirroredChannel(Base):
                 and_(
                     cls.src_id == src_id,
                     cls.dest_id == dest_id,
-                    cls.enabled == True,
-                    cls.legacy == True,
+                    cls.enabled,
+                    cls.legacy,
                 )
             )
             .values(legacy_error_rate=cls.legacy_error_rate + 1)
@@ -404,8 +412,8 @@ class MirroredChannel(Base):
                 and_(
                     cls.src_id == src_id,
                     cls.dest_id.in_(dest_ids),
-                    cls.enabled == True,
-                    cls.legacy == True,
+                    cls.enabled,
+                    cls.legacy,
                 )
             )
             .values(legacy_error_rate=cls.legacy_error_rate + 1)
@@ -425,8 +433,8 @@ class MirroredChannel(Base):
         disabled_mirrors = await session.execute(
             select(cls.src_id, cls.dest_id).where(
                 and_(
-                    cls.enabled == True,
-                    cls.legacy == True,
+                    cls.enabled,
+                    cls.legacy,
                     cls.legacy_error_rate >= threshold,
                 )
             )
@@ -487,8 +495,8 @@ class MirroredChannel(Base):
         disabled_mirrors = await session.execute(
             select(cls.src_id, cls.dest_id).where(
                 and_(
-                    cls.enabled == False,
-                    cls.legacy == True,
+                    not cls.enabled,
+                    cls.legacy,
                     cls.legacy_disable_for_failure_on_date >= since,
                 )
             )
@@ -1143,17 +1151,186 @@ class UserCommand(Base):
         ]
 
 
-async def recreate_all():
+class AutoPostSettings(Base):
+    __tablename__ = "auto_post_settings"
+    __mapper_args__ = {"eager_defaults": True}
+
+    name = Column("name", VARCHAR(32), primary_key=True)
+    enabled = Column(
+        "enabled",
+        Boolean,
+        default=True,
+    )
+
+    def __init__(
+        self,
+        id: int = 1,
+        enabled=False,
+    ):
+        self.id = id
+        self.enabled = enabled
+
+    @classmethod
+    @utils.ensure_session(db_session)
+    async def get_enabled(cls, auto_post_name: str, session: AsyncSession = None):
+        enabled = (
+            await session.execute(select(cls.enabled).where(cls.name == auto_post_name))
+        ).scalar()
+        return enabled
+
+    @classmethod
+    @utils.ensure_session(db_session)
+    async def set_enabled(
+        cls, auto_post_name: str, enabled: bool, session: AsyncSession = None
+    ):
+        currently_enabled = await cls.get_enabled(auto_post_name, session=session)
+
+        if currently_enabled == enabled:
+            return
+        elif currently_enabled is None:
+            await session.execute(
+                insert(cls).values({cls.name: auto_post_name, cls.enabled: enabled})
+            )
+        else:
+            await session.execute(
+                update(cls)
+                .values({cls.enabled: enabled})
+                .where(cls.name == auto_post_name)
+            )
+
+    @classmethod
+    async def get_lost_sector_enabled(cls):
+        return await cls.get_enabled("lost_sector")
+
+    @classmethod
+    async def set_lost_sector(cls, enabled: bool):
+        return await cls.set_enabled("lost_sector", enabled)
+
+    @classmethod
+    async def get_lost_sector_legendary_weapons_enabled(cls):
+        return await cls.get_enabled("lost_sector_legendary_weapons")
+
+    @classmethod
+    async def set_lost_sector_legendary_weapons(cls, enabled: bool):
+        return await cls.set_enabled("lost_sector_legendary_weapons", enabled)
+
+    @classmethod
+    async def get_lost_sector_twitter_enabled(cls):
+        return await cls.get_enabled("lost_sector_twitter")
+
+    @classmethod
+    async def set_lost_sector_twitter(cls, enabled: bool):
+        return await cls.set_enabled("lost_sector_twitter", enabled)
+
+    @classmethod
+    async def get_xur_enabled(cls):
+        return await cls.get_enabled("xur")
+
+    @classmethod
+    async def set_xur(cls, enabled: bool):
+        return await cls.set_enabled("xur", enabled)
+
+
+class BungieCredentials(Base):
+    __tablename__ = "bungie_credentials"
+    __mapper_args__ = {"eager_defaults": True}
+
+    id = Column("id", Integer, primary_key=True)
+    api_key = cfg.bungie_api_key
+    client_id = cfg.bungie_client_id
+    client_secret = cfg.bungie_client_secret
+    refresh_token = Column("refresh_token", VARCHAR(1024), default=None)
+    refresh_token_expires = Column("refresh_token_expires", DateTime, default=None)
+
+    def __init__(
+        self,
+        id: int = 1,
+        refresh_token=None,
+        refresh_token_expires=None,
+    ):
+        self.id = id
+        self.refresh_token = refresh_token
+        self.refresh_token_expires = refresh_token_expires
+
+    @classmethod
+    @utils.ensure_session(db_session)
+    async def get_credentials(cls, id=1, session: AsyncSession = None) -> t.Self:
+        return (await session.execute(select(cls).where(cls.id == id))).scalar()
+
+    @classmethod
+    @utils.ensure_session(db_session)
+    async def set_refresh_token(
+        cls,
+        id=1,
+        refresh_token=None,
+        refresh_token_expires=None,
+        session: AsyncSession = None,
+    ):
+        refresh_token_expires = dt.datetime.now() + dt.timedelta(
+            seconds=refresh_token_expires * 0.8  # 20% Factor of Safety
+        )
+
+        self: cls = (await session.execute(select(cls.id).where(cls.id == id))).scalar()
+
+        if self:
+            await session.execute(
+                update(cls)
+                .where(cls.id == id)
+                .values(
+                    {
+                        cls.refresh_token: refresh_token,
+                        cls.refresh_token_expires: refresh_token_expires,
+                    }
+                )
+            )
+        else:
+            await session.execute(
+                insert(cls).values(
+                    {
+                        cls.id: id,
+                        cls.refresh_token: refresh_token,
+                        cls.refresh_token_expires: refresh_token_expires,
+                    }
+                )
+            )
+
+
+async def destroy_all():
     # db_engine = create_engine(cfg.db_url, connect_args=cfg.db_connect_args)
     db_engine = create_async_engine(cfg.db_url_async, connect_args=cfg.db_connect_args)
     # db_session = sessionmaker(db_engine, **cfg.db_session_kwargs)
 
     async with db_engine.begin() as conn:
-        logging.info(f"Dropping tables: {Base.metadata.tables.keys()}")
+        logging.info(f"Dropping tables: {list(Base.metadata.tables.keys())}")
         await conn.run_sync(Base.metadata.drop_all)
+
+    await destroy_atlas_metadata()
+
+
+async def destroy_atlas_metadata():
+    db_engine = create_async_engine(cfg.db_url_async, connect_args=cfg.db_connect_args)
+
+    async with db_engine.begin() as conn:
+        logging.info("Dropping table: atlas_schema_revisions")
+        await conn.execute(text("DROP TABLE IF EXISTS atlas_schema_revisions"))
+
+
+async def create_all():
+    # db_engine = create_engine(cfg.db_url, connect_args=cfg.db_connect_args)
+    db_engine = create_async_engine(cfg.db_url_async, connect_args=cfg.db_connect_args)
+    # db_session = sessionmaker(db_engine, **cfg.db_session_kwargs)
+
+    async with db_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        logging.info(f"Created tables: {Base.metadata.tables.keys()}")
+        logging.info(f"Created tables: {list(Base.metadata.tables.keys())}")
 
 
 if __name__ == "__main__":
-    asyncio.run(recreate_all())
+    if "--print-ddl" in sys.argv:
+        print_ddl("mysql", [Base])
+
+    if "--destroy-all" in sys.argv:
+        aio.run(destroy_all())
+
+    if "--create-all" in sys.argv:
+        aio.run(create_all())

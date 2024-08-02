@@ -29,11 +29,12 @@ def _getenv(var_name: str, default: t.Optional[str] = None) -> str:
     var = __getenv(var_name)
     if var is None:
         if default is not None:
-            logging.info(f"Loaded variable {var_name} with default value {default}")
+            # logging.info(f"Loaded variable {var_name} with default value {default}")
             return default
         raise ValueError(f"Environment variable {var_name} not set")
     else:
-        logging.info(f"Loaded variable {var_name}")
+        # logging.info(f"Loaded variable {var_name}")
+        pass
     return str(var)
 
 
@@ -172,6 +173,13 @@ gsheets_credentials = _sheets_credentials(
 )
 sheets_ls_url = _getenv("SHEETS_LS_URL")
 
+# Bungie credentials
+bungie_api_key = _getenv("BUNGIE_API_KEY")
+bungie_client_id = _getenv("BUNGIE_CLIENT_ID")
+bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET")
+
+
+port = int(_getenv("PORT", 8080))
 #### Environment variables end ####
 
 ###################################
