@@ -18,8 +18,8 @@ import asyncio
 import pytest
 import sqlalchemy as sql
 
-from .. import schemas
-from ..schemas import UserCommand
+from ...common import schemas
+from ...common.schemas import UserCommand
 from ..utils import get_function_name
 
 

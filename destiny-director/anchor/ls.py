@@ -28,7 +28,8 @@ from sector_accounting.sector_accounting import (
     Sector,
 )
 
-from . import cfg, schemas, utils
+from ..common import schemas
+from . import cfg, utils
 from .autopost import make_autopost_control_commands
 from .embeds import construct_emoji_substituter, re_user_side_emoji
 

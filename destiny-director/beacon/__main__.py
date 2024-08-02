@@ -23,7 +23,8 @@ import miru
 import uvloop
 from lightbulb.ext import tasks
 
-from . import cfg, help, modules, schemas
+from ..common import schemas
+from . import cfg, help, modules
 from .bot import CachedFetchBot, CustomHelpBot, ServerEmojiEnabledBot, UserCommandBot
 
 

@@ -18,9 +18,9 @@ import typing as t
 import hikari as h
 import lightbulb as lb
 
+from ...common.schemas import MirroredChannel
 from .. import cfg
 from ..bot import CachedFetchBot
-from ..schemas import MirroredChannel
 
 debug_group = lb.command(name="debug", description="Debug group", hidden=True)(
     lb.implements(lb.SlashCommandGroup)(lambda: None)

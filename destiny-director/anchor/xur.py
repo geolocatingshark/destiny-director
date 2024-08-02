@@ -27,8 +27,9 @@ import regex as re
 from hmessage import HMessage
 from sector_accounting import xur as xur_support_data
 
+from ..common import schemas
 from . import bungie_api as api
-from . import cfg, schemas, utils
+from . import cfg, utils
 from .autopost import make_autopost_control_commands
 from .embeds import substitute_user_side_emoji
 

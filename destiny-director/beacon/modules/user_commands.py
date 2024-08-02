@@ -20,9 +20,9 @@ import typing as t
 import hikari as h
 import lightbulb as lb
 
+from ...common.schemas import UserCommand, db_session
 from .. import cfg, utils
 from ..bot import UserCommandBot
-from ..schemas import UserCommand, db_session
 
 # TODO
 # Add a way to try a command response

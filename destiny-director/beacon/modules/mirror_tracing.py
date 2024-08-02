@@ -20,8 +20,8 @@ from collections import defaultdict
 import hikari as h
 import lightbulb as lb
 
+from ...common.schemas import MirroredChannel
 from .. import cfg
-from ..schemas import MirroredChannel
 from .mirror import TimedSemaphore
 
 # Tracing is non-critical, so keep the database loading and api

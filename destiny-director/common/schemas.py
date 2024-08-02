@@ -41,7 +41,7 @@ from sqlalchemy.sql.sqltypes import (
     Text,
 )
 
-from beacon import cfg, utils
+from ..beacon import cfg, utils
 
 Base = declarative_base()
 db_engine = create_async_engine(

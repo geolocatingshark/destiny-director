@@ -17,9 +17,9 @@ import asyncio
 
 import pytest
 
-from .. import schemas
-from ..schemas import MirroredChannel as _MirroredChannel
-from ..schemas import ServerStatistics
+from ...common import schemas
+from ...common.schemas import MirroredChannel as _MirroredChannel
+from ...common.schemas import ServerStatistics
 
 
 def setup_function():

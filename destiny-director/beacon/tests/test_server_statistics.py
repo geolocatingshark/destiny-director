@@ -17,8 +17,8 @@ import asyncio
 
 import pytest
 
-from .. import schemas
-from ..schemas import ServerStatistics
+from ...common import schemas
+from ...common.schemas import ServerStatistics
 
 
 def setup_function(function):

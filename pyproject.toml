@@ -5,7 +5,7 @@ description = ""
 authors = ["geolocatingshark <geolocatingshark@gmail.com>"]
 license = "GNU AGPL-3.0-or-later"
 readme = "README.md"
-packages = [{ include = "beacon" }, { include = "anchor" }]
+packages = [{ include = "destiny-director" }]
 
 [tool.poetry.dependencies]
 aiocron = "^1.8"

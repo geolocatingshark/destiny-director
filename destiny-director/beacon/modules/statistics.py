@@ -19,7 +19,8 @@ import typing as t
 import hikari as h
 import lightbulb as lb
 
-from .. import cfg, schemas
+from ...common import schemas
+from .. import cfg
 from ..bot import CachedFetchBot
 
 

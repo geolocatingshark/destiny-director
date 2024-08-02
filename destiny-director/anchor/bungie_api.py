@@ -16,7 +16,8 @@ import aiosqlite
 import lightbulb as lb
 from yarl import URL
 
-from . import cfg, schemas
+from ..common import schemas
+from . import cfg
 
 BUNGIE_NET = "https://www.bungie.net"
 API_ROOT = BUNGIE_NET + "/Platform"
