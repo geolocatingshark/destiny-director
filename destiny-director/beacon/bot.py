@@ -56,7 +56,9 @@ class CachedFetchBot(lb.BotApp):
             return guild
 
         guild = await self.rest.fetch_guild(guild_id)
-        self.cache.set_guild(guild)
+        # Do not put RESTGuilds into the cache since Hikari misbehaves
+        # when this is done
+        # self.cache.set_guild(guild)
 
         return guild
 
