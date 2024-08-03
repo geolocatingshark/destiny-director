@@ -22,10 +22,16 @@ import miru as m
 import uvloop
 from lightbulb.ext import tasks
 
-from . import bungie_api, cfg, controller, ls, posts, source, xur
+from ..common import cfg
+from . import bungie_api, controller, ls, posts, source, xur
 
 uvloop.install()
-bot: lb.BotApp = lb.BotApp(**cfg.lightbulb_params)
+bot: lb.BotApp = lb.BotApp(
+    **cfg.lightbulb_params(
+        include_message_content_intent=False,
+        central_guilds_only=True,
+    )
+)
 
 logger = logging.getLogger(__name__)
 

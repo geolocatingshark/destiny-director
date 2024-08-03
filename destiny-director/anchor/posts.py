@@ -16,7 +16,7 @@
 import hikari as h
 import lightbulb as lb
 
-from . import cfg
+from ..common import cfg
 from .embeds import build_embed_with_user
 
 

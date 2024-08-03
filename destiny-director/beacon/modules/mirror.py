@@ -27,8 +27,9 @@ import lightbulb as lb
 import regex as re
 from lightbulb.ext import tasks
 
+from ...common import cfg
 from ...common.schemas import MirroredChannel, MirroredMessage, ServerStatistics
-from .. import bot, cfg, utils
+from .. import bot, utils
 
 re_markdown_link = re.compile(r"\[(.*?)\]\(.*?\)")
 

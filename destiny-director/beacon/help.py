@@ -22,7 +22,7 @@ import miru as m
 from miru.ext import nav
 from roman import toRoman as to_roman
 
-from . import cfg
+from ..common import cfg
 
 
 class NumberedButton(nav.NavButton):

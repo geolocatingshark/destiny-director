@@ -26,7 +26,7 @@ import lightbulb as lb
 from hmessage import HMessage as MessagePrototype
 from toolbox.members import calculate_permissions
 
-from . import cfg
+from ..common import cfg
 
 
 def ensure_session(sessionmaker):

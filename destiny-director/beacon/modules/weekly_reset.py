@@ -21,7 +21,8 @@ import lightbulb as lb
 import regex as re
 from hmessage import HMessage as MessagePrototype
 
-from .. import cfg, utils
+from ...common import cfg
+from .. import utils
 from ..nav import NavigatorView, NavPages
 from .autoposts import autopost_command_group, follow_control_command_maker
 

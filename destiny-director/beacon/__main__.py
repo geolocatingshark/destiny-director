@@ -23,8 +23,8 @@ import miru
 import uvloop
 from lightbulb.ext import tasks
 
-from ..common import schemas
-from . import cfg, help, modules
+from ..common import cfg, schemas
+from . import help, modules
 from .bot import CachedFetchBot, CustomHelpBot, ServerEmojiEnabledBot, UserCommandBot
 
 
@@ -36,7 +36,10 @@ uvloop.install()
 
 
 bot = Bot(
-    **cfg.lightbulb_params,
+    **cfg.lightbulb_params(
+        include_message_content_intent=True,
+        central_guilds_only=False,
+    ),
     user_command_schema=schemas.UserCommand,
     help_class=help.HelpCommand,
     help_slash_command=True,

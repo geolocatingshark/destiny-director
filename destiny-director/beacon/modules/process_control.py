@@ -17,7 +17,8 @@ import sys
 
 import lightbulb as lb
 
-from .. import cfg, utils
+from ...common import cfg
+from .. import utils
 
 
 @lb.command(

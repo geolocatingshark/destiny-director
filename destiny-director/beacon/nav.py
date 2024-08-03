@@ -27,9 +27,14 @@ from hmessage import HMessage as MessagePrototype
 from lightbulb.ext import tasks
 from miru.ext import nav
 
+from ..common.cfg import (
+    embed_default_color,
+    navigator_timeout,
+    reset_time_tolerance,
+    url_regex,
+)
 from . import utils
 from .bot import CachedFetchBot
-from .cfg import embed_default_color, navigator_timeout, reset_time_tolerance, url_regex
 
 NO_DATA_HERE_EMBED = h.Embed(title="No data here!", color=embed_default_color)
 

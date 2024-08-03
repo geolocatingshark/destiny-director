@@ -25,8 +25,8 @@ import miru as m
 from lightbulb.ext import tasks
 from yarl import URL
 
-from ..common import schemas
-from . import cfg, utils
+from ..common import cfg, schemas
+from . import utils
 
 
 class CachedFetchBot(lb.BotApp):

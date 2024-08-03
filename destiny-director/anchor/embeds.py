@@ -21,7 +21,7 @@ import lightbulb as lb
 import miru as m
 import regex as re
 
-from . import cfg
+from ..common import cfg
 from .utils import follow_link_single_step
 
 re_user_side_emoji = re.compile("(<a?)?:(\w+)(~\d)*:(\d+>)?")

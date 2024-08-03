@@ -20,8 +20,9 @@ from typing import Optional
 import hikari as h
 import lightbulb as lb
 
+from ...common import cfg
 from ...common.schemas import AsyncSession, MirroredChannel, db_session
-from .. import cfg, utils
+from .. import utils
 from ..bot import CachedFetchBot, UserCommandBot
 
 # Permissions that allow users to manage autoposts in a guild

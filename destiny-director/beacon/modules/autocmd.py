@@ -18,7 +18,7 @@ import typing as t
 
 import hikari as h
 
-from ..cfg import embed_default_color
+from ...common.cfg import embed_default_color
 
 _no_register = True
 

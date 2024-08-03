@@ -30,7 +30,7 @@ import yarl
 from hmessage import HMessage
 from pytz import utc
 
-from . import cfg
+from ..common import cfg
 
 
 class FeatureDisabledError(Exception):

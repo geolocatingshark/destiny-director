@@ -19,7 +19,7 @@ import asyncio
 
 import hikari as h
 
-from . import cfg
+from ..common import cfg
 
 rest = h.RESTApp()
 

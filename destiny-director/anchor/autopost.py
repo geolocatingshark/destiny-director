@@ -19,7 +19,8 @@ import typing as t
 import lightbulb as lb
 from hmessage import HMessage
 
-from . import cfg, utils
+from ..common import cfg
+from . import utils
 
 logger = logging.getLogger(__name__)
 

@@ -20,8 +20,9 @@ import typing as t
 import hikari as h
 import lightbulb as lb
 
+from ...common import cfg
 from ...common.schemas import UserCommand, db_session
-from .. import cfg, utils
+from .. import utils
 from ..bot import UserCommandBot
 
 # TODO

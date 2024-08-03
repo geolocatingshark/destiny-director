@@ -18,7 +18,7 @@ import datetime as dt
 import hikari as h
 import lightbulb as lb
 
-from .. import cfg
+from ...common import cfg
 from ..nav import NO_DATA_HERE_EMBED, NavigatorView, NavPages
 from .autoposts import autopost_command_group, follow_control_command_maker
 

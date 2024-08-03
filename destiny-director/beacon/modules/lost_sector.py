@@ -24,7 +24,8 @@ import regex as re
 import sector_accounting
 from hmessage import HMessage as MessagePrototype
 
-from .. import cfg, utils
+from ...common import cfg
+from .. import utils
 from ..bot import CachedFetchBot, ServerEmojiEnabledBot, UserCommandBot
 from ..nav import NO_DATA_HERE_EMBED, NavigatorView, NavPages
 from ..utils import space

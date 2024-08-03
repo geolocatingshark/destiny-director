@@ -13,13 +13,15 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import abc
+import datetime as dt
 import json
+import logging
 import ssl
 import typing as t
 from os import getenv as __getenv
 
 import hikari as h
+import regex as re
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -27,12 +29,8 @@ def _getenv(var_name: str, default: t.Optional[str] = None) -> str:
     var = __getenv(var_name)
     if var is None:
         if default is not None:
-            # print(f"Loaded {var_name} with default value {default}")
             return default
         raise ValueError(f"Environment variable {var_name} not set")
-    else:
-        # print(f"Loaded {var_name}")
-        pass
     return str(var)
 
 
@@ -47,11 +45,34 @@ def _test_env(var_name: str) -> list[int] | bool:
     return test_env
 
 
-def _lightbulb_params() -> dict:
-    lightbulb_params = {"token": discord_token}
+def lightbulb_params(
+    include_message_content_intent: bool,
+    central_guilds_only: bool,
+) -> dict:
+    """
+    Returns configuration parameters for lightbulb code within the bot
+
+    Args:
+        include_message_content_intent (bool): Whether the bot should receive message
+        contents from the api
+
+        central_guilds_only (bool): Whether the bot should only be enabled in the
+        central servers
+    """
+    intents = h.Intents.ALL_UNPRIVILEGED
+
+    if include_message_content_intent:
+        intents = intents | h.Intents.MESSAGE_CONTENT
+
+    lightbulb_params = {
+        "token": discord_token,
+        "intents": intents,
+        "max_rate_limit": 600,
+    }
+    # Only use the test env for testing if it is specified
     if test_env:
         lightbulb_params["default_enabled_guilds"] = test_env
-    else:
+    elif central_guilds_only:
         lightbulb_params["default_enabled_guilds"] = [
             kyber_discord_server_id,
             control_discord_server_id,
@@ -120,7 +141,18 @@ def _sheets_credentials(
     return gsheets_credentials
 
 
+######### loglevel config #########
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname).1s %(name)s | %(message)s",
+)
 ###### Environment variables ######
+
+# Discord environment config
+test_env = _test_env("TEST_ENV")
+discord_token = _getenv("DISCORD_TOKEN")
+disable_bad_channels = str(_getenv("DISABLE_BAD_CHANNELS")).lower() == "true"
 
 # Discord control server config
 control_discord_server_id = int(_getenv("CONTROL_DISCORD_SERVER_ID"))
@@ -130,14 +162,13 @@ kyber_discord_server_id = int(_getenv("KYBER_DISCORD_SERVER_ID"))
 log_channel = int(_getenv("LOG_CHANNEL_ID"))
 alerts_channel = int(_getenv("ALERTS_CHANNEL_ID"))
 
-# Discord environment config
-discord_token = _getenv("DISCORD_TOKEN")
-test_env = _test_env("TEST_ENV")
 
 # Discord constants
 embed_default_color = h.Color(int(_getenv("EMBED_DEFAULT_COLOR"), 16))
 embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR"), 16))
 followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES"), parse_int=int)
+default_url = _getenv("DEFAULT_URL")
+navigator_timeout = int(_getenv("NAVIGATOR_TIMEOUT") or 120)
 
 # Database URLs
 db_url, db_url_async = _db_urls("MYSQL_PRIVATE_URL", "MYSQL_URL")
@@ -172,17 +203,23 @@ port = int(_getenv("PORT", 8080))
     db_connect_args,
     db_engine_args,
 ) = _db_config()
-lightbulb_params = _lightbulb_params()
 
-
-class defaults(abc.ABC):
-    class xur(abc.ABC):
-        gfx_url = "https://kyber3000.com/Xur"
-        post_url = "https://kyber3000.com/Xurpost"
-
-    class weekly_reset(abc.ABC):
-        gfx_url = "https://kyber3000.com/Reset"
-        post_url = "https://kyber3000.com/Resetpost"
-
+reset_time_tolerance = dt.timedelta(minutes=60)
+url_regex = re.compile(
+    "http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
+)
+IMAGE_EXTENSIONS_LIST = [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".tiff",
+    ".tif",
+    ".heif",
+    ".heifs",
+    ".heic",
+    ".heics",
+    ".webp",
+]
 
 ##### Configs & constants end #####
