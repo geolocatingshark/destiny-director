@@ -21,10 +21,10 @@ import aiohttp
 import hikari as h
 import lightbulb as lb
 import regex as re
-import sector_accounting
 from hmessage import HMessage as MessagePrototype
 
 from ...common import cfg
+from ...sector_accounting import sector_accounting
 from .. import utils
 from ..bot import CachedFetchBot, ServerEmojiEnabledBot, UserCommandBot
 from ..nav import NO_DATA_HERE_EMBED, NavigatorView, NavPages
@@ -65,8 +65,8 @@ def _fmt_count(emoji: str, count: int, width: int) -> str:
 
 
 def format_counts(
-    legend_data: sector_accounting.sector_accounting.DifficultySpecificSectorData,
-    master_data: sector_accounting.sector_accounting.DifficultySpecificSectorData,
+    legend_data: sector_accounting.DifficultySpecificSectorData,
+    master_data: sector_accounting.DifficultySpecificSectorData,
     emoji_dict: t.Dict[str, h.Emoji],
 ) -> str:
     len_bar = len(

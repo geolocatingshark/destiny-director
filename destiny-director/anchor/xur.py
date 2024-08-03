@@ -25,9 +25,9 @@ import hikari as h
 import lightbulb as lb
 import regex as re
 from hmessage import HMessage
-from sector_accounting import xur as xur_support_data
 
 from ..common import cfg, schemas
+from ..sector_accounting import xur as xur_support_data
 from . import bungie_api as api
 from . import utils
 from .autopost import make_autopost_control_commands

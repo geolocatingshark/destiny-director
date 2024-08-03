@@ -7,7 +7,6 @@ from typing import List, Union
 import attr
 import gspread
 import regex as re
-from pytz import utc
 
 from .utils import (
     EntityRotation,
@@ -311,7 +310,7 @@ class Rotation(SpreadsheetBackedData):
 
     def __call__(self, date: Union[dt.datetime, None] = None) -> Sector:
         # Returns the lost sector in rotation on date or for today by default
-        date = date if date is not None else dt.datetime.now(tz=utc)
+        date = date if date is not None else dt.datetime.now(tz=dt.timezone.utc)
         days_since_ref_date = (date - self.start_date).days
 
         sector = Sector(
@@ -334,7 +333,9 @@ class Rotation(SpreadsheetBackedData):
         # of a lost sector annoucement
         reset_time = dt.timedelta(hours=16, minutes=(60 - buffer))
         # Google sheets epoch date (reference date for all dates in sheets)
-        google_sheets_epoch_date = dt.datetime(1899, 12, 30, 0, 0, 0, tzinfo=utc)
+        google_sheets_epoch_date = dt.datetime(
+            1899, 12, 30, 0, 0, 0, tzinfo=dt.timezone.utc
+        )
         # Note that the reference date below is actually not a date,
         # it is the number of days since the google sheets epoch date
         # hence we need to convert this into a usable date before returning

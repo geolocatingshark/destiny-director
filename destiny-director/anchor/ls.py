@@ -22,13 +22,13 @@ import hikari as h
 import lightbulb as lb
 from aiohttp import InvalidURL
 from hmessage import HMessage
-from sector_accounting.sector_accounting import (
+
+from ..common import cfg, schemas
+from ..sector_accounting.sector_accounting import (
     DifficultySpecificSectorData,
     Rotation,
     Sector,
 )
-
-from ..common import cfg, schemas
 from . import utils
 from .autopost import make_autopost_control_commands
 from .embeds import construct_emoji_substituter, re_user_side_emoji

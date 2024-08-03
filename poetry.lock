@@ -1998,27 +1998,6 @@ files = [
 ]
 
 [[package]]
-name = "sector-accounting"
-version = "0.2.4"
-description = "Lost sector accounting for Destiny 2 with google sheets as a db"
-optional = false
-python-versions = ">=3.8.0,<4.0"
-files = []
-develop = false
-
-[package.dependencies]
-attrs = ">=22.2.0"
-gspread = "^5.9"
-pytz = "*"
-regex = "*"
-
-[package.source]
-type = "git"
-url = "https://github.com/gsfernandes81/sector_accounting.git"
-reference = "5e1d4a"
-resolved_reference = "5e1d4a4586760c6096f091ce1ba6e1e37ceb325e"
-
-[[package]]
 name = "shellingham"
 version = "1.5.4"
 description = "Tool to Detect Surrounding Shell"
@@ -2361,4 +2340,4 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "2.0"
 python-versions = "~3.11.1"
-content-hash = "6e23bb8e3ba83094a4ed091457ad8cffc7f0b39ff1fb26a3a2719ae1ddc6168f"
+content-hash = "ae8a6fac96f4e5b8d24db47416a180a6eb58976f6e04bb9f36cfd3b3435649c6"

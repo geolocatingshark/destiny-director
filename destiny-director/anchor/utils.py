@@ -28,7 +28,6 @@ import hikari as h
 import lightbulb as lb
 import yarl
 from hmessage import HMessage
-from pytz import utc
 
 from ..common import cfg
 
@@ -56,7 +55,9 @@ def operation_timer(op_name, logger=logging.getLogger("main/" + __name__)):
 def weekend_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetime]:
     if today is None:
         today = dt.datetime.now()
-    today = dt.datetime(today.year, today.month, today.day, tzinfo=utc)
+    today = dt.datetime(
+        today.year, today.month, today.day, tzinfo=dt.timezone.dt.timezone.utc
+    )
     monday = today - dt.timedelta(days=today.weekday())
     # Weekend is friday 1700 UTC to Tuesday 1700 UTC
     friday = monday + dt.timedelta(days=4) + dt.timedelta(hours=17)
@@ -67,7 +68,7 @@ def weekend_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetim
 def week_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetime]:
     if today is None:
         today = dt.datetime.now()
-    today = dt.datetime(today.year, today.month, today.day, tzinfo=utc)
+    today = dt.datetime(today.year, today.month, today.day, tzinfo=dt.timezone.utc)
     monday = today - dt.timedelta(days=today.weekday())
     start = monday + dt.timedelta(days=1) + dt.timedelta(hours=17)
     end = start + dt.timedelta(days=7)
@@ -77,7 +78,7 @@ def week_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetime]:
 def day_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetime]:
     if today is None:
         today = dt.datetime.now()
-    today = dt.datetime(today.year, today.month, today.day, 17, tzinfo=utc)
+    today = dt.datetime(today.year, today.month, today.day, 17, tzinfo=dt.timezone.utc)
     today_end = today + dt.timedelta(days=1)
     return today, today_end
 
@@ -121,7 +122,7 @@ async def find_duplicate_uncrossposted_message(
     lookback_days: int = 2,
 ) -> h.Message | None:
     async for channel_message in channel.fetch_history(
-        after=dt.datetime.now(tz=utc) - dt.timedelta(days=lookback_days)
+        after=dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(days=lookback_days)
     ):
         channel_message_proto = HMessage.from_message(channel_message)
 

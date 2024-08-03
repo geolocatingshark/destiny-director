@@ -24,7 +24,6 @@ from typing import List, Optional, Set, Tuple
 
 import regex as re
 from atlas_provider_sqlalchemy.ddl import print_ddl
-from pytz import utc
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, validates
 from sqlalchemy.sql import insert, select, text, update
@@ -566,7 +565,9 @@ class MirroredMessage(Base):
         self.dest_channel = int(dest_channel)
         self.source_msg = int(source_msg)
         self.source_channel = int(source_channel)
-        self.creation_datetime = creation_datetime or dt.datetime.now(tz=utc)
+        self.creation_datetime = creation_datetime or dt.datetime.now(
+            tz=dt.timezone.utc
+        )
 
     @classmethod
     @utils.ensure_session(db_session)
@@ -652,7 +653,9 @@ class MirroredMessage(Base):
     ):
         """Delete entries older than <age>"""
         await session.execute(
-            delete(cls).where(dt.datetime.now(tz=utc) - age > cls.creation_datetime)
+            delete(cls).where(
+                dt.datetime.now(tz=dt.timezone.utc) - age > cls.creation_datetime
+            )
         )
 
 
