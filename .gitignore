@@ -135,3 +135,9 @@ dmypy.json
 # Bungie api files
 world_sql_content*
 manifest.zip
+
+# SQL Files
+*.sql
+
+# My ToDo list
+ToDo
