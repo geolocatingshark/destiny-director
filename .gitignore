@@ -136,8 +136,5 @@ dmypy.json
 world_sql_content*
 manifest.zip
 
-# SQL Files
-*.sql
-
 # My ToDo list
 ToDo

@@ -1,7 +1,7 @@
 FROM python:3.12-alpine AS base
 
 RUN apk update
-RUN apk add --no-cache git
+RUN apk add --no-cache git gcc musl-dev
 
 WORKDIR /app
 
