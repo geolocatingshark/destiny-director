@@ -39,6 +39,7 @@ bot = Bot(
     **cfg.lightbulb_params(
         include_message_content_intent=True,
         central_guilds_only=False,
+        discord_token=cfg.discord_token_beacon,
     ),
     user_command_schema=schemas.UserCommand,
     help_class=help.HelpCommand,

@@ -30,6 +30,7 @@ bot: lb.BotApp = lb.BotApp(
     **cfg.lightbulb_params(
         include_message_content_intent=False,
         central_guilds_only=True,
+        discord_token=cfg.discord_token_anchor,
     )
 )
 

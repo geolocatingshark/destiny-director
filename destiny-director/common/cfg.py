@@ -48,6 +48,7 @@ def _test_env(var_name: str) -> list[int] | bool:
 def lightbulb_params(
     include_message_content_intent: bool,
     central_guilds_only: bool,
+    discord_token: str,
 ) -> dict:
     """
     Returns configuration parameters for lightbulb code within the bot
@@ -151,7 +152,8 @@ logging.basicConfig(
 
 # Discord environment config
 test_env = _test_env("TEST_ENV")
-discord_token = _getenv("DISCORD_TOKEN")
+discord_token_anchor = _getenv("DISCORD_TOKEN_ANCHOR")
+discord_token_beacon = _getenv("DISCORD_TOKEN_BEACON")
 disable_bad_channels = str(_getenv("DISABLE_BAD_CHANNELS")).lower() == "true"
 
 # Discord control server config
