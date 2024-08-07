@@ -23,7 +23,7 @@ import uvloop
 from lightbulb.ext import tasks
 
 from ..common import cfg
-from . import bungie_api, controller, ls, posts, source, xur
+from . import bungie_api, controller, lost_sector, posts, source, xur
 
 uvloop.install()
 bot: lb.BotApp = lb.BotApp(
@@ -66,7 +66,7 @@ async def on_guild_rm(event: h.events.GuildLeaveEvent):
 
 if __name__ == "__main__":
     m.install(bot)
-    ls.register(bot)
+    lost_sector.register(bot)
     source.register(bot)
     controller.register(bot)
     posts.register(bot)
