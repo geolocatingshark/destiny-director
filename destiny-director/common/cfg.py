@@ -25,13 +25,22 @@ import regex as re
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _getenv(var_name: str, default: t.Optional[str] = None) -> str:
+def _getenv(
+    var_name: str,
+    default: t.Optional[str] = None,
+    *,
+    optional: bool = False,
+    cast_to: t.Type[t.Any] = str,
+) -> str:
     var = __getenv(var_name)
-    if var is None:
-        if default is not None:
-            return default
+    if var is not None:
+        return cast_to(var)
+    elif default is not None:
+        return default
+    elif optional:
+        return None
+    else:
         raise ValueError(f"Environment variable {var_name} not set")
-    return str(var)
 
 
 def _test_env(var_name: str) -> list[int] | bool:
@@ -152,25 +161,30 @@ logging.basicConfig(
 
 # Discord environment config
 test_env = _test_env("TEST_ENV")
-discord_token_anchor = _getenv("DISCORD_TOKEN_ANCHOR")
-discord_token_beacon = _getenv("DISCORD_TOKEN_BEACON")
-disable_bad_channels = str(_getenv("DISABLE_BAD_CHANNELS")).lower() == "true"
+discord_token_anchor = _getenv("DISCORD_TOKEN_ANCHOR", optional=True)
+discord_token_beacon = _getenv("DISCORD_TOKEN_BEACON", optional=True)
+disable_bad_channels = (
+    _getenv("DISABLE_BAD_CHANNELS", default="", optional=True).lower() == "true"
+)
 
 # Discord control server config
-control_discord_server_id = int(_getenv("CONTROL_DISCORD_SERVER_ID"))
-control_discord_role_id = int(_getenv("CONTROL_DISCORD_ROLE_ID"))
-admins = [int(admin.strip()) for admin in _getenv("ADMINS").split(",")]
-kyber_discord_server_id = int(_getenv("KYBER_DISCORD_SERVER_ID"))
-log_channel = int(_getenv("LOG_CHANNEL_ID"))
-alerts_channel = int(_getenv("ALERTS_CHANNEL_ID"))
+control_discord_server_id = _getenv("CONTROL_DISCORD_SERVER_ID", cast_to=int)
+control_discord_role_id = _getenv("CONTROL_DISCORD_ROLE_ID", optional=True, cast_to=int)
+admins = [
+    int(admin.strip())
+    for admin in _getenv("ADMINS", default="", optional=True).split(",")
+]
+kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", cast_to=int)
+log_channel = _getenv("LOG_CHANNEL_ID", cast_to=int)
+alerts_channel = _getenv("ALERTS_CHANNEL_ID", cast_to=int)
 
 
 # Discord constants
 embed_default_color = h.Color(int(_getenv("EMBED_DEFAULT_COLOR"), 16))
 embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR"), 16))
 followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES"), parse_int=int)
-default_url = _getenv("DEFAULT_URL")
-navigator_timeout = int(_getenv("NAVIGATOR_TIMEOUT") or 120)
+default_url = _getenv("DEFAULT_URL", optional=True)
+navigator_timeout = _getenv("NAVIGATOR_TIMEOUT", optional=True, cast_to=int) or 120
 
 # Database URLs
 db_url, db_url_async = _db_urls("MYSQL_PRIVATE_URL", "MYSQL_URL")
@@ -187,12 +201,12 @@ gsheets_credentials = _sheets_credentials(
 sheets_ls_url = _getenv("SHEETS_LS_URL")
 
 # Bungie credentials
-bungie_api_key = _getenv("BUNGIE_API_KEY")
-bungie_client_id = _getenv("BUNGIE_CLIENT_ID")
-bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET")
+bungie_api_key = _getenv("BUNGIE_API_KEY", optional=True)
+bungie_client_id = _getenv("BUNGIE_CLIENT_ID", optional=True)
+bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET", optional=True)
 
 
-port = int(_getenv("PORT", 8080))
+port = _getenv("PORT", 8080, cast_to=int)
 #### Environment variables end ####
 
 ###################################

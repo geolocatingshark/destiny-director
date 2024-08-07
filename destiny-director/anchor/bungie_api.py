@@ -937,13 +937,17 @@ def webserver_runner_preparation() -> aiohttp.web.AppRunner:
             ) as response:
                 response_json = await response.json()
 
-        OAuthStateManager.set_access_token(
-            response_json["access_token"], response_json["expires_in"]
-        )
-        await schemas.BungieCredentials.set_refresh_token(
-            refresh_token=response_json["refresh_token"],
-            refresh_token_expires=response_json["refresh_expires_in"],
-        )
+        try:
+            OAuthStateManager.set_access_token(
+                response_json["access_token"], response_json["expires_in"]
+            )
+            await schemas.BungieCredentials.set_refresh_token(
+                refresh_token=response_json["refresh_token"],
+                refresh_token_expires=response_json["refresh_expires_in"],
+            )
+        except KeyError:
+            print("Error during bungie api authentication: " + str(response_json))
+            return aiohttp.web.Response(text="Error during bungie api authentication")
 
         return aiohttp.web.Response(text="You can close this tab/window now.")
 

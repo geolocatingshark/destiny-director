@@ -223,16 +223,3 @@ def filter_discord_autoembeds(msg: h.Message | MessagePrototype):
 
 def followable_name(*, id: int) -> str | int:
     return next((key for key, value in cfg.followables.items() if value == id), id)
-
-
-class space:
-    zero_width = "\u200b"
-    hair = "\u200a"
-    six_per_em = "\u2006"
-    thin = "\u2009"
-    punctuation = "\u2008"
-    four_per_em = "\u2005"
-    three_per_em = "\u2004"
-    figure = "\u2007"
-    en = "\u2002"
-    em = "\u2003"

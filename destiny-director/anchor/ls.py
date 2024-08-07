@@ -18,139 +18,36 @@ import logging
 import typing as t
 
 import aiocron
+import aiohttp
 import hikari as h
 import lightbulb as lb
-from aiohttp import InvalidURL
-from hmessage import HMessage
+from hmessage import HMessage as MessagePrototype
 
 from ..common import cfg, schemas
-from ..sector_accounting.sector_accounting import (
-    DifficultySpecificSectorData,
-    Rotation,
-    Sector,
-)
+from ..common.lost_sector import format_counts, get_emoji_dict
+from ..common.utils import construct_emoji_substituter, re_user_side_emoji, space
+from ..sector_accounting import sector_accounting
 from . import utils
 from .autopost import make_autopost_control_commands
-from .embeds import construct_emoji_substituter, re_user_side_emoji
 
 logger = logging.getLogger(__name__)
 
 
-def _fmt_count(emoji: str, count: int, width: int) -> str:
-    if count:
-        return "{} x `{}`".format(
-            emoji,
-            str(count if count != -1 else "?").rjust(width, " "),
-        )
-    else:
-        return ""
-
-
-def format_counts(
-    legend_data: DifficultySpecificSectorData,
-    master_data: DifficultySpecificSectorData,
-    emoji_dict: t.Dict[str, h.Emoji],
-) -> str:
-    len_bar = len(
-        str(max(legend_data.barrier_champions, master_data.barrier_champions, key=abs))
-    )
-    len_oload = len(
-        str(
-            max(legend_data.overload_champions, master_data.overload_champions, key=abs)
-        )
-    )
-    len_unstop = len(
-        str(
-            max(
-                legend_data.unstoppable_champions,
-                master_data.unstoppable_champions,
-                key=abs,
-            )
-        )
-    )
-    len_arc = len(str(max(legend_data.arc_shields, master_data.arc_shields, key=abs)))
-    len_void = len(
-        str(max(legend_data.void_shields, master_data.void_shields, key=abs))
-    )
-    len_solar = len(
-        str(max(legend_data.solar_shields, master_data.solar_shields, key=abs))
-    )
-    len_stasis = len(
-        str(max(legend_data.stasis_shields, master_data.stasis_shields, key=abs))
-    )
-    len_strand = len(
-        str(max(legend_data.strand_shields, master_data.strand_shields, key=abs))
-    )
-
-    data_strings = []
-
-    for data in [legend_data, master_data]:
-        champs_string = utils.space.figure.join(
-            filter(
-                None,
-                [
-                    _fmt_count(emoji_dict["barrier"], data.barrier_champions, len_bar),
-                    _fmt_count(
-                        emoji_dict["overload"], data.overload_champions, len_oload
-                    ),
-                    _fmt_count(
-                        emoji_dict["unstoppable"],
-                        data.unstoppable_champions,
-                        len_unstop,
-                    ),
-                ],
-            )
-        )
-        shields_string = utils.space.figure.join(
-            filter(
-                None,
-                [
-                    _fmt_count(emoji_dict["arc"], data.arc_shields, len_arc),
-                    _fmt_count(emoji_dict["void"], data.void_shields, len_void),
-                    _fmt_count(emoji_dict["solar"], data.solar_shields, len_solar),
-                    _fmt_count(emoji_dict["stasis"], data.stasis_shields, len_stasis),
-                    _fmt_count(emoji_dict["strand"], data.strand_shields, len_strand),
-                ],
-            )
-        )
-        data_string = f"{utils.space.figure}|{utils.space.figure}".join(
-            filter(
-                None,
-                [
-                    champs_string,
-                    shields_string,
-                ],
-            )
-        )
-        data_strings.append(data_string)
-
-    return (
-        f"Expert:{utils.space.figure}"
-        + data_strings[0]
-        + f"\nMaster:{utils.space.hair}{utils.space.figure}"
-        + data_strings[1]
-    )
-
-
-async def get_emoji_dict(bot: lb.BotApp):
-    guild = bot.cache.get_guild(
-        cfg.kyber_discord_server_id
-    ) or await bot.rest.fetch_guild(cfg.kyber_discord_server_id)
-    return {emoji.name: emoji for emoji in await guild.fetch_emojis()}
-
-
 async def format_sector(
     bot: lb.BotApp,
-) -> HMessage:
+    secondary_image: h.Attachment | None = None,
+    secondary_embed_title: str | None = "",
+    secondary_embed_description: str | None = "",
+) -> MessagePrototype:
     emoji_dict = await get_emoji_dict(bot)
-    sector: Sector = Rotation.from_gspread_url(
+    sector: sector_accounting.Sector = sector_accounting.Rotation.from_gspread_url(
         cfg.sheets_ls_url, cfg.gsheets_credentials, buffer=5
     )()
 
     # Follow the hyperlink to have the newest image embedded
     try:
         ls_gfx_url = await utils.follow_link_single_step(sector.shortlink_gfx)
-    except InvalidURL:
+    except aiohttp.InvalidURL:
         ls_gfx_url = None
 
     # Surges to emojis
@@ -182,9 +79,9 @@ async def format_sector(
     embed = h.Embed(
         title="**Lost Sector Today**",
         description=(
-            f"{emoji_dict['LS']}{utils.space.three_per_em}{sector_name.strip()}\n"
+            f"{emoji_dict['LS']}{space.three_per_em}{sector_name.strip()}\n"
             + (
-                f"{emoji_dict['location']}{utils.space.three_per_em}{sector_location.strip()}"
+                f"{emoji_dict['location']}{space.three_per_em}{sector_location.strip()}"
                 if sector_location
                 else ""
             )
@@ -196,7 +93,7 @@ async def format_sector(
     embed.add_field(
         name="Rewards (If-Solo)",
         value=str(emoji_dict["exotic_engram"])
-        + f"{utils.space.three_per_em}Exotic {sector.reward}",
+        + f"{space.three_per_em}Exotic {sector.reward}",
     )
 
     if await schemas.AutoPostSettings.get_lost_sector_legendary_weapons_enabled():
@@ -216,27 +113,38 @@ async def format_sector(
     )
     embed.add_field(
         name="Elementals",
-        value=f"Surge: {utils.space.punctuation}{utils.space.hair}{utils.space.hair}"
+        value=f"Surge: {space.punctuation}{space.hair}{space.hair}"
         + " ".join(surges)
         + f"\nThreat: {threat}",
     )
     embed.add_field(
         name="Modifiers",
         value=str(emoji_dict["swords"])
-        + f"{utils.space.three_per_em}{sector.to_sector_v1().modifiers}"
-        + f"\n{overcharged_weapon_emoji}{utils.space.three_per_em}Overcharged {sector.overcharged_weapon}",
+        + f"{space.three_per_em}{sector.to_sector_v1().modifiers}"
+        + f"\n{overcharged_weapon_emoji}{space.three_per_em}Overcharged {sector.overcharged_weapon}",
     )
 
     if ls_gfx_url:
         embed.set_image(ls_gfx_url)
 
-    return HMessage(embeds=[embed])
+    if secondary_image:
+        embed2 = h.Embed(
+            title=secondary_embed_title,
+            description=secondary_embed_description,
+            color=cfg.kyber_pink,
+        )
+        embed2.set_image(secondary_image)
+        embeds = [embed, embed2]
+    else:
+        embeds = [embed]
+
+    return MessagePrototype(embeds=embeds)
 
 
 async def discord_announcer(
     bot: lb.BotApp,
     channel_id: int,
-    construct_message_coro: t.Coroutine[t.Any, t.Any, HMessage] = None,
+    construct_message_coro: t.Coroutine[t.Any, t.Any, MessagePrototype] = None,
     check_enabled: bool = False,
     enabled_check_coro: t.Coroutine[t.Any, t.Any, bool] = None,
     publish_message: bool = True,
