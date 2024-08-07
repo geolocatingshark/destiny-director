@@ -41,3 +41,12 @@ def get_ordinal_suffix(day: int) -> str:
         if day not in (11, 12, 13)
         else "th"
     )
+
+
+async def update_status(bot: h.GatewayBot, guild_count: int, test_env: bool):
+    await bot.update_presence(
+        activity=h.Activity(
+            name="{} servers : )".format(guild_count) if not test_env else "DEBUG MODE",
+            type=h.ActivityType.LISTENING,
+        )
+    )

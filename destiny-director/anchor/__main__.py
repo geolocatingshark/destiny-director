@@ -22,7 +22,7 @@ import miru as m
 import uvloop
 from lightbulb.ext import tasks
 
-from ..common import cfg
+from ..common import cfg, utils
 from . import bungie_api, controller, lost_sector, posts, source, xur
 
 uvloop.install()
@@ -37,31 +37,22 @@ bot: lb.BotApp = lb.BotApp(
 logger = logging.getLogger(__name__)
 
 
-async def update_status(guild_count: int):
-    await bot.update_presence(
-        activity=h.Activity(
-            name="{} servers : )".format(guild_count),
-            type=h.ActivityType.LISTENING,
-        )
-    )
-
-
 @bot.listen()
 async def on_start_guild_count(event: lb.LightbulbStartedEvent):
     bot.d.guild_count = len(await bot.rest.fetch_my_guilds())
-    await update_status(bot.d.guild_count)
+    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
 
 
 @bot.listen()
 async def on_guild_add(event: h.events.GuildJoinEvent):
     bot.d.guild_count += 1
-    await update_status(bot.d.guild_count)
+    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
 
 
 @bot.listen()
 async def on_guild_rm(event: h.events.GuildLeaveEvent):
     bot.d.guild_count -= 1
-    await update_status(bot.d.guild_count)
+    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
 
 
 if __name__ == "__main__":

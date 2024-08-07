@@ -23,7 +23,7 @@ import miru
 import uvloop
 from lightbulb.ext import tasks
 
-from ..common import cfg, schemas
+from ..common import cfg, schemas, utils
 from . import help, modules
 from .bot import CachedFetchBot, CustomHelpBot, ServerEmojiEnabledBot, UserCommandBot
 
@@ -52,33 +52,22 @@ logwood.compat.redirect_standard_logging()
 aiodebug.log_slow_callbacks.enable(0.05)
 
 
-async def update_status(guild_count: int):
-    await bot.update_presence(
-        activity=h.Activity(
-            name="{} servers : )".format(guild_count)
-            if not cfg.test_env
-            else "DEBUG MODE",
-            type=h.ActivityType.LISTENING,
-        )
-    )
-
-
 @bot.listen()
 async def on_start(event: lb.events.LightbulbStartedEvent):
     bot.d.guild_count = len(await bot.rest.fetch_my_guilds())
-    await update_status(bot.d.guild_count)
+    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
 
 
 @bot.listen()
 async def on_guild_add(event: h.events.GuildJoinEvent):
     bot.d.guild_count += 1
-    await update_status(bot.d.guild_count)
+    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
 
 
 @bot.listen()
 async def on_guild_rm(event: h.events.GuildLeaveEvent):
     bot.d.guild_count -= 1
-    await update_status(bot.d.guild_count)
+    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
 
 
 _modules = map(modules.__dict__.get, modules.__all__)
