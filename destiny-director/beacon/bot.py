@@ -26,6 +26,7 @@ from lightbulb.ext import tasks
 from yarl import URL
 
 from ..common import cfg, schemas
+from ..common.utils import follow_link_single_step
 from . import utils
 
 
@@ -305,7 +306,7 @@ class UserCommandBot(lb.BotApp):
                 await ctx.respond(
                     cfg.url_regex.sub("{}", text).format(
                         *[
-                            await utils.follow_link_single_step(link)
+                            await follow_link_single_step(link)
                             for link in cfg.url_regex.findall(text)
                         ]
                     ),
@@ -346,7 +347,7 @@ class UserCommandBot(lb.BotApp):
                 embed = h.Embed(**embed_kwargs)
 
                 if image:
-                    image = await utils.follow_link_single_step(image)
+                    image = await follow_link_single_step(image)
                     embed.set_image(image)
 
                 await ctx.respond(embed)

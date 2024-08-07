@@ -83,32 +83,6 @@ def day_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetime]:
     return today, today_end
 
 
-async def follow_link_single_step(
-    url: str, logger=logging.getLogger("main/" + __name__)
-) -> str:
-    async with aiohttp.ClientSession() as session:
-        retries = 10
-        retry_delay = 10
-        for i in range(retries):
-            async with session.get(url, allow_redirects=False) as resp:
-                try:
-                    return resp.headers["Location"]
-                except KeyError:
-                    # If we can't find the location key, warn and return the
-                    # provided url itself
-                    if resp.status >= 400:
-                        logger.error(
-                            "Could not find redirect for url "
-                            + "{}, (status {})".format(url, resp.status)
-                        )
-                        if i < retries - 1:
-                            logger.error("Retrying...")
-                        await aio.sleep(retry_delay)
-                        continue
-                    else:
-                        return url
-
-
 @attr.s
 class MessageFailureError(Exception):
     channel_id: int = attr.ib()

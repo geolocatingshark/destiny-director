@@ -22,8 +22,7 @@ import miru as m
 import regex as re
 
 from ..common import cfg
-from ..common.utils import re_user_side_emoji
-from .utils import follow_link_single_step
+from ..common.utils import follow_link_single_step, re_user_side_emoji
 
 
 def construct_emoji_substituter(
