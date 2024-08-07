@@ -33,3 +33,11 @@ class space:
     figure = "\u2007"
     en = "\u2002"
     em = "\u2003"
+
+
+def get_ordinal_suffix(day: int) -> str:
+    return (
+        {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+        if day not in (11, 12, 13)
+        else "th"
+    )

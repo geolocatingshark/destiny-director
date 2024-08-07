@@ -184,14 +184,6 @@ def xur_period(now: dt.datetime = None) -> t.Tuple[dt.datetime]:
     return start, end
 
 
-def get_ordinal_suffix(day: int) -> str:
-    return (
-        {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
-        if day not in (11, 12, 13)
-        else "th"
-    )
-
-
 async def wait_till_lightbulb_started(bot: lb.BotApp):
     if not bot.d.has_lb_started:
         await bot.wait_for(lb.LightbulbStartedEvent, timeout=None)

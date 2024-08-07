@@ -14,6 +14,7 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 import asyncio as aio
+import datetime as dt
 import logging
 import typing as t
 
@@ -25,7 +26,12 @@ from hmessage import HMessage as MessagePrototype
 
 from ..common import cfg, schemas
 from ..common.lost_sector import format_counts, get_emoji_dict
-from ..common.utils import construct_emoji_substituter, re_user_side_emoji, space
+from ..common.utils import (
+    construct_emoji_substituter,
+    get_ordinal_suffix,
+    re_user_side_emoji,
+    space,
+)
 from ..sector_accounting import sector_accounting
 from . import utils
 from .autopost import make_autopost_control_commands
@@ -34,15 +40,48 @@ logger = logging.getLogger(__name__)
 
 
 async def format_sector(
-    bot: lb.BotApp,
+    bot: lb.BotApp | None = None,
+    sector: sector_accounting.Sector | None = None,
     secondary_image: h.Attachment | None = None,
     secondary_embed_title: str | None = "",
     secondary_embed_description: str | None = "",
+    date: dt.datetime | None = None,
+    emoji_dict: t.Dict[str, h.Emoji] | None = None,
 ) -> MessagePrototype:
-    emoji_dict = await get_emoji_dict(bot)
-    sector: sector_accounting.Sector = sector_accounting.Rotation.from_gspread_url(
-        cfg.sheets_ls_url, cfg.gsheets_credentials, buffer=5
-    )()
+    """Format a lost sector announcement message
+
+    Args:
+        bot (lb.BotApp | None, optional): The bot instance. Must be specified if
+        emoji_dict is not.
+
+        sector (sector_accounting.Sector | None, optional): The sector to announce.
+        Fetches today's sector if not specified
+
+        secondary_image (h.Attachment | None, optional): The secondary image to embed.
+        Defaults to None.
+
+        secondary_embed_title (str | None, optional): The title of the secondary embed.
+        Defaults to "".
+
+        secondary_embed_description (str | None, optional): The description of the
+        secondary embed. Defaults to "".
+
+        date (dt.datetime | None, optional): The date to mention in the post announce.
+        Defaults to None.
+
+        emoji_dict (t.Dict[str, h.Emoji] | None, optional): The emoji dictionary must
+        be specified if the bot is not specified.
+    """
+
+    if emoji_dict is None:
+        if bot is None:
+            raise ValueError("bot must be provided if emoji_dict is not")
+        emoji_dict = await get_emoji_dict(bot)
+
+    if sector is None:
+        sector: sector_accounting.Sector = sector_accounting.Rotation.from_gspread_url(
+            cfg.sheets_ls_url, cfg.gsheets_credentials, buffer=5
+        )()
 
     # Follow the hyperlink to have the newest image embedded
     try:
@@ -76,8 +115,14 @@ async def format_sector(
         construct_emoji_substituter(emoji_dict), legendary_weapon_rewards
     )
 
+    if date:
+        suffix = get_ordinal_suffix(date.day)
+        title = f"Lost Sector for {date.strftime('%B %-d')}{suffix}"
+    else:
+        title = "Lost Sector Today"
+
     embed = h.Embed(
-        title="**Lost Sector Today**",
+        title=f"**{title}**",
         description=(
             f"{emoji_dict['LS']}{space.three_per_em}{sector_name.strip()}\n"
             + (
@@ -85,11 +130,11 @@ async def format_sector(
                 if sector_location
                 else ""
             )
+            + "\n"
         ),
         color=cfg.embed_default_color,
         url="https://lostsectortoday.com/",
     )
-
     embed.add_field(
         name="Rewards (If-Solo)",
         value=str(emoji_dict["exotic_engram"])
@@ -154,7 +199,7 @@ async def discord_announcer(
         try:
             if check_enabled and not await enabled_check_coro():
                 return
-            hmessage = await construct_message_coro(bot)
+            hmessage = await construct_message_coro(bot=bot)
         except Exception as e:
             logger.exception(e)
             retries += 1
@@ -237,7 +282,7 @@ async def ls_update(ctx: lb.MessageContext):
 
         await ctx.edit_last_response("Updating post now")
 
-        message = await format_sector(ctx.app)
+        message = await format_sector(bot=ctx.app)
         await msg_to_update.edit(**message.to_message_kwargs())
         await ctx.edit_last_response("Post updated")
 

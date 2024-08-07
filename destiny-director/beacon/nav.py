@@ -33,6 +33,7 @@ from ..common.cfg import (
     reset_time_tolerance,
     url_regex,
 )
+from ..common.utils import get_ordinal_suffix
 from . import utils
 from .bot import CachedFetchBot
 
@@ -555,7 +556,7 @@ class IndicatorButton(nav.IndicatorButton):
 
     async def before_page_change(self) -> None:
         date = self.view.pages.index_to_date(self.view.current_page)
-        suffix = utils.get_ordinal_suffix(date.day)
+        suffix = get_ordinal_suffix(date.day)
         self.label = f"{date.strftime('%B %-d')}{suffix}"
 
 

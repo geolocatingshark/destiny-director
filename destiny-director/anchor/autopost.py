@@ -106,7 +106,7 @@ def make_autopost_control_commands(
     async def show(ctx: lb.Context):
         await ctx.respond("Gathering data...")
         try:
-            message: HMessage = await message_constructor_coro(ctx.app)
+            message: HMessage = await message_constructor_coro(bot=ctx.app)
         except Exception as e:
             logger.exception(e)
             await ctx.edit_last_response("An error occurred!\n" + str(e))

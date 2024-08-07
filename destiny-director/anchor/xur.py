@@ -439,7 +439,7 @@ async def xur_discord_announcer(
 
             await api.check_bungie_api_online(raise_exception=True)
 
-            hmessage: HMessage = await construct_message_coro(bot)
+            hmessage: HMessage = await construct_message_coro(bot=bot)
         except api.APIOfflineException as e:
             logger.exception(e)
             retries += 1
