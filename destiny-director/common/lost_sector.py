@@ -211,43 +211,41 @@ async def format_sector(
                 if sector_location
                 else ""
             )
-            + "\n"
         ),
         color=cfg.embed_default_color,
         url="https://lostsectortoday.com/",
     )
-    embed.add_field(
-        name="Rewards (If-Solo)",
-        value=str(emoji_dict["exotic_engram"])
-        + f"{space.three_per_em}Exotic {sector.reward}",
+    embed.description += "\n\n" + (
+        "**Rewards (If-Solo)**\n"
+        + str(emoji_dict["exotic_engram"])
+        + f"{space.three_per_em}Exotic {sector.reward}"
     )
 
     if await schemas.AutoPostSettings.get_lost_sector_legendary_weapons_enabled():
-        embed.add_field(
-            "Legendary Weapons (If-Solo)",
-            legendary_weapon_rewards,
+        embed.description += "\n\n" + (
+            "**Legendary Weapons (If-Solo)**\n" + legendary_weapon_rewards
         )
 
-        embed.add_field(
-            "Drop Rate (with no champions left)",
-            "Expert: 70%\n" "Master: 100% + double perks on weapons",
+        embed.description += "\n\n" + (
+            "**Drop Rate (with no champions left)**\n" + "Expert: 70%\n"
+            "Master: 100% + double perks on weapons"
         )
 
-    embed.add_field(
-        name="Champs and Shields",
-        value=format_counts(sector.legend_data, sector.master_data, emoji_dict),
+    embed.description += "\n\n" + (
+        "**Champs and Shields**\n"
+        + format_counts(sector.legend_data, sector.master_data, emoji_dict)
     )
-    embed.add_field(
-        name="Elementals",
-        value=f"Surge: {space.punctuation}{space.hair}{space.hair}"
+    embed.description += "\n\n" + (
+        "**Elementals**\n"
+        + f"Surge: {space.punctuation}{space.hair}{space.hair}"
         + " ".join(surges)
-        + f"\nThreat: {threat}",
+        + f"\nThreat: {threat}"
     )
-    embed.add_field(
-        name="Modifiers",
-        value=str(emoji_dict["swords"])
+    embed.description += "\n\n" + (
+        "**Modifiers**\n"
+        + str(emoji_dict["swords"])
         + f"{space.three_per_em}{sector.to_sector_v1().modifiers}"
-        + f"\n{overcharged_weapon_emoji}{space.three_per_em}Overcharged {sector.overcharged_weapon}",
+        + f"\n{overcharged_weapon_emoji}{space.three_per_em}Overcharged {sector.overcharged_weapon}"
     )
 
     if ls_gfx_url:
