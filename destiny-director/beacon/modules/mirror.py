@@ -336,6 +336,10 @@ async def message_create_repeater_impl(
         else:
             break
 
+    # Fetch the message again to avoid stale date in case there was an
+    # edit very close to the crosspost event
+    msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
+
     mirror_start_time = perf_counter()
 
     # Remove discord auto image embeds

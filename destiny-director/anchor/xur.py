@@ -464,6 +464,10 @@ async def xur_discord_announcer(
         else:
             break
     if publish_message:
+        # Wait 5 seconds before crossposting to allow time between the edit
+        # and the crosspost events to avoid a race condition type error where
+        # the pre-edit message is crossposted for mirrors
+        await aio.sleep(5)
         await utils.crosspost_message_with_retries(bot, channel_id, msg.id)
 
 
