@@ -20,7 +20,6 @@ import typing as t
 from asyncio import Semaphore, create_task
 from random import randint
 
-import aiohttp
 import hikari as h
 import lightbulb as lb
 from hmessage import HMessage as MessagePrototype
@@ -29,52 +28,9 @@ from toolbox.members import calculate_permissions
 from ..common import cfg
 
 
-def ensure_session(sessionmaker):
-    """Decorator for functions that optionally want an sqlalchemy async session
-
-    Provides an async session via the `session` parameter if one is not already
-    provided via the same.
-
-    Caution: Always put below `@classmethod` and `@staticmethod`"""
-
-    def ensured_session(f: t.Coroutine):
-        async def wrapper(*args, **kwargs):
-            session = kwargs.pop("session", None)
-            if session is None:
-                async with sessionmaker() as session:
-                    async with session.begin():
-                        return await f(*args, **kwargs, session=session)
-            else:
-                return await f(*args, **kwargs, session=session)
-
-        return wrapper
-
-    return ensured_session
-
-
-class FriendlyValueError(ValueError):
-    pass
-
-
 def get_function_name() -> str:
     """Get the name of the function this was called from"""
     return inspect.stack()[1][3]
-
-
-def check_number_of_layers(
-    ln_names: list | int, min_layers: int = 1, max_layers: int = 3
-):
-    """Raises FriendlyValueError on too many layers of commands"""
-
-    ln_name_length = len(ln_names) if ln_names is not int else ln_names
-
-    if ln_name_length > max_layers:
-        raise FriendlyValueError(
-            "Discord does not support slash "
-            + f"commands with more than {max_layers} layers"
-        )
-    elif ln_name_length < min_layers:
-        raise ValueError(f"Too few ln_names provided, need at least {min_layers}")
 
 
 error_logger_semaphore = Semaphore(1)

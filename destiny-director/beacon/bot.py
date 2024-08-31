@@ -26,7 +26,7 @@ from lightbulb.ext import tasks
 from yarl import URL
 
 from ..common import cfg, schemas
-from ..common.utils import follow_link_single_step
+from ..common.utils import ensure_session, follow_link_single_step
 from . import utils
 
 
@@ -218,7 +218,7 @@ class UserCommandBot(lb.BotApp):
 
         return command_group
 
-    @utils.ensure_session(schemas.db_session)
+    @ensure_session(schemas.db_session)
     async def sync_schema_to_bot_cmds(
         self, session: t.Optional[schemas.AsyncSession] = None
     ):
@@ -244,7 +244,7 @@ class UserCommandBot(lb.BotApp):
         Effectively an alias of the sync_application_commands method"""
         await super().sync_application_commands()
 
-    @utils.ensure_session(schemas.db_session)
+    @ensure_session(schemas.db_session)
     async def sync_application_commands(
         self, session: t.Optional[schemas.AsyncSession] = None
     ) -> None:

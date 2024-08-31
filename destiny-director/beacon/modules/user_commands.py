@@ -22,7 +22,7 @@ import lightbulb as lb
 
 from ...common import cfg
 from ...common.schemas import UserCommand, db_session
-from .. import utils
+from ...common.utils import FriendlyValueError
 from ..bot import UserCommandBot
 
 # TODO
@@ -212,7 +212,7 @@ async def preview_command(
             + "\n```"
             + (
                 ("\nError message:\n" + "\n".join(e.args) + "\n")
-                if isinstance(e, utils.FriendlyValueError)
+                if isinstance(e, FriendlyValueError)
                 else ""
             )
             + "\nRaw response data:\n```\n"
@@ -271,7 +271,7 @@ async def add_command(
             )
             + (
                 ("\nError message:\n" + "\n".join(e.args) + "\n")
-                if isinstance(e, utils.FriendlyValueError)
+                if isinstance(e, FriendlyValueError)
                 else ""
             )
             + "\n Error trace:\n```"
@@ -334,7 +334,7 @@ async def delete_command(
             )
             + (
                 ("\nError message:\n" + "\n".join(e.args) + "\n")
-                if isinstance(e, utils.FriendlyValueError)
+                if isinstance(e, FriendlyValueError)
                 else ""
             )
             + "\n Error trace:\n```"
@@ -416,7 +416,7 @@ async def edit_command(
             )
             + (
                 ("\nError message:\n" + "\n".join(e.args) + "\n")
-                if isinstance(e, utils.FriendlyValueError)
+                if isinstance(e, FriendlyValueError)
                 else ""
             )
             + "\n Error trace:\n```"
@@ -512,7 +512,7 @@ async def rename_command_or_group(
                 ),
             )
             + ("\nError message:\n" + "\n".join(e.args) + "\n")
-            if isinstance(e, utils.FriendlyValueError)
+            if isinstance(e, FriendlyValueError)
             else ""
             + "\n Error trace:\n```"
             + "\n".join(tb.format_exception(e))

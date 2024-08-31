@@ -42,6 +42,7 @@ from sqlalchemy.sql.sqltypes import (
 
 from ..beacon import utils
 from . import cfg
+from .utils import ensure_session
 
 Base = declarative_base()
 db_engine = create_async_engine(
@@ -95,7 +96,7 @@ class MirroredChannel(Base):
         self.enabled = bool(enabled)
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def add_mirror(
         cls,
         src_id: int,
@@ -115,7 +116,7 @@ class MirroredChannel(Base):
             cls._legacy_srcs_cache.add(src_id)
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_dests(
         cls,
         src_id: int,
@@ -154,7 +155,7 @@ class MirroredChannel(Base):
         return dests
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_srcs(
         cls,
         dest_id: int,
@@ -179,7 +180,7 @@ class MirroredChannel(Base):
         return srcs
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def get_or_fetch_all_srcs(
         cls,
         legacy: bool | None = True,
@@ -203,7 +204,7 @@ class MirroredChannel(Base):
             return srcs
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_all_srcs(
         cls,
         legacy: bool | None = True,
@@ -217,7 +218,7 @@ class MirroredChannel(Base):
         return set(srcs)
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def count_dests(
         cls,
         src_id: int,
@@ -243,7 +244,7 @@ class MirroredChannel(Base):
         return dests_count
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def count_total_dests(
         cls,
         legacy_only: bool | None = True,
@@ -262,7 +263,7 @@ class MirroredChannel(Base):
         return dests_count
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def set_legacy(
         cls,
         src_id: int,
@@ -285,7 +286,7 @@ class MirroredChannel(Base):
                 cls._legacy_srcs_cache.remove(src_id)
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def remove_mirror(
         cls, src_id: int, dest_id: int, session: Optional[AsyncSession] = None
     ) -> None:
@@ -305,7 +306,7 @@ class MirroredChannel(Base):
         # removed.
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def remove_all_mirrors(
         cls, dest_id: int, session: Optional[AsyncSession] = None
     ) -> None:
@@ -324,7 +325,7 @@ class MirroredChannel(Base):
         # removed.
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def log_legacy_mirror_success(
         cls, src_id: int, dest_id: int, session: Optional[AsyncSession] = None
     ) -> None:
@@ -348,7 +349,7 @@ class MirroredChannel(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def log_legacy_mirror_success_in_batch(
         cls, src_id: int, dest_ids: List[int], session: Optional[AsyncSession] = None
     ):
@@ -372,7 +373,7 @@ class MirroredChannel(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def log_legacy_mirror_failure(
         cls, src_id: int, dest_id: int, session: Optional[AsyncSession] = None
     ) -> None:
@@ -396,7 +397,7 @@ class MirroredChannel(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def log_legacy_mirror_failure_in_batch(
         cls, src_id: int, dest_ids: List[int], session: Optional[AsyncSession] = None
     ):
@@ -420,7 +421,7 @@ class MirroredChannel(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def get_legacy_failing_mirrors(
         cls,
         threshold: int = 7,
@@ -445,7 +446,7 @@ class MirroredChannel(Base):
         return disabled_mirrors
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def disable_legacy_failing_mirrors(
         cls,
         threshold: int = 7,
@@ -483,7 +484,7 @@ class MirroredChannel(Base):
         return mirrors_to_disable
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def get_legacy_mirrors_disabled_for_failure(
         cls, since: Optional[dt.datetime], session: Optional[AsyncSession] = None
     ) -> List[Tuple[int, int]]:
@@ -507,7 +508,7 @@ class MirroredChannel(Base):
         return disabled_mirrors
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def undo_auto_disable_for_failure(
         cls,
         since: Optional[dt.datetime],
@@ -570,7 +571,7 @@ class MirroredMessage(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def add_msg(
         cls,
         dest_msg: int,
@@ -595,7 +596,7 @@ class MirroredMessage(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def add_msgs_in_batch(
         cls,
         dest_msgs: List[int],
@@ -625,7 +626,7 @@ class MirroredMessage(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def get_dest_msgs_and_channels(
         cls,
         source_msg: int,
@@ -645,7 +646,7 @@ class MirroredMessage(Base):
         return dest_msgs
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def prune(
         cls,
         age: None | dt.timedelta = dt.timedelta(days=21),
@@ -673,7 +674,7 @@ class ServerStatistics(Base):
         self.population = int(population)
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def add_server(
         cls,
         id: int,
@@ -684,7 +685,7 @@ class ServerStatistics(Base):
         await session.merge(cls(id, population))
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def add_servers_in_batch(
         cls,
         ids: List[int],
@@ -708,7 +709,7 @@ class ServerStatistics(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_server_ids(
         cls,
         session: Optional[AsyncSession] = None,
@@ -719,7 +720,7 @@ class ServerStatistics(Base):
         return ids
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_server_populations(
         cls, session: Optional[AsyncSession] = None
     ) -> Tuple[int, int]:
@@ -729,7 +730,7 @@ class ServerStatistics(Base):
         return populations
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def update_population(
         cls,
         id: int,
@@ -742,7 +743,7 @@ class ServerStatistics(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def update_population_in_batch(
         cls,
         ids: List[int],
@@ -828,7 +829,7 @@ class UserCommand(Base):
             )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_commands(
         cls, session: Optional[AsyncSession] = None
     ) -> List[UserCommand]:
@@ -840,7 +841,7 @@ class UserCommand(Base):
         return commands
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_command_groups(
         cls, session: Optional[AsyncSession] = None
     ) -> List[UserCommand]:
@@ -856,7 +857,7 @@ class UserCommand(Base):
         return commands
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_command(
         cls, *ln_names, session: Optional[AsyncSession] = None
     ) -> UserCommand:
@@ -880,7 +881,7 @@ class UserCommand(Base):
         ).scalar()
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_command_group(
         cls, *ln_names, session: Optional[AsyncSession] = None
     ) -> UserCommand:
@@ -909,7 +910,7 @@ class UserCommand(Base):
         ).scalar()
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def _autocomplete(
         cls, l1_name="", l2_name="", l3_name="", session: Optional[AsyncSession] = None
     ) -> List[List[str]]:
@@ -927,7 +928,7 @@ class UserCommand(Base):
         return completions
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def add_command(
         cls,
         *ln_names,  # Layer n names
@@ -956,7 +957,7 @@ class UserCommand(Base):
         return self
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def add_command_group(
         cls, *ln_names, description, session: Optional[AsyncSession] = None
     ):
@@ -969,7 +970,7 @@ class UserCommand(Base):
         )
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def check_parent_command_groups_exist(
         cls,
         l1_name: str,
@@ -1027,7 +1028,7 @@ class UserCommand(Base):
         return True
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def fetch_subcommands(
         cls, l1_name, l2_name: str = "", session: Optional[AsyncSession] = None
     ):
@@ -1047,7 +1048,7 @@ class UserCommand(Base):
         ).fetchall()
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def delete_command(
         cls,
         l1_name: str,
@@ -1086,7 +1087,7 @@ class UserCommand(Base):
         return commands_to_delete
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def delete_command_group(
         cls,
         l1_name: str,
@@ -1175,7 +1176,7 @@ class AutoPostSettings(Base):
         self.enabled = enabled
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def get_enabled(cls, auto_post_name: str, session: AsyncSession = None):
         enabled = (
             await session.execute(select(cls.enabled).where(cls.name == auto_post_name))
@@ -1183,7 +1184,7 @@ class AutoPostSettings(Base):
         return enabled
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def set_enabled(
         cls, auto_post_name: str, enabled: bool, session: AsyncSession = None
     ):
@@ -1257,12 +1258,12 @@ class BungieCredentials(Base):
         self.refresh_token_expires = refresh_token_expires
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def get_credentials(cls, id=1, session: AsyncSession = None) -> t.Self:
         return (await session.execute(select(cls).where(cls.id == id))).scalar()
 
     @classmethod
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def set_refresh_token(
         cls,
         id=1,

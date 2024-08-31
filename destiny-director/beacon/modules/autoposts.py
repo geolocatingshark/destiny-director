@@ -22,6 +22,7 @@ import lightbulb as lb
 
 from ...common import cfg
 from ...common.schemas import AsyncSession, MirroredChannel, db_session
+from ...common.utils import ensure_session
 from .. import utils
 from ..bot import CachedFetchBot, UserCommandBot
 
@@ -92,7 +93,7 @@ def follow_control_command_maker(
     )
     @lb.command(autoposts_name, autoposts_desc, pass_options=True, auto_defer=True)
     @lb.implements(lb.SlashSubCommand)
-    @utils.ensure_session(db_session)
+    @ensure_session(db_session)
     async def follow_control(
         ctx: lb.Context, option: int, session: Optional[AsyncSession] = None
     ):

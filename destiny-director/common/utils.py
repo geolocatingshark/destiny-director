@@ -79,3 +79,49 @@ async def follow_link_single_step(
                         continue
                     else:
                         return url
+
+
+class FriendlyValueError(ValueError):
+    pass
+
+
+def check_number_of_layers(
+    ln_names: list | int, min_layers: int = 1, max_layers: int = 3
+):
+    """Raises FriendlyValueError on too many layers of commands
+
+    This is a simple helper function to check if ln_names is between min_layers and
+    max_layers. If it is not, a FriendlyValueError is raised."""
+
+    ln_name_length = len(ln_names) if ln_names is not int else ln_names
+
+    if ln_name_length > max_layers:
+        raise FriendlyValueError(
+            "Discord does not support slash "
+            + f"commands with more than {max_layers} layers"
+        )
+    elif ln_name_length < min_layers:
+        raise ValueError(f"Too few ln_names provided, need at least {min_layers}")
+
+
+def ensure_session(sessionmaker):
+    """Decorator for functions that optionally want an sqlalchemy async session
+
+    Provides an async session via the `session` parameter if one is not already
+    provided via the same.
+
+    Caution: Always put below `@classmethod` and `@staticmethod`"""
+
+    def ensured_session(f: t.Coroutine):
+        async def wrapper(*args, **kwargs):
+            session = kwargs.pop("session", None)
+            if session is None:
+                async with sessionmaker() as session:
+                    async with session.begin():
+                        return await f(*args, **kwargs, session=session)
+            else:
+                return await f(*args, **kwargs, session=session)
+
+        return wrapper
+
+    return ensured_session
