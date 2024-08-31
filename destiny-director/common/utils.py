@@ -6,7 +6,7 @@ import aiohttp
 import hikari as h
 import regex as re
 
-re_user_side_emoji = re.compile("(<a?)?:(\w+)(~\d)*:(\d+>)?")
+re_user_side_emoji = re.compile(r"(<a?)?:(\w+)(~\d)*:(\d+>)?")
 
 
 def construct_emoji_substituter(

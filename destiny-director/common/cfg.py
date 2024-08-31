@@ -222,7 +222,7 @@ port = _getenv("PORT", 8080, cast_to=int)
 
 reset_time_tolerance = dt.timedelta(minutes=60)
 url_regex = re.compile(
-    "http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
+    r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
 )
 IMAGE_EXTENSIONS_LIST = [
     ".jpg",

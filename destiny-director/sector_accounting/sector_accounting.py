@@ -258,8 +258,8 @@ class SpreadsheetBackedData:
         warnings.filterwarnings(
             "ignore",
             message=(
-                "\[Deprecated\]\[in version 6\.0\.0\]: client_factory "
-                + "will be replaced by gspread\.http_client types"
+                r"[Deprecated][in version 6.0.0]: client_factory "
+                + r"will be replaced by gspread.http_client types"
             ),
         )
         spreadsheet: gspread.Spreadsheet = gspread.service_account_from_dict(
