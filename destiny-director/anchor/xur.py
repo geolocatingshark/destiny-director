@@ -36,6 +36,7 @@ from .embeds import substitute_user_side_emoji
 logger = logging.getLogger(__name__)
 
 re_masterwork = re.compile("Tier [0-9]: ")
+EXOTIC_CLASS_ITEM_NAMES = ["relativism", "stoicism", "solipsism"]
 
 
 def xur_departure_string(post_date_time: dt.datetime | None = None) -> str:
@@ -99,6 +100,7 @@ class HashableDict(dict):
 def costs_string_from_items(
     destiny_items: t.List[api.DestinyItem],
     emoji_include_list: t.List[str] = [],
+    include_cost_text: bool = True,
 ) -> str:
     costs: t.Set[dict] = {
         HashableDict(destiny_item.costs)
@@ -109,15 +111,18 @@ def costs_string_from_items(
     if not costs:
         return ""
 
-    costs_line = "Cost:  "
+    if include_cost_text:
+        costs_line = "Cost:  "
+    else:
+        costs_line = ""
     if len(costs) == 1:
         # exotic_weapons_fragment_ +=
         for currency, amount in costs.pop().items():
             emoji_name = api.likely_emoji_name(currency)
             if emoji_name not in emoji_include_list:
-                costs_line = f"{costs_line}{currency} x{amount} "
+                costs_line = f"{costs_line}{currency} `x{amount}` "
             else:
-                costs_line = f"{costs_line}:{emoji_name}: x{amount} "
+                costs_line = f"{costs_line}:{emoji_name}: `x{amount}` "
     elif len(costs) > 1:
         costs_line = "Costs vary per item"
 
@@ -268,6 +273,25 @@ def legendary_armor_fragement(
     return "\n".join(subfragments)
 
 
+def exotic_class_or_cipher_fragment(items, emoji_include_list: t.List[str]) -> str:
+    fragment = "\n"
+
+    if "exotic cipher" in [item.name.lower().strip() for item in items]:
+        fragment += "★ Exotic Cipher. " + costs_string_from_items(
+            items, emoji_include_list, include_cost_text=False
+        )
+    else:
+        fragment += (
+            "★ Exotic Class Items (Relativism, Stoicism, Solipsism) are available this week with randomized perks. "
+            + costs_string_from_items(
+                items, emoji_include_list, include_cost_text=False
+            )
+        )
+
+    fragment += "\n"
+    return fragment
+
+
 def last_two_active_perk_columns(perks: t.List[t.List[str]]) -> t.List[int]:
     perks_to_return = []
     for i, perk in enumerate(perks):
@@ -339,6 +363,15 @@ async def format_xur_vendor(
     description += exotic_armor_fragment(
         [item for item in vendor.sale_items if item.is_exotic and item.is_armor],
         allowed_emoji_list=emoji_dict.keys(),
+    )
+    description += exotic_class_or_cipher_fragment(
+        [
+            item
+            for item in vendor.sale_items
+            if item.name.lower().strip()
+            in (EXOTIC_CLASS_ITEM_NAMES + ["exotic cipher"])
+        ],
+        emoji_include_list=emoji_dict.keys(),
     )
     description += exotic_weapons_fragment(
         [item for item in vendor.sale_items if item.is_exotic and item.is_weapon],
