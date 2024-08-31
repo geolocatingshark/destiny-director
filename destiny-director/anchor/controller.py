@@ -57,3 +57,18 @@ async def restart(ctx: lb.Context):
 
 def register(bot: lb.BotApp) -> None:
     bot.command(kyber)
+
+
+@kyber.child
+@lb.command("info", "Configuration state info", guilds=[cfg.control_discord_server_id])
+@lb.implements(lb.SlashSubCommand)
+@utils.check_admin
+async def info(ctx: lb.Context):
+    config_info = (
+        "**Configuration Info**\n"
+        f"- Control Discord Server ID: {cfg.control_discord_server_id}\n"
+        f"- Test Environment: {cfg.test_env}\n"
+        f"- Lost Sector Channel: <#{cfg.followables["lost_sector"]}>\n"
+        f"- Xur Channel: <#{cfg.followables["xur"]}>\n"
+    )
+    await ctx.respond(config_info)
