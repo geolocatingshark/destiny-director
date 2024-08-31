@@ -26,8 +26,11 @@ from lightbulb.ext import tasks
 from yarl import URL
 
 from ..common import cfg, schemas
-from ..common.utils import ensure_session, follow_link_single_step
-from . import utils
+from ..common.utils import (
+    check_number_of_layers,
+    ensure_session,
+    follow_link_single_step,
+)
 
 
 class CachedFetchBot(lb.BotApp):
@@ -166,7 +169,7 @@ class UserCommandBot(lb.BotApp):
 
         # Filter out empty names
         ln_names = list(filter(lambda x: x, ln_names))
-        utils.check_number_of_layers(ln_names)
+        check_number_of_layers(ln_names)
 
         # lb.BotApp._slash_commands is a dict of names to CommandLike instances
         commands_group = self.slash_commands
@@ -197,7 +200,7 @@ class UserCommandBot(lb.BotApp):
             f"Command group {' -> '.join(ln_names)} was not found"
         )
 
-        utils.check_number_of_layers(ln_names, max_layers=2)
+        check_number_of_layers(ln_names, max_layers=2)
 
         try:
             # Try to find the command group
