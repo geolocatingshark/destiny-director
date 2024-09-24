@@ -49,6 +49,7 @@ async def trials_command(ctx: lb.Context):
     navigator = NavigatorView(
         pages=trials_pages,
         allow_start_on_blank_page=True,
+        display_date_offset=dt.timedelta(days=3),
     )
     await navigator.send(ctx.interaction)
 

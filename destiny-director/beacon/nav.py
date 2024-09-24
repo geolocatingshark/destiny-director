@@ -170,6 +170,7 @@ class NavigatorView(nav.NavigatorView):
         timeout: t.Optional[t.Union[float, int, dt.timedelta]] = navigator_timeout,
         autodefer: bool = True,
         allow_start_on_blank_page: bool = False,
+        display_date_offset: dt.timedelta = dt.timedelta(days=0),
     ) -> None:
         ### hikari-miru NavigatorView init ###
         # The only differences between this and the original is that
@@ -183,6 +184,7 @@ class NavigatorView(nav.NavigatorView):
         # The last interaction received, used for inter-based handling
         self._inter: t.Optional[h.MessageResponseMixin[t.Any]] = None
         super(nav.NavigatorView, self).__init__(timeout=timeout, autodefer=autodefer)
+        self.display_date_offset = display_date_offset
 
         default_buttons = self.get_default_buttons()
         for default_button in default_buttons:
@@ -280,7 +282,11 @@ class NavigatorView(nav.NavigatorView):
         if (self.pages.history_len + self.pages.lookahead_len) == 1:
             return []
         else:
-            return [PrevButton(), IndicatorButton(), NextButton()]
+            return [
+                PrevButton(),
+                IndicatorButton(display_date_offset=self.display_date_offset),
+                NextButton(),
+            ]
 
     @property
     def pages(self) -> "NavPages":
@@ -546,16 +552,19 @@ class IndicatorButton(nav.IndicatorButton):
         custom_id: t.Optional[str] = None,
         emoji: t.Union[h.Emoji, str, None] = None,
         row: t.Optional[int] = None,
+        display_date_offset: dt.timedelta = dt.timedelta(days=0),
     ):
         super().__init__(
             style=h.ButtonStyle.SECONDARY, custom_id=custom_id, emoji=emoji, row=row
         )
+        self.display_date_offset = display_date_offset
 
     async def callback(self, context: m.ViewContext) -> None:
         pass
 
     async def before_page_change(self) -> None:
         date = self.view.pages.index_to_date(self.view.current_page)
+        date += self.display_date_offset
         suffix = get_ordinal_suffix(date.day)
         self.label = f"{date.strftime('%B %-d')}{suffix}"
 
