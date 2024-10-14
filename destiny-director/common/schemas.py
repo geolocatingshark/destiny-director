@@ -40,9 +40,8 @@ from sqlalchemy.sql.sqltypes import (
     Text,
 )
 
-from ..beacon import utils
 from . import cfg
-from .utils import ensure_session
+from .utils import FriendlyValueError, check_number_of_layers, ensure_session
 
 Base = declarative_base()
 db_engine = create_async_engine(
@@ -822,7 +821,7 @@ class UserCommand(Base):
         elif key in ["l2_name", "l3_name"] and rgx_sub_cmd_name_is_valid.match(value):
             return value
         else:
-            raise utils.FriendlyValueError(
+            raise FriendlyValueError(
                 "Command names must start with a letter, be all lowercase, and only "
                 + "contain letter, numbers, dashes (-) and underscores (_) and must "
                 + "not be longer than 32 characters. Spaces cannot be used."
@@ -861,7 +860,7 @@ class UserCommand(Base):
     async def fetch_command(
         cls, *ln_names, session: Optional[AsyncSession] = None
     ) -> UserCommand:
-        utils.check_number_of_layers(ln_names)
+        check_number_of_layers(ln_names)
 
         # Pad ln_names with "" up to len 3
         ln_names = list(ln_names)
@@ -886,7 +885,7 @@ class UserCommand(Base):
         cls, *ln_names, session: Optional[AsyncSession] = None
     ) -> UserCommand:
         if len(ln_names) >= 3:
-            raise utils.FriendlyValueError(
+            raise FriendlyValueError(
                 "Discord does not support slash command groups more than "
                 + "2 layers deep"
             )
@@ -937,13 +936,13 @@ class UserCommand(Base):
         response_data: str,
         session: Optional[AsyncSession] = None,
     ):
-        utils.check_number_of_layers(ln_names)
+        check_number_of_layers(ln_names)
         await cls.check_parent_command_groups_exist(*ln_names, session=session)
 
         # Check if there is an existing command with the same name
         existing_command = await cls.fetch_command(*ln_names, session=session)
         if existing_command:
-            raise utils.FriendlyValueError(
+            raise FriendlyValueError(
                 f"Command {' -> '.join(filter(lambda n: n != '', ln_names))} already exists"
             )
 
@@ -982,7 +981,7 @@ class UserCommand(Base):
 
         Note, this is different from the command existing (response_type must be 0)
 
-        raises utils.FriendlyValueError if command groups specified do not exist"""
+        raises FriendlyValueError if command groups specified do not exist"""
 
         if l2_name:
             # Only check l1_name if l3_name command is provided
@@ -998,7 +997,7 @@ class UserCommand(Base):
             # scalar only returns false (None) when no rows are found
 
             if not l1_exists:
-                raise utils.FriendlyValueError(
+                raise FriendlyValueError(
                     f"{l1_name} is not an existing command group",
                 )
 
@@ -1020,7 +1019,7 @@ class UserCommand(Base):
             # scalar only returns false (None) when no rows are found
 
             if not l2_exists:
-                raise utils.FriendlyValueError(
+                raise FriendlyValueError(
                     f"{l1_name} -> {l2_name} is not an existing command group",
                 )
 
@@ -1100,7 +1099,7 @@ class UserCommand(Base):
         if subcommands and not cascade:
             # Handle the case where subcommands are found and we aren't supposed
             # to cascade delete
-            raise utils.FriendlyValueError(
+            raise FriendlyValueError(
                 f"Command group {l1_name}{(' -> ' + l2_name) if l2_name else ''} "
                 + "still has subcommands"
             )
