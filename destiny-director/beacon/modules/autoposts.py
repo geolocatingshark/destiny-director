@@ -218,6 +218,7 @@ def follow_control_command_maker(
                         ):
                             if (
                                 isinstance(hook, h.ChannelFollowerWebhook)
+                                and hook.source_channel
                                 and hook.source_channel.id == followable_channel
                             ):
                                 await bot.rest.delete_webhook(hook)
