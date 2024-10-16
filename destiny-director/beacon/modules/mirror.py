@@ -27,6 +27,7 @@ import lightbulb as lb
 import regex as re
 from lightbulb.ext import tasks
 
+from ...beacon.bot import CachedFetchBot
 from ...common import cfg
 from ...common.schemas import MirroredChannel, MirroredMessage, ServerStatistics
 from .. import bot, utils
@@ -312,7 +313,7 @@ async def message_create_repeater_impl(
             # event that has already fired
             msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
 
-            if wait_for_crosspost and not h.MessageFlag.CROSSPOSTED in msg.flags:
+            if wait_for_crosspost and h.MessageFlag.CROSSPOSTED not in msg.flags:
                 logging.info(
                     f"Message in channel {channel_name_or_id} not crossposted, waiting..."
                 )
@@ -927,7 +928,7 @@ mirror_group = lb.command(
 )
 @lb.implements(lb.SlashSubCommand)
 async def undo_auto_disable(ctx: lb.Context, from_date: str):
-    if not ctx.author.id in await ctx.bot.fetch_owner_ids():
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
         return
 
     from_date = dateparser.parse(from_date)
@@ -951,7 +952,7 @@ async def undo_auto_disable(ctx: lb.Context, from_date: str):
 )
 @lb.implements(lb.SlashSubCommand)
 async def manual_add(ctx: lb.Context, src: str, dest: str, dest_server_id: str):
-    if not ctx.author.id in await ctx.bot.fetch_owner_ids():
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
         return
 
     src = int(src)
@@ -973,7 +974,7 @@ async def manual_add(ctx: lb.Context, src: str, dest: str, dest_server_id: str):
 )
 @lb.implements(lb.MessageCommand)
 async def manual_mirror_send(ctx: lb.MessageContext):
-    if not ctx.author.id in await ctx.bot.fetch_owner_ids():
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
         await ctx.respond("You are not allowed to use this command...")
         return
 
@@ -997,7 +998,7 @@ async def manual_mirror_send(ctx: lb.MessageContext):
 )
 @lb.implements(lb.MessageCommand)
 async def manual_mirror_update(ctx: lb.MessageContext):
-    if not ctx.author.id in await ctx.bot.fetch_owner_ids():
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
         await ctx.respond("You are not allowed to use this command...")
         return
 
@@ -1022,7 +1023,7 @@ async def manual_mirror_update(ctx: lb.MessageContext):
 )
 @lb.implements(lb.SlashSubCommand)
 async def manual_mirror_delete(ctx: lb.SlashContext, message_id: str):
-    if not ctx.author.id in await ctx.bot.fetch_owner_ids():
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
         await ctx.respond("You are not allowed to use this command...")
         return
 
@@ -1033,6 +1034,55 @@ async def manual_mirror_delete(ctx: lb.SlashContext, message_id: str):
     logging.info(f"Manually deleting mirrored message {mid}")
     await message_delete_repeater_impl(mid, bot.cache.get_message(mid), ctx.app)
     await ctx.edit_last_response("Deleted messages.")
+
+
+@mirror_group.child
+@lb.option(
+    "channel_id", description="Destination channel id to show details of", type=str
+)
+@lb.command(
+    "source_details",
+    description="Show details about a channels mirror sources if any",
+    guilds=[cfg.control_discord_server_id],
+    hidden=True,
+    pass_options=True,
+)
+@lb.implements(lb.SlashSubCommand)
+async def mirror_source_details(ctx: lb.SlashContext, channel_id: str):
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
+        await ctx.respond("You are not allowed to use this command...")
+        return
+
+    # channel_id = 722159088321953913
+    channel_id = int(channel_id)
+    bot: CachedFetchBot = ctx.app
+
+    await ctx.respond("Checking the database...")
+
+    legacy_sources = await MirroredChannel.fetch_srcs(channel_id, legacy=True)
+    new_style_sources = await MirroredChannel.fetch_srcs(channel_id, legacy=False)
+
+    sources = {val: key for key, val in cfg.followables.items()}
+
+    legacy_sources: str = [sources[legacy_source] for legacy_source in legacy_sources]
+    new_style_sources: str = [
+        sources[new_style_source] for new_style_source in new_style_sources
+    ]
+
+    channel = await bot.fetch_channel(channel_id)
+    channel_name = channel.name if channel else "Unknown Channel"
+
+    await ctx.edit_last_response(
+        "```\n"
+        + f"Details for Channel: {channel_name} ({channel_id})\n"
+        + "Legacy sources:\n"
+        + ("\n".join(legacy_sources) if legacy_sources else "None")
+        + "\n\n"
+        + "New style sources:\n"
+        + ("\n".join(new_style_sources) if new_style_sources else "None")
+        + "\n"
+        + "```"
+    )
 
 
 def register(bot):
