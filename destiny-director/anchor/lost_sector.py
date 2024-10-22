@@ -115,20 +115,16 @@ async def ls_update(ctx: lb.MessageContext):
 
     msg_to_update: h.Message = ctx.options.target
 
-    async with schemas.db_session() as session:
-        settings: schemas.AutoPostSettings = await session.get(
-            schemas.AutoPostSettings, 0
-        )
-        if settings is None:
-            await ctx.respond("Please enable autoposts before using this cmd")
+    if not schemas.AutoPostSettings.get_lost_sector_enabled():
+        await ctx.respond("Please enable autoposts before using this cmd")
 
-        logger.info("Correcting posts")
+    logger.info("Correcting posts")
 
-        await ctx.edit_last_response("Updating post now")
+    await ctx.edit_last_response("Updating post now")
 
-        message = await format_sector(bot=ctx.app)
-        await msg_to_update.edit(**message.to_message_kwargs())
-        await ctx.edit_last_response("Post updated")
+    message = await format_sector(bot=ctx.app)
+    await msg_to_update.edit(**message.to_message_kwargs())
+    await ctx.edit_last_response("Post updated")
 
 
 async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):

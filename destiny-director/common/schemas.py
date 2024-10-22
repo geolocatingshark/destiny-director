@@ -1168,10 +1168,10 @@ class AutoPostSettings(Base):
 
     def __init__(
         self,
-        id: int = 1,
+        name: str,
         enabled=False,
     ):
-        self.id = id
+        self.name = name
         self.enabled = enabled
 
     @classmethod
