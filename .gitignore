@@ -138,3 +138,6 @@ manifest.zip
 
 # My ToDo list
 ToDo
+
+# VSCode Settings
+.vscode/settings.json

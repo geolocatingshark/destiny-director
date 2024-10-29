@@ -18,6 +18,9 @@ deploy-anchor-prod:
 	railway service anchor
 	railway up -d
 
+remove-last-deploy:
+	railway down
+
 run-beacon-local: .env
 	poetry run honcho start beacon
 
