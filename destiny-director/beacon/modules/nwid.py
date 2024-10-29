@@ -25,6 +25,7 @@ from .. import utils
 from ..nav import NavigatorView, NavPages
 from .autoposts import autopost_command_group, follow_control_command_maker
 
+# Tuesday:
 REFERENCE_DATE = dt.datetime(2023, 7, 18, 17, tzinfo=dt.timezone.utc)
 
 
@@ -93,7 +94,12 @@ async def on_start(event: h.StartedEvent):
 @lb.command("nwid", 'Find out what\'s going on "Next week in Destiny"')
 @lb.implements(lb.SlashCommand)
 async def nwid(ctx: lb.Context):
-    navigator = NavigatorView(pages=evweekly, autodefer=True)
+    navigator = NavigatorView(
+        pages=evweekly,
+        autodefer=True,
+        # Display next Tuesday for the users
+        display_date_offset=dt.timedelta(days=7),
+    )
     await navigator.send(ctx.interaction)
 
 
