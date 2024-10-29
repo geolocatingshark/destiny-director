@@ -14,7 +14,6 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 import datetime as dt
-import typing as t
 
 import hikari as h
 import lightbulb as lb
