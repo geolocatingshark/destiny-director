@@ -80,8 +80,8 @@ class NWIDPages(NavPages):
 
 
 async def on_start(event: h.StartedEvent):
-    global evweekly
-    evweekly = await NWIDPages.from_channel(
+    global nwid_pages
+    nwid_pages = await NWIDPages.from_channel(
         event.app,
         FOLLOWABLE_CHANNEL,
         history_len=4,
@@ -95,7 +95,7 @@ async def on_start(event: h.StartedEvent):
 @lb.implements(lb.SlashCommand)
 async def nwid(ctx: lb.Context):
     navigator = NavigatorView(
-        pages=evweekly,
+        pages=nwid_pages,
         autodefer=True,
         # Display next Tuesday for the users
         display_date_offset=dt.timedelta(days=7),
