@@ -149,6 +149,13 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
             if not (self.limits[0] <= key <= self.limits[1]):
                 self.pop(key)
 
+    def purge_history(self) -> None:
+        """Removes all keys in the past including now"""
+        now = dt.datetime.now(tz=dt.timezone.utc)
+        for key in list(self.keys()):
+            if key <= now:
+                self.pop(key)
+
     @staticmethod
     def nearest_limit_from_period_and_ref(period: dt.timedelta, ref: dt.datetime):
         """Return the nearest lower limit to ref that is an integer multiple of period"""
@@ -439,7 +446,8 @@ class NavPages(DateRangeDict):
 
         # Preprocess messages
         key = self.limits[0]
-        while key <= self.limits[1]:
+        now = dt.datetime.now(tz=dt.timezone.utc)
+        while key <= now:
             if self.get(key):
                 self[key] = self.preprocess_messages(self[key])
             key += self.period
@@ -510,9 +518,16 @@ class NavPages(DateRangeDict):
 
             @self.bot.listen()
             async def history_updater(
-                event: h.MessageCreateEvent | h.MessageUpdateEvent,
+                event: h.MessageCreateEvent
+                | h.MessageUpdateEvent
+                | h.MessageDeleteEvent,
             ):
-                await self._update_history(event)
+                if isinstance(event, h.MessageDeleteEvent):
+                    if event.channel_id == self.channel.id:
+                        self.purge_history()
+                        await self._populate_history()
+                else:
+                    await self._update_history(event)
 
         if self.lookahead_len > 0:
 
