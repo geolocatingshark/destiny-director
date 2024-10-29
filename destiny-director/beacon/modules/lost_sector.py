@@ -41,9 +41,11 @@ class SectorMessages(NavPages):
         for m in messages:
             m.embeds = utils.filter_discord_autoembeds(m)
         processed_messages = [
-            MessagePrototype.from_message(m)
-            .merge_content_into_embed(prepend=False)
-            .merge_attachements_into_embed(default_url=cfg.default_url)
+            MessagePrototype.from_message(m).merge_content_into_embed(prepend=False)
+            # Remove merge_attachements_into_embed since it cause embeds to disappear
+            # Did not investigate further as this functionality was not used in the
+            # last 3 months at least
+            # .merge_attachements_into_embed(default_url=cfg.default_url)
             for m in messages
         ]
 
@@ -75,7 +77,12 @@ class SectorMessages(NavPages):
 
         lookahead_dict = {}
 
-        for date in [start_date + self.period * n for n in range(self.lookahead_len)]:
+        for date in [
+            # Start range from 1 to avoid overwriting todays sector message from
+            # the channel / from history
+            start_date + self.period * n
+            for n in range(1, self.lookahead_len)
+        ]:
             try:
                 sector = sector_on(date)
             except KeyError:
