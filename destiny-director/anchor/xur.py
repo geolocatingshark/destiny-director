@@ -332,7 +332,20 @@ def legendary_weapons_fragment(
             )
         )
 
-    return "\n".join(subfragments)
+    return "\n".join(subfragments) + "\n"
+
+
+def xurfboard_sparrow_fragment():
+    return (
+        "## **__Other Strange Offers__**"
+        "\n"
+        "Cost:  <:strange_coin:1248721499943075861> `x97`"
+        "\n"
+        "\n"
+        "<:sparrow:1296886350712406170>  [**The Xûrfboard (Skimmer)**]"
+        "(https://kyberscorner.com/wp-content/uploads/2024/10"
+        "/The-Xurfboard-Skimmer-1.png)"
+    )
 
 
 XUR_FOOTER = """\n\n[**View More**](https://kyber3000.com/D2-Xur) ↗ 
@@ -390,6 +403,7 @@ async def format_xur_vendor(
         [item for item in vendor.sale_items if item.is_weapon and item.is_legendary],
         emoji_include_list=emoji_dict.keys(),
     )
+    description += xurfboard_sparrow_fragment()
 
     description += XUR_FOOTER
     description = await substitute_user_side_emoji(emoji_dict, description)
