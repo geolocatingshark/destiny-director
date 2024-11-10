@@ -136,26 +136,6 @@ def follow_control_command_maker(
                 )
                 return
 
-            # We do not support Forum Channels for mirrors
-            if (await bot.fetch_channel(ctx.channel_id)).type in [
-                h.ChannelType.GUILD_FORUM,
-                h.ChannelType.GUILD_PUBLIC_THREAD,
-                h.ChannelType.GUILD_PRIVATE_THREAD,
-                h.ChannelType.GUILD_NEWS_THREAD,
-            ]:
-                bot_owner = await bot.fetch_owner()
-                await ctx.respond(
-                    h.Embed(
-                        title="Unsupported channel type",
-                        description="This command does not support forum channels and threads",
-                        color=cfg.embed_error_color,
-                    ).set_footer(
-                        f"@{bot_owner.username}",
-                        icon=bot_owner.avatar_url or bot_owner.default_avatar_url,
-                    )
-                )
-                return
-
             try:
                 if option:
                     # If we are enabling autoposts:
