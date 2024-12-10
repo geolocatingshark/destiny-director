@@ -14,6 +14,7 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 import math
+import tempfile
 import typing as t
 
 import hikari as h
@@ -74,7 +75,7 @@ async def populations_command(ctx: lb.Context):
             title="Server populations",
             description=""
             + f"\n**Total**: {sum(map(lambda x: x[1], populations)):,d}"
-            + f"\n**Top 7 servers by population**\n"
+            + "\n**Top 7 servers by population**\n"
             + "\n".join(
                 f"{i+1}. **{server_name}**: {population:,d}"
                 for i, (server_name, population) in enumerate(top_7)
@@ -85,6 +86,48 @@ async def populations_command(ctx: lb.Context):
             color=cfg.embed_default_color,
         )
     )
+
+
+@stats_command_group.child
+@lb.command(
+    "server_list",
+    "List of all servers the bot is in",
+    auto_defer=True,
+    hidden=True,
+)
+@lb.implements(lb.SlashSubCommand)
+async def server_list_command(ctx: lb.Context):
+    bot: CachedFetchBot = ctx.bot
+    percentage_completion = 0
+    response = "Working... {}%"
+    await ctx.respond(response.format(percentage_completion))
+
+    server_ids: list = await schemas.ServerStatistics.fetch_server_ids()
+    server_names = []
+    total_servers = len(server_ids)
+
+    for server_number, server_id in enumerate(server_ids):
+        try:
+            server = await bot.fetch_guild(server_id)
+        except (
+            h.ForbiddenError,
+            h.NotFoundError,
+            h.UnauthorizedError,
+            h.RateLimitTooLongError,
+            h.InternalServerError,
+        ):
+            server_names.append(f"[{server_id}]")
+        else:
+            server_names.append(f"{server.name} [{server_id}]")
+
+        if server_number == total_servers or server_number % 100 == 0:
+            percentage_completion = int(100 * server_number / total_servers)
+            await ctx.edit_last_response(response.format(percentage_completion))
+
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".txt") as server_txt:
+        server_txt.write("\n".join(server_names))
+        server_txt.seek(0)
+        await ctx.edit_last_response("Completed!", attachment=h.File(server_txt.name))
 
 
 @stats_command_group.child
