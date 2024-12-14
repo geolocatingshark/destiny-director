@@ -83,6 +83,17 @@ async def on_start(event: h.StartedEvent):
         history_len=12,
         period=dt.timedelta(days=7),
         reference_date=REFERENCE_DATE,
+        no_data_message=MessagePrototype(
+            embeds=[
+                h.Embed(
+                    description=(
+                        "Xûr arrives at the Tower (Bazaar) every *Friday at reset* "
+                        "(<t:1734109200:t>) and departs on *Tuesday at reset*."
+                    ),
+                    color=cfg.embed_default_color,
+                ),
+            ]
+        ),
     )
 
 
