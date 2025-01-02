@@ -33,7 +33,7 @@ from ..common.cfg import (
     reset_time_tolerance,
     url_regex,
 )
-from ..common.utils import get_ordinal_suffix
+from ..common.utils import accumulate, get_ordinal_suffix
 from . import utils
 from .bot import CachedFetchBot
 
@@ -391,7 +391,7 @@ class NavPages(DateRangeDict):
     def preprocess_messages(
         self, messages: t.List[MessagePrototype | h.Message]
     ) -> MessagePrototype:
-        msg: MessagePrototype = utils.accumulate(
+        msg: MessagePrototype = accumulate(
             [MessagePrototype.from_message(msg) for msg in messages]
         )
 

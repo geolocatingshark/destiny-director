@@ -21,6 +21,7 @@ import lightbulb as lb
 from hmessage import HMessage as MessagePrototype
 
 from ...common import cfg
+from ...common.utils import accumulate
 from .. import utils
 from ..nav import NavigatorView, NavPages
 from .autoposts import autopost_command_group, follow_control_command_maker
@@ -34,7 +35,7 @@ class TWIDPages(NavPages):
     def preprocess_messages(
         self, messages: t.List[MessagePrototype | h.Message]
     ) -> MessagePrototype:
-        msg: MessagePrototype = utils.accumulate(
+        msg: MessagePrototype = accumulate(
             [MessagePrototype.from_message(m) for m in messages]
         )
         msg.embeds = utils.filter_discord_autoembeds(msg)

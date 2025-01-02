@@ -23,6 +23,7 @@ from hmessage import HMessage as MessagePrototype
 from hmessage import MultiImageEmbedList
 
 from ...common import cfg
+from ...common.utils import accumulate
 from .. import utils
 from ..nav import NavigatorView, NavPages
 from .autoposts import autopost_command_group, follow_control_command_maker
@@ -54,7 +55,7 @@ class XurPages(NavPages):
             )
 
         msg_proto = (
-            utils.accumulate(
+            accumulate(
                 [
                     MessagePrototype.from_message(m)
                     # .merge_embed_url_as_embed_image_into_embed()

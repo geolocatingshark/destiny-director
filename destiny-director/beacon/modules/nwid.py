@@ -21,7 +21,7 @@ import lightbulb as lb
 from hmessage import HMessage as MessagePrototype
 
 from ...common import cfg
-from .. import utils
+from ...common.utils import accumulate
 from ..nav import NavigatorView, NavPages
 from .autoposts import autopost_command_group, follow_control_command_maker
 
@@ -37,7 +37,7 @@ class NWIDPages(NavPages):
     def _preprocess_messages(
         cls, messages: t.List[MessagePrototype | h.Message]
     ) -> MessagePrototype:
-        msg = utils.accumulate([MessagePrototype.from_message(m) for m in messages])
+        msg = accumulate([MessagePrototype.from_message(m) for m in messages])
 
         urls = cfg.url_regex.findall(msg.content)
 

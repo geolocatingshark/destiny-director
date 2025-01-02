@@ -23,6 +23,7 @@ from hmessage import HMessage as MessagePrototype
 
 from ...common import cfg
 from ...common.lost_sector import format_sector, get_ordinal_suffix
+from ...common.utils import accumulate
 from ...sector_accounting import sector_accounting
 from .. import utils
 from ..bot import CachedFetchBot, ServerEmojiEnabledBot, UserCommandBot
@@ -49,7 +50,7 @@ class SectorMessages(NavPages):
             for m in messages
         ]
 
-        processed_message = utils.accumulate(processed_messages)
+        processed_message = accumulate(processed_messages)
 
         # Date correction
         try:

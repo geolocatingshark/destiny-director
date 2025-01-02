@@ -22,6 +22,7 @@ import regex as re
 from hmessage import HMessage as MessagePrototype
 
 from ...common import cfg
+from ...common.utils import accumulate
 from .. import utils
 from ..nav import NavigatorView, NavPages
 from .autoposts import autopost_command_group, follow_control_command_maker
@@ -43,7 +44,7 @@ class ResetPages(NavPages):
         for m in messages:
             m.embeds = utils.filter_discord_autoembeds(m)
         msg_proto = (
-            utils.accumulate([MessagePrototype.from_message(m) for m in messages])
+            accumulate([MessagePrototype.from_message(m) for m in messages])
             .merge_content_into_embed()
             .merge_attachements_into_embed(default_url=cfg.default_url)
         )

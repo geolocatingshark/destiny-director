@@ -125,3 +125,13 @@ def ensure_session(sessionmaker):
         return wrapper
 
     return ensured_session
+
+
+T = t.TypeVar("T")
+
+
+def accumulate(iterable: t.Iterable[T]) -> T:
+    final = iterable[0]
+    for arg in iterable[1:]:
+        final = final + arg
+    return final
