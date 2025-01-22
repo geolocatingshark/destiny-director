@@ -23,7 +23,7 @@ import uvloop
 from lightbulb.ext import tasks
 
 from ..common import cfg, utils
-from . import bungie_api, controller, lost_sector, posts, source, xur
+from . import bungie_api, controller, gunsmith, lost_sector, posts, source, xur
 
 uvloop.install()
 bot: lb.BotApp = lb.BotApp(
@@ -62,6 +62,7 @@ if __name__ == "__main__":
     controller.register(bot)
     posts.register(bot)
     bungie_api.register(bot)
+    gunsmith.register(bot)
     xur.register(bot)
     tasks.load(bot)
     bot.run()

@@ -27,6 +27,7 @@ import regex as re
 from hmessage import HMessage
 
 from ..common import cfg, schemas
+from ..common.utils import accumulate
 from ..sector_accounting import xur as xur_support_data
 from . import bungie_api as api
 from . import utils
@@ -313,10 +314,13 @@ def last_two_active_perk_columns(perks: t.List[t.List[str]]) -> t.List[int]:
 
 
 def legendary_weapons_fragment(
-    legendary_weapons: t.List[api.DestinyArmor], emoji_include_list: t.List[str]
+    legendary_weapons: t.List[api.DestinyArmor],
+    emoji_include_list: t.List[str],
+    include_title: str = "## **__Legendary Weapons__**",
 ) -> str:
     subfragments = []
-    subfragments.append("## **__Legendary Weapons__**")
+    if include_title:
+        subfragments.append(include_title)
 
     subfragments.append(costs_string_from_items(legendary_weapons, emoji_include_list))
     subfragments.append("")
@@ -353,9 +357,18 @@ XUR_FOOTER = """\n\n[**View More**](https://kyber3000.com/D2-Xur) ↗
 Have a great weekend! :gscheer:"""
 
 
+async def fetch_emoji_dict(bot: lb.BotApp):
+    guild = bot.cache.get_guild(
+        cfg.kyber_discord_server_id
+    ) or await bot.rest.fetch_guild(cfg.kyber_discord_server_id)
+
+    emoji_dict = {emoji.name: emoji for emoji in await guild.fetch_emojis()}
+    return emoji_dict
+
+
 async def format_xur_vendor(
     vendor: api.DestinyVendor,
-    bot: lb.BotApp = {},
+    bot: lb.BotApp,
 ) -> HMessage:
     xur_locations = xur_support_data.XurLocations.from_gspread_url(
         cfg.sheets_ls_url, cfg.gsheets_credentials
@@ -364,11 +377,7 @@ async def format_xur_vendor(
         cfg.sheets_ls_url, cfg.gsheets_credentials
     )
 
-    guild = bot.cache.get_guild(
-        cfg.kyber_discord_server_id
-    ) or await bot.rest.fetch_guild(cfg.kyber_discord_server_id)
-
-    emoji_dict = {emoji.name: emoji for emoji in await guild.fetch_emojis()}
+    emoji_dict = await fetch_emoji_dict(bot)
 
     description = "# [XÛR'S LOOT](https://kyber3000.com/D2-Xur)\n\n"
     description += xur_departure_string()
@@ -419,7 +428,14 @@ async def format_xur_vendor(
     return message
 
 
-async def fetch_xur_data(webserver_runner: aiohttp.web.AppRunner) -> api.DestinyVendor:
+async def fetch_vendor_data(
+    webserver_runner: aiohttp.web.AppRunner, vendor_hashes: t.List[int] | int
+) -> api.DestinyVendor:
+    try:
+        vendor_hashes.__iter__
+    except AttributeError:
+        vendor_hashes: t.List[int] = [vendor_hashes]
+
     access_token = await api.refresh_api_tokens(webserver_runner)
 
     async with aiohttp.ClientSession() as session:
@@ -429,32 +445,35 @@ async def fetch_xur_data(webserver_runner: aiohttp.web.AppRunner) -> api.Destiny
     manifest_table = await api._build_manifest_dict(
         await api._get_latest_manifest(schemas.BungieCredentials.api_key)
     )
-
-    xur: api.DestinyVendor = await api.DestinyVendor.request_from_api(
-        destiny_membership=destiny_membership,
-        character_id=character_id,
-        access_token=access_token,
-        manifest_table=manifest_table,
-        vendor_hash=api.XUR_VENDOR_HASH,
+    vendor: api.DestinyVendor = accumulate(
+        [
+            await api.DestinyVendor.request_from_api(
+                destiny_membership=destiny_membership,
+                character_id=character_id,
+                access_token=access_token,
+                manifest_table=manifest_table,
+                vendor_hash=vendor_hash,
+            )
+            for vendor_hash in vendor_hashes
+        ]
     )
 
-    xur += await api.DestinyVendor.request_from_api(
-        destiny_membership=destiny_membership,
-        character_id=character_id,
-        access_token=access_token,
-        manifest_table=manifest_table,
-        vendor_hash=api.XUR_STRANGE_GEAR_VENDOR_HASH,
-    )
+    return vendor
 
+
+async def fetch_xur_data(webserver_runner: aiohttp.web.AppRunner) -> api.DestinyVendor:
+    xur = await fetch_vendor_data(
+        webserver_runner, [api.XUR_VENDOR_HASH, api.XUR_STRANGE_GEAR_VENDOR_HASH]
+    )
     return xur
 
 
 async def xur_message_constructor(bot: lb.BotApp) -> HMessage:
     xur = await fetch_xur_data(bot.d.webserver_runner)
-    return await format_xur_vendor(xur, bot=bot)
+    return await format_xur_vendor(xur, bot)
 
 
-async def xur_discord_announcer(
+async def api_to_discord_announcer(
     bot: lb.BotApp,
     channel_id: int,
     construct_message_coro: t.Coroutine[t.Any, t.Any, HMessage] = None,
@@ -465,7 +484,7 @@ async def xur_discord_announcer(
     hmessage = HMessage(
         embeds=[
             h.Embed(
-                description="Waiting for Xur data from the API...",
+                description="Waiting for data from the API...",
                 color=cfg.embed_default_color,
             )
         ]
@@ -524,7 +543,7 @@ async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):
     # Use below crontab for testing to post every minute
     # @aiocron.crontab("* * * * *", start=True)
     async def autopost_xur():
-        await xur_discord_announcer(
+        await api_to_discord_announcer(
             event.app,
             channel_id=cfg.followables["xur"],
             check_enabled=True,
@@ -542,7 +561,7 @@ def register(bot: lb.BotApp) -> None:
             enabled_setter=schemas.AutoPostSettings.set_xur,
             channel_id=cfg.followables["xur"],
             message_constructor_coro=xur_message_constructor,
-            message_announcer_coro=xur_discord_announcer,
+            message_announcer_coro=api_to_discord_announcer,
         )
     )
 

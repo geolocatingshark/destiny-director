@@ -1234,6 +1234,14 @@ class AutoPostSettings(Base):
     async def set_xur(cls, enabled: bool):
         return await cls.set_enabled("xur", enabled)
 
+    @classmethod
+    async def get_gunsmith_enabled(cls):
+        return await cls.get_enabled("gunsmith")
+
+    @classmethod
+    async def set_gunsmith(cls, enabled: bool):
+        return await cls.set_enabled("gunsmith", enabled)
+
 
 class BungieCredentials(Base):
     __tablename__ = "bungie_credentials"
