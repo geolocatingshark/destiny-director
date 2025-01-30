@@ -7,6 +7,7 @@ import lightbulb as lb
 from hmessage import HMessage as MessagePrototype
 
 from ..common import cfg, schemas
+from ..common.utils import fetch_emoji_dict
 from ..sector_accounting import sector_accounting
 from . import utils
 from .utils import (
@@ -113,13 +114,6 @@ def format_counts(
     )
 
 
-async def get_emoji_dict(bot: lb.BotApp):
-    guild = bot.cache.get_guild(
-        cfg.kyber_discord_server_id
-    ) or await bot.rest.fetch_guild(cfg.kyber_discord_server_id)
-    return {emoji.name: emoji for emoji in await guild.fetch_emojis()}
-
-
 async def format_sector(
     bot: lb.BotApp | None = None,
     sector: sector_accounting.Sector | None = None,
@@ -157,7 +151,7 @@ async def format_sector(
     if emoji_dict is None:
         if bot is None:
             raise ValueError("bot must be provided if emoji_dict is not")
-        emoji_dict = await get_emoji_dict(bot)
+        emoji_dict = await fetch_emoji_dict(bot)
 
     if sector is None:
         sector: sector_accounting.Sector = sector_accounting.Rotation.from_gspread_url(

@@ -6,7 +6,16 @@ import aiohttp
 import hikari as h
 import regex as re
 
+from . import cfg
+
 re_user_side_emoji = re.compile(r"(<a?)?:(\w+)(~\d)*:(\d+>)?")
+
+
+async def fetch_emoji_dict(bot: h.GatewayBot):
+    guild = bot.cache.get_guild(
+        cfg.kyber_discord_server_id
+    ) or await bot.rest.fetch_guild(cfg.kyber_discord_server_id)
+    return {emoji.name: emoji for emoji in await guild.fetch_emojis()}
 
 
 def construct_emoji_substituter(

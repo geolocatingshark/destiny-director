@@ -56,7 +56,7 @@ async def get_channels(
 )
 @lb.implements(lb.SlashSubCommand)
 async def legacy_follow(ctx: lb.Context, source: h.GuildChannel, prefix: str):
-    if not ctx.author.id in await ctx.bot.fetch_owner_ids():
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
         return
 
     bot: CachedFetchBot = ctx.app
@@ -84,7 +84,7 @@ async def legacy_follow(ctx: lb.Context, source: h.GuildChannel, prefix: str):
 )
 @lb.implements(lb.SlashSubCommand)
 async def legacy_unfollow(ctx: lb.Context, source: h.GuildChannel, prefix: str):
-    if not ctx.author.id in await ctx.bot.fetch_owner_ids():
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
         return
 
     bot: CachedFetchBot = ctx.app
@@ -112,7 +112,7 @@ async def legacy_unfollow(ctx: lb.Context, source: h.GuildChannel, prefix: str):
 )
 @lb.implements(lb.SlashSubCommand)
 async def create_channels_in_category(ctx: lb.Context, prefix: str, number: int):
-    if not ctx.author.id in await ctx.bot.fetch_owner_ids():
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
         return
 
     guild = ctx.get_guild() or await ctx.app.rest.fetch_guild(ctx.guild_id)
@@ -138,7 +138,7 @@ async def create_channels_in_category(ctx: lb.Context, prefix: str, number: int)
 )
 @lb.implements(lb.SlashSubCommand)
 async def delete_channels_in_category(ctx: lb.Context, prefix: str):
-    if not ctx.author.id in await ctx.bot.fetch_owner_ids():
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
         return
 
     bot: lb.BotApp = ctx.app

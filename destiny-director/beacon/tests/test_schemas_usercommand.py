@@ -16,7 +16,6 @@
 import asyncio
 
 import pytest
-import sqlalchemy as sql
 
 from ...common import schemas
 from ...common.schemas import UserCommand

@@ -4,9 +4,11 @@ import lightbulb as lb
 from hmessage import HMessage
 
 from ..common import cfg, schemas
+from ..common.utils import fetch_emoji_dict
 from . import bungie_api as api
 from . import xur
 from .autopost import make_autopost_control_commands
+from .embeds import substitute_user_side_emoji
 
 
 async def gunsmith_message_constructor(bot: lb.BotApp) -> HMessage:
@@ -17,7 +19,7 @@ async def gunsmith_message_constructor(bot: lb.BotApp) -> HMessage:
 
 
 async def format_gunsmith_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
-    emoji_dict = await xur.fetch_emoji_dict(bot)
+    emoji_dict = await fetch_emoji_dict(bot)
 
     # Sale items with a cost are the featured items for banshee / gunsmith
     # on that day. We want featured items that are also weapons
@@ -30,6 +32,7 @@ async def format_gunsmith_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
     description += xur.legendary_weapons_fragment(
         featured_weapons, emoji_include_list=emoji_dict.keys(), include_title=""
     )
+    description = await substitute_user_side_emoji(emoji_dict, description)
 
     message = HMessage(
         embeds=[

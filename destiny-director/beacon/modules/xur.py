@@ -20,7 +20,6 @@ import hikari as h
 import lightbulb as lb
 import regex as re
 from hmessage import HMessage as MessagePrototype
-from hmessage import MultiImageEmbedList
 
 from ...common import cfg
 from ...common.utils import accumulate

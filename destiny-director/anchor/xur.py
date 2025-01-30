@@ -27,7 +27,7 @@ import regex as re
 from hmessage import HMessage
 
 from ..common import cfg, schemas
-from ..common.utils import accumulate
+from ..common.utils import accumulate, fetch_emoji_dict
 from ..sector_accounting import xur as xur_support_data
 from . import bungie_api as api
 from . import utils
@@ -170,14 +170,14 @@ def weapon_line_format(
 
     weapon_line = f"**{weapon_line}**"
 
+    if include_lightgg_link:
+        weapon_line = f"[{weapon_line}]({weapon.lightgg_url})"
+
     if emoji_include_list:
         if weapon.expected_emoji_name in emoji_include_list:
             weapon_line = f":{weapon.expected_emoji_name}: {weapon_line}"
         else:
             weapon_line = f":{default_emoji}: {weapon_line}"
-
-    if include_lightgg_link:
-        weapon_line = f"[{weapon_line}]({weapon.lightgg_url})"
 
     if include_perks:
         if callable(include_perks):
@@ -355,15 +355,6 @@ def xurfboard_sparrow_fragment():
 XUR_FOOTER = """\n\n[**View More**](https://kyber3000.com/D2-Xur) ↗ 
 
 Have a great weekend! :gscheer:"""
-
-
-async def fetch_emoji_dict(bot: lb.BotApp):
-    guild = bot.cache.get_guild(
-        cfg.kyber_discord_server_id
-    ) or await bot.rest.fetch_guild(cfg.kyber_discord_server_id)
-
-    emoji_dict = {emoji.name: emoji for emoji in await guild.fetch_emojis()}
-    return emoji_dict
 
 
 async def format_xur_vendor(
