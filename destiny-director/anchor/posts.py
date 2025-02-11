@@ -13,6 +13,8 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+import logging
+
 import hikari as h
 import lightbulb as lb
 
@@ -39,7 +41,29 @@ async def create_post(ctx: lb.Context):
         return await ctx.respond("You are not an admin")
 
     embed = await build_embed_with_user(ctx, done_button_text="Post")
-    await ctx.get_channel().send(embed)
+    try:
+        await ctx.get_channel().send(embed)
+    except h.ForbiddenError as e:
+        await ctx.edit_last_response(
+            "**orbiddenError**: It looks like I do not have permission to send messages here"
+        )
+        logging.exception(e)
+    except h.BadRequestError as e:
+        await ctx.edit_last_response(
+            "**BadRequestError**: It looks like the embed is either too large, has "
+            + "too many attachments, has attachments that are too large, or has "
+            + "exceeded some other limit. See description from documentation below:"
+            + "\n"
+            + "```\n"
+            + "This may be raised in several discrete situations, such as messages "
+            + "being empty with no attachments or embeds; messages with more than "
+            + "2000 characters in them, embeds that exceed one of the many embed "
+            + "limits; too many attachments; attachments that are too large; invalid "
+            + "image URLs in embeds; reply not found or not in the same channel; too "
+            + "many components.\n"
+            + "```\n"
+        )
+        logging.exception(e)
 
 
 @lb.command(
