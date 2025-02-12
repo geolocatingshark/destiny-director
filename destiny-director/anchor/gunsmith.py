@@ -34,15 +34,15 @@ async def format_gunsmith_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
     )
     description = await substitute_user_side_emoji(emoji_dict, description)
 
-    message = HMessage(
-        embeds=[
-            h.Embed(
-                description=description,
-                color=h.Color(cfg.embed_default_color),
-                url="https://kyberscorner.com",
-            )
-        ]
+    embed = h.Embed(
+        description=description,
+        color=h.Color(cfg.embed_default_color),
+        url="https://kyberscorner.com",
     )
+
+    embed.set_image(cfg.gunsmith_image_url)
+
+    message = HMessage(embeds=[embed])
     return message
 
 

@@ -200,6 +200,9 @@ gsheets_credentials = _sheets_credentials(
 )
 sheets_ls_url = _getenv("SHEETS_LS_URL")
 
+# Static Images / Resources
+gunsmith_image_url = _getenv("GUNSMITH_IMAGE_URL")
+
 # Bungie credentials
 bungie_api_key = _getenv("BUNGIE_API_KEY", optional=True)
 bungie_client_id = _getenv("BUNGIE_CLIENT_ID", optional=True)
