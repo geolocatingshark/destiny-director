@@ -1,7 +1,7 @@
 data "external_schema" "sqlalchemy" {
   program = [
     "python",
-    "destiny-director/common/schemas.py",
+    "dd/common/schemas.py",
     "--print-ddl"
   ]
 }

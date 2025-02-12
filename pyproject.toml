@@ -1,11 +1,11 @@
 [tool.poetry]
-name = "destiny-director"
+name = "dd"
 version = "1.0.0"
 description = ""
 authors = ["geolocatingshark <geolocatingshark@gmail.com>"]
 license = "GNU AGPL-3.0-or-later"
 readme = "README.md"
-packages = [{ include = "destiny-director" }]
+packages = [{ include = "dd" }]
 
 [tool.poetry.dependencies]
 aiocron = "^1.8"

@@ -28,10 +28,10 @@ run-anchor-local: .env
 	poetry run honcho start anchor
 
 destroy-schemas: .env
-	$(POETRY_CMD) honcho run python -m destiny-director.common.schemas --destroy-all
+	$(POETRY_CMD) honcho run python -m dd.common.schemas --destroy-all
 
 create-schemas: .env
-	$(POETRY_CMD) honcho run python -m destiny-director.common.schemas --create-all
+	$(POETRY_CMD) honcho run python -m dd.common.schemas --create-all
 
 atlas-migration-plan: .env
 	$(POETRY_CMD) honcho run atlas migrate diff --env sqlalchemy
