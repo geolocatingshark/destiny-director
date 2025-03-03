@@ -18,7 +18,7 @@ import logging
 from random import randint
 from time import perf_counter
 from types import TracebackType
-from typing import Any, Coroutine, Optional, Set, Type
+from typing import Any, Coroutine, Dict, List, Optional, Set, Type
 
 import attr
 import dateparser
@@ -64,24 +64,82 @@ discord_api_semaphore = TimedSemaphore(value=45)
 class KernelWorkTracker:
     """Class to track the progress of all kernels for a particular mirror event"""
 
-    def __init__(self, source_message_id: int):
+    retry_threshold = 3
+
+    def __init__(self, source_message_id: int, target_ids: List[int]):
         self.source_message_id = source_message_id
-        self.marked_for_retry: Set[int] = set()
-        self.marked_completed: Set[int] = set()
+        self._target_ids = set(target_ids)
+        self._tries: Dict[int, int] = {target_id: 0 for target_id in target_ids}
+        self._completed_successfully: Set[int] = set()
+        self._scheduled: Set[int] = set()
 
-    def count_messages_tried_at_least_once(self) -> int:
-        return len(self.marked_for_retry) + len(self.marked_completed)
+    def _report_try(self, target_id: int):
+        self._tries[target_id] += 1
+        self._scheduled.discard(target_id)
 
-    def mark_for_retry(self, id_: int):
-        self.marked_for_retry.add(id_)
+    def report_scheduled(self, target_id: int):
+        self._scheduled.add(target_id)
 
-    def mark_completed(self, id_: int):
-        try:
-            self.marked_for_retry.remove(id_)
-        except KeyError:
-            pass
-        finally:
-            self.marked_completed.add(id_)
+    def report_completed(self, target_id: int):
+        self._report_try(target_id)
+        self._completed_successfully.add(target_id)
+
+    def report_failure(self, target_id: int):
+        self._report_try(target_id)
+
+    @property
+    def failed_targets(self) -> Set[int]:
+        "IDs that have failed more than the retry threshold and will not be retried"
+        return set(
+            [
+                target_id
+                for target_id, tries in self._tries.items()
+                if tries >= self.retry_threshold
+            ]
+        )
+
+    @property
+    def scheduled_targets(self) -> Set[int]:
+        return self._scheduled
+
+    @property
+    def successful_targets(self) -> Set[int]:
+        return self._completed_successfully
+
+    @property
+    def targets_tried_at_least_once(self) -> Set[int]:
+        return set([target for target, tries_ in self._tries.items() if tries_ > 0])
+
+    @property
+    def targets_not_yet_tried(self) -> Set[int]:
+        return set([target for target, tries_ in self._tries.items() if tries_ == 0])
+
+    @property
+    def is_every_target_tried(self) -> bool:
+        return len(self.targets_tried_at_least_once) == len(self._target_ids)
+
+    @property
+    def targets_to_schedule_for_retry(self) -> Set[int]:
+        return (
+            self._target_ids
+            - self.failed_targets
+            - self.successful_targets
+            - self.scheduled_targets
+        )
+
+    @property
+    def targets_being_retried(self) -> Set[int]:
+        return self.targets_tried_at_least_once - (
+            self.failed_targets | self.successful_targets
+        )
+
+    @property
+    def targets_scheduled_for_first_try(self) -> Set[int]:
+        return self.targets_not_yet_tried.intersection(self.scheduled_targets)
+
+    @property
+    def is_nothing_left_to_do(self) -> bool:
+        return not self.targets_to_schedule_for_retry and not self.scheduled_targets
 
 
 @attr.s
@@ -123,45 +181,88 @@ def _get_message_summary(msg: h.Message, default: str = "Link") -> str:
     return summary
 
 
+async def _continue_logging_mirror_progress_till_completion(
+    log_message: h.Message, tracker: KernelWorkTracker, start_time: float
+):
+    COMPLETED = 2
+    RETRYING = 3
+    FAILED = 4
+    REMAINING = 5
+    TIME_TAKEN = 6
+    TIME_TAKE_TO_TRY_ALL_ONCE = 7
+
+    while True:
+        tries = 0
+        final_update = tracker.is_nothing_left_to_do
+        while (tries < 1) or final_update:
+            try:
+                time_taken = round(perf_counter() - start_time, 2)
+                time_taken = (
+                    f"{time_taken} seconds"
+                    if time_taken < 60
+                    else f"{time_taken // 60} minutes {round(time_taken % 60, 2)} seconds"
+                )
+
+                embed = log_message.embeds[0]
+                embed.edit_field(
+                    COMPLETED, h.UNDEFINED, str(len(tracker.successful_targets))
+                )
+                embed.edit_field(
+                    RETRYING, h.UNDEFINED, str(len(tracker.targets_being_retried))
+                )
+                embed.edit_field(FAILED, h.UNDEFINED, str(len(tracker.failed_targets)))
+                embed.edit_field(
+                    REMAINING,
+                    h.UNDEFINED,
+                    str(len(tracker.targets_not_yet_tried)),
+                )
+                embed.edit_field(TIME_TAKEN, h.UNDEFINED, str(time_taken))
+                if (
+                    tracker.is_every_target_tried
+                    and embed.fields[TIME_TAKE_TO_TRY_ALL_ONCE].value == "TBC"
+                ):
+                    embed.edit_field(
+                        TIME_TAKE_TO_TRY_ALL_ONCE, h.UNDEFINED, str(time_taken)
+                    )
+
+                if tracker.failed_targets:
+                    embed.color = cfg.embed_error_color
+
+                if tracker.is_nothing_left_to_do:
+                    embed.set_footer(
+                        text="✅ Completed"
+                        + (" with errors" if tracker.failed_targets else ""),
+                    )
+
+                await log_message.edit(embeds=[embed])
+
+                if final_update:
+                    return
+
+            except Exception as e:
+                e.add_note("Failed to log mirror progress due to exception\n")
+                logging.exception(e)
+                tries += 1
+                await aio.sleep(5**tries)
+            else:
+                await aio.sleep(5)  # Wait 5 seconds between updates
+                break
+
+
 async def log_mirror_progress_to_discord(
     bot: bot.CachedFetchBot,
-    successes: int,
-    retries: int,
-    failures: int,
-    pending: int,
+    tracker: KernelWorkTracker,
     source_message: h.Message | None,
     start_time: float,
     title: Optional[str] = "Mirror progress",
-    existing_message: Optional[int | h.Message] = None,
     source_channel: Optional[h.GuildChannel] = None,
-    is_completed: Optional[bool] = False,
-    tried_all_once: Optional[bool] = False,
 ):
-    if existing_message and not is_completed:
-        max_tries: int = 1
-    else:
-        # If this is the first or the completion message
-        # retry forever
-        max_tries: int = -1
-
     tries = 0
-    while tries != max_tries:
+    while True:
         try:
             log_channel: h.TextableGuildChannel = await bot.fetch_channel(
                 cfg.log_channel
             )
-
-            COMPLETED = 2
-            RETRYING = 3
-            FAILED = 4
-            REMAINING = 5
-            TIME_TAKEN = 6
-            TRIED_ALL_ONCE_TIME = 7
-
-            if isinstance(existing_message, int):
-                existing_message = await bot.fetch_message(
-                    log_channel, existing_message
-                )
 
             time_taken = round(perf_counter() - start_time, 2)
             time_taken = (
@@ -170,101 +271,94 @@ async def log_mirror_progress_to_discord(
                 else f"{time_taken // 60} minutes {round(time_taken % 60, 2)} seconds"
             )
 
-            if not existing_message:
-                if source_channel or source_message:
-                    source_channel: h.TextableGuildChannel = (
-                        await bot.fetch_channel(source_message.channel_id)
-                        if not source_channel
-                        else (
-                            source_channel
-                            if isinstance(source_channel, h.GuildChannel)
-                            else await bot.fetch_channel(source_channel)
-                        )
+            if source_channel or source_message:
+                source_channel: h.TextableGuildChannel = (
+                    await bot.fetch_channel(source_message.channel_id)
+                    if not source_channel
+                    else (
+                        source_channel
+                        if isinstance(source_channel, h.GuildChannel)
+                        else await bot.fetch_channel(source_channel)
                     )
-
-                if source_channel:
-                    source_guild = await bot.fetch_guild(source_channel.guild_id)
-                    source_message_link = source_message.make_link(source_guild)
-                else:
-                    source_message_link = ""
-
-                if source_message:
-                    source_message_summary = _get_message_summary(source_message)
-                else:
-                    source_message_summary = "Unknown"
-
-                if source_channel:
-                    source_channel_link = (
-                        "https://discord.com/channels/"
-                        + str(source_channel.guild_id)
-                        + "/"
-                        + str(source_channel.id)
-                    )
-
-                embed = h.Embed(color=cfg.embed_default_color, title=title)
-                embed.add_field(
-                    "Source message",
-                    f"[{source_message_summary}]({source_message_link})"
-                    if source_message_link
-                    else source_message_summary,
-                    inline=True,
-                ).add_field(
-                    "Source channel",
-                    f"[{source_channel.name}]({source_channel_link})"
-                    if source_channel
-                    else "Unknown",
-                    inline=True,
-                ).add_field("Completed", str(successes), inline=True).add_field(
-                    "Retrying", str(retries), inline=True
-                ).add_field("Failed", str(failures), inline=True).add_field(
-                    "Remaining", str(pending), inline=True
-                ).add_field("Time taken", f"{time_taken}").add_field(
-                    "Time to try all channels once",
-                    time_taken if tried_all_once else "TBC",
                 )
 
-                if source_message:
-                    if source_message.embeds and source_message.embeds[0].image:
-                        embed.set_thumbnail(source_message.embeds[0].image.url)
-                    elif source_message.attachments and source_message.attachments[
-                        0
-                    ].media_type.startswith("image"):
-                        embed.set_thumbnail(source_message.attachments[0].url)
-
-                if is_completed:
-                    embed.set_footer(
-                        text="✅ Completed",
-                    )
-                else:
-                    embed.set_footer(
-                        text="⏳ In progress",
-                    )
-
-                return await log_channel.send(embed)
+            if source_channel:
+                source_guild = await bot.fetch_guild(source_channel.guild_id)
+                source_message_link = source_message.make_link(source_guild)
             else:
-                embed = existing_message.embeds[0]
-                embed.edit_field(COMPLETED, h.UNDEFINED, str(successes))
-                embed.edit_field(RETRYING, h.UNDEFINED, str(retries))
-                embed.edit_field(FAILED, h.UNDEFINED, str(failures))
-                embed.edit_field(REMAINING, h.UNDEFINED, str(pending))
-                embed.edit_field(TIME_TAKEN, h.UNDEFINED, str(time_taken))
-                if tried_all_once and embed.fields[TRIED_ALL_ONCE_TIME].value == "TBC":
-                    embed.edit_field(TRIED_ALL_ONCE_TIME, h.UNDEFINED, str(time_taken))
+                source_message_link = ""
 
-                if failures > 0:
-                    embed.color = cfg.embed_error_color
+            if source_message:
+                source_message_summary = _get_message_summary(source_message)
+            else:
+                source_message_summary = "Unknown"
 
-                if is_completed:
-                    embed.set_footer(
-                        text="✅ Completed" + (" with errors" if failures > 0 else ""),
-                    )
+            if source_channel:
+                source_channel_link = (
+                    "https://discord.com/channels/"
+                    + str(source_channel.guild_id)
+                    + "/"
+                    + str(source_channel.id)
+                )
 
-                return await existing_message.edit(embeds=[embed])
+            embed = h.Embed(color=cfg.embed_default_color, title=title)
+            embed.add_field(
+                "Source message",
+                f"[{source_message_summary}]({source_message_link})"
+                if source_message_link
+                else source_message_summary,
+                inline=True,
+            ).add_field(
+                "Source channel",
+                f"[{source_channel.name}]({source_channel_link})"
+                if source_channel
+                else "Unknown",
+                inline=True,
+            ).add_field(
+                "Completed", str(len(tracker.successful_targets)), inline=True
+            ).add_field(
+                "Retrying", str(len(tracker.targets_being_retried)), inline=True
+            ).add_field(
+                "Failed", str(len(tracker.failed_targets)), inline=True
+            ).add_field(
+                "Remaining",
+                str(len(tracker.targets_not_yet_tried)),
+                inline=True,
+            ).add_field("Time taken", f"{time_taken}").add_field(
+                "Time to try all channels once",
+                time_taken if tracker.is_every_target_tried else "TBC",
+            )
+
+            if source_message:
+                if source_message.embeds and source_message.embeds[0].image:
+                    embed.set_thumbnail(source_message.embeds[0].image.url)
+                elif source_message.attachments and source_message.attachments[
+                    0
+                ].media_type.startswith("image"):
+                    embed.set_thumbnail(source_message.attachments[0].url)
+
+            if tracker.is_nothing_left_to_do:
+                embed.set_footer(
+                    text="✅ Completed",
+                )
+            else:
+                embed.set_footer(
+                    text="⏳ In progress",
+                )
+
+            log_message = await log_channel.send(embed)
+            break
         except Exception as e:
             e.add_note("Failed to log mirror progress due to exception\n")
             logging.exception(e)
             tries += 1
             await aio.sleep(5**tries)
+
+    aio.create_task(
+        _continue_logging_mirror_progress_till_completion(
+            log_message, tracker, start_time
+        )
+    )
 
 
 def ignore_non_src_channels(func):
@@ -358,7 +452,11 @@ async def message_create_repeater_impl(
     # edit very close to the crosspost event
     msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
 
-    kernel_work_tracker = KernelWorkTracker(msg.id)
+    mirrors = await MirroredChannel.fetch_dests(channel.id)
+    # Always guard against infinite loops through posting to the source channel
+    mirrors = list(filter(lambda x: x != channel.id, mirrors))
+
+    kernel_work_tracker = KernelWorkTracker(msg.id, target_ids=mirrors)
     mirror_start_time = perf_counter()
 
     # Remove discord auto image embeds
@@ -370,6 +468,7 @@ async def message_create_repeater_impl(
         delay: int = 0,
         kernel_work_tracker=kernel_work_tracker,
     ) -> KernelWorkDone:
+        kernel_work_tracker.report_scheduled(mirror_ch_id)
         await aio.sleep(delay)
 
         try:
@@ -393,7 +492,7 @@ async def message_create_repeater_impl(
                 + "due to exception\n"
             )
             logging.exception(e)
-            kernel_work_tracker.mark_for_retry(mirror_ch_id)
+            kernel_work_tracker.report_failure(mirror_ch_id)
             return KernelWorkDone(
                 source_message_id=msg.id,
                 dest_channel_id=mirror_ch_id,
@@ -401,7 +500,7 @@ async def message_create_repeater_impl(
                 retries=current_retries,
             )
         else:
-            kernel_work_tracker.mark_completed(mirror_ch_id)
+            kernel_work_tracker.report_completed(mirror_ch_id)
 
         if isinstance(channel, h.GuildNewsChannel):
             # If the channel is a news channel then crosspost the message as well
@@ -437,21 +536,14 @@ async def message_create_repeater_impl(
             retries=current_retries,
         )
 
-    mirrors = await MirroredChannel.fetch_dests(channel.id)
-    # Always guard against infinite loops through posting to the source channel
-    mirrors = list(filter(lambda x: x != channel.id, mirrors))
-
     announce_jobs = [aio.create_task(kernel(mirror_ch_id)) for mirror_ch_id in mirrors]
     return_in = 5  # seconds
     max_retries = 2
-    log_message: h.Message = await log_mirror_progress_to_discord(
-        bot,
-        0,
-        0,
-        0,
-        len(mirrors),
-        msg,
-        mirror_start_time,
+    await log_mirror_progress_to_discord(
+        bot=bot,
+        tracker=kernel_work_tracker,
+        source_message=msg,
+        start_time=mirror_start_time,
         title="Mirror (send) progress",
     )
 
@@ -525,21 +617,6 @@ async def message_create_repeater_impl(
         successes.extend(successes_to_log)
         failures.extend(failures_to_log)
 
-        log_message = await log_mirror_progress_to_discord(
-            bot,
-            len(successes),
-            len(to_retry),
-            len(failures),
-            len(pending),
-            msg,
-            mirror_start_time,
-            existing_message=log_message,
-            is_completed=not (bool(pending) or bool(to_retry)),
-            tried_all_once=(
-                len(mirrors) == kernel_work_tracker.count_messages_tried_at_least_once()
-            ),
-        )
-
         announce_jobs = pending | set(
             aio.create_task(
                 kernel(
@@ -596,7 +673,9 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
         else:
             break
 
-    kernel_work_tracker = KernelWorkTracker(msg.id)
+    kernel_work_tracker = KernelWorkTracker(
+        msg.id, [dest_msg_id for dest_msg_id, channel_id in msgs_to_update]
+    )
     mirror_start_time = perf_counter()
 
     # Fetch message again since update events aren't guaranteed to
@@ -613,6 +692,7 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
         delay: int = 0,
         kernel_work_tracker=kernel_work_tracker,
     ) -> None | KernelWorkDone:
+        kernel_work_tracker.report_scheduled(msg_id)
         await aio.sleep(delay)
 
         try:
@@ -631,12 +711,12 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
                 + "due to exception\n"
             )
             logging.exception(e)
-            kernel_work_tracker.mark_for_retry(channel_id)
+            kernel_work_tracker.report_failure(msg_id)
             return KernelWorkDone(
                 msg_id, channel_id, exception=e, retries=current_retries
             )
         else:
-            kernel_work_tracker.mark_completed(channel_id)
+            kernel_work_tracker.report_completed(msg_id)
             return KernelWorkDone(
                 msg_id, channel_id, dest_msg.id, retries=current_retries
             )
@@ -648,15 +728,12 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
 
     return_in = 15  # seconds
     max_retries = 2
-    log_message: h.Message = await log_mirror_progress_to_discord(
-        bot,
-        0,
-        0,
-        0,
-        len(msgs_to_update),
-        msg,
-        mirror_start_time,
-        title="Mirror update progress",
+    await log_mirror_progress_to_discord(
+        bot=bot,
+        tracker=kernel_work_tracker,
+        source_message=msg,
+        start_time=mirror_start_time,
+        title="Mirror (send) progress",
     )
 
     successes = []
@@ -689,22 +766,6 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
                 # If the result is not an exception
                 # then we add it to the successes list
                 successes.append(result)
-
-        log_message = await log_mirror_progress_to_discord(
-            bot,
-            len(successes),
-            len(to_retry),
-            len(failures),
-            len(pending),
-            msg,
-            mirror_start_time,
-            existing_message=log_message,
-            is_completed=not (bool(pending) or bool(to_retry)),
-            tried_all_once=(
-                len(msgs_to_update)
-                == kernel_work_tracker.count_messages_tried_at_least_once()
-            ),
-        )
 
         announce_jobs = pending | set(
             aio.create_task(
@@ -755,7 +816,9 @@ async def message_delete_repeater_impl(
         else:
             break
 
-    kernel_work_tracker = KernelWorkTracker(msg_id)
+    kernel_work_tracker = KernelWorkTracker(
+        msg_id, target_ids=[dest_msg_id for dest_msg_id, channel_id in msgs_to_delete]
+    )
     mirror_start_time = perf_counter()
 
     async def kernel(
@@ -765,6 +828,7 @@ async def message_delete_repeater_impl(
         delay: int = 0,
         kernel_work_tracker=kernel_work_tracker,
     ) -> None | KernelWorkDone:
+        kernel_work_tracker.report_scheduled(msg_id)
         await aio.sleep(delay)
 
         try:
@@ -779,12 +843,12 @@ async def message_delete_repeater_impl(
                 + "due to exception\n"
             )
             logging.exception(e)
-            kernel_work_tracker.mark_for_retry(channel_id)
+            kernel_work_tracker.report_failure(msg_id)
             return KernelWorkDone(
                 msg_id, channel_id, exception=e, retries=current_retries
             )
         else:
-            kernel_work_tracker.mark_completed(channel_id)
+            kernel_work_tracker.report_completed(msg_id)
             return KernelWorkDone(
                 msg_id, channel_id, dest_msg.id, retries=current_retries
             )
@@ -796,16 +860,12 @@ async def message_delete_repeater_impl(
 
     return_in = 10  # seconds
     max_retries = 2
-    log_message: h.Message = await log_mirror_progress_to_discord(
-        bot,
-        0,
-        0,
-        0,
-        len(msgs_to_delete),
-        msg,
-        mirror_start_time,
-        source_channel=msg.channel_id if msg else None,
-        title="Mirror delete progress",
+    await log_mirror_progress_to_discord(
+        bot=bot,
+        tracker=kernel_work_tracker,
+        source_message=msg,
+        start_time=mirror_start_time,
+        title="Mirror (send) progress",
     )
 
     successes = []
@@ -838,25 +898,6 @@ async def message_delete_repeater_impl(
                 # If the result is not an exception
                 # then we add it to the successes list
                 successes.append(result)
-
-        tried_all_once: bool = True
-        for pending_task in pending:
-            if pending_task.retries == 0:
-                tried_all_once = False
-                break
-
-        log_message = await log_mirror_progress_to_discord(
-            bot,
-            len(successes),
-            len(to_retry),
-            len(failures),
-            len(pending),
-            None,
-            mirror_start_time,
-            existing_message=log_message,
-            is_completed=not (bool(pending) or bool(to_retry)),
-            tried_all_once=tried_all_once,
-        )
 
         announce_jobs = pending | set(
             aio.create_task(
