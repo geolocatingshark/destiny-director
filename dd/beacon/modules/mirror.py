@@ -546,7 +546,7 @@ async def message_create_repeater_impl(
                 )
         except Exception as e:
             e.add_note(
-                f"Scheduling retry for message-send to channel {ch_id} "
+                f"Asking control for a retry for message-send to channel {ch_id} "
                 + "due to exception\n"
             )
             logging.exception(e)
@@ -691,7 +691,7 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
                 )
         except Exception as e:
             e.add_note(
-                f"Scheduling retry for message-update to channel {ch_id} "
+                f"Asking control for a retry for message-update to channel {ch_id} "
                 + "due to exception\n"
             )
             logging.exception(e)
@@ -763,7 +763,7 @@ async def message_delete_repeater_impl(
 
         except Exception as e:
             e.add_note(
-                f"Scheduling retry for message-delete to channel {ch_id} "
+                f"Asking control for a retry for message-delete to channel {ch_id} "
                 + "due to exception\n"
             )
             logging.exception(e)
