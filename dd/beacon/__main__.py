@@ -49,6 +49,7 @@ bot = Bot(
 
 
 logwood.compat.redirect_standard_logging()
+logwood.basic_config()
 aiodebug.log_slow_callbacks.enable(0.05)
 
 
