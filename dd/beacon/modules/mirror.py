@@ -18,9 +18,8 @@ import logging
 from random import randint
 from time import perf_counter
 from types import TracebackType
-from typing import Any, Coroutine, Dict, List, Optional, Set, Type
+from typing import Any, Callable, Coroutine, Dict, Optional, Type
 
-import attr
 import dateparser
 import hikari as h
 import lightbulb as lb
@@ -62,95 +61,142 @@ discord_api_semaphore = TimedSemaphore(value=45)
 
 
 class KernelWorkTracker:
-    """Class to track the progress of all kernels for a particular mirror event"""
+    """Class to track the progress of all kernels for a particular mirror event
 
-    retry_threshold = 3
+    source: Dict[int, int] = {source_channel_id: source_message_id} with size 1
+    targets: Dict[int, Optional[int]] = {target_channel_id: target_message_id}
+    """
 
-    def __init__(self, source_message_id: int, target_ids: List[int]):
-        self.source_message_id = source_message_id
-        self._target_ids = set(target_ids)
-        self._tries: Dict[int, int] = {target_id: 0 for target_id in target_ids}
-        self._completed_successfully: Set[int] = set()
-        self._scheduled: Set[int] = set()
+    def __init__(
+        self,
+        source: Dict[int, int],
+        targets: Dict[int, Optional[int]],
+        retry_threshold: int = 3,
+    ):
+        self.retry_threshold = retry_threshold
+        self.source_channel_id = source.keys().__iter__().__next__()
+        self.source_message_id = source[self.source_channel_id]
+        self._targets = targets
+        self._tries: Dict[int, Optional[int]] = {
+            target_id: 0 for target_id in self._targets.keys()
+        }
+        self._completed_successfully: Dict[int, int] = {}
+        self._scheduled: Dict[int, Optional[int]] = {}
 
-    def _report_try(self, target_id: int):
-        self._tries[target_id] += 1
-        self._scheduled.discard(target_id)
+    def _report_try(self, channel_id: int):
+        self._tries[channel_id] += 1
+        self._scheduled.pop(channel_id)
 
-    def report_scheduled(self, target_id: int):
-        self._scheduled.add(target_id)
+    def report_scheduled(self, channel_id: int, message_id: Optional[int] = None):
+        if channel_id in self._scheduled:
+            e = ValueError(
+                f"Target already scheduled. source_message_id: {self.source_message_id} id:"
+                f"{channel_id}.{self._scheduled[channel_id]} vs incoming: "
+                f"{channel_id}.{message_id}"
+            )
+            logging.exception(e)
+            raise e
+        else:
+            self._scheduled[channel_id] = message_id
 
-    def report_completed(self, target_id: int):
-        self._report_try(target_id)
-        self._completed_successfully.add(target_id)
+    def report_completed(self, channel_id: int, message_id: int):
+        self._report_try(channel_id)
+        self._completed_successfully[channel_id] = message_id
 
-    def report_failure(self, target_id: int):
-        self._report_try(target_id)
+    def report_failure(self, channel_id: int):
+        self._report_try(channel_id)
 
     @property
-    def failed_targets(self) -> Set[int]:
+    def failed_targets(self) -> Dict[int, Optional[int]]:
         "IDs that have failed more than the retry threshold and will not be retried"
-        return set(
-            [
-                target_id
-                for target_id, tries in self._tries.items()
-                if tries >= self.retry_threshold
-            ]
-        )
+        return {
+            channel_id: message_id
+            for channel_id, message_id in self._targets.items()
+            if self._tries[channel_id] >= self.retry_threshold
+        }
 
     @property
-    def scheduled_targets(self) -> Set[int]:
-        return self._scheduled
-
-    @property
-    def successful_targets(self) -> Set[int]:
+    def successful_targets(self) -> Dict[int, int]:
         return self._completed_successfully
 
     @property
-    def targets_tried_at_least_once(self) -> Set[int]:
-        return set([target for target, tries_ in self._tries.items() if tries_ > 0])
+    def _targets_tried_at_least_once(self) -> Dict[int, Optional[int]]:
+        return {
+            target: self._targets[target]
+            for target, tries_ in self._tries.items()
+            if tries_ > 0
+        }
 
     @property
-    def targets_not_yet_tried(self) -> Set[int]:
-        return set([target for target, tries_ in self._tries.items() if tries_ == 0])
+    def targets_not_yet_tried(self) -> Dict[int, Optional[int]]:
+        return {
+            target: self._targets[target]
+            for target, tries_ in self._tries.items()
+            if tries_ == 0
+        }
 
     @property
     def is_every_target_tried(self) -> bool:
-        return len(self.targets_tried_at_least_once) == len(self._target_ids)
+        return len(self._targets_tried_at_least_once) == len(self._targets)
 
     @property
-    def targets_to_schedule_for_retry(self) -> Set[int]:
-        return (
-            self._target_ids
-            - self.failed_targets
-            - self.successful_targets
-            - self.scheduled_targets
-        )
+    def targets_to_schedule(self) -> Dict[int, Optional[int]]:
+        return {
+            channel_id: message_id
+            for channel_id, message_id in self._targets.items()
+            if channel_id not in self._scheduled
+            and channel_id not in self.failed_targets
+            and channel_id not in self.successful_targets
+        }
 
     @property
-    def targets_being_retried(self) -> Set[int]:
-        return self.targets_tried_at_least_once - (
-            self.failed_targets | self.successful_targets
-        )
+    def targets_being_retried(self) -> Dict[int, Optional[int]]:
+        return {
+            channel_id: message_id
+            for channel_id, message_id in self._targets.items()
+            if channel_id in self._targets_tried_at_least_once
+            and channel_id not in self.failed_targets
+            and channel_id not in self.successful_targets
+        }
 
     @property
-    def targets_scheduled_for_first_try(self) -> Set[int]:
-        return self.targets_not_yet_tried.intersection(self.scheduled_targets)
-
-    @property
-    def is_nothing_left_to_do(self) -> bool:
-        return not self.targets_to_schedule_for_retry and not self.scheduled_targets
+    def is_work_left_to_do(self) -> bool:
+        return self.targets_to_schedule or self._scheduled
 
 
-@attr.s
-class KernelWorkDone:
-    """Class to hold the result of a creation kernel"""
+class KernelWorkControl(KernelWorkTracker):
+    def __init__(
+        self,
+        source: Dict[int, int],
+        targets: Dict[int, Optional[int]],
+        kernel: Callable,
+        retry_threshold: int = 3,
+    ):
+        super().__init__(source, targets, retry_threshold=retry_threshold)
+        self._kernel = kernel
 
-    source_message_id: int = attr.ib(converter=int)
-    dest_channel_id: int = attr.ib(converter=int)
-    dest_message_id: int = attr.ib(default=0, converter=int)
-    exception: Exception = attr.ib(default=None)
-    retries: int = attr.ib(default=0, converter=int)
+    @staticmethod
+    async def _kernel(self, ch_id: int, msg_id: int, delay: int = 0):
+        raise NotImplementedError
+
+    async def run_till_completion(self):
+        is_first_loop = True
+        while self.is_work_left_to_do:
+            await aio.wait(
+                [
+                    aio.create_task(
+                        self._kernel(
+                            self,
+                            dest_ch_id,
+                            dest_msg_id,
+                            delay=0 if is_first_loop else randint(180, 300),
+                        )
+                    )
+                    for dest_ch_id, dest_msg_id in self.targets_to_schedule.items()
+                ],
+                return_when=aio.ALL_COMPLETED,
+            )
+            is_first_loop = False
 
 
 def _get_message_summary(msg: h.Message, default: str = "Link") -> str:
@@ -193,7 +239,7 @@ async def _continue_logging_mirror_progress_till_completion(
 
     while True:
         tries = 0
-        final_update = tracker.is_nothing_left_to_do
+        final_update = not tracker.is_work_left_to_do
         while (tries < 1) or final_update:
             try:
                 time_taken = round(perf_counter() - start_time, 2)
@@ -228,7 +274,7 @@ async def _continue_logging_mirror_progress_till_completion(
                 if tracker.failed_targets:
                     embed.color = cfg.embed_error_color
 
-                if tracker.is_nothing_left_to_do:
+                if final_update:
                     embed.set_footer(
                         text="✅ Completed"
                         + (" with errors" if tracker.failed_targets else ""),
@@ -337,7 +383,7 @@ async def log_mirror_progress_to_discord(
                 ].media_type.startswith("image"):
                     embed.set_thumbnail(source_message.attachments[0].url)
 
-            if tracker.is_nothing_left_to_do:
+            if not tracker.is_work_left_to_do:
                 embed.set_footer(
                     text="✅ Completed",
                 )
@@ -394,21 +440,8 @@ def ignore_self(func):
     return wrapped_func
 
 
-@ignore_non_src_channels
-@ignore_self
-async def message_create_repeater(event: h.MessageCreateEvent):
-    await message_create_repeater_impl(
-        event.message,
-        event.app,
-        await event.app.fetch_channel(event.message.channel_id),
-    )
-
-
-async def message_create_repeater_impl(
-    msg: h.Message,
-    bot: bot.CachedFetchBot,
-    channel: h.TextableChannel,
-    wait_for_crosspost: bool = True,
+async def handle_waiting_for_crosspost(
+    msg: h.Message, bot: lb.BotApp, channel: h.TextableChannel, wait_for_crosspost: bool
 ):
     backoff_timer = 30
     while True:
@@ -448,6 +481,31 @@ async def message_create_repeater_impl(
         else:
             break
 
+
+@ignore_non_src_channels
+@ignore_self
+async def message_create_repeater(event: h.MessageCreateEvent):
+    await message_create_repeater_impl(
+        event.message,
+        event.app,
+        await event.app.fetch_channel(event.message.channel_id),
+    )
+
+
+async def message_create_repeater_impl(
+    msg: h.Message,
+    bot: bot.CachedFetchBot,
+    channel: h.TextableChannel,
+    wait_for_crosspost: bool = True,
+):
+    # Wait for message to be crossposted before mirroring if requested
+    await handle_waiting_for_crosspost(
+        msg=msg,
+        bot=bot,
+        channel=channel,
+        wait_for_crosspost=wait_for_crosspost,
+    )
+
     # Fetch the message again to avoid stale date in case there was an
     # edit very close to the crosspost event
     msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
@@ -456,23 +514,23 @@ async def message_create_repeater_impl(
     # Always guard against infinite loops through posting to the source channel
     mirrors = list(filter(lambda x: x != channel.id, mirrors))
 
-    kernel_work_tracker = KernelWorkTracker(msg.id, target_ids=mirrors)
     mirror_start_time = perf_counter()
 
     # Remove discord auto image embeds
     msg.embeds = utils.filter_discord_autoembeds(msg)
 
     async def kernel(
-        mirror_ch_id: int,
-        current_retries: int = 0,
+        tracker: KernelWorkTracker,
+        ch_id: int,
+        msg_id: int = None,
         delay: int = 0,
-        kernel_work_tracker=kernel_work_tracker,
-    ) -> KernelWorkDone:
-        kernel_work_tracker.report_scheduled(mirror_ch_id)
+    ):
+        # NOTE: msg is passed as a closure to the kernel function here
+        tracker.report_scheduled(ch_id)
         await aio.sleep(delay)
 
         try:
-            channel: h.TextableChannel = await bot.fetch_channel(mirror_ch_id)
+            channel: h.TextableChannel = await bot.fetch_channel(ch_id)
 
             if not isinstance(channel, h.TextableChannel):
                 # Ignore non textable channels
@@ -488,19 +546,14 @@ async def message_create_repeater_impl(
                 )
         except Exception as e:
             e.add_note(
-                f"Scheduling retry for message-send to channel {mirror_ch_id} "
+                f"Scheduling retry for message-send to channel {ch_id} "
                 + "due to exception\n"
             )
             logging.exception(e)
-            kernel_work_tracker.report_failure(mirror_ch_id)
-            return KernelWorkDone(
-                source_message_id=msg.id,
-                dest_channel_id=mirror_ch_id,
-                exception=e,
-                retries=current_retries,
-            )
+            tracker.report_failure(ch_id)
+            return
         else:
-            kernel_work_tracker.report_completed(mirror_ch_id)
+            tracker.report_completed(ch_id, mirrored_msg.id)
 
         if isinstance(channel, h.GuildNewsChannel):
             # If the channel is a news channel then crosspost the message as well
@@ -508,7 +561,7 @@ async def message_create_repeater_impl(
             for _ in range(3):
                 try:
                     async with discord_api_semaphore:
-                        await bot.rest.crosspost_message(mirror_ch_id, mirrored_msg.id)
+                        await bot.rest.crosspost_message(ch_id, mirrored_msg.id)
 
                 except Exception as e:
                     if (
@@ -520,7 +573,7 @@ async def message_create_repeater_impl(
                         break
 
                     e.add_note(
-                        f"Failed to crosspost message in channel {mirror_ch_id} "
+                        f"Failed to crosspost message in channel {ch_id} "
                         + "due to exception\n"
                     )
                     logging.exception(e)
@@ -529,112 +582,47 @@ async def message_create_repeater_impl(
                 else:
                     break
 
-        return KernelWorkDone(
-            source_message_id=msg.id,
-            dest_channel_id=mirror_ch_id,
-            dest_message_id=mirrored_msg.id,
-            retries=current_retries,
-        )
-
-    announce_jobs = [aio.create_task(kernel(mirror_ch_id)) for mirror_ch_id in mirrors]
-    return_in = 5  # seconds
-    max_retries = 2
-    await log_mirror_progress_to_discord(
-        bot=bot,
-        tracker=kernel_work_tracker,
-        source_message=msg,
-        start_time=mirror_start_time,
-        title="Mirror (send) progress",
+    control = KernelWorkControl(
+        source={channel.id: msg.id},
+        targets={ch_id: None for ch_id in mirrors},
+        kernel=kernel,
     )
 
-    successes = []
-    failures = []
-    to_retry = []
-    pending = []
+    await log_mirror_progress_to_discord(
+        bot=bot,
+        tracker=control,
+        source_message=msg,
+        start_time=mirror_start_time,
+        title="Mirror send progress",
+    )
 
-    while True:
-        done, pending = await aio.wait(
-            # announce_jobs is set then updated to only contain pending jobs
-            announce_jobs,
-            # Use the timeout to return in a fixed time to update logging and the db
-            timeout=return_in,
-            return_when=aio.ALL_COMPLETED,
-        )
-
-        # Successes and failures to log to db
-        failures_to_log = []
-        successes_to_log = []
-        # Empty the to_retry list
-        to_retry = []
-
-        for task in done:
-            result = task.result()
-            # If the result is an exception
-            if result.exception:
-                if result.retries < max_retries:
-                    # and if we have retries left
-                    # then we add it to the to_retry list
-                    to_retry.append(result)
-                else:
-                    # if we have no retries left
-                    # then we add it to the failures list
-                    # for logging in the db
-                    failures_to_log.append(result)
-            else:
-                # If the result is not an exception
-                # then we add it to the successes list
-                # to be logged in the db
-                successes_to_log.append(result)
-
-        # Log successes, failures and message pairs to the db
-        maybe_exceptions = await aio.gather(
-            MirroredChannel.log_legacy_mirror_failure_in_batch(
-                channel.id,
-                [failure.dest_channel_id for failure in failures_to_log],
-            ),
-            MirroredChannel.log_legacy_mirror_success_in_batch(
-                channel.id,
-                [success.dest_channel_id for success in successes_to_log],
-            ),
-            MirroredMessage.add_msgs_in_batch(
-                dest_msgs=[success.dest_message_id for success in successes_to_log],
-                dest_channels=[success.dest_channel_id for success in successes_to_log],
-                source_msg=msg.id,
-                source_channel=channel.id,
-            ),
-            return_exceptions=True,
-        )
-
-        # Log exceptions working with the db to the console
-        if any(maybe_exceptions):
-            logging.error(
-                "Error logging mirror success/failure in db: "
-                + ", ".join(
-                    [str(exception) for exception in maybe_exceptions if exception]
-                )
-            )
-
-        successes.extend(successes_to_log)
-        failures.extend(failures_to_log)
-
-        announce_jobs = pending | set(
-            aio.create_task(
-                kernel(
-                    job.dest_channel_id,
-                    job.retries + 1,
-                    # Wait for between 3 and 5 minutes before retrying
-                    # to allow for momentary discord outages of particular
-                    # servers
-                    delay=randint(180, 300),
-                )
-            )
-            for job in to_retry
-        )
-
-        if len(announce_jobs) == 0:
-            break
+    await control.run_till_completion()
 
     logging.info("Completed all mirrors in " + str(perf_counter() - mirror_start_time))
+
+    # Log successes, failures and message pairs to the db
+    maybe_exceptions = await aio.gather(
+        MirroredChannel.log_legacy_mirror_failure_in_batch(
+            channel.id, list(control.failed_targets.keys())
+        ),
+        MirroredChannel.log_legacy_mirror_success_in_batch(
+            channel.id, list(control.successful_targets.keys())
+        ),
+        MirroredMessage.add_msgs_in_batch(
+            dest_msgs=list(control.successful_targets.values()),
+            dest_channels=list(control.successful_targets.keys()),
+            source_msg=msg.id,
+            source_channel=channel.id,
+        ),
+        return_exceptions=True,
+    )
+
+    # Log exceptions working with the db to the console
+    if any(maybe_exceptions):
+        logging.error(
+            "Error logging mirror success/failure in db: "
+            + ", ".join([str(exception) for exception in maybe_exceptions if exception])
+        )
 
     # Auto disable persistently failing mirrors
     if cfg.disable_bad_channels:
@@ -673,9 +661,6 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
         else:
             break
 
-    kernel_work_tracker = KernelWorkTracker(
-        msg.id, [dest_msg_id for dest_msg_id, channel_id in msgs_to_update]
-    )
     mirror_start_time = perf_counter()
 
     # Fetch message again since update events aren't guaranteed to
@@ -686,18 +671,17 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
     msg.embeds = utils.filter_discord_autoembeds(msg)
 
     async def kernel(
+        kernel_work_tracker: KernelWorkTracker,
+        ch_id: int,
         msg_id: int,
-        channel_id: int,
-        current_retries: Optional[int] = 0,
         delay: int = 0,
-        kernel_work_tracker=kernel_work_tracker,
-    ) -> None | KernelWorkDone:
-        kernel_work_tracker.report_scheduled(msg_id)
+    ):
+        kernel_work_tracker.report_scheduled(ch_id, msg_id)
         await aio.sleep(delay)
 
         try:
             async with discord_api_semaphore:
-                dest_msg = await bot.fetch_message(channel_id, msg_id)
+                dest_msg = await bot.fetch_message(ch_id, msg_id)
             async with discord_api_semaphore:
                 await dest_msg.edit(
                     msg.content,
@@ -707,86 +691,30 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
                 )
         except Exception as e:
             e.add_note(
-                f"Scheduling retry for message-update to channel {channel_id} "
+                f"Scheduling retry for message-update to channel {ch_id} "
                 + "due to exception\n"
             )
             logging.exception(e)
-            kernel_work_tracker.report_failure(msg_id)
-            return KernelWorkDone(
-                msg_id, channel_id, exception=e, retries=current_retries
-            )
+            kernel_work_tracker.report_failure(ch_id)
         else:
-            kernel_work_tracker.report_completed(msg_id)
-            return KernelWorkDone(
-                msg_id, channel_id, dest_msg.id, retries=current_retries
-            )
+            kernel_work_tracker.report_completed(ch_id, msg_id)
 
-    announce_jobs = [
-        aio.create_task(kernel(msg_id, channel_id))
-        for msg_id, channel_id in msgs_to_update
-    ]
-
-    return_in = 15  # seconds
-    max_retries = 2
-    await log_mirror_progress_to_discord(
-        bot=bot,
-        tracker=kernel_work_tracker,
-        source_message=msg,
-        start_time=mirror_start_time,
-        title="Mirror (send) progress",
+    control = KernelWorkControl(
+        source={msg.channel_id: msg.id},
+        targets={channel_id: dest_msg_id for dest_msg_id, channel_id in msgs_to_update},
+        retry_threshold=2,
+        kernel=kernel,
     )
 
-    successes = []
-    to_retry = []
-    failures = []
-    while True:
-        done, pending = await aio.wait(
-            announce_jobs,
-            timeout=return_in,
-            return_when=aio.ALL_COMPLETED,
-        )
+    await log_mirror_progress_to_discord(
+        bot=bot,
+        tracker=control,
+        source_message=msg,
+        start_time=mirror_start_time,
+        title="Mirror update progress",
+    )
 
-        # Empty the to_retry list
-        to_retry = []
-
-        for task in done:
-            result: KernelWorkDone = task.result()
-            # If the result is an exception
-            if result.exception:
-                if result.retries < max_retries:
-                    # and if we have retries left
-                    # then we add it to the to_retry list
-                    to_retry.append(result)
-                else:
-                    # if we have no retries left
-                    # then we add it to the failures list
-                    # for logging only to the console
-                    failures.append(result)
-            else:
-                # If the result is not an exception
-                # then we add it to the successes list
-                successes.append(result)
-
-        announce_jobs = pending | set(
-            aio.create_task(
-                kernel(
-                    job.source_message_id,
-                    job.dest_channel_id,
-                    job.retries + 1,
-                    # Wait for between 10 and 30 minutes before retrying
-                    # to allow for momentary discord outages of particular
-                    # servers
-                    # This delay is longer than the ones for create and delete
-                    # since in case we hit an edit rate limit, it will be much
-                    # longer before we can retry generally
-                    delay=randint(600, 1800),
-                )
-            )
-            for job in to_retry
-        )
-
-        if len(announce_jobs) == 0:
-            break
+    await control.run_till_completion()
 
 
 @ignore_non_src_channels
@@ -816,106 +744,49 @@ async def message_delete_repeater_impl(
         else:
             break
 
-    kernel_work_tracker = KernelWorkTracker(
-        msg_id, target_ids=[dest_msg_id for dest_msg_id, channel_id in msgs_to_delete]
-    )
     mirror_start_time = perf_counter()
 
     async def kernel(
+        tracker,
+        ch_id: int,
         msg_id: int,
-        channel_id: int,
-        current_retries: Optional[int] = 0,
         delay: int = 0,
-        kernel_work_tracker=kernel_work_tracker,
-    ) -> None | KernelWorkDone:
-        kernel_work_tracker.report_scheduled(msg_id)
+    ):
+        tracker.report_scheduled(ch_id, msg_id)
         await aio.sleep(delay)
 
         try:
             async with discord_api_semaphore:
-                dest_msg: h.Message = await bot.fetch_message(channel_id, msg_id)
+                dest_msg: h.Message = await bot.fetch_message(ch_id, msg_id)
             async with discord_api_semaphore:
                 await dest_msg.delete()
 
         except Exception as e:
             e.add_note(
-                f"Scheduling retry for message-delete to channel {channel_id} "
+                f"Scheduling retry for message-delete to channel {ch_id} "
                 + "due to exception\n"
             )
             logging.exception(e)
-            kernel_work_tracker.report_failure(msg_id)
-            return KernelWorkDone(
-                msg_id, channel_id, exception=e, retries=current_retries
-            )
+            tracker.report_failure(dest_msg.channel_id)
         else:
-            kernel_work_tracker.report_completed(msg_id)
-            return KernelWorkDone(
-                msg_id, channel_id, dest_msg.id, retries=current_retries
-            )
+            tracker.report_completed(dest_msg.channel_id, msg_id)
 
-    announce_jobs = [
-        aio.create_task(kernel(msg_id, channel_id))
-        for msg_id, channel_id in msgs_to_delete
-    ]
-
-    return_in = 10  # seconds
-    max_retries = 2
-    await log_mirror_progress_to_discord(
-        bot=bot,
-        tracker=kernel_work_tracker,
-        source_message=msg,
-        start_time=mirror_start_time,
-        title="Mirror (send) progress",
+    control = KernelWorkControl(
+        source={None: msg_id},
+        targets={channel_id: dest_msg_id for dest_msg_id, channel_id in msgs_to_delete},
+        retry_threshold=2,
+        kernel=kernel,
     )
 
-    successes = []
-    to_retry = []
-    failures = []
-    while True:
-        done, pending = await aio.wait(
-            announce_jobs,
-            timeout=return_in,
-            return_when=aio.ALL_COMPLETED,
-        )
+    await log_mirror_progress_to_discord(
+        bot=bot,
+        tracker=control,
+        source_message=msg,
+        start_time=mirror_start_time,
+        title="Mirror delete progress",
+    )
 
-        # Empty the to_retry list
-        to_retry = []
-
-        for task in done:
-            result: KernelWorkDone = task.result()
-            # If the result is an exception
-            if result.exception:
-                if result.retries < max_retries:
-                    # and if we have retries left
-                    # then we add it to the to_retry list
-                    to_retry.append(result)
-                else:
-                    # if we have no retries left
-                    # then we add it to the failures list
-                    # for logging only to the console
-                    failures.append(result)
-            else:
-                # If the result is not an exception
-                # then we add it to the successes list
-                successes.append(result)
-
-        announce_jobs = pending | set(
-            aio.create_task(
-                kernel(
-                    job.source_message_id,
-                    job.dest_channel_id,
-                    job.retries + 1,
-                    # Wait for between 3 and 5 minutes before retrying
-                    # to allow for momentary discord outages of particular
-                    # servers
-                    delay=randint(180, 300),
-                )
-            )
-            for job in to_retry
-        )
-
-        if len(announce_jobs) == 0:
-            break
+    await control.run_till_completion()
 
 
 @tasks.task(d=7, auto_start=True, wait_before_execution=False, pass_app=True)
@@ -1186,7 +1057,7 @@ async def mirror_source_details(ctx: lb.SlashContext, channel_id: str):
     )
 
 
-def register(bot):
+def register(bot: lb.BotApp):
     bot.listen(h.MessageCreateEvent)(message_create_repeater)
     bot.listen(h.MessageUpdateEvent)(message_update_repeater)
     bot.listen(h.MessageDeleteEvent)(message_delete_repeater)

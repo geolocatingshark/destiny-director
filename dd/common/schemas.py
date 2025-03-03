@@ -424,7 +424,7 @@ class MirroredChannel(Base):
     @ensure_session(db_session)
     async def get_legacy_failing_mirrors(
         cls,
-        threshold: int = 7,
+        threshold: int = 3,
         session: Optional[AsyncSession] = None,
     ) -> List[Tuple[int, int]]:
         """Return mirrors that have failed too many times
@@ -449,7 +449,7 @@ class MirroredChannel(Base):
     @ensure_session(db_session)
     async def disable_legacy_failing_mirrors(
         cls,
-        threshold: int = 7,
+        threshold: int = 3,
         session: Optional[AsyncSession] = None,
     ) -> List[Tuple[int, int]]:
         """Disable mirrors that have failed too many times
