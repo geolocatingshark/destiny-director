@@ -17,9 +17,16 @@ import asyncio
 
 import pytest
 
+from dd.common import schemas
+
 
 @pytest.fixture(scope="session")
 def event_loop():
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
+
+@pytest.hookimpl()
+def pytest_sessionfinish(session):
+    asyncio.run(schemas.destroy_all())
