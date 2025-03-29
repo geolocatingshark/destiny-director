@@ -420,7 +420,9 @@ async def format_xur_vendor(
 
 
 async def fetch_vendor_data(
-    webserver_runner: aiohttp.web.AppRunner, vendor_hashes: t.List[int] | int
+    webserver_runner: aiohttp.web.AppRunner,
+    vendor_hashes: t.List[int] | int,
+    character_class: str = "Hunter",
 ) -> api.DestinyVendor:
     try:
         vendor_hashes.__iter__
@@ -431,7 +433,9 @@ async def fetch_vendor_data(
 
     async with aiohttp.ClientSession() as session:
         destiny_membership = await api.DestinyMembership.from_api(session, access_token)
-        character_id = await destiny_membership.get_character_id(session, access_token)
+        character_id = await destiny_membership.get_character_id(
+            session, access_token, character_class
+        )
 
     manifest_table = await api._build_manifest_dict(
         await api._get_latest_manifest(schemas.BungieCredentials.api_key)

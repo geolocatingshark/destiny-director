@@ -1204,6 +1204,14 @@ class AutoPostSettings(Base):
             )
 
     @classmethod
+    async def get_eververse_enabled(cls):
+        return await cls.get_enabled("eververse")
+
+    @classmethod
+    async def set_eververse(cls, enabled: bool):
+        return await cls.set_enabled("eververse", enabled)
+
+    @classmethod
     async def get_lost_sector_enabled(cls):
         return await cls.get_enabled("lost_sector")
 

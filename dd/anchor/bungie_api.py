@@ -29,7 +29,7 @@ API_OAUTH = (
 )
 API_OAUTH_GET_TOKEN = API_ROOT + "/App/OAuth/token/"
 API_PROFILE = (
-    API_ROOT + "/Destiny2/{membership_type}/Profile/{membership_id}/?components=100"
+    API_ROOT + "/Destiny2/{membership_type}/Profile/{membership_id}/?components=100,200"
 )
 API_VENDORS = API_ROOT + "/Destiny2/Vendors/"
 API_VENDORS_AUTHENTICATED = (
@@ -54,6 +54,8 @@ ARMOR_TYPE_NAMES = (
 )
 
 DESTINY_CLASSES_ENUM = ("Titan", "Hunter", "Warlock")
+
+DESTINY_CLASS_TYPE_IDS = {2: "Hunter", 0: "Titan", 1: "Warlock"}
 
 components = (
     # "300,"  # DestinyComponentType.ItemInstances
@@ -284,7 +286,7 @@ class DestinyMembership:
         self,
         session: aiohttp.ClientSession,
         access_token: str,
-        character_index: int = 0,
+        character_class: str = "Hunter",
     ):
         url = API_PROFILE.format(
             membership_type=self.membership_type,
@@ -297,7 +299,14 @@ class DestinyMembership:
 
         async with session.get(url, headers=headers) as resp:
             data = await resp.json()
-            return data["Response"]["profile"]["data"]["characterIds"][character_index]
+            character_id_by_class = {}
+            for character_id in data["Response"]["profile"]["data"]["characterIds"]:
+                class_id = data["Response"]["characters"]["data"][character_id][
+                    "classType"
+                ]
+                character_id_by_class[DESTINY_CLASS_TYPE_IDS[class_id]] = character_id
+
+            return character_id_by_class[character_class]
 
 
 class DestinyItem:
@@ -412,6 +421,12 @@ class DestinyItem:
             + f" - Rarity: {self.rarity}\n"
             + f" - Type: {self.item_type_friendly_name}\n"
         )
+
+    def __eq__(self, other: t.Self) -> bool:
+        return self.hash == other.hash
+
+    def __hash__(self):
+        return hash(self.hash)
 
     @staticmethod
     def get_appropriate_subclass(item_type: int) -> t.Type[t.Self]:
