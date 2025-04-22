@@ -23,6 +23,7 @@ from typing import Any, Callable, Coroutine, Dict, Optional, Type
 import dateparser
 import hikari as h
 import lightbulb as lb
+import miru as m
 import regex as re
 from lightbulb.ext import tasks
 
@@ -82,6 +83,7 @@ class KernelWorkTracker:
         }
         self._completed_successfully: Dict[int, int] = {}
         self._scheduled: Dict[int, Optional[int]] = {}
+        self.cancelled: Dict[int, Optional[int]] = {}
 
     def _report_try(self, channel_id: int):
         self._tries[channel_id] += 1
@@ -147,6 +149,7 @@ class KernelWorkTracker:
             if channel_id not in self._scheduled
             and channel_id not in self.failed_targets
             and channel_id not in self.successful_targets
+            and channel_id not in self.cancelled
         }
 
     @property
@@ -174,6 +177,7 @@ class KernelWorkControl(KernelWorkTracker):
     ):
         super().__init__(source, targets, retry_threshold=retry_threshold)
         self._kernel = kernel
+        self._tasks = set()
 
     @staticmethod
     async def _kernel(self, ch_id: int, msg_id: int, delay: int = 0):
@@ -182,21 +186,29 @@ class KernelWorkControl(KernelWorkTracker):
     async def run_till_completion(self):
         is_first_loop = True
         while self.is_work_left_to_do:
-            await aio.wait(
-                [
-                    aio.create_task(
-                        self._kernel(
-                            self,
-                            dest_ch_id,
-                            dest_msg_id,
-                            delay=0 if is_first_loop else randint(180, 300),
-                        )
+            tasks = [
+                aio.create_task(
+                    self._kernel(
+                        self,
+                        dest_ch_id,
+                        dest_msg_id,
+                        delay=0 if is_first_loop else randint(180, 300),
                     )
-                    for dest_ch_id, dest_msg_id in self.targets_to_schedule.items()
-                ],
-                return_when=aio.ALL_COMPLETED,
-            )
+                )
+                for dest_ch_id, dest_msg_id in self.targets_to_schedule.items()
+            ]
+            self._tasks.update(tasks)
+            await aio.wait(self._tasks, return_when=aio.ALL_COMPLETED)
             is_first_loop = False
+
+    async def cancel(self, *arg, **kwargs):
+        for task in self._tasks:
+            task: aio.Task
+            task.cancel()
+
+        self.cancelled.update(self._scheduled)
+        self.cancelled.update(self.targets_to_schedule)
+        self._scheduled.clear()
 
 
 def _get_message_summary(msg: h.Message, default: str = "Link") -> str:
@@ -275,12 +287,18 @@ async def _continue_logging_mirror_progress_till_completion(
                     embed.color = cfg.embed_error_color
 
                 if final_update:
-                    embed.set_footer(
-                        text="✅ Completed"
-                        + (" with errors" if tracker.failed_targets else ""),
-                    )
+                    if tracker.cancelled:
+                        embed.set_footer(
+                            text="❌ Cancelled"
+                            + (" with errors" if tracker.failed_targets else ""),
+                        )
+                    else:
+                        embed.set_footer(
+                            text="✅ Completed"
+                            + (" with errors" if tracker.failed_targets else ""),
+                        )
 
-                await log_message.edit(embeds=[embed])
+                await log_message.edit(embeds=[embed], components=[])
 
                 if final_update:
                     return
@@ -295,13 +313,23 @@ async def _continue_logging_mirror_progress_till_completion(
                 break
 
 
+class LogCancelButton(m.Button):
+    def __init__(self, callback=None):
+        super().__init__(style=h.ButtonStyle.DANGER, label="Cancel Mirror")
+        self._callback = callback
+
+    async def callback(self, ctx: m.ViewContext):
+        await self._callback(self, ctx)
+
+
 async def log_mirror_progress_to_discord(
     bot: bot.CachedFetchBot,
-    tracker: KernelWorkTracker,
+    control: KernelWorkControl,
     source_message: h.Message | None,
     start_time: float,
     title: Optional[str] = "Mirror progress",
     source_channel: Optional[h.GuildChannel] = None,
+    enable_cancellation: Optional[bool] = False,
 ):
     tries = 0
     while True:
@@ -361,18 +389,18 @@ async def log_mirror_progress_to_discord(
                 else "Unknown",
                 inline=True,
             ).add_field(
-                "Completed", str(len(tracker.successful_targets)), inline=True
+                "Completed", str(len(control.successful_targets)), inline=True
             ).add_field(
-                "Retrying", str(len(tracker.targets_being_retried)), inline=True
+                "Retrying", str(len(control.targets_being_retried)), inline=True
             ).add_field(
-                "Failed", str(len(tracker.failed_targets)), inline=True
+                "Failed", str(len(control.failed_targets)), inline=True
             ).add_field(
                 "Remaining",
-                str(len(tracker.targets_not_yet_tried)),
+                str(len(control.targets_not_yet_tried)),
                 inline=True,
             ).add_field("Time taken", f"{time_taken}").add_field(
                 "Time to try all channels once",
-                time_taken if tracker.is_every_target_tried else "TBC",
+                time_taken if control.is_every_target_tried else "TBC",
             )
 
             if source_message:
@@ -383,7 +411,7 @@ async def log_mirror_progress_to_discord(
                 ].media_type.startswith("image"):
                     embed.set_thumbnail(source_message.attachments[0].url)
 
-            if not tracker.is_work_left_to_do:
+            if not control.is_work_left_to_do:
                 embed.set_footer(
                     text="✅ Completed",
                 )
@@ -392,7 +420,30 @@ async def log_mirror_progress_to_discord(
                     text="⏳ In progress",
                 )
 
-            log_message = await log_channel.send(embed)
+            if enable_cancellation:
+
+                async def cancel(self: m.Button, ctx: m.ViewContext):
+                    # Cancel the kernel and remove the message
+                    bot: lb.BotApp = ctx.bot
+                    if ctx.author.id not in await bot.fetch_owner_ids():
+                        # Ignore non owners
+                        pass
+
+                    await control.cancel()
+                    self.disabled = True
+                    await ctx.edit_response(components=ctx.view)
+                    self.view.stop()
+
+                # ToDo: Check if user is allowed to cancel before cancelling
+                cancel_button = LogCancelButton(callback=cancel)
+                view = m.View(timeout=60 * 60 * 7)
+                view.add_item(cancel_button)
+                log_message = await log_channel.send(embed, components=view)
+                await view.start(message=log_message)
+                # Do not await view.wait() since it will block the event loop
+                # and we want to continue logging progress
+            else:
+                log_message = await log_channel.send(embed)
             break
         except Exception as e:
             e.add_note("Failed to log mirror progress due to exception\n")
@@ -402,7 +453,7 @@ async def log_mirror_progress_to_discord(
 
     aio.create_task(
         _continue_logging_mirror_progress_till_completion(
-            log_message, tracker, start_time
+            log_message, control, start_time
         )
     )
 
@@ -590,7 +641,7 @@ async def message_create_repeater_impl(
 
     await log_mirror_progress_to_discord(
         bot=bot,
-        tracker=control,
+        control=control,
         source_message=msg,
         start_time=mirror_start_time,
         title="Mirror send progress",
@@ -708,10 +759,11 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
 
     await log_mirror_progress_to_discord(
         bot=bot,
-        tracker=control,
+        control=control,
         source_message=msg,
         start_time=mirror_start_time,
         title="Mirror update progress",
+        enable_cancellation=True,
     )
 
     await control.run_till_completion()
@@ -780,7 +832,7 @@ async def message_delete_repeater_impl(
 
     await log_mirror_progress_to_discord(
         bot=bot,
-        tracker=control,
+        control=control,
         source_message=msg,
         start_time=mirror_start_time,
         title="Mirror delete progress",
