@@ -588,10 +588,11 @@ async def message_create_repeater_impl(
 
             async with discord_api_semaphore:
                 # Send the message
+                # Note: components are no longer mirrored. This allows use to
+                # use buttons for admin purposes in the main server
                 mirrored_msg = await channel.send(
                     msg.content,
                     attachments=msg.attachments,
-                    components=msg.components,
                     embeds=msg.embeds,
                 )
         except Exception as e:
@@ -733,10 +734,11 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
             async with discord_api_semaphore:
                 dest_msg = await bot.fetch_message(ch_id, msg_id)
             async with discord_api_semaphore:
+                # Note: components are no longer mirrored. This allows use to
+                # use buttons for admin purposes in the main server
                 await dest_msg.edit(
                     msg.content,
                     attachments=msg.attachments,
-                    components=msg.components,
                     embeds=msg.embeds,
                 )
         except Exception as e:
