@@ -452,6 +452,7 @@ class NavPages(DateRangeDict):
                 self[key] = self.preprocess_messages(self[key])
             key += self.period
 
+    @utils.ignore_self_for_method
     async def _update_history(self, event: h.MessageCreateEvent | h.MessageUpdateEvent):
         """Updates the history with any changes or new messages in self.channel"""
 

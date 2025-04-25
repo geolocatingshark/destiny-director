@@ -144,3 +144,25 @@ def filter_discord_autoembeds(msg: h.Message | MessagePrototype):
 
 def followable_name(*, id: int) -> str | int:
     return next((key for key, value in cfg.followables.items() if value == id), id)
+
+
+def ignore_self(func):
+    async def wrapped_func(event: h.MessageEvent):
+        if event.author_id == event.app.get_me().id:
+            # Never respond to self or mirror self
+            return
+
+        return await func(event)
+
+    return wrapped_func
+
+
+def ignore_self_for_method(func):
+    async def wrapped_func(self, event: h.MessageEvent):
+        if event.author_id == event.app.get_me().id:
+            # Never respond to self or mirror self
+            return
+
+        return await func(self, event)
+
+    return wrapped_func

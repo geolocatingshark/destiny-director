@@ -15,10 +15,11 @@
 
 import asyncio as aio
 import logging
+from enum import Enum
 from random import randint
 from time import perf_counter
 from types import TracebackType
-from typing import Any, Callable, Coroutine, Dict, Optional, Type
+from typing import Any, Callable, Coroutine, Dict, Optional, Tuple, Type
 
 import dateparser
 import hikari as h
@@ -61,6 +62,62 @@ class TimedSemaphore(aio.Semaphore):
 discord_api_semaphore = TimedSemaphore(value=45)
 
 
+class MirrorOperationType(Enum):
+    """Enum to represent the type of mirror operation"""
+
+    SEND = 1
+    UPDATE = 2
+    DELETE = 3
+
+
+class KernelWorkControlRegistry:
+    """Registry to keep track of current KernelWorkControl instances"""
+
+    def __init__(self):
+        # Note: the dict is structured as follows:
+        # {
+        #    (
+        #       source_channel_id,
+        #       source_message_id,
+        #   ): KernelWorkControl
+        # }
+        self._registry: Dict[Tuple[int, int], KernelWorkControl] = {}
+
+    def register(self, control: "KernelWorkControl"):
+        """Register a KernelWorkControl instance"""
+        key = (
+            control.source_channel_id,
+            control.source_message_id,
+        )
+        if key in self._registry:
+            # Consider making this an async wait for the other task to finish
+            # Remember to alter the code for whether we will block for all operation
+            # types individually or cumulatively if you do make this change
+            raise ValueError(f"KernelWorkControl already registered for {key}")
+        self._registry[key] = control
+
+    def cancel(
+        self,
+        source_channel_id: int,
+        source_message_id: int,
+    ):
+        """Cancel a KernelWorkControl instance"""
+        key = (source_channel_id, source_message_id)
+        if key in self._registry:
+            control = self._registry.pop(key)
+            if control.mirror_operation_type != MirrorOperationType.UPDATE:
+                raise ValueError(
+                    "Can only cancel mirror updates. This message has an operation "
+                    f"of type '{control.mirror_operation_type}' running"
+                )
+            control.cancel()
+        else:
+            raise ValueError("This message does not have any operations in progress")
+
+
+kernel_work_control_registry = KernelWorkControlRegistry()
+
+
 class KernelWorkTracker:
     """Class to track the progress of all kernels for a particular mirror event
 
@@ -72,11 +129,13 @@ class KernelWorkTracker:
         self,
         source: Dict[int, int],
         targets: Dict[int, Optional[int]],
+        mirror_operation_type: MirrorOperationType,
         retry_threshold: int = 3,
     ):
         self.retry_threshold = retry_threshold
         self.source_channel_id = source.keys().__iter__().__next__()
         self.source_message_id = source[self.source_channel_id]
+        self.mirror_operation_type = mirror_operation_type
         self._targets = targets
         self._tries: Dict[int, Optional[int]] = {
             target_id: 0 for target_id in self._targets.keys()
@@ -172,10 +231,17 @@ class KernelWorkControl(KernelWorkTracker):
         self,
         source: Dict[int, int],
         targets: Dict[int, Optional[int]],
+        mirror_operation_type: MirrorOperationType,
         kernel: Callable,
         retry_threshold: int = 3,
     ):
-        super().__init__(source, targets, retry_threshold=retry_threshold)
+        super().__init__(
+            source,
+            targets,
+            mirror_operation_type=mirror_operation_type,
+            retry_threshold=retry_threshold,
+        )
+        kernel_work_control_registry.register(self)
         self._kernel = kernel
         self._tasks = set()
 
@@ -201,7 +267,7 @@ class KernelWorkControl(KernelWorkTracker):
             await aio.wait(self._tasks, return_when=aio.ALL_COMPLETED)
             is_first_loop = False
 
-    async def cancel(self, *arg, **kwargs):
+    def cancel(self, *arg, **kwargs):
         for task in self._tasks:
             task: aio.Task
             task.cancel()
@@ -479,17 +545,6 @@ def ignore_non_src_channels(func):
     return wrapped_func
 
 
-def ignore_self(func):
-    async def wrapped_func(event: h.MessageEvent):
-        if event.author_id == event.app.get_me().id:
-            # Never respond to self or mirror self
-            return
-
-        return await func(event)
-
-    return wrapped_func
-
-
 async def handle_waiting_for_crosspost(
     msg: h.Message, bot: lb.BotApp, channel: h.TextableChannel, wait_for_crosspost: bool
 ):
@@ -533,7 +588,7 @@ async def handle_waiting_for_crosspost(
 
 
 @ignore_non_src_channels
-@ignore_self
+@utils.ignore_self
 async def message_create_repeater(event: h.MessageCreateEvent):
     await message_create_repeater_impl(
         event.message,
@@ -636,6 +691,7 @@ async def message_create_repeater_impl(
     control = KernelWorkControl(
         source={channel.id: msg.id},
         targets={ch_id: None for ch_id in mirrors},
+        mirror_operation_type=MirrorOperationType.SEND,
         kernel=kernel,
     )
 
@@ -691,7 +747,7 @@ async def message_create_repeater_impl(
 
 
 @ignore_non_src_channels
-@ignore_self
+@utils.ignore_self
 async def message_update_repeater(event: h.MessageUpdateEvent):
     await message_update_repeater_impl(event.message, event.app)
 
@@ -728,6 +784,8 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
         delay: int = 0,
     ):
         kernel_work_tracker.report_scheduled(ch_id, msg_id)
+        # ToDo: Remove before prod
+        delay = 90
         await aio.sleep(delay)
 
         try:
@@ -754,6 +812,7 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
     control = KernelWorkControl(
         source={msg.channel_id: msg.id},
         targets={channel_id: dest_msg_id for dest_msg_id, channel_id in msgs_to_update},
+        mirror_operation_type=MirrorOperationType.UPDATE,
         retry_threshold=2,
         kernel=kernel,
     )
@@ -827,6 +886,7 @@ async def message_delete_repeater_impl(
     control = KernelWorkControl(
         source={None: msg_id},
         targets={channel_id: dest_msg_id for dest_msg_id, channel_id in msgs_to_delete},
+        mirror_operation_type=MirrorOperationType.DELETE,
         retry_threshold=2,
         kernel=kernel,
     )
@@ -1053,6 +1113,29 @@ async def manual_mirror_delete(ctx: lb.SlashContext, message_id: str):
     await ctx.edit_last_response("Deleted messages.")
 
 
+@lb.command(
+    "mirror_cancel",
+    description="Manually cancels a message mirror currently in progress",
+    guilds=[cfg.control_discord_server_id, cfg.kyber_discord_server_id],
+    hidden=True,
+    ephemeral=True,
+)
+@lb.implements(lb.MessageCommand)
+async def mirror_cancel(ctx: lb.MessageContext):
+    if ctx.author.id not in await ctx.bot.fetch_owner_ids():
+        await ctx.respond("You are not allowed to use this command...")
+        return
+
+    message: h.Message = ctx.options.target
+    try:
+        kernel_work_control_registry.cancel(message.channel_id, message.id)
+    except ValueError as e:
+        await ctx.respond("Failed to cancel mirror: " + str(e))
+        return
+    else:
+        await ctx.respond("Cancelled mirror")
+
+
 @mirror_group.child
 @lb.option(
     "channel_id", description="Destination channel id to show details of", type=str
@@ -1118,3 +1201,5 @@ def register(bot: lb.BotApp):
     bot.command(mirror_group)
     bot.command(manual_mirror_send)
     bot.command(manual_mirror_update)
+    bot.command(manual_mirror_delete)
+    bot.command(mirror_cancel)
