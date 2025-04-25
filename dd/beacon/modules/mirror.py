@@ -434,7 +434,6 @@ async def log_mirror_progress_to_discord(
                     await ctx.edit_response(components=ctx.view)
                     self.view.stop()
 
-                # ToDo: Check if user is allowed to cancel before cancelling
                 cancel_button = LogCancelButton(callback=cancel)
                 view = m.View(timeout=60 * 60 * 7)
                 view.add_item(cancel_button)
