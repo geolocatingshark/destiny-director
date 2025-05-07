@@ -62,6 +62,80 @@ async def pre_start(event: h.StartingEvent):
     event.app.command(autopost_command_group)
 
 
+async def enable_non_legacy_mirror(
+    bot: CachedFetchBot, followable_channel: int, ctx: lb.Context, session: AsyncSession
+):
+    await bot.rest.follow_channel(followable_channel, ctx.channel_id)
+    await MirroredChannel.add_mirror(
+        followable_channel,
+        ctx.channel_id,
+        ctx.guild_id,
+        False,
+        session=session,
+    )
+
+
+async def enable_legacy_mirror(
+    bot: CachedFetchBot,
+    followable_channel: int,
+    ctx: lb.Context,
+    role: h.Role,
+    session: AsyncSession,
+):
+    await (
+        await (
+            await bot.fetch_channel(
+                ctx.channel_id,
+            )
+        ).send("Test message :)")
+    ).delete()
+
+    await MirroredChannel.add_mirror(
+        followable_channel,
+        ctx.channel_id,
+        ctx.guild_id,
+        True,
+        role_mention_id=(role.id if role else 0),
+        session=session,
+    )
+
+
+async def unfollow_channel(bot: CachedFetchBot, news_channel: int, target_channel: int):
+    for hook in await bot.rest.fetch_channel_webhooks(
+        await bot.fetch_channel(target_channel)
+    ):
+        if (
+            isinstance(hook, h.ChannelFollowerWebhook)
+            and hook.source_channel
+            and hook.source_channel.id == news_channel
+        ):
+            await bot.rest.delete_webhook(hook)
+
+
+async def disable_mirror(
+    ctx: lb.Context, followable_channel: int, bot: CachedFetchBot, session: AsyncSession
+):
+    # Check if this is a legacy mirror, and if so, remove it and return
+    if int(ctx.channel_id) in (await MirroredChannel.fetch_dests(followable_channel)):
+        await MirroredChannel.remove_mirror(
+            followable_channel, ctx.channel_id, session=session
+        )
+
+    else:
+        # If this is not a legacy mirror, then we need to delete the webhook for it
+
+        # Fetch and delete follow based webhooks and filter for our channel as a
+        # source
+        await unfollow_channel(
+            bot=bot, news_channel=followable_channel, target_channel=ctx.channel_id
+        )
+
+        # Also remove the mirror
+        await MirroredChannel.remove_mirror(
+            followable_channel, ctx.channel_id, session=session
+        )
+
+
 def follow_control_command_maker(
     followable_channel: int,
     autoposts_name: str,
@@ -91,11 +165,20 @@ def follow_control_command_maker(
         # the user, so we use int instead, unsure if this is a lightbulb bug
         type=int,
     )
+    @lb.option(
+        "ping_role",
+        "An optional role to ping when autoposting",
+        type=h.Role,
+        default=None,
+    )
     @lb.command(autoposts_name, autoposts_desc, pass_options=True, auto_defer=True)
     @lb.implements(lb.SlashSubCommand)
     @ensure_session(db_session)
     async def follow_control(
-        ctx: lb.Context, option: int, session: Optional[AsyncSession] = None
+        ctx: lb.Context,
+        option: int,
+        ping_role: h.Role,
+        session: Optional[AsyncSession] = None,
     ):
         option = bool(option)
         bot: t.Union[CachedFetchBot, UserCommandBot] = ctx.bot
@@ -140,14 +223,14 @@ def follow_control_command_maker(
                 if option:
                     # If we are enabling autoposts:
                     try:
-                        await bot.rest.follow_channel(
-                            followable_channel, ctx.channel_id
-                        )
-                        await MirroredChannel.add_mirror(
-                            followable_channel,
-                            ctx.channel_id,
-                            ctx.guild_id,
-                            False,
+                        if ping_role:
+                            raise ValueError(
+                                "Role pings are not supported by new style mirrors"
+                            )
+                        await enable_non_legacy_mirror(
+                            bot=bot,
+                            followable_channel=followable_channel,
+                            ctx=ctx,
                             session=session,
                         )
                     except h.BadRequestError as e:
@@ -159,54 +242,58 @@ def follow_control_command_maker(
                             # In this case, add a legacy mirror instead
 
                             # Test sending a message to the channel before adding the mirror
-                            await (
-                                await (
-                                    await bot.fetch_channel(
-                                        ctx.channel_id,
-                                    )
-                                ).send("Test message :)")
-                            ).delete()
-
-                            await MirroredChannel.add_mirror(
-                                followable_channel,
-                                ctx.channel_id,
-                                ctx.guild_id,
-                                True,
+                            await enable_legacy_mirror(
+                                bot=bot,
+                                followable_channel=followable_channel,
+                                ctx=ctx,
+                                role=ping_role,
                                 session=session,
                             )
+
+                    except ValueError as e:
+                        if (
+                            "role pings are not supported by new style mirrors"
+                            in str(e.args).lower()
+                        ):
+                            await enable_legacy_mirror(
+                                bot=bot,
+                                followable_channel=followable_channel,
+                                ctx=ctx,
+                                role=ping_role,
+                                session=session,
+                            )
+
+                        try:
+                            await unfollow_channel(
+                                bot=bot,
+                                news_channel=followable_channel,
+                                target_channel=ctx.channel_id,
+                            )
+                        except h.ForbiddenError:
+                            if (
+                                "missing permissions" in str(e.args).lower()
+                                or "missing access" in str(e.args).lower()
+                            ):
+                                # If we are missing permissions, then we can't delete the webhook
+                                # In this case, notify the user with a list of possibly missing
+                                # permissions
+                                bot_owner = await bot.fetch_owner()
+                                await ctx.respond(
+                                    bot_missing_permissions_embed(bot_owner)
+                                )
+                                return
+                            else:
+                                raise e
 
                         else:
                             raise e
                 else:
-                    # If we are disabling autoposts:
-
-                    # Check if this is a legacy mirror, and if so, remove it and return
-                    if int(ctx.channel_id) in (
-                        await MirroredChannel.fetch_dests(followable_channel)
-                    ):
-                        await MirroredChannel.remove_mirror(
-                            followable_channel, ctx.channel_id, session=session
-                        )
-
-                    else:
-                        # If this is not a legacy mirror, then we need to delete the webhook for it
-
-                        # Fetch and delete follow based webhooks and filter for our channel as a
-                        # source
-                        for hook in await bot.rest.fetch_channel_webhooks(
-                            await bot.fetch_channel(ctx.channel_id)
-                        ):
-                            if (
-                                isinstance(hook, h.ChannelFollowerWebhook)
-                                and hook.source_channel
-                                and hook.source_channel.id == followable_channel
-                            ):
-                                await bot.rest.delete_webhook(hook)
-
-                        # Also remove the mirror
-                        await MirroredChannel.remove_mirror(
-                            followable_channel, ctx.channel_id, session=session
-                        )
+                    await disable_mirror(
+                        ctx=ctx,
+                        followable_channel=followable_channel,
+                        bot=bot,
+                        session=session,
+                    )
 
             except h.ForbiddenError as e:
                 if (

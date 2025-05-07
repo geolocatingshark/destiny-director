@@ -40,8 +40,8 @@ from sqlalchemy.sql.sqltypes import (
     Text,
 )
 
-from . import cfg
-from .utils import FriendlyValueError, check_number_of_layers, ensure_session
+from dd.common import cfg
+from dd.common.utils import FriendlyValueError, check_number_of_layers, ensure_session
 
 Base = declarative_base()
 db_engine = create_async_engine(
@@ -73,6 +73,7 @@ class MirroredChannel(Base):
     dest_server_id = Column("dest_server_id", BigInteger)
     legacy = Column("legacy", Boolean)
     enabled = Column("enabled", Boolean, default=True)
+    role_mention_id = Column("role_mention_id", BigInteger, default=None)
     legacy_error_rate = Column("legacy_error_rate", Integer, default=0)
     legacy_disable_for_failure_on_date = Column(
         "legacy_disable_for_failure_on_date", DateTime, default=None
@@ -86,6 +87,7 @@ class MirroredChannel(Base):
         dest_server_id: int,
         legacy: bool,
         enabled: bool,
+        role_mention_id: Optional[int],
     ):
         super().__init__()
         self.src_id = int(src_id)
@@ -93,6 +95,7 @@ class MirroredChannel(Base):
         self.dest_server_id = dest_server_id and int(dest_server_id)
         self.legacy = bool(legacy)
         self.enabled = bool(enabled)
+        self.role_mention_id = role_mention_id and int(role_mention_id)
 
     @classmethod
     @ensure_session(db_session)
@@ -103,12 +106,20 @@ class MirroredChannel(Base):
         dest_server_id: int,
         legacy: bool,
         enabled: bool = True,
+        role_mention_id: Optional[int] = 0,
         session: Optional[AsyncSession] = None,
     ):
         src_id = int(src_id)
         dest_id = int(dest_id)
         await session.merge(
-            cls(src_id, dest_id, dest_server_id, legacy, enabled=enabled)
+            cls(
+                src_id,
+                dest_id,
+                dest_server_id,
+                legacy,
+                enabled=enabled,
+                role_mention_id=role_mention_id,
+            )
         )
 
         if legacy and src_id not in cls._legacy_srcs_cache:
