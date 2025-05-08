@@ -597,7 +597,7 @@ def add_role_ping_to_msg(
     """Add role ping to message content if specified for this channel
 
     In case the roll ping is 0, no changes are made."""
-    role_ping = int(role_ping_per_ch_id.get(dest_channel_id, 0))
+    role_ping = int(role_ping_per_ch_id.get(dest_channel_id) or 0)
     if role_ping:
         if msg_content:
             msg_content = msg_content.strip("\n") + "\n\n"
