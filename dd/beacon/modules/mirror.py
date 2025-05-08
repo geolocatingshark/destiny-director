@@ -231,6 +231,7 @@ class KernelWorkControl(KernelWorkTracker):
         self,
         source: Dict[int, int],
         targets: Dict[int, Optional[int]],
+        role_ping_per_ch_id: Dict[int, Optional[int]],
         mirror_operation_type: MirrorOperationType,
         kernel: Callable,
         retry_threshold: int = 3,
@@ -241,6 +242,7 @@ class KernelWorkControl(KernelWorkTracker):
             mirror_operation_type=mirror_operation_type,
             retry_threshold=retry_threshold,
         )
+        self.role_ping_per_ch_id = role_ping_per_ch_id
         kernel_work_control_registry.register(self)
         self._kernel = kernel
         self._tasks = set()
@@ -587,6 +589,24 @@ async def handle_waiting_for_crosspost(
             break
 
 
+def add_role_ping_to_msg(
+    msg_content: str,
+    dest_channel_id: int,
+    role_ping_per_ch_id: Dict[int, Optional[int]],
+) -> str:
+    """Add role ping to message content if specified for this channel
+
+    In case the roll ping is 0, no changes are made."""
+    role_ping = int(role_ping_per_ch_id.get(dest_channel_id, 0))
+    if role_ping:
+        if msg_content:
+            msg_content = msg_content.strip("\n") + "\n\n"
+        else:
+            msg_content = ""
+        msg_content += f"||<@&{role_ping}>||"
+    return msg_content
+
+
 @ignore_non_src_channels
 @utils.ignore_self
 async def message_create_repeater(event: h.MessageCreateEvent):
@@ -616,6 +636,9 @@ async def message_create_repeater_impl(
     msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
 
     mirrors = await MirroredChannel.fetch_dests(channel.id)
+    mirror_mention_ids = await MirroredChannel.fetch_mirror_and_role_mention_id(
+        channel.id
+    )
     # Always guard against infinite loops through posting to the source channel
     mirrors = list(filter(lambda x: x != channel.id, mirrors))
 
@@ -625,13 +648,13 @@ async def message_create_repeater_impl(
     msg.embeds = utils.filter_discord_autoembeds(msg)
 
     async def kernel(
-        tracker: KernelWorkTracker,
+        control: KernelWorkControl,
         ch_id: int,
         msg_id: int = None,
         delay: int = 0,
     ):
         # NOTE: msg is passed as a closure to the kernel function here
-        tracker.report_scheduled(ch_id)
+        control.report_scheduled(ch_id)
         await aio.sleep(delay)
 
         try:
@@ -641,14 +664,20 @@ async def message_create_repeater_impl(
                 # Ignore non textable channels
                 raise ValueError("Channel is not textable")
 
+            # msg_content = msg.content
+            msg_content = add_role_ping_to_msg(
+                msg.content, ch_id, control.role_ping_per_ch_id
+            )
+
             async with discord_api_semaphore:
                 # Send the message
                 # Note: components are no longer mirrored. This allows use to
                 # use buttons for admin purposes in the main server
                 mirrored_msg = await channel.send(
-                    msg.content,
+                    msg_content,
                     attachments=msg.attachments,
                     embeds=msg.embeds,
+                    role_mentions=True,
                 )
         except Exception as e:
             e.add_note(
@@ -656,10 +685,10 @@ async def message_create_repeater_impl(
                 + "due to exception\n"
             )
             logging.exception(e)
-            tracker.report_failure(ch_id)
+            control.report_failure(ch_id)
             return
         else:
-            tracker.report_completed(ch_id, mirrored_msg.id)
+            control.report_completed(ch_id, mirrored_msg.id)
 
         if isinstance(channel, h.GuildNewsChannel):
             # If the channel is a news channel then crosspost the message as well
@@ -691,6 +720,7 @@ async def message_create_repeater_impl(
     control = KernelWorkControl(
         source={channel.id: msg.id},
         targets={ch_id: None for ch_id in mirrors},
+        role_ping_per_ch_id=mirror_mention_ids,
         mirror_operation_type=MirrorOperationType.SEND,
         kernel=kernel,
     )
@@ -778,26 +808,29 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
     msg.embeds = utils.filter_discord_autoembeds(msg)
 
     async def kernel(
-        kernel_work_tracker: KernelWorkTracker,
+        control: KernelWorkControl,
         ch_id: int,
         msg_id: int,
         delay: int = 0,
     ):
-        kernel_work_tracker.report_scheduled(ch_id, msg_id)
-        # ToDo: Remove before prod
-        delay = 90
+        control.report_scheduled(ch_id, msg_id)
         await aio.sleep(delay)
 
         try:
             async with discord_api_semaphore:
                 dest_msg = await bot.fetch_message(ch_id, msg_id)
             async with discord_api_semaphore:
+                msg_content = add_role_ping_to_msg(
+                    msg.content, ch_id, control.role_ping_per_ch_id
+                )
+
                 # Note: components are no longer mirrored. This allows use to
                 # use buttons for admin purposes in the main server
                 await dest_msg.edit(
-                    msg.content,
+                    msg_content,
                     attachments=msg.attachments,
                     embeds=msg.embeds,
+                    role_mentions=True,
                 )
         except Exception as e:
             e.add_note(
@@ -805,9 +838,9 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
                 + "due to exception\n"
             )
             logging.exception(e)
-            kernel_work_tracker.report_failure(ch_id)
+            control.report_failure(ch_id)
         else:
-            kernel_work_tracker.report_completed(ch_id, msg_id)
+            control.report_completed(ch_id, msg_id)
 
     control = KernelWorkControl(
         source={msg.channel_id: msg.id},

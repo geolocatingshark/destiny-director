@@ -56,6 +56,11 @@ def bot_missing_permissions_embed(bot_owner: h.User):
 autopost_command_group = lb.command(name="autopost", description="Autopost control")(
     lb.implements(lb.SlashCommandGroup)(lambda: None)
 )
+autopost_command_group = lb.set_help(
+    text="Each also autopost has the option to enable pings "
+    "with the `ping_role` option. Mention (@) the desired role "
+    "when enabling autoposts to enable pings."
+)(autopost_command_group)
 
 
 async def pre_start(event: h.StartingEvent):
@@ -169,7 +174,7 @@ def follow_control_command_maker(
         "ping_role",
         "An optional role to ping when autoposting",
         type=h.Role,
-        default=None,
+        default=0,
     )
     @lb.command(autoposts_name, autoposts_desc, pass_options=True, auto_defer=True)
     @lb.implements(lb.SlashSubCommand)
@@ -249,7 +254,8 @@ def follow_control_command_maker(
                                 role=ping_role,
                                 session=session,
                             )
-
+                        else:
+                            raise e
                     except ValueError as e:
                         if (
                             "role pings are not supported by new style mirrors"
@@ -263,28 +269,27 @@ def follow_control_command_maker(
                                 session=session,
                             )
 
-                        try:
-                            await unfollow_channel(
-                                bot=bot,
-                                news_channel=followable_channel,
-                                target_channel=ctx.channel_id,
-                            )
-                        except h.ForbiddenError:
-                            if (
-                                "missing permissions" in str(e.args).lower()
-                                or "missing access" in str(e.args).lower()
-                            ):
-                                # If we are missing permissions, then we can't delete the webhook
-                                # In this case, notify the user with a list of possibly missing
-                                # permissions
-                                bot_owner = await bot.fetch_owner()
-                                await ctx.respond(
-                                    bot_missing_permissions_embed(bot_owner)
+                            try:
+                                await unfollow_channel(
+                                    bot=bot,
+                                    news_channel=followable_channel,
+                                    target_channel=ctx.channel_id,
                                 )
-                                return
-                            else:
-                                raise e
-
+                            except h.ForbiddenError as e2:
+                                if (
+                                    "missing permissions" in str(e2.args).lower()
+                                    or "missing access" in str(e2.args).lower()
+                                ):
+                                    # If we are missing permissions, then we can't delete the webhook
+                                    # In this case, notify the user with a list of possibly missing
+                                    # permissions
+                                    bot_owner = await bot.fetch_owner()
+                                    await ctx.respond(
+                                        bot_missing_permissions_embed(bot_owner)
+                                    )
+                                    return
+                                else:
+                                    raise e2
                         else:
                             raise e
                 else:

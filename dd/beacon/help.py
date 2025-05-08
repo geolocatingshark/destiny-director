@@ -129,6 +129,9 @@ def build_help_lines(
                 f"`/{' '.join(parents + [cmd_name])}` - {cmd.description}"
             )
 
+        command_help = cmd.get_help(context=None).strip()
+        if command_help:
+            help_single_page.append(command_help)
         help_single_page.extend(subcommand_helps)
 
     return help_single_page

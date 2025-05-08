@@ -19,8 +19,7 @@ import asyncio as aio
 import datetime as dt
 import logging
 import sys
-import typing as t
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Self, Set, Tuple
 
 import regex as re
 from atlas_provider_sqlalchemy.ddl import print_ddl
@@ -163,6 +162,27 @@ class MirroredChannel(Base):
         dests = dests if dests else []
         dests = [dest[0] for dest in dests]
         return dests
+
+    @classmethod
+    @ensure_session(db_session)
+    async def fetch_mirror_and_role_mention_id(
+        cls,
+        src_id: int,
+        session: Optional[AsyncSession] = None,
+    ) -> Dict[int, int]:
+        """Fetch all dests with corresponding mirror_ping_role id for a given src_id
+
+        src_id -> The source channel ID
+        """
+        src_id = int(src_id)
+        mention_ids = await session.execute(
+            select(cls.dest_id, cls.role_mention_id).where(and_(cls.src_id == src_id))
+        )
+
+        mention_ids = mention_ids if mention_ids else []
+        mention_ids = {dest[0]: dest[1] for dest in mention_ids}
+        print(mention_ids)
+        return mention_ids
 
     @classmethod
     @ensure_session(db_session)
@@ -1286,7 +1306,7 @@ class BungieCredentials(Base):
 
     @classmethod
     @ensure_session(db_session)
-    async def get_credentials(cls, id=1, session: AsyncSession = None) -> t.Self:
+    async def get_credentials(cls, id=1, session: AsyncSession = None) -> Self:
         return (await session.execute(select(cls).where(cls.id == id))).scalar()
 
     @classmethod
