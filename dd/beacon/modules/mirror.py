@@ -90,10 +90,13 @@ class KernelWorkControlRegistry:
             control.source_message_id,
         )
         if key in self._registry:
-            # Consider making this an async wait for the other task to finish
-            # Remember to alter the code for whether we will block for all operation
-            # types individually or cumulatively if you do make this change
-            raise ValueError(f"KernelWorkControl already registered for {key}")
+            existing_control = self._registry[key]
+            if existing_control.is_work_left_to_do:
+                # Consider making this an async wait for the other task to finish
+                # Remember to alter the code for whether we will block for all
+                # operation types individually or cumulatively if you do make this
+                # change
+                raise ValueError(f"KernelWorkControl already registered for {key}")
         self._registry[key] = control
 
     def cancel(
