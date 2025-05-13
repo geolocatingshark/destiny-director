@@ -181,7 +181,6 @@ class MirroredChannel(Base):
 
         mention_ids = mention_ids if mention_ids else []
         mention_ids = {dest[0]: dest[1] for dest in mention_ids}
-        print(mention_ids)
         return mention_ids
 
     @classmethod
