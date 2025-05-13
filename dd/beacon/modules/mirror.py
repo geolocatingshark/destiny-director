@@ -790,6 +790,9 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
             if not msgs_to_update:
                 # Return if this message was not mirrored for any reason
                 return
+            mirror_mention_ids = await MirroredChannel.fetch_mirror_and_role_mention_id(
+                msg.channel_id
+            )
 
         except Exception as e:
             await utils.discord_error_logger(bot, e)
@@ -846,6 +849,7 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
         source={msg.channel_id: msg.id},
         targets={channel_id: dest_msg_id for dest_msg_id, channel_id in msgs_to_update},
         mirror_operation_type=MirrorOperationType.UPDATE,
+        role_ping_per_ch_id=mirror_mention_ids,
         retry_threshold=2,
         kernel=kernel,
     )
@@ -920,6 +924,7 @@ async def message_delete_repeater_impl(
         source={None: msg_id},
         targets={channel_id: dest_msg_id for dest_msg_id, channel_id in msgs_to_delete},
         mirror_operation_type=MirrorOperationType.DELETE,
+        role_ping_per_ch_id={},
         retry_threshold=2,
         kernel=kernel,
     )
