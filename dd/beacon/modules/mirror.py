@@ -15,6 +15,7 @@
 
 import asyncio as aio
 import logging
+from collections import defaultdict
 from enum import Enum
 from random import randint
 from time import perf_counter
@@ -82,6 +83,7 @@ class KernelWorkControlRegistry:
         #   ): KernelWorkControl
         # }
         self._registry: Dict[Tuple[int, int], KernelWorkControl] = {}
+        self._locks: Dict[Tuple[int, int], aio.Lock] = defaultdict(aio.Lock)
 
     def register(self, control: "KernelWorkControl"):
         """Register a KernelWorkControl instance"""
@@ -98,6 +100,14 @@ class KernelWorkControlRegistry:
                 # change
                 raise ValueError(f"KernelWorkControl already registered for {key}")
         self._registry[key] = control
+
+    def lock_source_message(self, control: "KernelWorkControl") -> aio.Lock:
+        """Wait for the lock for a KernelWorkControl instance"""
+        key = (
+            control.source_channel_id,
+            control.source_message_id,
+        )
+        return self._locks[key]
 
     def cancel(
         self,
@@ -246,7 +256,6 @@ class KernelWorkControl(KernelWorkTracker):
             retry_threshold=retry_threshold,
         )
         self.role_ping_per_ch_id = role_ping_per_ch_id
-        kernel_work_control_registry.register(self)
         self._kernel = kernel
         self._tasks = set()
 
@@ -256,21 +265,23 @@ class KernelWorkControl(KernelWorkTracker):
 
     async def run_till_completion(self):
         is_first_loop = True
-        while self.is_work_left_to_do:
-            tasks = [
-                aio.create_task(
-                    self._kernel(
-                        self,
-                        dest_ch_id,
-                        dest_msg_id,
-                        delay=0 if is_first_loop else randint(180, 300),
+        async with kernel_work_control_registry.lock_source_message(self):
+            kernel_work_control_registry.register(self)
+            while self.is_work_left_to_do:
+                tasks = [
+                    aio.create_task(
+                        self._kernel(
+                            self,
+                            dest_ch_id,
+                            dest_msg_id,
+                            delay=0 if is_first_loop else randint(180, 300),
+                        )
                     )
-                )
-                for dest_ch_id, dest_msg_id in self.targets_to_schedule.items()
-            ]
-            self._tasks.update(tasks)
-            await aio.wait(self._tasks, return_when=aio.ALL_COMPLETED)
-            is_first_loop = False
+                    for dest_ch_id, dest_msg_id in self.targets_to_schedule.items()
+                ]
+                self._tasks.update(tasks)
+                await aio.wait(self._tasks, return_when=aio.ALL_COMPLETED)
+                is_first_loop = False
 
     def cancel(self, *arg, **kwargs):
         for task in self._tasks:
