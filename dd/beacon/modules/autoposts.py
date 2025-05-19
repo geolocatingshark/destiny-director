@@ -290,6 +290,16 @@ def follow_control_command_maker(
                                     return
                                 else:
                                     raise e2
+                            except h.NotFoundError as e2:
+                                if "unknown channel" in str(e2.args).lower():
+                                    # In case we cannot fetch the webhooks part of the channel
+                                    # we get a not found error. This happens in forum channels
+                                    # we can safely ignore this error since its impossible for
+                                    # users to be subscribed through webhooks in these types of
+                                    # channels
+                                    pass
+                                else:
+                                    raise e2
                         else:
                             raise e
                 else:
