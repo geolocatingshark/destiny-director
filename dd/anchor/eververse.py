@@ -79,6 +79,7 @@ async def format_eververse_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
 
     description = "# [This Week 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)\n\n"
     description += "**__BRIGHT DUST OFFERINGS__** :bright_dust:\n\n"
+    description += "⇣ All items below cost Bright Dust ⇣\n\n"
 
     for class_, class_specific_sale_items in zip(
         ["Hunter", "Titan", "Warlock"],
@@ -93,9 +94,7 @@ async def format_eververse_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
 
         description += f"**{class_} Specific Items**\n"
         for item in class_specific_sale_items:
-            description += (
-                f"• {item.name} ({item.costs['Bright Dust']} :bright_dust:)\n"
-            )
+            description += f"• {item.name} ({item.costs['Bright Dust']})\n"
         description += "\n"
 
     for item_type, items in remaining_items.items():
@@ -105,7 +104,7 @@ async def format_eververse_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
             item.lightgg_url
             description += (
                 f"• [{item.name}]({item.lightgg_url}) "
-                f"({item.costs['Bright Dust']} :bright_dust:)\n"
+                f"({item.costs['Bright Dust']})\n"
             )
         description += "\n"
 
