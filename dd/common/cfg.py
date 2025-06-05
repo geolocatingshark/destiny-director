@@ -32,6 +32,9 @@ def _getenv(
     optional: bool = False,
     cast_to: t.Type[t.Any] = str,
 ) -> str:
+    if not optional and str(__getenv("DD_IGNORE_MISSING_CFGS")).lower() == "true":
+        return _getenv(var_name, default, optional=True, cast_to=cast_to)
+
     var = __getenv(var_name)
     if var is not None:
         return cast_to(var)
