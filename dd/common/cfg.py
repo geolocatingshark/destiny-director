@@ -183,9 +183,9 @@ alerts_channel = _getenv("ALERTS_CHANNEL_ID", cast_to=int)
 
 
 # Discord constants
-embed_default_color = h.Color(int(_getenv("EMBED_DEFAULT_COLOR"), 16))
-embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR"), 16))
-followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES"), parse_int=int)
+embed_default_color = h.Color(int(_getenv("EMBED_DEFAULT_COLOR", "0"), 16))
+embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR", "0"), 16))
+followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES", "{}"), parse_int=int)
 default_url = _getenv("DEFAULT_URL", optional=True)
 navigator_timeout = _getenv("NAVIGATOR_TIMEOUT", optional=True, cast_to=int) or 120
 
