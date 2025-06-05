@@ -175,7 +175,7 @@ control_discord_server_id = _getenv("CONTROL_DISCORD_SERVER_ID", cast_to=int)
 control_discord_role_id = _getenv("CONTROL_DISCORD_ROLE_ID", optional=True, cast_to=int)
 admins = [
     int(admin.strip())
-    for admin in _getenv("ADMINS", default="", optional=True).split(",")
+    for admin in _getenv("ADMINS", default="-1", optional=True).split(",")
 ]
 kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", cast_to=int)
 log_channel = _getenv("LOG_CHANNEL_ID", cast_to=int)
