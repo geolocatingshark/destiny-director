@@ -99,6 +99,13 @@ def _db_urls(var_name: str, var_name_alternative) -> tuple[str, str]:
     except ValueError:
         db_url = _getenv(var_name_alternative)
 
+    if not db_url:
+        # Added for compatiblity with Library Mode
+        # db_url will only be none if the library mode environment
+        # variable switch is enabled since _getenv(var_name_alternative)
+        # would otherwise raise ValueError
+        db_url = "://"
+
     __repl_till = db_url.find("://")
     db_url = db_url[__repl_till:]
     db_url_async = "mysql+asyncmy" + db_url
