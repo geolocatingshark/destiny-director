@@ -146,11 +146,13 @@ def _sheets_credentials(
     client_id: str,
     client_x509_cert_url: str,
 ) -> dict[str, str]:
+    priv_key = _getenv(priv_key)
+    priv_key = priv_key.replace("\\n", "\n") if priv_key else None
     gsheets_credentials = {
         "type": "service_account",
         "project_id": _getenv(proj_id),
         "private_key_id": _getenv(priv_key_id),
-        "private_key": _getenv(priv_key).replace("\\n", "\n"),
+        "private_key": priv_key,
         "client_email": _getenv(client_email),
         "client_id": _getenv(client_id),
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
