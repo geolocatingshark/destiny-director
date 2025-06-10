@@ -229,12 +229,15 @@ async def format_sector(
         "**Champs and Shields**\n"
         + format_counts(sector.legend_data, sector.master_data, emoji_dict)
     )
-    embed.description += "\n\n" + (
-        "**Elementals**\n"
-        + f"Surge: {space.punctuation}{space.hair}{space.hair}"
-        + " ".join(surges)
-        + f"\nThreat: {threat}"
-    )
+    embed.description += "\n\n" + "**Elementals**\n"
+    if await schemas.AutoPostSettings.get_lost_sector_surge_enabled():
+        embed.description += (
+            f"Surge: {space.punctuation}{space.hair}{space.hair}"
+            + " ".join(surges)
+            + "\n"
+        )
+    embed.description += f"Threat: {threat}"
+
     embed.description += "\n\n" + (
         "**Modifiers**\n"
         + str(emoji_dict["swords"])

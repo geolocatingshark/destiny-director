@@ -1258,6 +1258,14 @@ class AutoPostSettings(Base):
         return await cls.set_enabled("lost_sector_legendary_weapons", enabled)
 
     @classmethod
+    async def get_lost_sector_surge_enabled(cls):
+        return await cls.get_enabled("lost_sector_surge")
+
+    @classmethod
+    async def set_lost_sector_surge(cls, enabled: bool):
+        return await cls.set_enabled("lost_sector_surge", enabled)
+
+    @classmethod
     async def get_lost_sector_twitter_enabled(cls):
         return await cls.get_enabled("lost_sector_twitter")
 
