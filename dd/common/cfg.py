@@ -99,6 +99,13 @@ def _db_urls(var_name: str, var_name_alternative) -> tuple[str, str]:
     except ValueError:
         db_url = _getenv(var_name_alternative)
 
+    if not db_url:
+        # Added for compatiblity with Library Mode
+        # db_url will only be none if the library mode environment
+        # variable switch is enabled since _getenv(var_name_alternative)
+        # would otherwise raise ValueError
+        db_url = "://"
+
     __repl_till = db_url.find("://")
     db_url = db_url[__repl_till:]
     db_url_async = "mysql+asyncmy" + db_url
@@ -139,11 +146,13 @@ def _sheets_credentials(
     client_id: str,
     client_x509_cert_url: str,
 ) -> dict[str, str]:
+    priv_key = _getenv(priv_key)
+    priv_key = priv_key.replace("\\n", "\n") if priv_key else None
     gsheets_credentials = {
         "type": "service_account",
         "project_id": _getenv(proj_id),
         "private_key_id": _getenv(priv_key_id),
-        "private_key": _getenv(priv_key).replace("\\n", "\n"),
+        "private_key": priv_key,
         "client_email": _getenv(client_email),
         "client_id": _getenv(client_id),
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
@@ -183,9 +192,9 @@ alerts_channel = _getenv("ALERTS_CHANNEL_ID", cast_to=int)
 
 
 # Discord constants
-embed_default_color = h.Color(_getenv("EMBED_DEFAULT_COLOR", 0, cast_to=int), 16)
-embed_error_color = h.Color(_getenv("EMBED_ERROR_COLOR", 0, cast_to=int), 16)
-followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES", {}), parse_int=int)
+embed_default_color = h.Color(int(_getenv("EMBED_DEFAULT_COLOR", "0"), 16))
+embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR", "0"), 16))
+followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES", "{}"), parse_int=int)
 default_url = _getenv("DEFAULT_URL", optional=True)
 navigator_timeout = _getenv("NAVIGATOR_TIMEOUT", optional=True, cast_to=int) or 120
 

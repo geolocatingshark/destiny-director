@@ -93,6 +93,33 @@ async def control_legendary_weapons(ctx: lb.Context, option: str):
     )
 
 
+@lb.option(
+    "option", "Enable or disable", str, choices=["Enable", "Disable"], required=True
+)
+@lb.command(
+    "surges",
+    "Control lost sector surge announcements",
+    auto_defer=True,
+    pass_options=True,
+)
+@lb.implements(lb.SlashSubCommand)
+async def control_surges(ctx: lb.Context, option: str):
+    """Enable or disable lost sector surge announcements"""
+
+    desired_setting: bool = True if option.lower() == "enable" else False
+    current_setting = await schemas.AutoPostSettings.get_lost_sector_surge_enabled()
+
+    if desired_setting == current_setting:
+        return await ctx.respond(
+            f"Lost sector surge announcements are already {'enabled' if desired_setting else 'disabled'}"
+        )
+
+    await schemas.AutoPostSettings.set_lost_sector_surge(enabled=desired_setting)
+    await ctx.respond(
+        f"Lost sector surge announcements now {'enabled' if desired_setting else 'disabled'}"
+    )
+
+
 def sub_group(parent: lb.CommandLike, name: str, description: str):
     @lb.command(name, description)
     @lb.implements(lb.SlashSubGroup)
@@ -153,6 +180,7 @@ def register(bot: lb.BotApp) -> None:
     )
 
     autopost_control_parent_group.child(control_legendary_weapons)
+    autopost_control_parent_group.child(control_surges)
 
     bot.command(autopost_control_parent_group)
 
