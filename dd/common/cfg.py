@@ -197,6 +197,9 @@ embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR", "0"), 16))
 followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES", "{}"), parse_int=int)
 default_url = _getenv("DEFAULT_URL", optional=True)
 navigator_timeout = _getenv("NAVIGATOR_TIMEOUT", optional=True, cast_to=int) or 120
+kyber_ls_thumbnail = (
+    "https://kyberscorner.com/wp-content/uploads/2025/06/lost_sector_kyber.png"
+)
 
 # Database URLs
 db_url, db_url_async = _db_urls("MYSQL_PRIVATE_URL", "MYSQL_URL")

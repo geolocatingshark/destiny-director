@@ -245,6 +245,8 @@ async def format_sector(
         + f"\n{overcharged_weapon_emoji}{space.three_per_em}Overcharged {sector.overcharged_weapon}"
     )
 
+    embed.set_thumbnail(cfg.kyber_ls_thumbnail)
+
     if ls_gfx_url:
         embed.set_image(ls_gfx_url)
 
