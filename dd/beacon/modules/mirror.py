@@ -264,24 +264,25 @@ class KernelWorkControl(KernelWorkTracker):
         raise NotImplementedError
 
     async def run_till_completion(self):
-        is_first_loop = True
         async with kernel_work_control_registry.lock_source_message(self):
             kernel_work_control_registry.register(self)
-            while self.is_work_left_to_do:
+
+            loop_number = 0
+            while self.is_work_left_to_do and loop_number < self.retry_threshold:
                 tasks = [
                     aio.create_task(
                         self._kernel(
                             self,
                             dest_ch_id,
                             dest_msg_id,
-                            delay=0 if is_first_loop else randint(180, 300),
+                            delay=0 if loop_number == 0 else randint(180, 300),
                         )
                     )
                     for dest_ch_id, dest_msg_id in self.targets_to_schedule.items()
                 ]
                 self._tasks.update(tasks)
                 await aio.wait(self._tasks, return_when=aio.ALL_COMPLETED)
-                is_first_loop = False
+                loop_number += 1
 
     def cancel(self, *arg, **kwargs):
         for task in self._tasks:
