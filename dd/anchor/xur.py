@@ -141,8 +141,12 @@ def exotic_armor_fragment(
             f":{armor_piece.class_.lower().capitalize()}:  "
             + f"{armor_piece.class_.lower().capitalize()}: "
             + f"[**{armor_piece.name} "
-            + f"({armor_piece.bucket})**]({armor_piece.lightgg_url})\n"
-            + armor_stat_line_format(armor_piece, allowed_emoji_list=allowed_emoji_list)
+            + f"({armor_piece.bucket})**]({armor_piece.lightgg_url})"
+            # + "\n"
+            # + armor_stat_line_format(
+            #     armor_piece,
+            #     allowed_emoji_list=allowed_emoji_list,
+            # )
         )
     return (
         "## **__Exotic Armor__**\n"
@@ -364,9 +368,9 @@ async def format_xur_vendor(
     xur_locations = xur_support_data.XurLocations.from_gspread_url(
         cfg.sheets_ls_url, cfg.gsheets_credentials
     )
-    xur_armor_sets = xur_support_data.XurArmorSets.from_gspread_url(
-        cfg.sheets_ls_url, cfg.gsheets_credentials
-    )
+    # xur_armor_sets = xur_support_data.XurArmorSets.from_gspread_url(
+    #     cfg.sheets_ls_url, cfg.gsheets_credentials
+    # )
 
     emoji_dict = await fetch_emoji_dict(bot)
 
@@ -394,11 +398,11 @@ async def format_xur_vendor(
         [item for item in vendor.sale_items if item.is_exotic and item.is_catalyst],
         emoji_include_list=emoji_dict.keys(),
     )
-    description += legendary_armor_fragement(
-        [item for item in vendor.sale_items if item.is_armor and item.is_legendary],
-        xur_armor_sets,
-        emoji_include_list=emoji_dict.keys(),
-    )
+    # description += legendary_armor_fragement(
+    #     [item for item in vendor.sale_items if item.is_armor and item.is_legendary],
+    #     xur_armor_sets,
+    #     emoji_include_list=emoji_dict.keys(),
+    # )
     description += legendary_weapons_fragment(
         [item for item in vendor.sale_items if item.is_weapon and item.is_legendary],
         emoji_include_list=emoji_dict.keys(),
