@@ -251,33 +251,6 @@ def exotic_catalysts_fragment(
     return exotic_catalysts_fragment_
 
 
-def legendary_armor_fragement(
-    legendary_armor_pieces: t.List[api.DestinyArmor],
-    xur_armor_sets_data: xur_support_data.XurArmorSets,
-    emoji_include_list: t.List[str] = [],
-) -> str:
-    armor_sets = set()
-    for armor_piece in legendary_armor_pieces:
-        armor_set_name = armor_piece.armor_set_name
-        if armor_set_name:
-            armor_sets.add(armor_set_name)
-
-    subfragments = []
-    subfragments.append("## **__Legendary Armor__**")
-    subfragments.append(
-        costs_string_from_items(legendary_armor_pieces, emoji_include_list)
-    )
-    subfragments.append("")
-
-    for armor_set_name in armor_sets:
-        armor_set = xur_armor_sets_data[armor_set_name]
-        subfragments.append(f":armor: **{armor_set}**")
-
-    subfragments.append("")
-
-    return "\n".join(subfragments)
-
-
 def exotic_class_or_cipher_fragment(items, emoji_include_list: t.List[str]) -> str:
     fragment = "\n"
 
@@ -398,11 +371,6 @@ async def format_xur_vendor(
         [item for item in vendor.sale_items if item.is_exotic and item.is_catalyst],
         emoji_include_list=emoji_dict.keys(),
     )
-    # description += legendary_armor_fragement(
-    #     [item for item in vendor.sale_items if item.is_armor and item.is_legendary],
-    #     xur_armor_sets,
-    #     emoji_include_list=emoji_dict.keys(),
-    # )
     description += legendary_weapons_fragment(
         [item for item in vendor.sale_items if item.is_weapon and item.is_legendary],
         emoji_include_list=emoji_dict.keys(),
