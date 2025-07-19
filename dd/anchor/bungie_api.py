@@ -606,7 +606,7 @@ class DestinyArmor(DestinyItem):
 
         for stat in self._armor_v2_to_v3_stats_mapping.values():
             self._stats[stat] = stats.get(stat, 0) + stats.get(
-                self._armor_v2_to_v3_stats_mapping[stat], 0
+                self._armor_v3_to_v2_stats_mapping[stat], 0
             )
 
     @staticmethod
