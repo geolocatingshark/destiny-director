@@ -579,14 +579,20 @@ class DestinyWeapon(DestinyItem):
 
 
 class DestinyArmor(DestinyItem):
-    # _tracked_stats = [
-    #     "Mobility",
-    #     "Resilience",
-    #     "Recovery",
-    #     "Discipline",
-    #     "Intellect",
-    #     "Strength",
-    # ]
+    _armor_v2_to_v3_stats_mapping = {
+        "Mobility": "Weapons",
+        "Resilience": "Health",
+        "Recovery": "Class",
+        "Discipline": "Grenade",
+        "Intellect": "Super",
+        "Strength": "Melee",
+    }
+    _armor_v3_to_v2_stats_mapping = {
+        v: k for k, v in _armor_v2_to_v3_stats_mapping.items()
+    }
+    _tracked_stats = list(_armor_v2_to_v3_stats_mapping.keys()) + list(
+        _armor_v2_to_v3_stats_mapping.values()
+    )
 
     def __init__(
         self,
@@ -595,12 +601,13 @@ class DestinyArmor(DestinyItem):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        # self._stats = stats
-        # self._intrinsic_stats_added = False
+        self._intrinsic_stats_added = False
+        self._stats = {}
 
-        # for stat in self._tracked_stats:
-        #     if stat not in self.stats:
-        #         self.stats[stat] = 0
+        for stat in self._armor_v2_to_v3_stats_mapping.values():
+            self._stats[stat] = stats.get(stat, 0) + stats.get(
+                self._armor_v2_to_v3_stats_mapping[stat], 0
+            )
 
     @staticmethod
     def _get_stat_name(manifest_table: dict, hash_: int):
@@ -698,37 +705,40 @@ class DestinyArmor(DestinyItem):
 
     @property
     def stats(self) -> dict:
-        # self._stats = {name: self._stats.get(name, 0) for name in self._tracked_stats}
-        self._stats = {}
+        self._stats = {
+            name: self._stats.get(name, 0)
+            for name in self._armor_v2_to_v3_stats_mapping.values()
+        }
         return self._stats
 
     @stats.setter
     def stats(self, stats: dict):
-        # self._stats = {name: stats.get(name, 0) for name in self._tracked_stats}
-        return
+        self._stats = {
+            name: stats.get(name, 0)
+            for name in self._armor_v2_to_v3_stats_mapping.values()
+        }
 
     @property
     def stat_total(self) -> int:
-        # return sum(self.stats.values())
-        return 0
+        return sum(self.stats.values())
 
     def __repr__(self):
         return (
             super().__repr__()
             + (f" - Armor Set: {self.armor_set_name}\n" if self.armor_set_name else "")
-            # + (
-            #     (
-            #         " - Stats:\n"
-            #         + "\n".join(
-            #             f"   * {stat_name}: {stat_value}"
-            #             for stat_name, stat_value in self.stats.items()
-            #         )
-            #         + "\n"
-            #         + f"   * Total: {self.stat_total}"
-            #     )
-            #     if self.stats
-            #     else ""
-            # )
+            + (
+                (
+                    " - Stats:\n"
+                    + "\n".join(
+                        f"   * {stat_name}: {stat_value}"
+                        for stat_name, stat_value in self.stats.items()
+                    )
+                    + "\n"
+                    + f"   * Total: {self.stat_total}"
+                )
+                if self.stats
+                else ""
+            )
             + "\n"
         )
 

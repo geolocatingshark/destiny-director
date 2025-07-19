@@ -70,18 +70,17 @@ def armor_stat_line_format(
     armor: api.DestinyArmor,
     simple_mode: bool = False,
     allowed_emoji_list: t.List[str] = [],
-    default_emoji="rotate",
 ) -> str:
     if simple_mode:
-        return f"- Stat: {armor.stat_total}"
+        return f"**Σ: {armor.stat_total}**"
     stats = armor.stats
     stat_line = f"**Σ {armor.stat_total}**:"
     for stat_name, stat_value in stats.items():
-        stat_name = stat_name.lower()
+        stat_name = str(stat_name).lower()
         if stat_name in allowed_emoji_list:
             stat_line += f" :{stat_name}: `{stat_value}`"
         else:
-            stat_line += f" :{default_emoji}: `{stat_value}` "
+            stat_line += f" :{stat_name[:1].upper()}: `{stat_value}` "
 
     return stat_line
 
