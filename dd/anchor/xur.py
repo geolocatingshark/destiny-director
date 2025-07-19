@@ -169,6 +169,9 @@ def exotic_armor_fragment(
 
     classes_ = []
     for class_, armor_pieces in exotic_armor_pieces_by_class.items():
+        if classes_:
+            # Add line break between classes
+            subfragments.append("")
         classes_.append(class_)
         subfragments.append(f"**{class_.capitalize()}**")
         for armor_piece in armor_pieces:
