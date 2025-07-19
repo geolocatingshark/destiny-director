@@ -334,10 +334,12 @@ async def format_xur_vendor(
     description = "# [XÛR'S LOOT](https://kyber3000.com/D2-Xur)\n\n"
     description += xur_departure_string()
     description += xur_location_fragment(vendor.location, xur_locations)
+    exotic_armor_pieces = [
+        item for item in vendor.sale_items if item.is_exotic and item.is_armor
+    ]
+    exotic_armor_pieces.sort(key=lambda x: x.class_)
     description += exotic_armor_fragment(
-        [item for item in vendor.sale_items if item.is_exotic and item.is_armor].sort(
-            key=lambda x: x.class_
-        ),
+        exotic_armor_pieces,
         allowed_emoji_list=emoji_dict.keys(),
     )
     description += exotic_weapons_fragment(
