@@ -37,7 +37,6 @@ from .embeds import substitute_user_side_emoji
 logger = logging.getLogger(__name__)
 
 re_masterwork = re.compile("Tier [0-9]: ")
-EXOTIC_CLASS_ITEM_NAMES = ["relativism", "stoicism", "solipsism"]
 
 
 def xur_departure_string(post_date_time: dt.datetime | None = None) -> str:
@@ -136,10 +135,15 @@ def exotic_armor_fragment(
     exotic_armor_pieces: t.List[api.DestinyArmor], allowed_emoji_list: t.List[str]
 ) -> str:
     subfragments: t.List[str] = []
+    class_ = None
     for armor_piece in exotic_armor_pieces:
+        if class_ != armor_piece.class_:
+            class_ = armor_piece.class_
+            if subfragments:
+                subfragments.append("")
+            subfragments.append(str(class_).capitalize())
         subfragments.append(
-            f":{armor_piece.class_.lower().capitalize()}:  "
-            + f"{armor_piece.class_.lower().capitalize()}: "
+            ":armor:"
             + f"[**{armor_piece.name} "
             + f"({armor_piece.bucket})**]({armor_piece.lightgg_url})"
             # + "\n"
@@ -152,8 +156,8 @@ def exotic_armor_fragment(
         "## **__Exotic Armor__**\n"
         + costs_string_from_items(exotic_armor_pieces, allowed_emoji_list)
         + "\n\n"
-        + "\n\n".join(subfragments)
-        + "\n"
+        + "\n".join(subfragments)
+        + "\n\n"
     )
 
 
@@ -251,25 +255,6 @@ def exotic_catalysts_fragment(
     return exotic_catalysts_fragment_
 
 
-def exotic_class_or_cipher_fragment(items, emoji_include_list: t.List[str]) -> str:
-    fragment = "\n"
-
-    if "exotic cipher" in [item.name.lower().strip() for item in items]:
-        fragment += "★ Exotic Cipher. " + costs_string_from_items(
-            items, emoji_include_list, include_cost_text=False
-        )
-    else:
-        fragment += (
-            "★ Exotic Class Items (Relativism, Stoicism, Solipsism) are available this week with randomized perks. "
-            + costs_string_from_items(
-                items, emoji_include_list, include_cost_text=False
-            )
-        )
-
-    fragment += "\n"
-    return fragment
-
-
 def last_two_active_perk_columns(perks: t.List[t.List[str]]) -> t.List[int]:
     perks_to_return = []
     for i, perk in enumerate(perks):
@@ -351,17 +336,10 @@ async def format_xur_vendor(
     description += xur_departure_string()
     description += xur_location_fragment(vendor.location, xur_locations)
     description += exotic_armor_fragment(
-        [item for item in vendor.sale_items if item.is_exotic and item.is_armor],
+        [item for item in vendor.sale_items if item.is_exotic and item.is_armor].sort(
+            key=lambda x: x.class_
+        ),
         allowed_emoji_list=emoji_dict.keys(),
-    )
-    description += exotic_class_or_cipher_fragment(
-        [
-            item
-            for item in vendor.sale_items
-            if item.name.lower().strip()
-            in (EXOTIC_CLASS_ITEM_NAMES + ["exotic cipher"])
-        ],
-        emoji_include_list=emoji_dict.keys(),
     )
     description += exotic_weapons_fragment(
         [item for item in vendor.sale_items if item.is_exotic and item.is_weapon],
