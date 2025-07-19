@@ -37,6 +37,16 @@ from .embeds import substitute_user_side_emoji
 logger = logging.getLogger(__name__)
 
 re_masterwork = re.compile("Tier [0-9]: ")
+exotic_class_item_by_class = {
+    "hunter": "Relativism",
+    "titan": "Stoicism",
+    "warlock": "Solipsism",
+}
+exotic_class_item_xur_strings_by_class = {
+    "hunter": ":armor: [**Relativism (Class Item)**](https://light.gg/db/items/3844826440)",
+    "titan": ":armor: [**Stoicism (Class Item)**](https://light.gg/db/items/3844826440)",
+    "warlock": ":armor: [**Solipsism (Class Item)**](https://light.gg/db/items/3844826440)",
+}
 
 
 def xur_departure_string(post_date_time: dt.datetime | None = None) -> str:
@@ -130,27 +140,51 @@ def costs_string_from_items(
     return costs_line
 
 
+def exotic_armor_name_line(exotic_armor_piece: api.DestinyArmor):
+    return (
+        ":armor:"
+        + f"[**{exotic_armor_piece.name} "
+        + f"({exotic_armor_piece.bucket})**]"
+        + f"({exotic_armor_piece.lightgg_url})"
+    )
+
+
 def exotic_armor_fragment(
     exotic_armor_pieces: t.List[api.DestinyArmor], allowed_emoji_list: t.List[str]
 ) -> str:
     subfragments: t.List[str] = []
     class_ = None
+    exotic_armor_pieces_by_class: t.Dict[str, t.List[api.DestinyArmor]] = {}
+
+    classes_ = []
     for armor_piece in exotic_armor_pieces:
-        if class_ != armor_piece.class_:
-            class_ = armor_piece.class_
-            if subfragments:
-                subfragments.append("")
-            subfragments.append(str(class_).capitalize())
-        subfragments.append(
-            ":armor:"
-            + f"[**{armor_piece.name} "
-            + f"({armor_piece.bucket})**]({armor_piece.lightgg_url})"
-            # + "\n"
-            # + armor_stat_line_format(
-            #     armor_piece,
-            #     allowed_emoji_list=allowed_emoji_list,
-            # )
-        )
+        if armor_piece.class_ not in classes_:
+            classes_.append(armor_piece.class_)
+
+    for class_ in classes_:
+        exotic_armor_pieces_by_class[class_] = []
+
+    for armor_piece in exotic_armor_pieces:
+        exotic_armor_pieces_by_class[armor_piece.class_].append(armor_piece)
+
+    classes_ = []
+    for class_, armor_pieces in exotic_armor_pieces_by_class.items():
+        classes_.append(class_)
+        subfragments.append(f"**{class_.capitalize()}**")
+        for armor_piece in armor_pieces:
+            subfragments.append(
+                exotic_armor_name_line(armor_piece)
+                # + "\n"
+                # + armor_stat_line_format(
+                #     armor_piece,
+                #     allowed_emoji_list=allowed_emoji_list,
+                # )
+            )
+        if exotic_class_item_by_class[class_.lower()] not in [
+            armor_piece.name for armor_piece in armor_pieces
+        ]:
+            subfragments.append(exotic_class_item_xur_strings_by_class[class_.lower()])
+
     return (
         "## **__Exotic Armor__**\n"
         + costs_string_from_items(exotic_armor_pieces, allowed_emoji_list)
