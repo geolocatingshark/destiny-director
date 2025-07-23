@@ -68,6 +68,12 @@ async def format_eververse_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
         if "bright dust" not in str(sale_item.costs).lower():
             continue
 
+        # Manually exclude DokiDoki Bundles from eververse returned from the API
+        # The below two lines should be removed at a later date when this is not a
+        # problem
+        if sale_item.name.startswith("Doki Doki Destiny "):
+            continue
+
         if sale_item.class_ == "Hunter":
             hunter_specific_items.append(sale_item)
         elif sale_item.class_ == "Titan":
