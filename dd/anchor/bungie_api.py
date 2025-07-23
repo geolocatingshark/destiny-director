@@ -55,7 +55,7 @@ ARMOR_TYPE_NAMES = (
 
 DESTINY_CLASSES_ENUM = ("Titan", "Hunter", "Warlock")
 
-DESTINY_CLASS_TYPE_IDS = {2: "Hunter", 0: "Titan", 1: "Warlock"}
+DESTINY_CLASS_TYPE_IDS = {1: "Hunter", 0: "Titan", 2: "Warlock"}
 
 components = (
     # "300,"  # DestinyComponentType.ItemInstances
