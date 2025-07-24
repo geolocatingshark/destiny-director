@@ -28,7 +28,7 @@ from . import (
     controller,
     eververse,
     gunsmith,
-    lost_sector,
+    # lost_sector,
     posts,
     source,
     xur,
@@ -66,7 +66,7 @@ async def on_guild_rm(event: h.events.GuildLeaveEvent):
 
 if __name__ == "__main__":
     m.install(bot)
-    lost_sector.register(bot)
+    # lost_sector.register(bot)
     source.register(bot)
     controller.register(bot)
     posts.register(bot)
