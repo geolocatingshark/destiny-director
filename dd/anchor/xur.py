@@ -43,9 +43,9 @@ exotic_class_item_by_class = {
     "warlock": "Solipsism",
 }
 exotic_class_item_xur_strings_by_class = {
-    "hunter": ":armor: [**Relativism (Class Item)**](https://light.gg/db/items/3844826440)",
-    "titan": ":armor: [**Stoicism (Class Item)**](https://light.gg/db/items/3844826440)",
-    "warlock": ":armor: [**Solipsism (Class Item)**](https://light.gg/db/items/3844826440)",
+    "hunter": ":armor:  [**Relativism (Class Item)**](https://light.gg/db/items/3844826440)",
+    "titan": ":armor:  [**Stoicism (Class Item)**](https://light.gg/db/items/3844826440)",
+    "warlock": ":armor:  [**Solipsism (Class Item)**](https://light.gg/db/items/3844826440)",
 }
 
 
@@ -82,7 +82,7 @@ def armor_stat_line_format(
     allowed_emoji_list: t.List[str] = [],
 ) -> str:
     if simple_mode:
-        return f"**Σ: {armor.stat_total}**"
+        return f"Σ {armor.stat_total}"
     stats = armor.stats
     stat_line = f"**Σ {armor.stat_total}**:"
     for stat_name, stat_value in stats.items():
@@ -142,7 +142,7 @@ def costs_string_from_items(
 
 def exotic_armor_name_line(exotic_armor_piece: api.DestinyArmor):
     return (
-        ":armor:"
+        ":armor:  "
         + f"[**{exotic_armor_piece.name} "
         + f"({exotic_armor_piece.bucket})**]"
         + f"({exotic_armor_piece.lightgg_url})"
@@ -177,16 +177,18 @@ def exotic_armor_fragment(
         for armor_piece in armor_pieces:
             subfragments.append(
                 exotic_armor_name_line(armor_piece)
-                # + "\n"
-                # + armor_stat_line_format(
-                #     armor_piece,
-                #     allowed_emoji_list=allowed_emoji_list,
-                # )
+                + " "
+                + armor_stat_line_format(
+                    armor_piece, allowed_emoji_list=allowed_emoji_list, simple_mode=True
+                )
             )
         if exotic_class_item_by_class[class_.lower()] not in [
             armor_piece.name for armor_piece in armor_pieces
         ]:
-            subfragments.append(exotic_class_item_xur_strings_by_class[class_.lower()])
+            subfragments.append(
+                exotic_class_item_xur_strings_by_class[class_.lower()]
+                + " *random rolls*"
+            )
 
     return (
         "## **__Exotic Armor__**\n"
