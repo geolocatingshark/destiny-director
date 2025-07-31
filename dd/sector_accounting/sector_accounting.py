@@ -254,9 +254,9 @@ class SpreadsheetBackedData:
 
 @attr.s
 class Rotation(SpreadsheetBackedData):
-    start_date: dt.datetime = attr.ib(type=dt.datetime)
-    _sector_rot: Dict[str, EntityRotation] = attr.ib(type=defaultdict(EntityRotation))
-    _sector_data: SectorData = attr.ib(SectorData)
+    start_date = attr.ib(type=dt.datetime)
+    _sector_rot = attr.ib(type=defaultdict(EntityRotation))
+    _sector_data = attr.ib(SectorData)
 
     @classmethod
     def from_gspread(
