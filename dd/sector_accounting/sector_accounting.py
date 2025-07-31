@@ -256,6 +256,7 @@ class SpreadsheetBackedData:
 class Rotation(SpreadsheetBackedData):
     start_date = attr.ib(type=dt.datetime)
     _sector_rot = attr.ib(type=defaultdict(EntityRotation))
+    _surge_rot = attr.ib(type=EntityRotation)
     _sector_data = attr.ib(SectorData)
 
     @classmethod
@@ -285,7 +286,6 @@ class Rotation(SpreadsheetBackedData):
                 "Throne World": EntityRotation.from_gspread(values, 10),
             },
             surge_rot=EntityRotation.from_gspread(values, 11),
-            legendary_rewards_rot=EntityRotation.from_gspread(values, 12),
             sector_data=SectorData(general_sheet, legend_sheet, master_sheet),
         )
 
