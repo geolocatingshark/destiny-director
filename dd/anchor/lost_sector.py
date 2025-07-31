@@ -23,7 +23,7 @@ import lightbulb as lb
 from hmessage import HMessage as MessagePrototype
 
 from ..common import cfg, schemas
-from ..common.lost_sector import format_sector
+from ..common.lost_sector import format_post
 from . import utils
 from .autopost import make_autopost_control_commands
 
@@ -149,7 +149,7 @@ async def ls_update(ctx: lb.MessageContext):
 
     await ctx.edit_last_response("Updating post now")
 
-    message = await format_sector(bot=ctx.app)
+    message = await format_post(bot=ctx.app)
     await msg_to_update.edit(**message.to_message_kwargs())
     await ctx.edit_last_response("Post updated")
 
@@ -165,7 +165,7 @@ async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):
             channel_id=cfg.followables["lost_sector"],
             check_enabled=True,
             enabled_check_coro=schemas.AutoPostSettings.get_lost_sector_enabled,
-            construct_message_coro=format_sector,
+            construct_message_coro=format_post,
         )
 
 
@@ -175,7 +175,7 @@ def register(bot: lb.BotApp) -> None:
         schemas.AutoPostSettings.get_lost_sector_enabled,
         schemas.AutoPostSettings.set_lost_sector,
         cfg.followables["lost_sector"],
-        format_sector,
+        format_post,
         message_announcer_coro=discord_announcer,
     )
 

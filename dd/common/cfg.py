@@ -217,6 +217,7 @@ sheets_ls_url = _getenv("SHEETS_LS_URL")
 
 # Static Images / Resources
 gunsmith_image_url = _getenv("GUNSMITH_IMAGE_URL")
+lost_sector_gif_url = _getenv("LOST_SECTOR_GIF_URL")
 
 # Bungie credentials
 bungie_api_key = _getenv("BUNGIE_API_KEY", optional=True)

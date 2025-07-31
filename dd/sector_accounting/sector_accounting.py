@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import datetime as dt
 import warnings
-from typing import List, Union
+from collections import defaultdict
+from typing import Dict, List, Union
 
 import attr
 import gspread
@@ -167,30 +168,6 @@ class Sector:
             self.master_data or other.master_data,
         )
 
-    def to_sector_v1(self) -> SectorV1Compat:
-        modifiers = ""
-
-        if self.legend_data.modifiers:
-            modifiers += self.legend_data.modifiers
-
-        if self.legend_data.modifiers and self.master_data.modifiers:
-            modifiers += " + "
-
-        if self.master_data.modifiers:
-            modifiers += self.master_data.modifiers + " on Master"
-
-        return SectorV1Compat(
-            name=self.name,
-            shortlink_gfx=self.shortlink_gfx,
-            reward=self.reward,
-            champions=self.legend_data.champions,
-            shields=self.legend_data.shields,
-            burn=self.threat,
-            modifiers=modifiers,
-            overcharged_weapon=self.overcharged_weapon,
-            surge=self.surge,
-        )
-
 
 class SectorData(dict):
     def __init__(
@@ -277,12 +254,9 @@ class SpreadsheetBackedData:
 
 @attr.s
 class Rotation(SpreadsheetBackedData):
-    start_date = attr.ib(type=dt.datetime)
-    _reward_rot = attr.ib(type=EntityRotation)
-    _sector_rot = attr.ib(type=EntityRotation)
-    _surge_rot = attr.ib(type=EntityRotation)
-    _legendary_rewards_rot = attr.ib(type=EntityRotation)
-    _sector_data = attr.ib(SectorData)
+    start_date: dt.datetime = attr.ib(type=dt.datetime)
+    _sector_rot: Dict[str, EntityRotation] = attr.ib(type=defaultdict(EntityRotation))
+    _sector_data: SectorData = attr.ib(SectorData)
 
     @classmethod
     def from_gspread(
@@ -299,28 +273,36 @@ class Rotation(SpreadsheetBackedData):
         self = cls(
             # Lost sector start date
             cls._start_date_from_gspread(rotation_sheet, buffer),
-            reward_rot=EntityRotation.from_gspread(values, 1),
-            sector_rot=EntityRotation.from_gspread(values, 2),
-            surge_rot=EntityRotation.from_gspread(values, 3),
-            legendary_rewards_rot=EntityRotation.from_gspread(values, 4),
+            sector_rot={
+                "Cosmodrome": EntityRotation.from_gspread(values, 2),
+                "The Dreaming City": EntityRotation.from_gspread(values, 3),
+                "EDZ": EntityRotation.from_gspread(values, 4),
+                "Europa": EntityRotation.from_gspread(values, 5),
+                "The Moon": EntityRotation.from_gspread(values, 6),
+                "Neomuna": EntityRotation.from_gspread(values, 7),
+                "Nessus": EntityRotation.from_gspread(values, 8),
+                "Pale Heart": EntityRotation.from_gspread(values, 9),
+                "Throne World": EntityRotation.from_gspread(values, 10),
+            },
+            surge_rot=EntityRotation.from_gspread(values, 11),
+            legendary_rewards_rot=EntityRotation.from_gspread(values, 12),
             sector_data=SectorData(general_sheet, legend_sheet, master_sheet),
         )
 
         return self
 
-    def __call__(self, date: Union[dt.datetime, None] = None) -> Sector:
+    def __call__(self, date: Union[dt.datetime, None] = None) -> List[Sector]:
         # Returns the lost sector in rotation on date or for today by default
         date = date if date is not None else dt.datetime.now(tz=dt.timezone.utc)
         days_since_ref_date = (date - self.start_date).days
 
-        sector = Sector(
-            name=self._sector_rot[days_since_ref_date],
-            reward=self._reward_rot[days_since_ref_date],
-            surge=self._surge_rot[days_since_ref_date],
-            legendary_rewards=self._legendary_rewards_rot[days_since_ref_date],
-        )
+        sectors = []
 
-        return sector + self._sector_data[sector.name]
+        for sector_names in self._sector_rot.values():
+            sector_name = sector_names[days_since_ref_date]
+            sectors.append(Sector(name=sector_name) + self._sector_data[sector_name])
+
+        return sectors
 
     @staticmethod
     def _start_date_from_gspread(

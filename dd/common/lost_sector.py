@@ -12,7 +12,6 @@ from ..sector_accounting import sector_accounting
 from . import utils
 from .utils import (
     construct_emoji_substituter,
-    get_ordinal_suffix,
     re_user_side_emoji,
     space,
 )
@@ -114,12 +113,9 @@ def format_counts(
     )
 
 
-async def format_sector(
+async def format_post(
     bot: lb.BotApp | None = None,
-    sector: sector_accounting.Sector | None = None,
-    secondary_image: h.Attachment | None = None,
-    secondary_embed_title: str | None = "",
-    secondary_embed_description: str | None = "",
+    sectors: sector_accounting.Sector | None = None,
     date: dt.datetime | None = None,
     emoji_dict: t.Dict[str, h.Emoji] | None = None,
 ) -> MessagePrototype:
@@ -153,112 +149,59 @@ async def format_sector(
             raise ValueError("bot must be provided if emoji_dict is not")
         emoji_dict = await fetch_emoji_dict(bot)
 
-    if sector is None:
-        sector: sector_accounting.Sector = sector_accounting.Rotation.from_gspread_url(
-            cfg.sheets_ls_url, cfg.gsheets_credentials, buffer=5
-        )()
+    if sectors is None:
+        sectors: t.List[sector_accounting.Sector] = (
+            sector_accounting.Rotation.from_gspread_url(
+                cfg.sheets_ls_url, cfg.gsheets_credentials, buffer=5
+            )(date)
+        )
 
     # Follow the hyperlink to have the newest image embedded
     try:
-        ls_gfx_url = await utils.follow_link_single_step(sector.shortlink_gfx)
+        ls_gif_url = await utils.follow_link_single_step(cfg.lost_sector_gif_url)
     except aiohttp.InvalidURL:
-        ls_gfx_url = None
-
-    # Surges to emojis
-    surges = []
-    for surge in sector.surges:
-        surges += [str(emoji_dict.get(surge) or emoji_dict.get(surge.lower()))]
-
-    # Threat to emoji
-    threat = emoji_dict.get(sector.threat) or emoji_dict.get(sector.threat.lower())
-
-    overcharged_weapon_emoji = (
-        "⚔️" if sector.overcharged_weapon.lower() in ["sword", "glaive"] else "🔫"
-    )
-
-    if "(" in sector.name or ")" in sector.name:
-        sector_name = sector.name.split("(")[0].strip()
-        sector_location = sector.name.split("(")[1].split(")")[0].strip()
-    else:
-        sector_name = sector.name
-        sector_location = None
-
-    # Legendary weapon rewards
-    legendary_weapon_rewards = sector.legendary_rewards
-
-    legendary_weapon_rewards = re_user_side_emoji.sub(
-        construct_emoji_substituter(emoji_dict), legendary_weapon_rewards
-    )
-
-    if date:
-        suffix = get_ordinal_suffix(date.day)
-        title = f"Lost Sector for {date.strftime('%B %-d')}{suffix}"
-    else:
-        title = "Lost Sector Today"
+        ls_gif_url = None
 
     embed = h.Embed(
-        title=f"**{title}**",
+        title="**Destiny 2**",
         description=(
-            f"{emoji_dict['LS']}{space.three_per_em}{sector_name.strip()}\n"
-            + (
-                f"{emoji_dict['location']}{space.three_per_em}{sector_location.strip()}"
-                if sector_location
-                else ""
-            )
+            "## [World Lost Sectors](https://kyber3000.com/LS)\n"
+            "\n"
+            "Changes daily at (<t:1753894800:t>) TO RECHECK FORMAT\n"
+            "\n"
         ),
         color=cfg.embed_default_color,
         url="https://lostsectortoday.com/",
     )
-    embed.description += "\n\n" + (
-        "**Rewards (If-Solo)**\n"
-        + str(emoji_dict["exotic_engram"])
-        + f"{space.three_per_em}Exotic {sector.reward}"
+
+    for sector in sectors:
+        sector: sector_accounting.Sector
+        embed.description += f":LS: **[{sector.name}]({sector.shortlink_gfx})**\n"
+
+    embed.description += (
+        "\n"
+        + "Rewards:\n"
+        + ":enhancement_core: Enhancement Core\n"
+        + ":exotic_engram: Exotic Engram (If-Solo)\n"
+        + ":legendary_weap: Legendary Weapon (If-Solo)\n"
+    )
+    embed.description += (
+        "[View more details](https://lostsectortoday.com) ↗ "
+        "| [Support Us](https://ko-fi.com/Kyber3000) ↗"
     )
 
-    if await schemas.AutoPostSettings.get_lost_sector_legendary_weapons_enabled():
-        embed.description += "\n\n" + (
-            "**Legendary Weapons (If-Solo)**\n" + legendary_weapon_rewards
-        )
-
-        embed.description += "\n\n" + (
-            "**Drop Rate (with no champions left)**\n" + "Expert: 70%\n"
-            "Master: 100% + double perks on weapons"
-        )
-
-    embed.description += "\n\n" + (
-        "**Champs and Shields**\n"
-        + format_counts(sector.legend_data, sector.master_data, emoji_dict)
-    )
-    embed.description += "\n\n" + "**Elementals**\n"
-    if await schemas.AutoPostSettings.get_lost_sector_surge_enabled():
-        embed.description += (
-            f"Surge: {space.punctuation}{space.hair}{space.hair}"
-            + " ".join(surges)
-            + "\n"
-        )
-    embed.description += f"Threat: {threat}"
-
-    embed.description += "\n\n" + (
-        "**Modifiers**\n"
-        + str(emoji_dict["swords"])
-        + f"{space.three_per_em}{sector.to_sector_v1().modifiers}"
-        + f"\n{overcharged_weapon_emoji}{space.three_per_em}Overcharged {sector.overcharged_weapon}"
+    embed.description = re_user_side_emoji.sub(
+        construct_emoji_substituter(emoji_dict), embed.description
     )
 
     embed.set_thumbnail(cfg.kyber_ls_thumbnail)
 
-    if ls_gfx_url:
-        embed.set_image(ls_gfx_url)
+    if ls_gif_url:
+        embed.set_image(ls_gif_url)
 
-    if secondary_image:
-        embed2 = h.Embed(
-            title=secondary_embed_title,
-            description=secondary_embed_description,
-            color=cfg.kyber_pink,
-        )
-        embed2.set_image(secondary_image)
-        embeds = [embed, embed2]
-    else:
-        embeds = [embed]
+    return MessagePrototype(embeds=[embed])
 
-    return MessagePrototype(embeds=embeds)
+
+async def format_sector(sector: sector_accounting.Sector) -> str:
+    """Formats a Sector object into an embed."""
+    return f":LS: **[{sector.name}]({sector.shortlink_gfx})**\n"
