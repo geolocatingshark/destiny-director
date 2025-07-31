@@ -167,7 +167,7 @@ async def format_post(
         description=(
             "## [World Lost Sectors](https://kyber3000.com/LS)\n"
             "\n"
-            "Changes daily at (<t:1753894800:t>) TO RECHECK FORMAT\n"
+            "Changes daily at <t:1753894800:t> local time.\n"
             "\n"
         ),
         color=cfg.embed_default_color,
