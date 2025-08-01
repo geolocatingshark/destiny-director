@@ -22,7 +22,6 @@ import lightbulb as lb
 from hmessage import HMessage as MessagePrototype
 
 from ...common import cfg
-from ...common.lost_sector import get_ordinal_suffix
 from ...common.utils import accumulate
 from .. import utils
 from ..bot import CachedFetchBot, ServerEmojiEnabledBot, UserCommandBot
@@ -50,20 +49,6 @@ class SectorMessages(NavPages):
         ]
 
         processed_message = accumulate(processed_messages)
-
-        # Date correction
-        try:
-            title = str(processed_message.embeds[0].title)
-            if "Lost Sector Today" in title:
-                date = messages[0].timestamp
-                suffix = get_ordinal_suffix(date.day)
-                title = title.replace(
-                    "Today", f"for {date.strftime('%B %-d')}{suffix}", 1
-                )
-                processed_message.embeds[0].title = title
-        except Exception as e:
-            e.add_note("Exception trying to replace date in lost sector title")
-            logging.exception(e)
 
         return processed_message
 
