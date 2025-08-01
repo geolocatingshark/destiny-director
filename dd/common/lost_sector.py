@@ -184,10 +184,11 @@ async def format_post(
         + ":enhancement_core: Enhancement Core\n"
         + ":exotic_engram: Exotic Engram (If-Solo)\n"
         + ":legendary_weap: Legendary Weapon (If-Solo)\n"
+        + "\n"
     )
     embed.description += (
-        "[View more details](https://lostsectortoday.com) ↗ "
-        "| [Support Us](https://ko-fi.com/Kyber3000) ↗"
+        "[View more details](https://lostsectortoday.com) ↗\n"
+        "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
     )
 
     embed.description = re_user_side_emoji.sub(
