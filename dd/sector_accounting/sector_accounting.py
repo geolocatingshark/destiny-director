@@ -294,7 +294,10 @@ class Rotation(SpreadsheetBackedData):
 
         for sector_names in self._sector_rot.values():
             sector_name = sector_names[days_since_ref_date]
-            sectors.append(Sector(name=sector_name) + self._sector_data[sector_name])
+            sectors.append(
+                Sector(name=sector_name, surge=self._surge_rot[days_since_ref_date])
+                + self._sector_data[sector_name]
+            )
 
         return sectors
 
