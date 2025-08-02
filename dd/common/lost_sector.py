@@ -186,6 +186,8 @@ async def format_post(
         construct_emoji_substituter(emoji_dict), embed.description
     )
 
+    embed.description[:3072]
+
     embed.set_thumbnail(cfg.kyber_ls_thumbnail)
 
     if ls_gif_url:
