@@ -1250,28 +1250,12 @@ class AutoPostSettings(Base):
         return await cls.set_enabled("lost_sector", enabled)
 
     @classmethod
-    async def get_lost_sector_legendary_weapons_enabled(cls):
-        return await cls.get_enabled("lost_sector_legendary_weapons")
+    async def get_lost_sector_details_enabled(cls):
+        return await cls.get_enabled("lost_sector_details")
 
     @classmethod
-    async def set_lost_sector_legendary_weapons(cls, enabled: bool):
-        return await cls.set_enabled("lost_sector_legendary_weapons", enabled)
-
-    @classmethod
-    async def get_lost_sector_surge_enabled(cls):
-        return await cls.get_enabled("lost_sector_surge")
-
-    @classmethod
-    async def set_lost_sector_surge(cls, enabled: bool):
-        return await cls.set_enabled("lost_sector_surge", enabled)
-
-    @classmethod
-    async def get_lost_sector_twitter_enabled(cls):
-        return await cls.get_enabled("lost_sector_twitter")
-
-    @classmethod
-    async def set_lost_sector_twitter(cls, enabled: bool):
-        return await cls.set_enabled("lost_sector_twitter", enabled)
+    async def set_lost_sector_details(cls, enabled: bool):
+        return await cls.set_enabled("lost_sector_details", enabled)
 
     @classmethod
     async def get_xur_enabled(cls):

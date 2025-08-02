@@ -66,57 +66,26 @@ async def discord_announcer(
     "option", "Enable or disable", str, choices=["Enable", "Disable"], required=True
 )
 @lb.command(
-    "legendary_weapons",
-    "Control lost sector legendary weapon announcements",
+    "details",
+    "Control whether lost sector additional details and counts are sent out",
     auto_defer=True,
     pass_options=True,
 )
 @lb.implements(lb.SlashSubCommand)
-async def control_legendary_weapons(ctx: lb.Context, option: str):
+async def control_lost_sector_details(ctx: lb.Context, option: str):
     """Enable or disable lost sector legendary weapon announcements"""
 
     desired_setting: bool = True if option.lower() == "enable" else False
-    current_setting = (
-        await schemas.AutoPostSettings.get_lost_sector_legendary_weapons_enabled()
-    )
+    current_setting = await schemas.AutoPostSettings.get_lost_sector_details_enabled()
 
     if desired_setting == current_setting:
         return await ctx.respond(
-            f"Lost sector legendary weapon announcements are already {'enabled' if desired_setting else 'disabled'}"
+            f"Lost sector details are already {'enabled' if desired_setting else 'disabled'}"
         )
 
-    await schemas.AutoPostSettings.set_lost_sector_legendary_weapons(
-        enabled=desired_setting
-    )
+    await schemas.AutoPostSettings.set_lost_sector_details(enabled=desired_setting)
     await ctx.respond(
-        f"Lost sector legendary weapon announcements now {'enabled' if desired_setting else 'disabled'}"
-    )
-
-
-@lb.option(
-    "option", "Enable or disable", str, choices=["Enable", "Disable"], required=True
-)
-@lb.command(
-    "surges",
-    "Control lost sector surge announcements",
-    auto_defer=True,
-    pass_options=True,
-)
-@lb.implements(lb.SlashSubCommand)
-async def control_surges(ctx: lb.Context, option: str):
-    """Enable or disable lost sector surge announcements"""
-
-    desired_setting: bool = True if option.lower() == "enable" else False
-    current_setting = await schemas.AutoPostSettings.get_lost_sector_surge_enabled()
-
-    if desired_setting == current_setting:
-        return await ctx.respond(
-            f"Lost sector surge announcements are already {'enabled' if desired_setting else 'disabled'}"
-        )
-
-    await schemas.AutoPostSettings.set_lost_sector_surge(enabled=desired_setting)
-    await ctx.respond(
-        f"Lost sector surge announcements now {'enabled' if desired_setting else 'disabled'}"
+        f"Lost sector details are now {'enabled' if desired_setting else 'disabled'}"
     )
 
 
@@ -179,8 +148,7 @@ def register(bot: lb.BotApp) -> None:
         message_announcer_coro=discord_announcer,
     )
 
-    autopost_control_parent_group.child(control_legendary_weapons)
-    autopost_control_parent_group.child(control_surges)
+    autopost_control_parent_group.child(control_lost_sector_details)
 
     bot.command(autopost_control_parent_group)
 

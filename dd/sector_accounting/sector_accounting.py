@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import warnings
 from collections import defaultdict
-from typing import Dict, List, Union
+from typing import List, Self, Union
 
 import attr
 import gspread
@@ -12,15 +12,9 @@ import regex as re
 from .utils import (
     EntityRotation,
     Minutes,
-    SectorV1Compat,
     _parse_counts,
     all_values_from_sheet,
 )
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
 
 # For future reference, this file pulls data from google sheets
 # The library used to pull this data is gspread
@@ -143,7 +137,7 @@ class Sector:
     overcharged_weapon = attr.ib("")
     shortlink_gfx = attr.ib("")
     # From "Lost Sector Shield & Champion Counts" sheet 0
-    legend_data = attr.ib(DifficultySpecificSectorData())
+    expert_data = attr.ib(DifficultySpecificSectorData())
     # From "Lost Sector Shield & Champion Counts" sheet 1
     master_data = attr.ib(DifficultySpecificSectorData())
 
@@ -164,7 +158,7 @@ class Sector:
             self.threat or other.threat,
             self.overcharged_weapon or other.overcharged_weapon,
             self.shortlink_gfx or other.shortlink_gfx,
-            self.legend_data or other.legend_data,
+            self.expert_data or other.expert_data,
             self.master_data or other.master_data,
         )
 
@@ -195,7 +189,7 @@ class SectorData(dict):
             threat=general_row[1],
             overcharged_weapon=general_row[2],
             shortlink_gfx=general_row[3],
-            legend_data=DifficultySpecificSectorData(
+            expert_data=DifficultySpecificSectorData(
                 void_shields=legend_row[1],
                 solar_shields=legend_row[2],
                 arc_shields=legend_row[3],

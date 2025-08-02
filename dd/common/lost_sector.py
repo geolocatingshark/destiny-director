@@ -17,7 +17,7 @@ from .utils import (
 )
 
 
-def _fmt_count(emoji: str, count: int, width: int) -> str:
+def _fmt_count(emoji: str, count: int, width: int = 2) -> str:
     if count:
         return "{} x `{}`".format(
             emoji,
@@ -27,58 +27,29 @@ def _fmt_count(emoji: str, count: int, width: int) -> str:
         return ""
 
 
-def format_counts(
-    legend_data: sector_accounting.DifficultySpecificSectorData,
-    master_data: sector_accounting.DifficultySpecificSectorData,
-    emoji_dict: t.Dict[str, h.Emoji],
-) -> str:
-    len_bar = len(
-        str(max(legend_data.barrier_champions, master_data.barrier_champions, key=abs))
-    )
-    len_oload = len(
-        str(
-            max(legend_data.overload_champions, master_data.overload_champions, key=abs)
-        )
-    )
-    len_unstop = len(
-        str(
-            max(
-                legend_data.unstoppable_champions,
-                master_data.unstoppable_champions,
-                key=abs,
-            )
-        )
-    )
-    len_arc = len(str(max(legend_data.arc_shields, master_data.arc_shields, key=abs)))
-    len_void = len(
-        str(max(legend_data.void_shields, master_data.void_shields, key=abs))
-    )
-    len_solar = len(
-        str(max(legend_data.solar_shields, master_data.solar_shields, key=abs))
-    )
-    len_stasis = len(
-        str(max(legend_data.stasis_shields, master_data.stasis_shields, key=abs))
-    )
-    len_strand = len(
-        str(max(legend_data.strand_shields, master_data.strand_shields, key=abs))
-    )
+def _elements_to_emoji(elements: str):
+    elements = elements.lower()
+    present_elements = []
+    for element in ["arc", "solar", "void", "stasis", "strand"]:
+        if element in elements:
+            present_elements.append(f":{element}:")
+    return present_elements
 
+
+def format_data(sector: sector_accounting.Sector) -> str:
     data_strings = []
 
-    for data in [legend_data, master_data]:
+    expert_data = sector.expert_data
+    master_data = sector.master_data
+
+    for data in [expert_data, master_data]:
         champs_string = space.figure.join(
             filter(
                 None,
                 [
-                    _fmt_count(emoji_dict["barrier"], data.barrier_champions, len_bar),
-                    _fmt_count(
-                        emoji_dict["overload"], data.overload_champions, len_oload
-                    ),
-                    _fmt_count(
-                        emoji_dict["unstoppable"],
-                        data.unstoppable_champions,
-                        len_unstop,
-                    ),
+                    _fmt_count(":barrier:", data.barrier_champions),
+                    _fmt_count(":overload:", data.overload_champions),
+                    _fmt_count(":unstoppable:", data.unstoppable_champions),
                 ],
             )
         )
@@ -86,14 +57,15 @@ def format_counts(
             filter(
                 None,
                 [
-                    _fmt_count(emoji_dict["arc"], data.arc_shields, len_arc),
-                    _fmt_count(emoji_dict["void"], data.void_shields, len_void),
-                    _fmt_count(emoji_dict["solar"], data.solar_shields, len_solar),
-                    _fmt_count(emoji_dict["stasis"], data.stasis_shields, len_stasis),
-                    _fmt_count(emoji_dict["strand"], data.strand_shields, len_strand),
+                    _fmt_count(":arc:", data.arc_shields),
+                    _fmt_count(":void:", data.void_shields),
+                    _fmt_count(":solar:", data.solar_shields),
+                    _fmt_count(":stasis:", data.stasis_shields),
+                    _fmt_count(":strand:", data.strand_shields),
                 ],
             )
         )
+
         data_string = f"{space.figure}|{space.figure}".join(
             filter(
                 None,
@@ -105,11 +77,24 @@ def format_counts(
         )
         data_strings.append(data_string)
 
+    overcharged_weapon_emoji = (
+        "⚔️" if sector.overcharged_weapon.lower() in ["sword", "glaive"] else "🔫"
+    )
+
+    threat_string = space.figure.join(["☢️"] + _elements_to_emoji(sector.threat))
+    surge_string = space.figure.join(["💪"] + _elements_to_emoji(sector.surge))
+    overcharge_string = (
+        overcharged_weapon_emoji + space.figure + sector.overcharged_weapon
+    )
+
     return (
-        f"Expert:{space.figure}"
+        f"E:{space.figure}"
         + data_strings[0]
-        + f"\nMaster:{space.hair}{space.figure}"
+        + f"{space.figure}M:{space.figure}"
         + data_strings[1]
+        + "\n"
+        + space.figure.join([threat_string, surge_string, overcharge_string])
+        + "\n"
     )
 
 
@@ -174,9 +159,15 @@ async def format_post(
         url="https://lostsectortoday.com/",
     )
 
+    ls_extra_details_enabled = (
+        await schemas.AutoPostSettings.get_lost_sector_details_enabled()
+    )
+
     for sector in sectors:
         sector: sector_accounting.Sector
         embed.description += f":LS: **[{sector.name}]({sector.shortlink_gfx})**\n"
+        if ls_extra_details_enabled:
+            embed.description += format_data(sector)
 
     embed.description += (
         "\n"
