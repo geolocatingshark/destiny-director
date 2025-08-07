@@ -14,7 +14,6 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 import datetime as dt
-import logging
 import typing as t
 
 import hikari as h
@@ -22,10 +21,12 @@ import lightbulb as lb
 from hmessage import HMessage as MessagePrototype
 
 from ...common import cfg
+from ...common.lost_sector import format_post
 from ...common.utils import accumulate
+from ...sector_accounting import sector_accounting
 from .. import utils
 from ..bot import CachedFetchBot, ServerEmojiEnabledBot, UserCommandBot
-from ..nav import NavigatorView, NavPages
+from ..nav import NO_DATA_HERE_EMBED, NavigatorView, NavPages
 from .autoposts import autopost_command_group, follow_control_command_maker
 
 REFERENCE_DATE = dt.datetime(2023, 7, 20, 17, tzinfo=dt.timezone.utc)
@@ -52,6 +53,44 @@ class SectorMessages(NavPages):
 
         return processed_message
 
+    async def lookahead(
+        self, after: dt.datetime
+    ) -> t.Dict[dt.datetime, MessagePrototype]:
+        start_date = after
+        sector_on = sector_accounting.Rotation.from_gspread_url(
+            cfg.sheets_ls_url, cfg.gsheets_credentials, buffer=1
+        )
+
+        lookahead_dict = {}
+
+        for date in [
+            # Start range from 1 to avoid overwriting todays sector message from
+            # the channel / from history
+            start_date + self.period * n
+            for n in range(1, self.lookahead_len)
+        ]:
+            try:
+                sectors = sector_on(date)
+            except KeyError:
+                # A KeyError will be raised if TBC is selected for the google sheet
+                # In this case, we will just return a message saying that there is no data
+                lookahead_dict = {
+                    **lookahead_dict,
+                    date: MessagePrototype(embeds=[NO_DATA_HERE_EMBED]),
+                }
+            else:
+                lookahead_dict = {
+                    **lookahead_dict,
+                    date: await format_post(
+                        bot=self.bot,
+                        sectors=sectors,
+                        date=date,
+                        emoji_dict=self.bot.emoji,
+                    ),
+                }
+
+        return lookahead_dict
+
 
 async def on_start(event: h.StartedEvent):
     global sectors
@@ -59,7 +98,7 @@ async def on_start(event: h.StartedEvent):
         event.app,
         FOLLOWABLE_CHANNEL,
         history_len=14,
-        lookahead_len=0,
+        lookahead_len=7,
         period=dt.timedelta(days=1),
         reference_date=REFERENCE_DATE,
     )
