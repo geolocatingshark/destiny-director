@@ -33,7 +33,7 @@ from ..common.cfg import (
     reset_time_tolerance,
     url_regex,
 )
-from ..common.utils import accumulate, get_ordinal_suffix
+from ..common.utils import accumulate, discord_error_logger, get_ordinal_suffix
 from . import utils
 from .bot import CachedFetchBot
 
@@ -499,7 +499,7 @@ class NavPages(DateRangeDict):
                 self[from_] = self.preprocess_messages(msgs_from_api)
 
             except Exception as e:
-                await utils.discord_error_logger(self.bot, e)
+                await discord_error_logger(self.bot, e)
                 await sleep(2**retry_no)
             else:
                 break
@@ -545,7 +545,7 @@ class NavPages(DateRangeDict):
                     await sleep(randint(0, int(self.lookahead_update_interval / 20)))
                     await self._update_lookahead()
                 except Exception as e:
-                    await utils.discord_error_logger(bot, e)
+                    await discord_error_logger(bot, e)
 
     async def lookahead(
         self, after: dt.datetime

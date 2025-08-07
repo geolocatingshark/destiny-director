@@ -1,6 +1,7 @@
 import asyncio as aio
 import logging
 import typing as t
+from random import randint
 
 import aiohttp
 import hikari as h
@@ -9,6 +10,7 @@ import regex as re
 from . import cfg
 
 re_user_side_emoji = re.compile(r"(<a?)?:(\w+)(~\d)*:(\d+>)?")
+error_logger_semaphore = aio.Semaphore(1)
 
 
 async def fetch_emoji_dict(bot: h.GatewayBot):
@@ -144,3 +146,26 @@ def accumulate(iterable: t.Iterable[T]) -> T:
     for arg in iterable[1:]:
         final = final + arg
     return final
+
+
+async def discord_error_logger(
+    bot: h.GatewayBot, e: Exception, error_reference: int = None
+):
+    """Logs discord errors to the log channel and the console"""
+
+    if not error_reference:
+        error_reference = randint(1000000, 9999999)
+
+    alerts_channel: h.TextableGuildChannel = bot.cache.get_guild_channel(
+        cfg.alerts_channel
+    ) or await bot.rest.fetch_channel(cfg.alerts_channel)
+
+    async with error_logger_semaphore:
+        task = aio.create_task(
+            alerts_channel.send(
+                f"Exception {type(e)} with reference {error_reference} occurred"
+            )
+        )
+        logging.error(f"Error reference: {error_reference}")
+        logging.exception(e)
+        await task

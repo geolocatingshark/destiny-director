@@ -22,7 +22,7 @@ import lightbulb as lb
 
 from ...common import cfg
 from ...common.schemas import AsyncSession, MirroredChannel, db_session
-from ...common.utils import ensure_session
+from ...common.utils import discord_error_logger, ensure_session
 from .. import utils
 from ..bot import CachedFetchBot, UserCommandBot
 
@@ -340,7 +340,7 @@ def follow_control_command_maker(
                     icon=bot_owner.avatar_url or bot_owner.default_avatar_url,
                 )
             )
-            await utils.discord_error_logger(bot, e, error_reference)
+            await discord_error_logger(bot, e, error_reference)
             raise e
         else:
             await ctx.respond(

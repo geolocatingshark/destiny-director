@@ -32,6 +32,7 @@ from lightbulb.ext import tasks
 from ...beacon.bot import CachedFetchBot
 from ...common import cfg
 from ...common.schemas import MirroredChannel, MirroredMessage, ServerStatistics
+from ...common.utils import discord_error_logger
 from .. import bot, utils
 
 re_markdown_link = re.compile(r"\[(.*?)\]\(.*?\)")
@@ -597,7 +598,7 @@ async def handle_waiting_for_crosspost(
         except aio.TimeoutError:
             return
         except Exception as e:
-            await utils.discord_error_logger(bot, e)
+            await discord_error_logger(bot, e)
             await aio.sleep(backoff_timer)
             backoff_timer += 30 / backoff_timer
         else:
@@ -810,7 +811,7 @@ async def message_update_repeater_impl(msg: h.Message, bot: bot.CachedFetchBot):
             )
 
         except Exception as e:
-            await utils.discord_error_logger(bot, e)
+            await discord_error_logger(bot, e)
             await aio.sleep(backoff_timer)
             backoff_timer += 30 / backoff_timer
         else:
@@ -902,7 +903,7 @@ async def message_delete_repeater_impl(
                 return
 
         except Exception as e:
-            await utils.discord_error_logger(bot, e)
+            await discord_error_logger(bot, e)
             await aio.sleep(backoff_timer)
             backoff_timer += 30 / backoff_timer
         else:
@@ -1012,7 +1013,7 @@ async def refresh_server_sizes(bot: bot.CachedFetchBot):
             )
             e.add_note(exception_note)
 
-            await utils.discord_error_logger(bot, e)
+            await discord_error_logger(bot, e)
 
             if not should_retry_:
                 break
@@ -1031,7 +1032,7 @@ async def prune_message_db(bot: bot.CachedFetchBot):
         await MirroredMessage.prune()
     except Exception as e:
         e.add_note("Exception during routine pruning of MirroredMessage")
-        await utils.discord_error_logger(bot, e)
+        await discord_error_logger(bot, e)
 
 
 # Command group for all mirror commands

@@ -15,10 +15,7 @@
 
 import datetime as dt
 import inspect
-import logging
 import typing as t
-from asyncio import Semaphore, create_task
-from random import randint
 
 import hikari as h
 import lightbulb as lb
@@ -31,30 +28,6 @@ from ..common import cfg
 def get_function_name() -> str:
     """Get the name of the function this was called from"""
     return inspect.stack()[1][3]
-
-
-error_logger_semaphore = Semaphore(1)
-
-
-async def discord_error_logger(
-    bot: h.GatewayBot, e: Exception, error_reference: int = None
-):
-    """Logs discord errors to the log channel and the console"""
-
-    if not error_reference:
-        error_reference = randint(1000000, 9999999)
-
-    alerts_channel = await bot.fetch_channel(cfg.alerts_channel)
-
-    async with error_logger_semaphore:
-        task = create_task(
-            alerts_channel.send(
-                f"Exception {type(e)} with reference {error_reference} occurred"
-            )
-        )
-        logging.error(f"Error reference: {error_reference}")
-        logging.exception(e)
-        await task
 
 
 async def check_invoker_has_perms(

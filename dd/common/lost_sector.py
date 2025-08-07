@@ -7,95 +7,44 @@ import lightbulb as lb
 from hmessage import HMessage as MessagePrototype
 
 from ..common import cfg, schemas
-from ..common.utils import fetch_emoji_dict
+from ..common.utils import discord_error_logger, fetch_emoji_dict
 from ..sector_accounting import sector_accounting
-from . import utils
 from .utils import (
     construct_emoji_substituter,
+    follow_link_single_step,
     re_user_side_emoji,
     space,
 )
 
-
-def _fmt_count(emoji: str, count: int, width: int = 2) -> str:
-    if count:
-        return "{} x `{}`".format(
-            emoji,
-            str(count if count != -1 else "?").rjust(width, " "),
-        )
-    else:
-        return ""
+_elements = ["solar", "void", "arc", "stasis", "strand"]
 
 
 def _elements_to_emoji(elements: str):
     elements = elements.lower()
     present_elements = []
-    for element in ["arc", "solar", "void", "stasis", "strand"]:
+    for element in _elements:
         if element in elements:
             present_elements.append(f":{element}:")
     return present_elements
 
 
 def format_data(sector: sector_accounting.Sector) -> str:
-    data_strings = []
-
     expert_data = sector.expert_data
     master_data = sector.master_data
 
-    for data in [expert_data, master_data]:
-        champs_string = space.figure.join(
-            filter(
-                None,
-                [
-                    _fmt_count(":barrier:", data.barrier_champions),
-                    _fmt_count(":overload:", data.overload_champions),
-                    _fmt_count(":unstoppable:", data.unstoppable_champions),
-                ],
-            )
-        )
-        shields_string = space.figure.join(
-            filter(
-                None,
-                [
-                    _fmt_count(":arc:", data.arc_shields),
-                    _fmt_count(":void:", data.void_shields),
-                    _fmt_count(":solar:", data.solar_shields),
-                    _fmt_count(":stasis:", data.stasis_shields),
-                    _fmt_count(":strand:", data.strand_shields),
-                ],
-            )
-        )
-
-        data_string = f"{space.figure}|{space.figure}".join(
-            filter(
-                None,
-                [
-                    champs_string,
-                    shields_string,
-                ],
-            )
-        )
-        data_strings.append(data_string)
-
-    overcharged_weapon_emoji = (
-        "⚔️" if sector.overcharged_weapon.lower() in ["sword", "glaive"] else "🔫"
+    champs_string = space.figure.join(
+        ["Champions:"]
+        + [
+            f":{champ}:"
+            for champ in set(expert_data.champions_list + master_data.champions_list)
+        ]
+    )
+    shields_string = space.figure.join(
+        ["Shields:"]
+        + _elements_to_emoji(str(expert_data.shields_list + master_data.shields_list))
     )
 
-    threat_string = space.figure.join(["☢️"] + _elements_to_emoji(sector.threat))
-    surge_string = space.figure.join(["💪"] + _elements_to_emoji(sector.surge))
-    overcharge_string = (
-        overcharged_weapon_emoji + space.figure + sector.overcharged_weapon
-    )
-
-    return (
-        f"E:{space.figure}"
-        + data_strings[0]
-        + f"{space.figure}M:{space.figure}"
-        + data_strings[1]
-        + "\n"
-        + space.figure.join([threat_string, surge_string, overcharge_string])
-        + "\n"
-    )
+    return "\n".join([champs_string, shields_string]) + "\n\n"
 
 
 async def format_post(
@@ -143,7 +92,7 @@ async def format_post(
 
     # Follow the hyperlink to have the newest image embedded
     try:
-        ls_gif_url = await utils.follow_link_single_step(cfg.lost_sector_gif_url)
+        ls_gif_url = await follow_link_single_step(cfg.lost_sector_gif_url)
     except aiohttp.InvalidURL:
         ls_gif_url = None
 
@@ -170,8 +119,7 @@ async def format_post(
             embed.description += format_data(sector)
 
     embed.description += (
-        "\n"
-        + "Rewards:\n"
+        "Rewards:\n"
         + ":enhancement_core: Enhancement Core\n"
         + ":exotic_engram: Exotic Engram (If-Solo)\n"
         + ":legendary_weap: Legendary Weapon (If-Solo)\n"
@@ -186,9 +134,12 @@ async def format_post(
         construct_emoji_substituter(emoji_dict), embed.description
     )
 
-    embed.description[:3072]
-
-    embed.set_thumbnail(cfg.kyber_ls_thumbnail)
+    if len(embed.description) >= 4096:
+        await discord_error_logger(
+            bot, ValueError("WARNING: Embed is greater than 4096 characters!")
+        )
+        # TODO: Mention owners for above
+        embed.description = embed.description[:4096]
 
     if ls_gif_url:
         embed.set_image(ls_gif_url)
