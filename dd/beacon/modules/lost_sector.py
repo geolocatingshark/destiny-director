@@ -64,10 +64,7 @@ class SectorMessages(NavPages):
         lookahead_dict = {}
 
         for date in [
-            # Start range from 1 to avoid overwriting todays sector message from
-            # the channel / from history
-            start_date + self.period * n
-            for n in range(1, self.lookahead_len)
+            start_date + self.period * n for n in range(0, self.lookahead_len - 1)
         ]:
             try:
                 sectors = sector_on(date)
