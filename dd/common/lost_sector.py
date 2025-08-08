@@ -118,6 +118,9 @@ async def format_post(
         if ls_extra_details_enabled:
             embed.description += format_data(sector)
 
+    if not ls_extra_details_enabled:
+        embed.description += "\n"
+
     embed.description += (
         "Rewards:\n"
         + ":enhancement_core: Enhancement Core\n"
