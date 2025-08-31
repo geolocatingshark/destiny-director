@@ -397,15 +397,17 @@ async def format_xur_vendor(
 
     description += XUR_FOOTER
     description = await substitute_user_side_emoji(emoji_dict, description)
-    message = HMessage(
-        embeds=[
-            h.Embed(
-                description=description,
-                color=h.Color(cfg.embed_default_color),
-                url="https://kyberscorner.com",
-            )
-        ]
+    embed = h.Embed(
+        description=description,
+        color=h.Color(cfg.embed_default_color),
+        url="https://kyberscorner.com",
     )
+
+    if await schemas.AutoPostSettings.get_xur_default_image_enabled():
+        embed.set_image(cfg.xur_image_url)
+
+    message = HMessage(embeds=[embed])
+
     return message
 
 

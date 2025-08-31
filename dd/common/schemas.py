@@ -1266,6 +1266,14 @@ class AutoPostSettings(Base):
         return await cls.set_enabled("xur", enabled)
 
     @classmethod
+    async def get_xur_default_image_enabled(cls):
+        return await cls.get_enabled("xur_default_image")
+
+    @classmethod
+    async def set_xur_default_image_enabled(cls, enabled: bool):
+        return await cls.set_enabled("xur_default_image", enabled)
+
+    @classmethod
     async def get_gunsmith_enabled(cls):
         return await cls.get_enabled("gunsmith")
 
