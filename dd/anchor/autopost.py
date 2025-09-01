@@ -32,7 +32,7 @@ def make_autopost_control_commands(
     channel_id: int,
     message_constructor_coro: t.Coroutine[t.Any, t.Any, HMessage],
     message_announcer_coro: t.Coroutine[t.Any, t.Any, None] = None,
-) -> t.Callable:
+) -> lb.CommandLike:
     @lb.command(
         autopost_name if not cfg.test_env else "dev_" + autopost_name,
         "Commands for Kyber",
