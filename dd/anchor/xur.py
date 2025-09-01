@@ -539,18 +539,47 @@ async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):
         )
 
 
+@lb.option(
+    "option", "Enable or disable", str, choices=["Enable", "Disable"], required=True
+)
+@lb.command(
+    "default_image",
+    "Control whether the default xur image is added to the embed",
+    auto_defer=True,
+    pass_options=True,
+)
+@lb.implements(lb.SlashSubCommand)
+async def control_xur_default_image(ctx: lb.Context, option: str):
+    """Control whether the default xur image is added to the embed"""
+
+    desired_setting: bool = True if option.lower() == "enable" else False
+    current_setting = await schemas.AutoPostSettings.get_xur_default_image_enabled()
+
+    if desired_setting == current_setting:
+        return await ctx.respond(
+            f"Lost sector details are already {'enabled' if desired_setting else 'disabled'}"
+        )
+
+    await schemas.AutoPostSettings.set_xur_default_image_enabled(
+        enabled=desired_setting
+    )
+    await ctx.respond(
+        f"Xur's default image is now {'enabled' if desired_setting else 'disabled'}"
+    )
+
+
 def register(bot: lb.BotApp) -> None:
     bot.listen(lb.LightbulbStartedEvent)(on_start_schedule_autoposts)
-    bot.command(
-        make_autopost_control_commands(
-            autopost_name="xur",
-            enabled_getter=schemas.AutoPostSettings.get_xur_enabled,
-            enabled_setter=schemas.AutoPostSettings.set_xur,
-            channel_id=cfg.followables["xur"],
-            message_constructor_coro=xur_message_constructor,
-            message_announcer_coro=api_to_discord_announcer,
-        )
+    xur_control_parent_group = make_autopost_control_commands(
+        autopost_name="xur",
+        enabled_getter=schemas.AutoPostSettings.get_xur_enabled,
+        enabled_setter=schemas.AutoPostSettings.set_xur,
+        channel_id=cfg.followables["xur"],
+        message_constructor_coro=xur_message_constructor,
+        message_announcer_coro=api_to_discord_announcer,
     )
+    xur_control_parent_group.child(control_xur_default_image)
+    bot.command(xur_control_parent_group)
 
 
 if __name__ == "__main__":
