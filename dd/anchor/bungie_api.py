@@ -1074,7 +1074,8 @@ async def account_numbers(ctx: lb.Context):
         "```"
         f"Destiny Character ID: {character_id}\n"
         f"Destiny Membership ID: {destiny_membership.membership_id}\n"
-        f"Destiny Membership Type: {destiny_membership.membership_type}"
+        f"Destiny Membership Type: {destiny_membership.membership_type}\n"
+        f"Destiny access token: {access_token}"
         "```"
     )
 
