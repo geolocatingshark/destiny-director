@@ -47,9 +47,9 @@ async def format_gunsmith_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
 
 
 async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):
-    # Run every day at 17:00 UTC
+    # Run every day at 17:01 UTC
     # TO BE RECHECKED BASED ON KYBERS REPLY
-    @aiocron.crontab("0 17 * * TUE", start=True)
+    @aiocron.crontab("1 17 * * TUE", start=True)
     # Use below crontab for testing to post every minute
     # @aiocron.crontab("* * * * *", start=True)
     async def autopost_gunsmith():
