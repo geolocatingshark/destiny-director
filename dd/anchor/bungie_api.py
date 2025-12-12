@@ -344,7 +344,9 @@ class DestinyItem:
             )
 
         item_type: int = manifest_entry["itemType"]
-        item_type_friendly_name: str = manifest_entry["itemTypeDisplayName"]
+        item_type_friendly_name: str = manifest_entry.get(
+            "itemTypeDisplayName", "Unknown Type"
+        )
 
         collectible_set_name = (
             (
