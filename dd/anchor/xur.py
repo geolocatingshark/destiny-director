@@ -534,7 +534,7 @@ async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):
             event.app,
             channel_id=cfg.followables["xur"],
             check_enabled=True,
-            enabled_check_coro=schemas.AutoPostSettings.get_lost_sector_enabled,
+            enabled_check_coro=schemas.AutoPostSettings.get_xur_enabled,
             construct_message_coro=xur_message_constructor,
         )
 
@@ -557,7 +557,7 @@ async def control_xur_default_image(ctx: lb.Context, option: str):
 
     if desired_setting == current_setting:
         return await ctx.respond(
-            f"Lost sector details are already {'enabled' if desired_setting else 'disabled'}"
+            f"Xur's default image is already {'enabled' if desired_setting else 'disabled'}"
         )
 
     await schemas.AutoPostSettings.set_xur_default_image_enabled(
