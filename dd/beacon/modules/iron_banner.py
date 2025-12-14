@@ -13,12 +13,8 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import datetime as dt
-
 from ...common import cfg
 from .autoposts import autopost_command_group, follow_control_command_maker
-
-REFERENCE_DATE = dt.datetime(2023, 12, 12, 17, tzinfo=dt.timezone.utc)
 
 FOLLOWABLE_CHANNEL = cfg.followables["iron_banner"]
 

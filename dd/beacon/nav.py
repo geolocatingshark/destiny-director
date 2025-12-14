@@ -347,6 +347,8 @@ class NavPages(DateRangeDict):
     suppress_content_autoembeds: bool
         Instructs the default preprocess_messages method to stop discord link auto
         embeds based on message content
+    no_data_message: MessagePrototype
+        Message to use when no data is available
     """
 
     def __init__(
@@ -412,6 +414,34 @@ class NavPages(DateRangeDict):
 
     @classmethod
     async def from_channel(cls, bot: CachedFetchBot, channel, **kwargs) -> t.Self:
+        """
+        Create a NavPages instance from a channel ID or channel object.
+
+        Additional keyword arguments (kwargs) are passed directly to the class
+        constructor. This allows customization of the instance at creation.
+
+        Args:
+            bot: The bot instance used to fetch the channel if needed.
+            channel: The channel ID or channel object to create from.
+            period (dt.timedelta): The period between each key.
+            reference_date (dt.datetime): The date to use as the reference for
+                the 0 key.
+            history_len (int, optional): The number of periods to keep in the
+                past. Default is 7.
+            lookahead_len (int, optional): The number of periods to keep in the
+                future. Default is 0.
+            lookahead_update_interval (int, optional): The number of seconds
+                between each update of the lookahead. Default is 1800.
+            suppress_content_autoembeds (bool, optional): If True, instructs the
+                default preprocess_messages method to stop Discord link auto
+                embeds based on message content. Default is True.
+            no_data_message (MessagePrototype, optional): Message to use when no
+                data is available. Default is MessagePrototype(embeds=[NO_DATA_HERE_EMBED]).
+            **kwargs: Additional keyword arguments for the class constructor.
+
+        Returns:
+            An instance of NavPages.
+        """
         if isinstance(channel, (int, h.Snowflake)):
             channel = await bot.fetch_channel(int(channel))
 

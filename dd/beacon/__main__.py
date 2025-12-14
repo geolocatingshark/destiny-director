@@ -75,6 +75,9 @@ _modules = map(modules.__dict__.get, modules.__all__)
 
 for module in _modules:
     logging.info(f"Loading module {module.__name__.split('.')[-1]}")
+    if (hasattr(module, "IGNORE") and module.IGNORE) or not hasattr(module, "register"):
+        logging.info(f"Skipping module {module.__name__.split('.')[-1]}")
+        continue
     module.register(bot)
 
 tasks.load(bot)
