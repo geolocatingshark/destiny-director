@@ -141,3 +141,13 @@ ToDo
 
 # VSCode Settings
 .vscode/settings.json
+
+# Misc
+.swp
+ToDo.md
+Twitter Keys.txt
+
+# Syncthing
+.stfolder/
+.stignore
+.trash/
