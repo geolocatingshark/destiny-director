@@ -1,12 +1,11 @@
 #!/bin/sh
-source /venv/bin/activate
-# If RAILWAY_SERVICE_NAME is beacon, then start beacon with honcho,
+# If RAILWAY_SERVICE_NAME is beacon, then start beacon,
 # otherwise if RAILWAY_SERVICE_NAME is anchor start anchor
 # otherwise raise an error
 if [ "$RAILWAY_SERVICE_NAME" = "beacon" ]; then
-  honcho start --no-prefix beacon
+  atlas migrate apply -u ${MYSQL_URL} && python -OO -m dd.beacon
 elif [ "$RAILWAY_SERVICE_NAME" = "anchor" ]; then
-    honcho start --no-prefix anchor
+    atlas migrate apply -u ${MYSQL_URL} && python -OO -m dd.anchor
   else
     echo "Unknown service name: $RAILWAY_SERVICE_NAME"
     exit 1

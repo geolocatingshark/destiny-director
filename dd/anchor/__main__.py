@@ -19,7 +19,6 @@ import logging
 import hikari as h
 import lightbulb as lb
 import miru as m
-import uvloop
 from lightbulb.ext import tasks
 
 from ..common import cfg, utils
@@ -34,7 +33,6 @@ from . import (
     xur,
 )
 
-uvloop.install()
 bot: lb.BotApp = lb.BotApp(
     **cfg.lightbulb_params(
         include_message_content_intent=False,

@@ -1,40 +1,49 @@
+# Stage 1: Base (System dependencies)
 FROM python:3.12-alpine AS base
-
-RUN apk update
-RUN apk add --no-cache git gcc musl-dev
+RUN apk update && apk add --no-cache git gcc tzdata musl-dev
+ENV TZ=Etc/UTC
 
 WORKDIR /app
 
-FROM base AS builder-base
-
-ENV PIP_DEFAULT_TIMEOUT=100 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
-    POETRY_VERSION=1.8.3
-
-RUN pip install "poetry==$POETRY_VERSION"
-RUN python -m venv /venv
-
-COPY pyproject.toml poetry.lock ./
-RUN . /venv/bin/activate && poetry install --without dev --no-root
-
-FROM builder-base AS builder
-
-COPY . .
-RUN . /venv/bin/activate && poetry build
-
+# Stage 2: Atlas DB Migrations Image
 FROM arigaio/atlas:latest-community-alpine AS atlas-base
 
-FROM base AS final
+# Stage 3: UV Helper (Provides the uv binary for build stages)
+# Copy the uv binary directly from the official image
+# Compile bytecode for faster startup in build stages
+FROM base AS uv-helper
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+ENV UV_COMPILE_BYTECODE=1
 
-ARG RAILWAY_SERVICE_NAME
+# Stage 4: Exporter (Generates requirements.txt)
+# --no-emit-project makes the requirements.txt only contain third-party dependencies,
+# not the local app itself.
+FROM uv-helper AS exporter
+COPY pyproject.toml uv.lock ./
+RUN uv export --no-dev --no-hashes --no-emit-project --format=requirements-txt --output-file=requirements.txt
 
+# Stage 5: Dependencies
+FROM base AS dependencies
+COPY --from=exporter /app/requirements.txt .
+ENV PIP_DEFAULT_TIMEOUT=100 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Stage 6: Builder (Builds your application wheel)
+FROM uv-helper AS builder
+COPY . .
+RUN uv build
+
+# Stage 7: Final Base (Combines cached deps + app code)
+# Install the application wheel; dependencies are already satisfied by the base layer
+FROM dependencies AS final
+COPY --from=builder /app/dist/*.whl .
 COPY --from=atlas-base /atlas /bin/atlas
-COPY --from=builder /venv /venv
-COPY --from=builder /app/dist .
-COPY docker-entrypoint.sh ./
-COPY Procfile ./
-COPY migrations ./migrations
+RUN pip install --no-cache-dir *.whl
 
-RUN . /venv/bin/activate && pip install *.whl
+# Stage 8: Target
+ARG RAILWAY_SERVICE_NAME
+COPY ./migrations ./migrations
+COPY ./docker-entrypoint.sh .
 CMD ["sh", "docker-entrypoint.sh"]

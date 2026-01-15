@@ -1,49 +1,57 @@
-[tool.poetry]
+[project]
 name = "dd"
 version = "1.0.0"
 description = ""
-authors = ["geolocatingshark <geolocatingshark@gmail.com>"]
-license = "GNU AGPL-3.0-or-later"
+authors = [{ name = "geolocatingshark", email = "geolocatingshark@gmail.com" }]
+requires-python = "~=3.12.0"
 readme = "README.md"
-packages = [{ include = "dd" }]
+license = "AGPL-3.0-or-later"
+dependencies = [
+    "aiocron>=1.8",
+    "aiofiles>=24.1",
+    "aiohttp>=3.13",
+    "aiosqlite>=0.20.0",
+    "asyncmy>=0.2.9",
+    "atlas-provider-sqlalchemy>=0.2.2",
+    "attrs>=22.2.0",
+    "dateparser>=1.1",
+    "gspread>=5.9",
+    "hikari-lightbulb>=2.3.5,<3",
+    "hikari-message",
+    "hikari-miru>=3.4.0,<4",
+    "hikari-toolbox>=0.1.5",
+    "hikari==2.0.0.dev126",
+    "python-dotenv>=1.2.1",
+    "regex>=2023.6.3",
+    "roman>=4.1",
+    "setuptools>=72.1.0",
+    "sqlalchemy>=2.0,<3",
+    "tzdata>=2025.3",
+    "yarl>=1.9",
+]
 
-[tool.poetry.dependencies]
-aiocron = "^1.8"
-aiodebug = "^2.3"
-aiofiles = "^24.1"
-aiohttp = "^3.9"
-aiosqlite = "^0.20.0"
-asyncmy = "^0.2.9"
-atlas-provider-sqlalchemy = "^0.2.2"
-attrs = ">=22.2.0"
-cryptography = ">42.0"
-dateparser = "^1.1"
-faust-cchardet = "^2.1"
-gspread = "^5.9"
-hikari = { extras = ["speedups"], version = "==2.0.0.dev126" }
-hikari-lightbulb = { version = "^2.3.5", extras = ["crontrigger"] }
-hikari-message = {git = "https://github.com/gsfernandes81/hikari-message.git", rev = "e0b7e5f"}
-hikari-miru = "^3.4.0"
-hikari-toolbox = "^0.1.5"
-honcho = "^1.1.0"
-logwood = "^3.1.0"
-python = "~3.12.0"
-regex = "^2023.6.3"
-roman = "^4.1"
-sqlalchemy = "^2.0"
-uvloop = ">=0.17"
-yarl = "^1.9"
-setuptools = "^72.1.0"
+[dependency-groups]
+dev = [
+    "rope>=1.6",
+    "pytest>=7.2",
+    "pytest-asyncio>=0.20",
+]
 
-[tool.poetry.group.dev.dependencies]
-ruff = "*"
-rope = "^1.6"
-pytest = "^7.2"
-pytest-asyncio = "^0.20"
+[tool.uv]
+concurrent-installs = 1
+
+[tool.uv.sources]
+hikari-message = { git = "https://github.com/gsfernandes81/hikari-message.git", rev = "e0b7e5f" }
+
+[tool.hatch.build.targets.sdist]
+include = ["dd"]
+
+[tool.hatch.build.targets.wheel]
+include = ["dd"]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 88

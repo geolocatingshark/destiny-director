@@ -22,27 +22,31 @@ remove-last-deploy:
 	railway down
 
 run-beacon-local: .env
-	poetry run honcho start beacon
+	. .venv/bin/activate
+	python -OOm dd.beacon
 
 run-anchor-local: .env
-	poetry run honcho start anchor
+	. .venv/bin/activate
+	python -OOm dd.anchor
 
 destroy-schemas: .env
-	$(POETRY_CMD) honcho run python -m dd.common.schemas --destroy-all
+	. .venv/bin/activate
+	python -m dd.common.schemas --destroy-all
 
 create-schemas: .env
-	$(POETRY_CMD) honcho run python -m dd.common.schemas --create-all
+	. .venv/bin/activate
+	python -m dd.common.schemas --create-all
 
 atlas-migration-plan: .env
-	$(POETRY_CMD) honcho run atlas migrate diff --env sqlalchemy
+	atlas migrate diff --env sqlalchemy
 
 atlas-migration-dry-run:
-	@echo "$(POETRY_CMD) honcho run atlas migrate apply -u <MYSQL_URL> --dry-run"
-	@$(POETRY_CMD) honcho run atlas migrate apply -u ${MYSQL_URL} --dry-run
+	@echo "atlas migrate apply -u <MYSQL_URL> --dry-run"
+	atlas migrate apply -u ${MYSQL_URL} --dry-run
 
 atlas-migration-apply:
-	@echo "$(POETRY_CMD) honcho run atlas migrate apply -u <MYSQL_URL>"
-	@$(POETRY_CMD) honcho run atlas migrate apply -u ${MYSQL_URL}
+	@echo "atlas migrate apply -u <MYSQL_URL>"
+	atlas migrate apply -u ${MYSQL_URL}
 
 test: .env
 	poetry run honcho run python -m pytest
@@ -53,3 +57,9 @@ test: .env
 	@echo "variables are required and the example values are not valid but"
 	@echo "are there to show the approximate format of values."
 	@exit 1
+
+install-termux-deps:
+	@echo "If the specific python version for this project is not available"
+	@echo "and cannot be upgraded, then consider using the TUR to find it:"
+	@echo "https://github.com/termux-user-repository/tur"
+	pkg install python uv
