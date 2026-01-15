@@ -30,6 +30,7 @@ dependencies = [
     "yarl>=1.9",
 ]
 
+
 [dependency-groups]
 dev = [
     "rope>=1.6",
@@ -37,8 +38,14 @@ dev = [
     "pytest-asyncio>=0.20",
 ]
 
+speedups = [
+    "hikari[speedups]>=2.0.0.dev126",
+    "cryptography>=46.0.3",
+]
+
 [tool.uv]
 concurrent-installs = 1
+default-groups = ["dev", "speedups"]
 
 [tool.uv.sources]
 hikari-message = { git = "https://github.com/gsfernandes81/hikari-message.git", rev = "e0b7e5f" }
