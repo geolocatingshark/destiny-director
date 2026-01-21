@@ -72,7 +72,7 @@ async def slash_command(ctx: lb.Context):
     await navigator.send(ctx.interaction)
 
 
-# CODE FOR PAGES BELOW. CAN BE SAFELY REMOVED IF ONLY AUTOPOSTS ARE NEEDED
+# CODE FOR PAGES ABOVE. CAN BE SAFELY REMOVED IF ONLY AUTOPOSTS ARE NEEDED
 
 
 def register(bot: lb.BotApp):
