@@ -15,6 +15,7 @@
 
 import hikari as h
 import lightbulb as lb
+from hmessage import HMessage
 
 from ...common import cfg
 from ..bot import CachedFetchBot
@@ -90,7 +91,9 @@ async def slash_command_group():
 async def slash_subcommand(ctx: lb.Context):
     global last_message_in_channel
 
-    await ctx.respond(last_message_in_channel)
+    await ctx.respond(
+        **(HMessage.from_message(last_message_in_channel).to_message_kwargs())
+    )
 
 
 def register(bot: lb.BotApp):
