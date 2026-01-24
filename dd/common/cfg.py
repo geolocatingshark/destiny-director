@@ -26,77 +26,95 @@ from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession
 
 load_dotenv()
+T = t.TypeVar("T")
 
 
-def _getenv(
-    var_name: str,
-    default: t.Optional[str] = None,
-    *,
-    optional: bool = False,
-    cast_to: t.Type[t.Any] = str,
-) -> str:
-    if not optional and str(__getenv("DD_IGNORE_MISSING_CFGS")).lower() == "true":
-        return _getenv(var_name, default, optional=True, cast_to=cast_to)
+@t.overload
+def _getenv(key: str, default: int) -> int: ...
 
-    var = __getenv(var_name)
-    if var is not None:
-        return cast_to(var)
-    elif default is not None:
-        return default
-    elif optional:
-        return None
+
+@t.overload
+def _getenv(key: str, default: str) -> str: ...
+
+
+@t.overload
+def _getenv(key: str) -> str: ...
+
+
+def _getenv(key: str, default: t.Union[int, str] | None = None) -> t.Union[int, str]:
+    value = __getenv(key)
+
+    if value is None:
+        if default is None:
+            raise ValueError(f"Environment variable '{key}' not found.")
+        elif isinstance(default, int):
+            return int(default)
+        else:
+            return default
     else:
-        raise ValueError(f"Environment variable {var_name} not set")
+        if isinstance(default, int):
+            try:
+                return int(value)
+            except ValueError:
+                raise ValueError(f"Environment variable '{key}' must be an integer.")
+
+        return value
 
 
-def _test_env(var_name: str) -> list[int] | bool:
+def _test_env(var_name: str) -> tuple[int, ...] | tuple[()]:
     test_env = _getenv(var_name, default="false")
     test_env = test_env.lower()
     test_env = (
-        [int(env.strip()) for env in test_env.split(",")]
+        tuple(int(env.strip()) for env in test_env.split(","))
         if test_env != "false"
-        else False
+        else ()
     )
     return test_env
 
 
-def lightbulb_params(
-    include_message_content_intent: bool,
-    central_guilds_only: bool,
-    discord_token: str,
-) -> dict:
-    """
-    Returns configuration parameters for lightbulb code within the bot
+# def lightbulb_params(
+#     include_message_content_intent: bool,
+#     central_guilds_only: bool,
+#     discord_token: str,
+# ) -> dict:
+#     """
+#     Returns configuration parameters for lightbulb code within the bot
 
-    Args:
-        include_message_content_intent (bool): Whether the bot should receive message
-        contents from the api
+#     Args:
+#         include_message_content_intent (bool): Whether the bot should receive message
+#         contents from the api
 
-        central_guilds_only (bool): Whether the bot should only be enabled in the
-        central servers
-    """
-    intents = h.Intents.ALL_UNPRIVILEGED
+#         central_guilds_only (bool): Whether the bot should only be enabled in the
+#         central servers
 
-    if include_message_content_intent:
-        intents = intents | h.Intents.MESSAGE_CONTENT
+#     Returns (dict with keys):
+#         token (str)
+#         intents (hikari.Intents)
+#         max_rate_limit (int)
+#         default_enabled_guilds (tuple[int, ...] | tuple[()])
+#     """
+#     intents = h.Intents.ALL_UNPRIVILEGED
 
-    lightbulb_params = {
-        "token": discord_token,
-        "intents": intents,
-        "max_rate_limit": 600,
-    }
-    # Only use the test env for testing if it is specified
-    if test_env:
-        lightbulb_params["default_enabled_guilds"] = test_env
-    elif central_guilds_only:
-        lightbulb_params["default_enabled_guilds"] = [
-            kyber_discord_server_id,
-            control_discord_server_id,
-        ]
-    return lightbulb_params
+#     if include_message_content_intent:
+#         intents = intents | h.Intents.MESSAGE_CONTENT
+
+#     lightbulb_params = {
+#         "token": discord_token,
+#         "intents": intents,
+#         "max_rate_limit": 600,
+#     }
+#     # Only use the test env for testing if it is specified
+#     if test_env:
+#         lightbulb_params["default_enabled_guilds"] = test_env
+#     elif central_guilds_only:
+#         lightbulb_params["default_enabled_guilds"] = [
+#             kyber_discord_server_id,
+#             control_discord_server_id,
+#         ]
+#     return lightbulb_params
 
 
-def _db_urls(var_name: str, var_name_alternative) -> tuple[str, str]:
+def _db_urls(var_name: str, var_name_alternative: str) -> tuple[str, str]:
     try:
         db_url = _getenv(var_name)
     except ValueError:
@@ -116,15 +134,20 @@ def _db_urls(var_name: str, var_name_alternative) -> tuple[str, str]:
     return db_url, db_url_async
 
 
-def _db_config():
-    db_session_kwargs_sync = {
+def _db_config() -> t.Tuple[
+    t.Mapping[str, bool | t.Type[AsyncSession]],
+    t.Mapping[str, bool],
+    t.Mapping[str, ssl.SSLContext],
+    t.Mapping[str, int | str],
+]:
+    db_session_kwargs_sync: t.Dict[str, bool] = {
         "expire_on_commit": False,
     }
     db_session_kwargs = db_session_kwargs_sync | {
         "class_": AsyncSession,
     }
 
-    db_connect_args = {}
+    db_connect_args: t.Mapping[str, ssl.SSLContext] = {}
     if _getenv("MYSQL_SSL", "true") == "true":
         ssl_ctx = ssl.create_default_context(
             cafile="/etc/ssl/certs/ca-certificates.crt"
@@ -132,7 +155,7 @@ def _db_config():
         ssl_ctx.verify_mode = ssl.CERT_REQUIRED
         db_connect_args.update({"ssl": ssl_ctx})
 
-    db_engine_args = {
+    db_engine_args: t.Dict[str, int | str] = {
         "max_overflow": -1,
         "isolation_level": "READ COMMITTED",
         "pool_pre_ping": True,
@@ -150,7 +173,7 @@ def _sheets_credentials(
     client_x509_cert_url: str,
 ) -> dict[str, str]:
     priv_key = _getenv(priv_key)
-    priv_key = priv_key.replace("\\n", "\n") if priv_key else None
+    priv_key = priv_key.replace("\\n", "\n")
     gsheets_credentials = {
         "type": "service_account",
         "project_id": _getenv(proj_id),
@@ -176,30 +199,25 @@ logging.basicConfig(
 
 # Discord environment config
 test_env = _test_env("TEST_ENV")
-discord_token_anchor = _getenv("DISCORD_TOKEN_ANCHOR", optional=True)
-discord_token_beacon = _getenv("DISCORD_TOKEN_BEACON", optional=True)
-disable_bad_channels = (
-    _getenv("DISABLE_BAD_CHANNELS", default="", optional=True).lower() == "true"
-)
+discord_token_anchor = _getenv("DISCORD_TOKEN_ANCHOR", default="")
+discord_token_beacon = _getenv("DISCORD_TOKEN_BEACON", default="")
+disable_bad_channels = _getenv("DISABLE_BAD_CHANNELS", default="").lower() == "true"
 
 # Discord control server config
-control_discord_server_id = _getenv("CONTROL_DISCORD_SERVER_ID", cast_to=int)
-control_discord_role_id = _getenv("CONTROL_DISCORD_ROLE_ID", optional=True, cast_to=int)
-admins = [
-    int(admin.strip())
-    for admin in _getenv("ADMINS", default="-1", optional=True).split(",")
-]
-kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", cast_to=int)
-log_channel = _getenv("LOG_CHANNEL_ID", cast_to=int)
-alerts_channel = _getenv("ALERTS_CHANNEL_ID", cast_to=int)
+control_discord_server_id = _getenv("CONTROL_DISCORD_SERVER_ID", "-1")
+control_discord_role_id = _getenv("CONTROL_DISCORD_ROLE_ID", "-1")
+admins = [int(admin.strip()) for admin in _getenv("ADMINS", default="-1").split(",")]
+kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", default=0)
+log_channel = _getenv("LOG_CHANNEL_ID", default=0)
+alerts_channel = _getenv("ALERTS_CHANNEL_ID", default=0)
 
 
 # Discord constants
 embed_default_color = h.Color(int(_getenv("EMBED_DEFAULT_COLOR", "0"), 16))
 embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR", "0"), 16))
 followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES", "{}"), parse_int=int)
-default_url = _getenv("DEFAULT_URL", optional=True)
-navigator_timeout = _getenv("NAVIGATOR_TIMEOUT", optional=True, cast_to=int) or 120
+default_url = _getenv("DEFAULT_URL", "")
+navigator_timeout = _getenv("NAVIGATOR_TIMEOUT", 120)
 kyber_ls_thumbnail = (
     "https://kyberscorner.com/wp-content/uploads/2025/06/lost_sector_kyber.png"
 )
@@ -224,12 +242,12 @@ lost_sector_gif_url = _getenv("LOST_SECTOR_GIF_URL")
 xur_image_url = _getenv("XUR_IMAGE_URL")
 
 # Bungie credentials
-bungie_api_key = _getenv("BUNGIE_API_KEY", optional=True)
-bungie_client_id = _getenv("BUNGIE_CLIENT_ID", optional=True)
-bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET", optional=True)
+bungie_api_key = _getenv("BUNGIE_API_KEY", "")
+bungie_client_id = _getenv("BUNGIE_CLIENT_ID", "")
+bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET", "")
 
 
-port = _getenv("PORT", 8080, cast_to=int)
+port = _getenv("PORT", 8080)
 #### Environment variables end ####
 
 ###################################
