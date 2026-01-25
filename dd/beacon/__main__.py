@@ -13,62 +13,31 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import logging
-
 import hikari as h
 import lightbulb as lb
 import miru
-from lightbulb.ext import tasks
 
-from ..common import cfg, schemas, utils
-from . import help, modules
-from .bot import CachedFetchBot, CustomHelpBot, ServerEmojiEnabledBot, UserCommandBot
+import dd.beacon.extensions
 
+from ..common import cfg
 
-class Bot(ServerEmojiEnabledBot, UserCommandBot, CachedFetchBot, CustomHelpBot):
-    pass
+bot = h.GatewayBot(
+    token=cfg.discord_token_beacon,
+    intents=h.Intents.ALL_UNPRIVILEGED | h.Intents.MESSAGE_CONTENT,
+    max_rate_limit=600,
+)
 
-
-bot = Bot(
-    **cfg.lightbulb_params(
-        include_message_content_intent=True,
-        central_guilds_only=False,
-        discord_token=cfg.discord_token_beacon,
-    ),
-    user_command_schema=schemas.UserCommand,
-    help_class=help.HelpCommand,
-    help_slash_command=True,
-    emoji_servers=[cfg.kyber_discord_server_id],
+client = lb.client_from_app(
+    bot,
+    cfg.test_env or (),  # Lightbulb enabled guilds
 )
 
 
-@bot.listen()
-async def on_start(event: lb.events.LightbulbStartedEvent):
-    bot.d.guild_count = len(await bot.rest.fetch_my_guilds())
-    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
+@bot.listen(h.StartingEvent)
+async def on_starting_event(event: h.StartingEvent):
+    await client.load_extensions_from_package(dd.beacon.extensions)
+    await client.start()
 
 
-@bot.listen()
-async def on_guild_add(event: h.events.GuildJoinEvent):
-    bot.d.guild_count += 1
-    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
-
-
-@bot.listen()
-async def on_guild_rm(event: h.events.GuildLeaveEvent):
-    bot.d.guild_count -= 1
-    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
-
-
-_modules = map(modules.__dict__.get, modules.__all__)
-
-for module in _modules:
-    logging.info(f"Loading module {module.__name__.split('.')[-1]}")
-    if (hasattr(module, "IGNORE") and module.IGNORE) or not hasattr(module, "register"):
-        logging.info(f"Skipping module {module.__name__.split('.')[-1]}")
-        continue
-    module.register(bot)
-
-tasks.load(bot)
 miru.install(bot)
 bot.run()
