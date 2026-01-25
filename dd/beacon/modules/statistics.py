@@ -66,7 +66,7 @@ async def populations_command(ctx: lb.Context):
     for log_key in sorted(logs.keys()):
         log_breakdown_text += (
             f"\nBetween **{10**log_key:,d}** and "
-            + f"**{10**(log_key+1):,d}**: "
+            + f"**{10 ** (log_key + 1):,d}**: "
             + f"{logs[log_key]:,d}"
         )
 
@@ -77,7 +77,7 @@ async def populations_command(ctx: lb.Context):
             + f"\n**Total**: {sum(map(lambda x: x[1], populations)):,d}"
             + "\n**Top 7 servers by population**\n"
             + "\n".join(
-                f"{i+1}. **{server_name}**: {population:,d}"
+                f"{i + 1}. **{server_name}**: {population:,d}"
                 for i, (server_name, population) in enumerate(top_7)
             )
             + f"\n**Other servers**: {rest:,d}"

@@ -20,16 +20,5 @@ __all__ = []
 for loader, module_name, is_pkg in pkgutil.walk_packages(__path__):
     # Loads all modules in this directory
     module = importlib.import_module("." + module_name, package=__name__)
-
-    # If the module has a _no_register attribute, and it's set to True, don't register it
-    # in __all__
-    try:
-        do_not_register = module._no_register
-    except AttributeError:
-        do_not_register = False
-
-    if do_not_register:
-        continue
-    else:
-        __all__.append(module_name)
-        globals()[module_name] = module
+    __all__.append(module_name)
+    globals()[module_name] = module

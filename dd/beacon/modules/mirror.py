@@ -1221,13 +1221,13 @@ async def mirror_source_details(ctx: lb.SlashContext, channel_id: str):
     legacy_sources: str = [
         sources[legacy_source]
         if legacy_source in sources
-        else f"Unknown Source: { legacy_source }"
+        else f"Unknown Source: {legacy_source}"
         for legacy_source in legacy_sources
     ]
     new_style_sources: str = [
         sources[new_style_source]
         if new_style_source in sources
-        else f"Unknown Source: { new_style_source }"
+        else f"Unknown Source: {new_style_source}"
         for new_style_source in new_style_sources
     ]
 
