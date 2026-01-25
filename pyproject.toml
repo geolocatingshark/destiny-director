@@ -16,11 +16,10 @@ dependencies = [
     "attrs>=22.2.0",
     "dateparser>=1.1",
     "gspread>=5.9",
-    "hikari-lightbulb>=2.3.5,<3",
-    "hikari-message",
+    "hikari-lightbulb>=3.0.0",
     "hikari-miru>=3.4.0,<4",
     "hikari-toolbox>=0.1.5",
-    "hikari==2.0.0.dev126",
+    "hikari==2.5.0",
     "python-dotenv>=1.2.1",
     "regex>=2023.6.3",
     "roman>=4.1",
@@ -46,9 +45,6 @@ speedups = [
 [tool.uv]
 concurrent-installs = 1
 default-groups = ["dev", "speedups"]
-
-[tool.uv.sources]
-hikari-message = { git = "https://github.com/gsfernandes81/hikari-message.git", rev = "e0b7e5f" }
 
 [tool.hatch.build.targets.sdist]
 include = ["dd"]
