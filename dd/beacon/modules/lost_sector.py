@@ -18,7 +18,8 @@ import typing as t
 
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage as MessagePrototype
+
+from dd.hmessage import HMessage
 
 from ...common import cfg
 from ...common.lost_sector import format_post
@@ -37,11 +38,11 @@ FOLLOWABLE_CHANNEL = cfg.followables["lost_sector"]
 class SectorMessages(NavPages):
     bot: ServerEmojiEnabledBot
 
-    def preprocess_messages(self, messages: t.List[h.Message | MessagePrototype]):
+    def preprocess_messages(self, messages: t.List[h.Message | HMessage]):
         for m in messages:
             m.embeds = utils.filter_discord_autoembeds(m)
         processed_messages = [
-            MessagePrototype.from_message(m).merge_content_into_embed(prepend=False)
+            HMessage.from_message(m).merge_content_into_embed(prepend=False)
             # Remove merge_attachements_into_embed since it cause embeds to disappear
             # Did not investigate further as this functionality was not used in the
             # last 3 months at least
@@ -53,9 +54,7 @@ class SectorMessages(NavPages):
 
         return processed_message
 
-    async def lookahead(
-        self, after: dt.datetime
-    ) -> t.Dict[dt.datetime, MessagePrototype]:
+    async def lookahead(self, after: dt.datetime) -> t.Dict[dt.datetime, HMessage]:
         start_date = after
         sector_on = sector_accounting.Rotation.from_gspread_url(
             cfg.sheets_ls_url, cfg.gsheets_credentials, buffer=1
@@ -73,7 +72,7 @@ class SectorMessages(NavPages):
                 # In this case, we will just return a message saying that there is no data
                 lookahead_dict = {
                     **lookahead_dict,
-                    date: MessagePrototype(embeds=[NO_DATA_HERE_EMBED]),
+                    date: HMessage(embeds=[NO_DATA_HERE_EMBED]),
                 }
             else:
                 lookahead_dict = {

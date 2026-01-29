@@ -23,9 +23,9 @@ from random import randint
 import hikari as h
 import lightbulb as lb
 import miru as m
-from hmessage import HMessage as MessagePrototype
-from lightbulb.ext import tasks
 from miru.ext import nav
+
+from dd.hmessage import HMessage
 
 from ..common.cfg import (
     embed_default_color,
@@ -40,7 +40,7 @@ from .bot import CachedFetchBot
 NO_DATA_HERE_EMBED = h.Embed(title="No data here!", color=embed_default_color)
 
 
-class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
+class DateRangeDict(t.Dict[dt.datetime, HMessage]):
     """Dict with keys that are contiguous date ranges up to limits
 
     The keys of the backing dict are the start of the date ranges.
@@ -104,7 +104,7 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
             + index * self.period
         )
 
-    def __getitem__(self, key: dt.datetime | int) -> MessagePrototype:
+    def __getitem__(self, key: dt.datetime | int) -> HMessage:
         if isinstance(key, int):
             key = self.index_to_date(key)
         if not isinstance(key, dt.datetime):
@@ -132,7 +132,7 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
         __key = self.round_down(__key)
         return super().__contains__(__key)
 
-    def __setitem__(self, key: dt.datetime, value: MessagePrototype) -> None:
+    def __setitem__(self, key: dt.datetime, value: HMessage) -> None:
         if not isinstance(key, dt.datetime):
             raise TypeError("Key must be of type datetime.datetime")
 
@@ -231,13 +231,13 @@ class NavigatorView(nav.NavigatorView):
         )
 
     def _get_page_payload(
-        self, page: t.Union[str, h.Embed, t.Sequence[h.Embed], MessagePrototype]
+        self, page: t.Union[str, h.Embed, t.Sequence[h.Embed], HMessage]
     ) -> t.MutableMapping[str, t.Any]:
         """Get the page content that is to be sent."""
 
-        if not isinstance(page, MessagePrototype):
+        if not isinstance(page, HMessage):
             raise TypeError(
-                f"Expected type 'MessagePrototype' to send as page, not '{page.__class__.__name__}'."
+                f"Expected type 'HMessage' to send as page, not '{page.__class__.__name__}'."
             )
 
         return_dict = page.to_message_kwargs()
@@ -324,7 +324,7 @@ class NavPages(DateRangeDict):
     """Class to maintain a dict of slash command responses over time.
 
     The key for the dict is the datetime after which the response was posted
-    and the value is the MessagePrototype instance for the response.
+    and the value is the HMessage instance for the response.
     Additionally the key also accepts an int and interprets it as n periods
     since the currrent datetime rounded down.
 
@@ -347,7 +347,7 @@ class NavPages(DateRangeDict):
     suppress_content_autoembeds: bool
         Instructs the default preprocess_messages method to stop discord link auto
         embeds based on message content
-    no_data_message: MessagePrototype
+    no_data_message: HMessage
         Message to use when no data is available
     """
 
@@ -360,9 +360,7 @@ class NavPages(DateRangeDict):
         lookahead_len: t.Optional[int] = 0,
         lookahead_update_interval: t.Optional[int] = 1800,
         suppress_content_autoembeds: t.Optional[bool] = True,
-        no_data_message: t.Optional[MessagePrototype] = MessagePrototype(
-            embeds=[NO_DATA_HERE_EMBED]
-        ),
+        no_data_message: t.Optional[HMessage] = HMessage(embeds=[NO_DATA_HERE_EMBED]),
     ):
         super().__init__(period)
         self.history_len = history_len
@@ -375,7 +373,7 @@ class NavPages(DateRangeDict):
         self._suppress_content_autoembeds = suppress_content_autoembeds
         self.no_data_message = no_data_message
 
-    def __getitem__(self, key: dt.datetime | int) -> MessagePrototype:
+    def __getitem__(self, key: dt.datetime | int) -> HMessage:
         try:
             return super().__getitem__(key)
         except KeyError:
@@ -390,12 +388,8 @@ class NavPages(DateRangeDict):
         limit_high = midpoint + self.period * self.lookahead_len
         return (limit_low, limit_high)
 
-    def preprocess_messages(
-        self, messages: t.List[MessagePrototype | h.Message]
-    ) -> MessagePrototype:
-        msg: MessagePrototype = accumulate(
-            [MessagePrototype.from_message(msg) for msg in messages]
-        )
+    def preprocess_messages(self, messages: t.List[HMessage | h.Message]) -> HMessage:
+        msg: HMessage = accumulate([HMessage.from_message(msg) for msg in messages])
 
         if self._suppress_content_autoembeds:
             # Stop discord from making new auto embeds
@@ -435,8 +429,8 @@ class NavPages(DateRangeDict):
             suppress_content_autoembeds (bool, optional): If True, instructs the
                 default preprocess_messages method to stop Discord link auto
                 embeds based on message content. Default is True.
-            no_data_message (MessagePrototype, optional): Message to use when no
-                data is available. Default is MessagePrototype(embeds=[NO_DATA_HERE_EMBED]).
+            no_data_message (HMessage, optional): Message to use when no
+                data is available. Default is HMessage(embeds=[NO_DATA_HERE_EMBED]).
             **kwargs: Additional keyword arguments for the class constructor.
 
         Returns:
@@ -482,7 +476,7 @@ class NavPages(DateRangeDict):
                 self[key] = self.preprocess_messages(self[key])
             key += self.period
 
-    @utils.ignore_self_for_method
+    @utils.ignore_own_user
     async def _update_history(self, event: h.MessageCreateEvent | h.MessageUpdateEvent):
         """Updates the history with any changes or new messages in self.channel"""
 
@@ -577,13 +571,11 @@ class NavPages(DateRangeDict):
                 except Exception as e:
                     await discord_error_logger(bot, e)
 
-    async def lookahead(
-        self, after: dt.datetime
-    ) -> t.Dict[dt.datetime, MessagePrototype]:
+    async def lookahead(self, after: dt.datetime) -> t.Dict[dt.datetime, HMessage]:
         """Return the predicted messages for the periods after <after>
 
         The dict must have <self.lookahead_len> entries, indexed by the start of the
-        period and must contain the MessagePrototype for that period."""
+        period and must contain the HMessage for that period."""
         return {}
 
 

@@ -19,7 +19,8 @@ import typing as t
 
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage as MessagePrototype
+
+from dd.hmessage import HMessage
 
 from ...common import cfg
 from ...common.utils import accumulate
@@ -33,15 +34,13 @@ FOLLOWABLE_CHANNEL = cfg.followables["weekly_nightfall"]
 
 
 class NightfallPages(NavPages):
-    def preprocess_messages(
-        self, messages: t.List[MessagePrototype | h.Message]
-    ) -> MessagePrototype:
+    def preprocess_messages(self, messages: t.List[HMessage | h.Message]) -> HMessage:
         for m in messages:
             m.embeds = utils.filter_discord_autoembeds(m)
 
         try:
             msg_proto = (
-                accumulate([MessagePrototype.from_message(m) for m in messages])
+                accumulate([HMessage.from_message(m) for m in messages])
                 .merge_content_into_embed()
                 .merge_attachements_into_embed(default_url=cfg.default_url)
             )
@@ -51,7 +50,7 @@ class NightfallPages(NavPages):
                 + ", ".join(str(m.id) for m in messages)
             )
             logging.exception(e)
-            msg_proto = MessagePrototype(
+            msg_proto = HMessage(
                 embeds=[
                     h.Embed(
                         title="Error",

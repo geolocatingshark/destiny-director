@@ -20,7 +20,8 @@ import typing as t
 import aiocron
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage as MessagePrototype
+
+from dd.hmessage import HMessage
 
 from ..common import cfg, schemas
 from ..common.lost_sector import format_post
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 async def discord_announcer(
     bot: lb.BotApp,
     channel_id: int,
-    construct_message_coro: t.Coroutine[t.Any, t.Any, MessagePrototype] = None,
+    construct_message_coro: t.Coroutine[t.Any, t.Any, HMessage] = None,
     check_enabled: bool = False,
     enabled_check_coro: t.Coroutine[t.Any, t.Any, bool] = None,
     publish_message: bool = True,

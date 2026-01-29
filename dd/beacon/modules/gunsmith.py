@@ -19,7 +19,8 @@ import typing as t
 import hikari as h
 import lightbulb as lb
 import regex as re
-from hmessage import HMessage as MessagePrototype
+
+from dd.hmessage import HMessage
 
 from ...common import cfg
 from ...common.utils import accumulate
@@ -38,13 +39,11 @@ rgx_find_from_till_text = re.compile(r"\n\*\*(From|Till)\*\*[^\n]*")
 
 
 class ResetPages(NavPages):
-    def preprocess_messages(
-        self, messages: t.List[MessagePrototype | h.Message]
-    ) -> MessagePrototype:
+    def preprocess_messages(self, messages: t.List[HMessage | h.Message]) -> HMessage:
         for m in messages:
             m.embeds = utils.filter_discord_autoembeds(m)
         msg_proto = (
-            accumulate([MessagePrototype.from_message(m) for m in messages])
+            accumulate([HMessage.from_message(m) for m in messages])
             .merge_content_into_embed()
             .merge_attachements_into_embed(default_url=cfg.default_url)
         )

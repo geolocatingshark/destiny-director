@@ -15,7 +15,8 @@
 
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage
+
+from dd.hmessage import HMessage
 
 from ...common import cfg
 from ..bot import CachedFetchBot

@@ -24,7 +24,8 @@ import aiohttp.web
 import hikari as h
 import lightbulb as lb
 import regex as re
-from hmessage import HMessage
+
+from dd.hmessage import HMessage
 
 from ..common import cfg, schemas
 from ..common.utils import accumulate, fetch_emoji_dict

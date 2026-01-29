@@ -17,7 +17,8 @@ import logging
 import typing as t
 
 import lightbulb as lb
-from hmessage import HMessage
+
+from dd.hmessage import HMessage
 
 from ..common import cfg
 from . import utils

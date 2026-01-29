@@ -1,7 +1,8 @@
 import aiocron
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage
+
+from dd.hmessage import HMessage
 
 from ..common import cfg, schemas
 from ..common.utils import fetch_emoji_dict

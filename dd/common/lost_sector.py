@@ -4,7 +4,8 @@ import typing as t
 import aiohttp
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage as MessagePrototype
+
+from dd.hmessage import HMessage
 
 from ..common import cfg, schemas
 from ..common.utils import discord_error_logger, fetch_emoji_dict
@@ -52,7 +53,7 @@ async def format_post(
     sectors: sector_accounting.Sector | None = None,
     date: dt.datetime | None = None,
     emoji_dict: t.Dict[str, h.Emoji] | None = None,
-) -> MessagePrototype:
+) -> HMessage:
     """Format a lost sector announcement message
 
     Args:
@@ -147,7 +148,7 @@ async def format_post(
     if ls_gif_url:
         embed.set_image(ls_gif_url)
 
-    return MessagePrototype(embeds=[embed])
+    return HMessage(embeds=[embed])
 
 
 async def format_sector(sector: sector_accounting.Sector) -> str:

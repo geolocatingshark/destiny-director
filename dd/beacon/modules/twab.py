@@ -18,7 +18,8 @@ import typing as t
 
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage as MessagePrototype
+
+from dd.hmessage import HMessage
 
 from ...common import cfg
 from ...common.utils import accumulate
@@ -32,12 +33,8 @@ FOLLOWABLE_CHANNEL = cfg.followables["twab"]
 
 
 class TWIDPages(NavPages):
-    def preprocess_messages(
-        self, messages: t.List[MessagePrototype | h.Message]
-    ) -> MessagePrototype:
-        msg: MessagePrototype = accumulate(
-            [MessagePrototype.from_message(m) for m in messages]
-        )
+    def preprocess_messages(self, messages: t.List[HMessage | h.Message]) -> HMessage:
+        msg: HMessage = accumulate([HMessage.from_message(m) for m in messages])
         msg.embeds = utils.filter_discord_autoembeds(msg)
 
         urls = cfg.url_regex.findall(msg.content)

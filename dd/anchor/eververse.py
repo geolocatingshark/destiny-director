@@ -4,7 +4,8 @@ from collections import defaultdict
 import aiocron
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage
+
+from dd.hmessage import HMessage
 
 from ..common import cfg, schemas
 from ..common.utils import fetch_emoji_dict
@@ -109,8 +110,7 @@ async def format_eververse_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
             item: api.DestinyItem
             item.lightgg_url
             description += (
-                f"• [{item.name}]({item.lightgg_url}) "
-                f"({item.costs['Bright Dust']})\n"
+                f"• [{item.name}]({item.lightgg_url}) ({item.costs['Bright Dust']})\n"
             )
         description += "\n"
 

@@ -17,7 +17,8 @@ import datetime as dt
 
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage as MessagePrototype
+
+from dd.hmessage import HMessage
 
 from ...common import cfg
 from ..nav import NavigatorView, NavPages
@@ -37,9 +38,7 @@ async def on_start(event: h.StartedEvent):
         period=dt.timedelta(days=7),
         reference_date=REFERENCE_DATE,
         suppress_content_autoembeds=False,
-        no_data_message=MessagePrototype(
-            content="Trials is unavailable for this week."
-        ),
+        no_data_message=HMessage(content="Trials is unavailable for this week."),
     )
 
 

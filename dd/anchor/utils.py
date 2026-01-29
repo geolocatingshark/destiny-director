@@ -27,7 +27,8 @@ import attr
 import hikari as h
 import lightbulb as lb
 import yarl
-from hmessage import HMessage
+
+from dd.hmessage import HMessage
 
 from ..common import cfg
 
