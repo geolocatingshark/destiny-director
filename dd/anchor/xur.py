@@ -141,10 +141,14 @@ def costs_string_from_items(
 
 
 def exotic_armor_name_line(exotic_armor_piece: api.DestinyArmor):
+    name = exotic_armor_piece.name
+    armor_slot = exotic_armor_piece.bucket
+    if armor_slot == "Leg":
+        armor_slot = "Legs"
     return (
         ":armor:  "
-        + f"[**{exotic_armor_piece.name} "
-        + f"({exotic_armor_piece.bucket})**]"
+        + f"[**{name} "
+        + f"({armor_slot})**]"
         + f"({exotic_armor_piece.lightgg_url})"
     )
 
