@@ -199,7 +199,7 @@ def exotic_armor_fragment(
         + costs_string_from_items(exotic_armor_pieces, allowed_emoji_list)
         + "\n\n"
         + "\n".join(subfragments)
-        + "\n\n"
+        + "\n"
     )
 
 
