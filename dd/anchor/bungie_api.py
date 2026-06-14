@@ -236,6 +236,29 @@ class APIOffline(Exception):
         return self.message + "\n" + pformat(self.api_response)
 
 
+class MissingResponseField(Exception):
+    def __init__(
+        self,
+        field_name: str,
+        api_response: dict[t.Any, t.Any],
+        request_details: str = "",
+    ):
+        self.message = (
+            f"The expected field '{field_name}' was not found in the API response"
+        )
+        self.api_response = api_response
+        self.request_details = request_details
+
+    def __str__(self) -> str:
+        return (
+            self.message
+            + "\n"
+            + self.request_details
+            + "\n"
+            + pformat(self.api_response)
+        )
+
+
 class DestinyMembership:
     @classmethod
     async def from_api(
@@ -267,8 +290,7 @@ class DestinyMembership:
             return cls(primary_membership_id, primary_membership_type)
         except NameError:
             raise ValueError(
-                "Could not find primary destiny membership type for this bungie "
-                "account"
+                "Could not find primary destiny membership type for this bungie account"
             )
 
     def __init__(
@@ -816,7 +838,14 @@ class DestinyVendor:
             if response["ErrorCode"] == 1627:
                 raise VendorNotFound("Vendor not found", api_response=response)
 
-            response = response["Response"]
+            if "Response" not in response:
+                raise MissingResponseField(
+                    "Response",
+                    api_response=response,
+                    request_details=f"Vendor hash: {vendor_hash}",
+                )
+
+            response = response.get("Response")
 
         return cls.from_vendors_api_response(
             response=response,

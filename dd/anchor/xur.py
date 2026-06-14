@@ -264,7 +264,7 @@ def exotic_weapons_fragment(
             weapon_line_format(
                 exotic_weapon,
                 include_weapon_type=False if exotic_weapon.name == "Hawkmoon" else True,
-                include_perks=[1] if exotic_weapon.name == "Hawkmoon" else [],
+                include_perks=[2] if exotic_weapon.name == "Hawkmoon" else [],
                 include_lightgg_link=True,
                 emoji_include_list=emoji_include_list,
             )
@@ -317,6 +317,28 @@ def last_two_active_perk_columns(perks: t.List[t.List[str]]) -> t.List[int]:
     return perks_to_return[-2:]
 
 
+def legendary_armor_sets_fragment(
+    legendary_armor: t.List[api.DestinyArmor],
+    emoji_include_list: t.List[str],
+    include_title: str = "## **__Legendary Armor Sets__**",
+) -> str:
+    subfragments = []
+    if include_title:
+        subfragments.append(include_title)
+
+    subfragments.append(costs_string_from_items(legendary_armor, emoji_include_list))
+    subfragments.append("")
+
+    armor_set_names = set()
+    for armor in legendary_armor:
+        armor_set_names.add(armor.collectible_set_name)
+
+    for armor_set_name in sorted(armor_set_names):
+        subfragments.append(f":armor: **{armor_set_name}**")
+
+    return "\n".join(subfragments) + "\n"
+
+
 def legendary_weapons_fragment(
     legendary_weapons: t.List[api.DestinyArmor],
     emoji_include_list: t.List[str],
@@ -341,19 +363,6 @@ def legendary_weapons_fragment(
         )
 
     return "\n".join(subfragments) + "\n"
-
-
-def xurfboard_sparrow_fragment():
-    return (
-        "## **__Other Strange Offers__**"
-        "\n"
-        "Cost:  <:strange_coin:1248721499943075861> `x97`"
-        "\n"
-        "\n"
-        "<:sparrow:1296886350712406170>  [**The Xûrfboard (Skimmer)**]"
-        "(https://kyberscorner.com/wp-content/uploads/2024/10"
-        "/The-Xurfboard-Skimmer-1.png)"
-    )
 
 
 XUR_FOOTER = """\n\n[**View More**](https://kyber3000.com/D2-Xur) ↗ 
@@ -393,11 +402,14 @@ async def format_xur_vendor(
         [item for item in vendor.sale_items if item.is_exotic and item.is_catalyst],
         emoji_include_list=emoji_dict.keys(),
     )
+    description += legendary_armor_sets_fragment(
+        [item for item in vendor.sale_items if item.is_legendary and item.is_armor],
+        emoji_include_list=emoji_dict.keys(),
+    )
     description += legendary_weapons_fragment(
         [item for item in vendor.sale_items if item.is_weapon and item.is_legendary],
         emoji_include_list=emoji_dict.keys(),
     )
-    description += xurfboard_sparrow_fragment()
 
     description += XUR_FOOTER
     description = await substitute_user_side_emoji(emoji_dict, description)
