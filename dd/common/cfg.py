@@ -24,6 +24,7 @@ import hikari as h
 import regex as re
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.pool import NullPool, Pool
 
 load_dotenv()
 T = t.TypeVar("T")
@@ -41,7 +42,7 @@ def _getenv(key: str, default: str) -> str: ...
 def _getenv(key: str) -> str: ...
 
 
-def _getenv(key: str, default: t.Union[int, str] | None = None) -> t.Union[int, str]:
+def _getenv(key: str, default: int | str | None = None) -> int | str:
     value = __getenv(key)
 
     if value is None:
@@ -56,7 +57,9 @@ def _getenv(key: str, default: t.Union[int, str] | None = None) -> t.Union[int, 
             try:
                 return int(value)
             except ValueError:
-                raise ValueError(f"Environment variable '{key}' must be an integer.")
+                raise ValueError(
+                    f"Environment variable '{key}' must be an integer."
+                ) from None
 
         return value
 
@@ -70,48 +73,6 @@ def _test_env(var_name: str) -> tuple[int, ...] | tuple[()]:
         else ()
     )
     return test_env
-
-
-# def lightbulb_params(
-#     include_message_content_intent: bool,
-#     central_guilds_only: bool,
-#     discord_token: str,
-# ) -> dict:
-#     """
-#     Returns configuration parameters for lightbulb code within the bot
-
-#     Args:
-#         include_message_content_intent (bool): Whether the bot should receive message
-#         contents from the api
-
-#         central_guilds_only (bool): Whether the bot should only be enabled in the
-#         central servers
-
-#     Returns (dict with keys):
-#         token (str)
-#         intents (hikari.Intents)
-#         max_rate_limit (int)
-#         default_enabled_guilds (tuple[int, ...] | tuple[()])
-#     """
-#     intents = h.Intents.ALL_UNPRIVILEGED
-
-#     if include_message_content_intent:
-#         intents = intents | h.Intents.MESSAGE_CONTENT
-
-#     lightbulb_params = {
-#         "token": discord_token,
-#         "intents": intents,
-#         "max_rate_limit": 600,
-#     }
-#     # Only use the test env for testing if it is specified
-#     if test_env:
-#         lightbulb_params["default_enabled_guilds"] = test_env
-#     elif central_guilds_only:
-#         lightbulb_params["default_enabled_guilds"] = [
-#             kyber_discord_server_id,
-#             control_discord_server_id,
-#         ]
-#     return lightbulb_params
 
 
 def _db_urls(var_name: str, var_name_alternative: str) -> tuple[str, str]:
@@ -134,13 +95,13 @@ def _db_urls(var_name: str, var_name_alternative: str) -> tuple[str, str]:
     return db_url, db_url_async
 
 
-def _db_config() -> t.Tuple[
-    t.Mapping[str, bool | t.Type[AsyncSession]],
+def _db_config() -> tuple[
+    t.Mapping[str, bool | type[AsyncSession]],
     t.Mapping[str, bool],
     t.Mapping[str, ssl.SSLContext],
-    t.Mapping[str, int | str],
+    t.Mapping[str, int | str | bool | type[Pool]],
 ]:
-    db_session_kwargs_sync: t.Dict[str, bool] = {
+    db_session_kwargs_sync: dict[str, t.Any] = {
         "expire_on_commit": False,
     }
     db_session_kwargs = db_session_kwargs_sync | {
@@ -155,12 +116,25 @@ def _db_config() -> t.Tuple[
         ssl_ctx.verify_mode = ssl.CERT_REQUIRED
         db_connect_args.update({"ssl": ssl_ctx})
 
-    db_engine_args: t.Dict[str, int | str] = {
+    db_engine_args: dict[str, int | str | bool | type[Pool]] = {
         "max_overflow": -1,
         "isolation_level": "READ COMMITTED",
         "pool_pre_ping": True,
         "pool_recycle": 3600,
+        "pool_use_lifo": True,
     }
+    # Under pytest the engine is driven from many short-lived event loops
+    # (every asyncio.run() in test setup/teardown opens a new loop). asyncmy
+    # connections are bound to their creating loop, so pooled connections that
+    # outlive that loop blow up with "Event loop is closed" when the pool later
+    # terminates them. NullPool closes each connection on return, within the
+    # live loop, so nothing survives to a dead loop.
+    if __getenv("PYTEST_VERSION") is not None:
+        db_engine_args["poolclass"] = NullPool
+        # max_overflow and pool_use_lifo are QueuePool-specific and rejected
+        # by create_engine when combined with NullPool.
+        del db_engine_args["max_overflow"]
+        del db_engine_args["pool_use_lifo"]
     return db_session_kwargs, db_session_kwargs_sync, db_connect_args, db_engine_args
 
 
@@ -204,10 +178,10 @@ discord_token_beacon = _getenv("DISCORD_TOKEN_BEACON", default="")
 disable_bad_channels = _getenv("DISABLE_BAD_CHANNELS", default="").lower() == "true"
 
 # Discord control server config
-control_discord_server_id = _getenv("CONTROL_DISCORD_SERVER_ID", "-1")
+control_discord_server_id = int(_getenv("CONTROL_DISCORD_SERVER_ID", "-1"))
 control_discord_role_id = _getenv("CONTROL_DISCORD_ROLE_ID", "-1")
 admins = [int(admin.strip()) for admin in _getenv("ADMINS", default="-1").split(",")]
-kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", default=0)
+kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", default=-1)
 log_channel = _getenv("LOG_CHANNEL_ID", default=0)
 alerts_channel = _getenv("ALERTS_CHANNEL_ID", default=0)
 
@@ -215,12 +189,37 @@ alerts_channel = _getenv("ALERTS_CHANNEL_ID", default=0)
 # Discord constants
 embed_default_color = h.Color(int(_getenv("EMBED_DEFAULT_COLOR", "0"), 16))
 embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR", "0"), 16))
-followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES", "{}"), parse_int=int)
+followables: dict[str, int] = json.loads(_getenv("FOLLOWABLES", "{}"), parse_int=int)
 default_url = _getenv("DEFAULT_URL", "")
 navigator_timeout = _getenv("NAVIGATOR_TIMEOUT", 120)
 kyber_ls_thumbnail = (
     "https://kyberscorner.com/wp-content/uploads/2025/06/lost_sector_kyber.png"
 )
+
+# Discord logging / alerting config (see dd/common/discord_logging.py)
+# Minimum log level forwarded to the alerts channel.
+alert_min_level = _getenv("ALERT_MIN_LEVEL", "ERROR")
+# Seconds the consumer waits collecting records before flushing a batch (lets
+# duplicate records within the window collapse into a single alert).
+alert_flush_interval = _getenv("ALERT_FLUSH_INTERVAL", 5)
+# Max queued records before new ones are dropped (back-pressure guard).
+alert_queue_maxsize = _getenv("ALERT_QUEUE_MAXSIZE", 1000)
+# Rolling window (seconds) and occurrence threshold for the "error storm"
+# escalation, plus a debounce so a sustained storm doesn't re-ping every flush.
+alert_freq_window = _getenv("ALERT_FREQ_WINDOW", 300)
+alert_freq_threshold = _getenv("ALERT_FREQ_THRESHOLD", 10)
+alert_escalation_debounce = _getenv("ALERT_ESCALATION_DEBOUNCE", 600)
+# Fraction of a mirror run's targets that must fail (and minimum sample size)
+# before a "majority of mirrors failing" critical alert fires. _getenv only
+# coerces int/str, so the ratio is read as a string and parsed to float.
+mirror_failure_ratio_threshold = float(_getenv("MIRROR_FAILURE_RATIO_THRESHOLD", "0.5"))
+mirror_failure_min_sample = _getenv("MIRROR_FAILURE_MIN_SAMPLE", 10)
+# Seconds an autopost announcer may stall (API offline / edit failing) before a
+# single critical alert fires for that run.
+announcer_offline_alert_after = _getenv("ANNOUNCER_OFFLINE_ALERT_AFTER", 900)
+# Accent colours for alert severities (hex, like the other embed colours).
+embed_warning_color = h.Color(int(_getenv("EMBED_WARNING_COLOR", "F1C40F"), 16))
+embed_critical_color = h.Color(int(_getenv("EMBED_CRITICAL_COLOR", "992D22"), 16))
 
 # Database URLs
 db_url, db_url_async = _db_urls("MYSQL_PRIVATE_URL", "MYSQL_URL")
