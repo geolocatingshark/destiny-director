@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import typing as t
 import warnings
 from collections import defaultdict
-from typing import List, Self, Union
+from typing import Self
 
 import attr
 import gspread
@@ -11,7 +12,6 @@ import regex as re
 
 from .utils import (
     EntityRotation,
-    Minutes,
     _parse_counts,
     all_values_from_sheet,
 )
@@ -51,18 +51,18 @@ class DifficultySpecificSectorData:
         shields (str): Comma separated list of shields in the lost sector.
     """
 
-    barrier_champions = attr.ib(0, converter=_parse_counts)
-    overload_champions = attr.ib(0, converter=_parse_counts)
-    unstoppable_champions = attr.ib(0, converter=_parse_counts)
-    arc_shields = attr.ib(0, converter=_parse_counts)
-    void_shields = attr.ib(0, converter=_parse_counts)
-    solar_shields = attr.ib(0, converter=_parse_counts)
-    stasis_shields = attr.ib(0, converter=_parse_counts)
-    strand_shields = attr.ib(0, converter=_parse_counts)
-    modifiers = attr.ib("")
+    barrier_champions: int = attr.ib(default=0, converter=_parse_counts)
+    overload_champions: int = attr.ib(default=0, converter=_parse_counts)
+    unstoppable_champions: int = attr.ib(default=0, converter=_parse_counts)
+    arc_shields: int = attr.ib(default=0, converter=_parse_counts)
+    void_shields: int = attr.ib(default=0, converter=_parse_counts)
+    solar_shields: int = attr.ib(default=0, converter=_parse_counts)
+    stasis_shields: int = attr.ib(default=0, converter=_parse_counts)
+    strand_shields: int = attr.ib(default=0, converter=_parse_counts)
+    modifiers: str = attr.ib(default="")
 
     @property
-    def champions_list(self) -> List[str]:
+    def champions_list(self) -> list[str]:
         champions = []
         if self.barrier_champions != 0:
             champions.append("Barrier")
@@ -77,7 +77,7 @@ class DifficultySpecificSectorData:
         return ", ".join(self.champions_list) or "None"
 
     @property
-    def shields_list(self) -> List[str]:
+    def shields_list(self) -> list[str]:
         shields = []
         if self.arc_shields != 0:
             shields.append("Arc")
@@ -128,21 +128,25 @@ class Sector:
     """
 
     # From "Lost Sectors (Internal)" sheet 0
-    name = attr.ib(type=str)
-    reward = attr.ib("")
-    surge = attr.ib("")
-    legendary_rewards = attr.ib("")
+    name: str = attr.ib()
+    reward: str = attr.ib(default="")
+    surge: str = attr.ib(default="")
+    legendary_rewards: str = attr.ib(default="")
     # From "Lost Sector Shield & Champion Counts" sheet 2
-    threat = attr.ib("")
-    overcharged_weapon = attr.ib("")
-    shortlink_gfx = attr.ib("")
+    threat: str = attr.ib(default="")
+    overcharged_weapon: str = attr.ib(default="")
+    shortlink_gfx: str = attr.ib(default="")
     # From "Lost Sector Shield & Champion Counts" sheet 0
-    expert_data = attr.ib(DifficultySpecificSectorData())
+    expert_data: DifficultySpecificSectorData = attr.ib(
+        default=attr.Factory(DifficultySpecificSectorData)
+    )
     # From "Lost Sector Shield & Champion Counts" sheet 1
-    master_data = attr.ib(DifficultySpecificSectorData())
+    master_data: DifficultySpecificSectorData = attr.ib(
+        default=attr.Factory(DifficultySpecificSectorData)
+    )
 
     @property
-    def surges(self) -> List[str]:
+    def surges(self) -> list[str]:
         surges = re_split_list.split(self.surge)
         surges = [surge.strip() for surge in surges]
         return surges
@@ -163,18 +167,21 @@ class Sector:
         )
 
 
-class SectorData(dict):
+class SectorData(dict[str, "Sector"]):
     def __init__(
         self,
         general: gspread.Spreadsheet,
         legend: gspread.Spreadsheet,
         master: gspread.Spreadsheet,
     ):
-        general = all_values_from_sheet(general, columns_are_major=False)[1:]
-        legend = all_values_from_sheet(legend, columns_are_major=False)[1:]
-        master = all_values_from_sheet(master, columns_are_major=False)[1:]
+        super().__init__()
+        general_rows = all_values_from_sheet(general, columns_are_major=False)[1:]
+        legend_rows = all_values_from_sheet(legend, columns_are_major=False)[1:]
+        master_rows = all_values_from_sheet(master, columns_are_major=False)[1:]
 
-        for general_row, legend_row, master_row in zip(general, legend, master):
+        for general_row, legend_row, master_row in zip(
+            general_rows, legend_rows, master_rows, strict=True
+        ):
             sector: Sector = self.gspread_data_row_to_sector(
                 general_row, legend_row, master_row
             )
@@ -182,7 +189,7 @@ class SectorData(dict):
 
     @staticmethod
     def gspread_data_row_to_sector(
-        general_row: list, legend_row: list, master_row: list
+        general_row: list[t.Any], legend_row: list[t.Any], master_row: list[t.Any]
     ) -> Sector:
         return Sector(
             name=general_row[0],
@@ -220,8 +227,8 @@ class SpreadsheetBackedData:
         cls,
         url: str,
         # Google API credentials, see https://docs.gspread.org/en/latest/oauth2.html
-        credentials: dict,
-        **kwargs,
+        credentials: dict[str, t.Any],
+        **kwargs: t.Any,
     ) -> Self:
         # Instantiates the spreadsheet, only uses the first worksheet by default
         # Ignore the client_factory deprecation warning
@@ -248,16 +255,16 @@ class SpreadsheetBackedData:
 
 @attr.s
 class Rotation(SpreadsheetBackedData):
-    start_date = attr.ib(type=dt.datetime)
-    _sector_rot = attr.ib(type=defaultdict(EntityRotation))
-    _surge_rot = attr.ib(type=EntityRotation)
-    _sector_data = attr.ib(SectorData)
+    start_date: dt.datetime = attr.ib()
+    sector_rot: defaultdict[str, EntityRotation] = attr.ib()
+    surge_rot: EntityRotation = attr.ib()
+    sector_data: SectorData = attr.ib()
 
     @classmethod
     def from_gspread(
         cls,
         worksheet: gspread.Spreadsheet,
-        buffer: Minutes = 10,  # in minutes
+        buffer: int = 10,  # in minutes
     ) -> Rotation:
         rotation_sheet = worksheet.get_worksheet(1)
         legend_sheet = worksheet.get_worksheet(2)
@@ -285,18 +292,18 @@ class Rotation(SpreadsheetBackedData):
 
         return self
 
-    def __call__(self, date: Union[dt.datetime, None] = None) -> List[Sector]:
+    def __call__(self, date: dt.datetime | None = None) -> list[Sector]:
         # Returns the lost sector in rotation on date or for today by default
-        date = date if date is not None else dt.datetime.now(tz=dt.timezone.utc)
+        date = date if date is not None else dt.datetime.now(tz=dt.UTC)
         days_since_ref_date = (date - self.start_date).days
 
         sectors = []
 
-        for sector_names in self._sector_rot.values():
+        for sector_names in self.sector_rot.values():
             sector_name = sector_names[days_since_ref_date]
             sectors.append(
-                Sector(name=sector_name, surge=self._surge_rot[days_since_ref_date])
-                + self._sector_data[sector_name]
+                Sector(name=sector_name, surge=self.surge_rot[days_since_ref_date])
+                + self.sector_data[sector_name]
             )
 
         return sectors
@@ -312,9 +319,7 @@ class Rotation(SpreadsheetBackedData):
         # of a lost sector annoucement
         reset_time = dt.timedelta(hours=16, minutes=(60 - buffer))
         # Google sheets epoch date (reference date for all dates in sheets)
-        google_sheets_epoch_date = dt.datetime(
-            1899, 12, 30, 0, 0, 0, tzinfo=dt.timezone.utc
-        )
+        google_sheets_epoch_date = dt.datetime(1899, 12, 30, 0, 0, 0, tzinfo=dt.UTC)
         # Note that the reference date below is actually not a date,
         # it is the number of days since the google sheets epoch date
         # hence we need to convert this into a usable date before returning
@@ -325,4 +330,4 @@ class Rotation(SpreadsheetBackedData):
         return start_date
 
     def __len__(self):
-        return len(self._sector_rot)
+        return len(self.sector_rot)

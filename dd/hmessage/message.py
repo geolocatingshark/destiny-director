@@ -13,6 +13,12 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+"""HMessage: a mutable, mergeable representation of a Discord message.
+
+Wraps message content, embeds and attachments with helpers to merge several
+source messages into a single message payload (used when mirroring and
+announcing).
+"""
 
 from __future__ import annotations
 
@@ -68,12 +74,12 @@ class HMessage:
     """A prototype for a message to be sent to a channel."""
 
     content: str = attr.ib(default="", converter=str)
-    embeds: t.List[h.Embed] = attr.ib(default=attr.Factory(list))
+    embeds: list[h.Embed] = attr.ib(default=attr.Factory(list))
     embed_default_colour: h.Color = attr.ib(
         default=DEFAULT_COLOR, converter=h.Color, eq=False
     )
-    attachments: t.List[h.Attachment] = attr.ib(default=attr.Factory(list))
-    id: t.Optional[int] = attr.ib(default=0, converter=int, eq=False)
+    attachments: list[h.Attachment] = attr.ib(default=attr.Factory(list))
+    id: int | None = attr.ib(default=0, converter=int, eq=False)
 
     @content.validator
     def _validate_content(self, attribute, value):
@@ -93,16 +99,30 @@ class HMessage:
             raise ValueError("Cannot send more than 10 attachments in a single message")
 
     @classmethod
-    def from_message(cls, message: h.Message) -> "HMessage":
+    def from_message(cls, message: h.PartialMessage) -> HMessage:
         """Create a HMessage instance from a message."""
         return cls(
             content=message.content or "",
-            embeds=[HMessageEmbed.from_embed(embed) for embed in message.embeds],
-            attachments=[att.url for att in message.attachments],
+            embeds=[
+                HMessageEmbed.from_embed(embed)
+                for embed in (
+                    message.embeds
+                    if not isinstance(message.embeds, h.UndefinedType)
+                    else []
+                )
+            ],
+            attachments=[
+                att.url
+                for att in (
+                    message.attachments
+                    if not isinstance(message.attachments, h.UndefinedType)
+                    else []
+                )
+            ],
             id=message.id,
         )
 
-    def to_message_kwargs(self) -> t.Dict[str, t.Any]:
+    def to_message_kwargs(self) -> dict[str, t.Any]:
         """Convert the HMessage instance into a dict of kwargs to be passed to
         `hikari.Messageable.send`."""
         return {
@@ -128,13 +148,14 @@ class HMessage:
 
     def merge_content_into_embed(
         self, embed_no: int = 0, prepend: bool = True
-    ) -> "HMessage":
+    ) -> HMessage:
         """Merge the content of a message into the description of an embed.
 
         Args:
             embed_no (int, optional): The index of the embed to merge the content into.
-            prepend (bool, optional): Whether to prepend the content to the embed description.
-                If False, the content will be appended to the embed description. Defaults to True.
+            prepend (bool, optional): Whether to prepend the content to the embed
+                description. If False, the content will be appended to the embed
+                description. Defaults to True.
         """
         content = str(self.content or "")
         self.content = ""
@@ -150,26 +171,21 @@ class HMessage:
 
         if prepend:
             self.embeds[embed_no].description = (
-                content + "\n\n" + self.embeds[embed_no].description
+                content + "\n\n" + (self.embeds[embed_no].description or "")
             )
         else:
             self.embeds[embed_no].description = (
-                self.embeds[embed_no].description + "\n\n" + content
+                (self.embeds[embed_no].description or "") + "\n\n" + content
             )
 
         return self
 
-    def merge_embed_url_as_embed_image_into_embed(
-        self, embed_no: int = 0, designator: int = 0
-    ) -> "HMessage":
-        self.merge_url_as_image_into_embed(
-            self.embeds[embed_no].url, embed_no, designator
-        )
-        self.embeds[embed_no].url = None
-        return self
-
     def merge_url_as_image_into_embed(
-        self, url: str, embed_no: int = 0, designator: int = 0
+        self,
+        url: str | None,
+        embed_no: int = 0,
+        designator: int = 0,
+        default_url: str | None = None,
     ):
         if url is None:
             logging.warning("Cannot merge NoneType URL into embed")
@@ -181,10 +197,14 @@ class HMessage:
         embed_no = int(embed_no) % len(self.embeds)
 
         embed = self.embeds.pop(embed_no)
+        # Fall back to ``default_url`` for the embed's canonical url when the
+        # embed carries none of its own — otherwise from_embed raises (an embed
+        # synthesised with no url cannot anchor a valid multi-image group).
         embeds = MultiImageEmbedList.from_embed(
             embed,
             designator,
             [url],
+            default_url=default_url or "",
         )
 
         for embed in embeds[::-1]:
@@ -202,15 +222,17 @@ class HMessage:
         embed_no: int = -1,
         designator: int = 0,
         new_embed: bool = False,
-        default_url: str = None,
-    ) -> "HMessage":
+        default_url: str | None = None,
+    ) -> HMessage:
         """Merge the attachments of a message into the embed.
 
         Args:
-            embed_no (int, optional): The index of the embed to merge the attachments into.
-            designator (int, optional): The designator to use for the embed. Defaults to 0.
-            new_embed (bool, optional): Whether to create a new embed for the attachments.
-                                        sets embed_no to the last embed. Defaults to False.
+            embed_no (int, optional): The index of the embed to merge the
+                attachments into.
+            designator (int, optional): The designator to use for the embed.
+                Defaults to 0.
+            new_embed (bool, optional): Whether to create a new embed for the
+                attachments. Sets embed_no to the last embed. Defaults to False.
         """
         if not self.embeds:
             self.embeds = [h.Embed(color=DEFAULT_COLOR)]
@@ -235,7 +257,7 @@ class HMessage:
             self.embeds.pop(embed_no),
             designator,
             attachments_to_embeds_list,
-            default_url=default_url,
+            default_url=default_url or "",
         )
 
         for embed in embeds[::-1]:

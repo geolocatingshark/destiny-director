@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import typing as t
 
 import hikari as h
@@ -29,13 +30,15 @@ class MultiImageEmbedList(list[h.Embed]):
 
     def __init__(
         self,
-        *args: t.List[t.Any],
         url: str,
         designator: int = 0,
-        images: list[str] = [],
+        images: list[str] | None = None,
         **kwargs: t.Any,
     ):
         super().__init__()
+
+        if images is None:
+            images = []
 
         if kwargs.get("image"):
             raise ValueError(
@@ -58,22 +61,19 @@ class MultiImageEmbedList(list[h.Embed]):
             DESIGNATOR_PARAMETER_NAME, str(designator or 0)
         )
         embed = h.Embed(
-            *args,
             url=str(yarl_url % {DESIGNATOR_PARAMETER_NAME: designator_str}),
             **kwargs,
         )
 
-        try:
+        with contextlib.suppress(IndexError):
             embed.set_image(images.pop(0))
-        except IndexError:
-            pass
 
         self.append(embed)
 
         for image in images:
             self.add_image(image)
 
-    def add_image(self, image: str) -> "MultiImageEmbedList":
+    def add_image(self, image: str) -> MultiImageEmbedList:
         """Add an image to the MultiImageEmbedList instance."""
         if self[-1].image:
             embed = h.Embed(
@@ -87,7 +87,7 @@ class MultiImageEmbedList(list[h.Embed]):
             self[-1].set_image(image)
         return self
 
-    def add_images(self, images: list[str]) -> "MultiImageEmbedList":
+    def add_images(self, images: list[str]) -> MultiImageEmbedList:
         """Add multiple images to the MultiImageEmbedList instance."""
         for image in images:
             self.add_image(image)
@@ -98,23 +98,31 @@ class MultiImageEmbedList(list[h.Embed]):
         cls,
         embed: h.Embed,
         designator: int = 0,
-        images: t.List[str] = [],
-        default_url: t.Union[str, yarl.URL] = "",
-    ) -> "MultiImageEmbedList":
+        images: list[str] | None = None,
+        default_url: str | yarl.URL = "",
+    ) -> MultiImageEmbedList:
+        if images is None:
+            images = []
+
+        # Resolve (and validate) the canonical url *before* constructing: the
+        # constructor always appends the designator query param, so the embed's
+        # ``.url`` is never empty afterwards — checking it post-construction would
+        # never fire. Multi-image grouping needs a real shared url, so require one.
+        resolved_url = embed.url or str(default_url)
+        if not resolved_url:
+            raise ValueError(
+                "If no default_url is provided then embeds must have a url."
+            )
+
         # Create a MultiImageEmbed instance
-        multi_image_embed: t.List[h.Embed] = cls(
-            url=embed.url or str(default_url),
+        multi_image_embed: list[h.Embed] = cls(
+            url=resolved_url,
             designator=designator,
             description=embed.description,
             title=embed.title,
             color=embed.color or DEFAULT_COLOR,
             timestamp=embed.timestamp,
         )
-
-        if multi_image_embed[0].url:
-            raise ValueError(
-                "If no default_url is provided then embeds must have a url."
-            )
 
         if embed.image:
             multi_image_embed[0].set_image(embed.image.url)
@@ -132,7 +140,8 @@ class MultiImageEmbedList(list[h.Embed]):
                 field.name, field.value, inline=field.is_inline
             )
 
-        # Loop through the image URLs and create and append new embeds with different image properties
+        # Loop through the image URLs and create and append new embeds with
+        # different image properties
         multi_image_embed.add_images(images)
         # Return the MultiImageEmbed instance
         return multi_image_embed
