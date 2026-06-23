@@ -25,12 +25,12 @@ import aiofiles
 import aiohttp
 import attr
 import hikari as h
-import lightbulb as lb
 import yarl
 
 from dd.hmessage import HMessage
 
 from ..common import cfg
+from ..common.bot import CachedFetchBot
 
 
 class FeatureDisabledError(Exception):
@@ -38,7 +38,9 @@ class FeatureDisabledError(Exception):
 
 
 @contextlib.contextmanager
-def operation_timer(op_name, logger=logging.getLogger("main/" + __name__)):
+def operation_timer(op_name, logger: logging.Logger | None = None):
+    if logger is None:
+        logger = logging.getLogger("main/" + __name__)
     start_time = dt.datetime.now()
     logger.info("Announce started")
     yield lambda t: (t - start_time).total_seconds()
@@ -46,19 +48,15 @@ def operation_timer(op_name, logger=logging.getLogger("main/" + __name__)):
     time_delta = end_time - start_time
     minutes = time_delta.seconds // 60
     seconds = time_delta.seconds % 60
-    logger.info(
-        "{name} finished in {mins} minutes and {secs} seconds".format(
-            name=op_name, mins=minutes, secs=seconds
-        )
-    )
+    logger.info(f"{op_name} finished in {minutes} minutes and {seconds} seconds")
 
 
-def weekend_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetime]:
+def weekend_period(
+    today: dt.datetime | None = None,
+) -> tuple[dt.datetime, dt.datetime]:
     if today is None:
         today = dt.datetime.now()
-    today = dt.datetime(
-        today.year, today.month, today.day, tzinfo=dt.timezone.dt.timezone.utc
-    )
+    today = dt.datetime(today.year, today.month, today.day, tzinfo=dt.UTC)
     monday = today - dt.timedelta(days=today.weekday())
     # Weekend is friday 1700 UTC to Tuesday 1700 UTC
     friday = monday + dt.timedelta(days=4) + dt.timedelta(hours=17)
@@ -66,20 +64,20 @@ def weekend_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetim
     return friday, tuesday
 
 
-def week_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetime]:
+def week_period(today: dt.datetime | None = None) -> tuple[dt.datetime, dt.datetime]:
     if today is None:
         today = dt.datetime.now()
-    today = dt.datetime(today.year, today.month, today.day, tzinfo=dt.timezone.utc)
+    today = dt.datetime(today.year, today.month, today.day, tzinfo=dt.UTC)
     monday = today - dt.timedelta(days=today.weekday())
     start = monday + dt.timedelta(days=1) + dt.timedelta(hours=17)
     end = start + dt.timedelta(days=7)
     return start, end
 
 
-def day_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetime]:
+def day_period(today: dt.datetime | None = None) -> tuple[dt.datetime, dt.datetime]:
     if today is None:
         today = dt.datetime.now()
-    today = dt.datetime(today.year, today.month, today.day, 17, tzinfo=dt.timezone.utc)
+    today = dt.datetime(today.year, today.month, today.day, 17, tzinfo=dt.UTC)
     today_end = today + dt.timedelta(days=1)
     return today, today_end
 
@@ -87,17 +85,17 @@ def day_period(today: dt.datetime = None) -> t.Tuple[dt.datetime, dt.datetime]:
 @attr.s
 class MessageFailureError(Exception):
     channel_id: int = attr.ib()
-    message_kwargs: dict = attr.ib()
+    message_kwargs: dict[str, t.Any] = attr.ib()
     source_exception_details: Exception = attr.ib()
 
 
 async def find_duplicate_uncrossposted_message(
     message: HMessage,
-    channel: h.GuildNewsChannel,
+    channel: h.TextableChannel,
     lookback_days: int = 2,
 ) -> h.Message | None:
     async for channel_message in channel.fetch_history(
-        after=dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(days=lookback_days)
+        after=dt.datetime.now(tz=dt.UTC) - dt.timedelta(days=lookback_days)
     ):
         channel_message_proto = HMessage.from_message(channel_message)
 
@@ -115,15 +113,17 @@ async def find_duplicate_uncrossposted_message(
 
 
 async def crosspost_message_with_retries(
-    bot: lb.BotApp,
-    channel: h.GuildNewsChannel | int,
+    bot: CachedFetchBot,
+    channel: h.TextableChannel | int,
     message_id: int,
 ):
     if isinstance(channel, int):
-        channel = bot.cache.get_guild_channel(channel) or await bot.rest.fetch_channel(
+        resolved = bot.cache.get_guild_channel(channel) or await bot.rest.fetch_channel(
             channel
         )
-    if not isinstance(channel, h.GuildNewsChannel):
+    else:
+        resolved = channel
+    if not isinstance(resolved, h.GuildNewsChannel):
         logging.warning(
             "Attempted to crosspost a message in a non-news channel. Skipping..."
         )
@@ -131,7 +131,7 @@ async def crosspost_message_with_retries(
     crosspost_backoff = 30
     while True:
         try:
-            await bot.rest.crosspost_message(channel.id, message_id)
+            await bot.rest.crosspost_message(resolved.id, message_id)
         except Exception as e:
             if (
                 isinstance(e, h.BadRequestError)
@@ -150,19 +150,21 @@ async def crosspost_message_with_retries(
 
 
 async def send_message(
-    bot: lb.BotApp,
+    bot: CachedFetchBot,
     msg_proto: HMessage,
     channel_id: int,
     crosspost: bool = True,
     deduplicate: bool = False,
 ) -> h.Message:
     send_backoff = 10
+    channel: h.TextableChannel | None = None
+    msg: h.Message | None = None
     while True:
         try:
-            channel: h.TextableGuildChannel = (
+            channel = t.cast(
+                h.TextableChannel,
                 bot.cache.get_guild_channel(channel_id)
-                or await bot.rest.fetch_channel(channel_id)
-                or None
+                or await bot.rest.fetch_channel(channel_id),
             )
             msg = await channel.send(**msg_proto.to_message_kwargs())
         except Exception as e:
@@ -189,22 +191,30 @@ async def send_message(
         else:
             break
 
+    if msg is None:
+        raise RuntimeError("send_message exited its loop without sending a message")
     if not crosspost:
         return msg
 
-    await crosspost_message_with_retries(bot, channel, msg)
+    if channel is None:
+        raise RuntimeError("send_message has no channel to crosspost from")
+    await crosspost_message_with_retries(bot, channel, msg.id)
 
     return msg
 
 
-async def download_linked_image(url: str) -> t.Union[str, None]:
+# Cap image downloads so a slow/hung host can't block this coroutine forever.
+_IMAGE_DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
+
+async def download_linked_image(url: str) -> str | None:
     # Returns the name of the downloaded image
     # Throws an aiohttp.client_exceptions.InvalidURL on
     # an invalid url
     # ToDo: Implement a per URL lock on this function
     #       Also implement a naming scheme based on path
     #       And implement a name size limit as required
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=_IMAGE_DOWNLOAD_TIMEOUT) as session:
         backoff_timer = 1
         try:
             while True:
@@ -222,7 +232,7 @@ async def download_linked_image(url: str) -> t.Union[str, None]:
             return None
 
 
-def _get_uri_name(url: str) -> str:
+def _get_uri_name(url: str | yarl.URL) -> str:
     return yarl.URL(url).name
 
 
@@ -241,8 +251,8 @@ async def run_in_thread_pool(func, *args, **kwargs):
 
 async def alert_owner(
     *args: str,
-    bot: lb.BotApp = None,
-    channel: t.Union[None, int, h.TextableChannel],
+    bot: CachedFetchBot | None = None,
+    channel: None | int | h.TextableChannel,
     mention_mods: bool = True,
 ):
     # Sends an alert in the specified channels
@@ -256,14 +266,16 @@ async def alert_owner(
     alert = "Warning:" + alert + " "
 
     if mention_mods:
-        alert = alert + "<@&{}> ".format(cfg.control_discord_role_id)
+        alert = alert + f"<@&{cfg.control_discord_role_id}> "
 
     # If we get a single channel, turn it into a len() = 1 list
     if isinstance(channel, int):
         if bot is None:
             raise ValueError("bot needs to be specified if channel is int")
-        channel = bot.cache.get_guild_channel(channel) or await bot.rest.fetch_channel(
-            channel
+        channel = t.cast(
+            h.TextableChannel,
+            bot.cache.get_guild_channel(channel)
+            or await bot.rest.fetch_channel(channel),
         )
     elif channel is None:
         return alert
@@ -272,20 +284,6 @@ async def alert_owner(
     await channel.send(alert, role_mentions=True)
 
 
-def endl(*args: t.List[str]) -> str:
+def endl(*args: list[str]) -> str:
     # Returns a string with each argument separated by a newline
     return "\n".join([str(arg) for arg in args])
-
-
-def followable_name(*, id: int):
-    return next((key for key, value in cfg.followables.items() if value == id), id)
-
-
-def check_admin(func):
-    async def wrapper(ctx: lb.Context, *args, **kwargs):
-        if ctx.author.id not in cfg.admins:
-            await ctx.respond("Only admins can use this command")
-            return
-        return await func(ctx, *args, **kwargs)
-
-    return wrapper

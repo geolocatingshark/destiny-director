@@ -16,6 +16,7 @@
 import asyncio as aio
 import datetime as dt
 import logging
+import time
 import typing as t
 
 import aiocron
@@ -27,15 +28,18 @@ import regex as re
 
 from dd.hmessage import HMessage
 
-from ..common import cfg, schemas
-from ..common.utils import accumulate, fetch_emoji_dict
-from ..sector_accounting import xur as xur_support_data
+from ...common import cfg, schemas
+from ...common.bot import CachedFetchBot
+from ...common.utils import accumulate, fetch_emoji_dict
+from ...sector_accounting import xur as xur_support_data
+from .. import utils
+from ..autopost import make_autopost_control_commands
+from ..embeds import substitute_user_side_emoji
 from . import bungie_api as api
-from . import utils
-from .autopost import make_autopost_control_commands
-from .embeds import substitute_user_side_emoji
 
 logger = logging.getLogger(__name__)
+
+loader = lb.Loader()
 
 re_masterwork = re.compile("Tier [0-9]: ")
 exotic_class_item_by_class = {
@@ -54,7 +58,7 @@ def xur_departure_string(post_date_time: dt.datetime | None = None) -> str:
     # Find the closest Tuesday in the future and set the time
     # to 1700 UTC on that day
     if post_date_time is None:
-        post_date_time = dt.datetime.now(tz=dt.timezone.utc)
+        post_date_time = dt.datetime.now(tz=dt.UTC)
 
     # Find the next Tuesday
     days_ahead = 1 - post_date_time.weekday()
@@ -73,14 +77,14 @@ def xur_departure_string(post_date_time: dt.datetime | None = None) -> str:
 def xur_location_fragment(
     xur_location: str, xur_locations: xur_support_data.XurLocations
 ) -> str:
-    xur_location = xur_locations[xur_location]
-    return f"## **__Location__**\n:location: **{str(xur_location)}**\n"
+    location = xur_locations[xur_location]
+    return f"## **__Location__**\n:location: **{str(location)}**\n"
 
 
 def armor_stat_line_format(
     armor: api.DestinyArmor,
     simple_mode: bool = False,
-    allowed_emoji_list: t.List[str] = [],
+    allowed_emoji_list: t.Iterable[str] = [],
 ) -> str:
     if simple_mode:
         return f"Σ {armor.stat_total}"
@@ -96,52 +100,38 @@ def armor_stat_line_format(
     return stat_line
 
 
-class HashableDict(dict):
-    def __key(self):
-        return tuple((k, self[k]) for k in sorted(self))
-
-    def __hash__(self):
-        return hash(self.__key())
-
-    def __eq__(self, other):
-        return self.__key() == other.__key()
-
-
 def costs_string_from_items(
-    destiny_items: t.List[api.DestinyItem],
-    emoji_include_list: t.List[str] = [],
+    destiny_items: t.Iterable[api.DestinyItem],
+    emoji_include_list: t.Iterable[str] = [],
     include_cost_text: bool = True,
 ) -> str:
-    costs: t.Set[dict] = {
-        HashableDict(destiny_item.costs)
+    # Deduplicate cost structures by their sorted (currency, amount) items,
+    # keeping one representative cost dict per distinct structure.
+    unique_costs: dict[tuple[tuple[str, int], ...], dict[str, int]] = {
+        tuple(sorted(destiny_item.costs.items())): destiny_item.costs
         for destiny_item in destiny_items
         if destiny_item.costs
     }
 
-    if not costs:
+    if not unique_costs:
         return ""
 
-    if include_cost_text:
-        costs_line = "Cost:  "
-    else:
-        costs_line = ""
-    if len(costs) == 1:
-        # exotic_weapons_fragment_ +=
-        for currency, amount in costs.pop().items():
+    costs_line = "Cost:  " if include_cost_text else ""
+    if len(unique_costs) == 1:
+        (only_cost,) = unique_costs.values()
+        for currency, amount in only_cost.items():
             emoji_name = api.likely_emoji_name(currency)
             if emoji_name not in emoji_include_list:
                 costs_line = f"{costs_line}{currency} `x{amount}` "
             else:
                 costs_line = f"{costs_line}:{emoji_name}: `x{amount}` "
-    elif len(costs) > 1:
+    elif len(unique_costs) > 1:
         costs_line = "Costs vary per item"
-
-    costs_line
 
     return costs_line
 
 
-def exotic_armor_name_line(exotic_armor_piece: api.DestinyArmor):
+def exotic_armor_name_line(exotic_armor_piece: api.DestinyArmor) -> str:
     name = exotic_armor_piece.name
     armor_slot = exotic_armor_piece.bucket
     if armor_slot == "Leg":
@@ -155,29 +145,23 @@ def exotic_armor_name_line(exotic_armor_piece: api.DestinyArmor):
 
 
 def exotic_armor_fragment(
-    exotic_armor_pieces: t.List[api.DestinyArmor], allowed_emoji_list: t.List[str]
+    exotic_armor_pieces: list[api.DestinyArmor], allowed_emoji_list: t.Iterable[str]
 ) -> str:
-    subfragments: t.List[str] = []
-    class_ = None
-    exotic_armor_pieces_by_class: t.Dict[str, t.List[api.DestinyArmor]] = {}
+    subfragments: list[str] = []
 
-    classes_ = []
+    # Group armor pieces by class, preserving first-seen class order.
+    exotic_armor_pieces_by_class: dict[str, list[api.DestinyArmor]] = {}
     for armor_piece in exotic_armor_pieces:
-        if armor_piece.class_ not in classes_:
-            classes_.append(armor_piece.class_)
+        exotic_armor_pieces_by_class.setdefault(armor_piece.class_, []).append(
+            armor_piece
+        )
 
-    for class_ in classes_:
-        exotic_armor_pieces_by_class[class_] = []
-
-    for armor_piece in exotic_armor_pieces:
-        exotic_armor_pieces_by_class[armor_piece.class_].append(armor_piece)
-
-    classes_ = []
-    for class_, armor_pieces in exotic_armor_pieces_by_class.items():
-        if classes_:
+    for index, (class_, armor_pieces) in enumerate(
+        exotic_armor_pieces_by_class.items()
+    ):
+        if index:
             # Add line break between classes
             subfragments.append("")
-        classes_.append(class_)
         subfragments.append(f"**{class_.capitalize()}**")
         for armor_piece in armor_pieces:
             subfragments.append(
@@ -205,13 +189,13 @@ def exotic_armor_fragment(
 
 
 def weapon_line_format(
-    weapon: api.DestinyWeapon,
+    weapon: api.DestinyItem,
     include_weapon_type: bool,
     # Either a list of perk indices or a callable that returns a list of perk indices
     # based on a list of perks
-    include_perks: t.List[int] | t.Callable,
+    include_perks: list[int] | t.Callable[[list[str]], list[int]],
     include_lightgg_link: bool,
-    emoji_include_list: t.List[str] = ["weapon"],
+    emoji_include_list: t.Iterable[str] = ["weapon"],
     default_emoji: str = "weapon",
 ) -> str:
     weapon_line = weapon.name
@@ -231,10 +215,15 @@ def weapon_line_format(
             weapon_line = f":{default_emoji}: {weapon_line}"
 
     if include_perks:
-        if callable(include_perks):
-            include_perks = include_perks(weapon.perks)
-        perks = []
-        for perk_index in include_perks:
+        _include_perks: t.Any = include_perks
+        perk_indices: list[int] = t.cast(
+            list[int],
+            _include_perks(weapon.perks)
+            if callable(_include_perks)
+            else _include_perks,
+        )
+        perks: list[str] = []
+        for perk_index in perk_indices:
             if perk_index >= len(weapon.perks):
                 continue
 
@@ -244,15 +233,14 @@ def weapon_line_format(
             else:
                 perks.append(perk_options)
 
-        perks = ": " + ", ".join(perks)
-        weapon_line += perks
+        weapon_line += ": " + ", ".join(perks)
 
     return weapon_line
 
 
 def exotic_weapons_fragment(
-    exotic_weapons: t.List[api.DestinyWeapon],
-    emoji_include_list: t.List[str],
+    exotic_weapons: list[api.DestinyItem],
+    emoji_include_list: t.Iterable[str],
 ) -> str:
     exotic_weapons_fragment_ = "## **__Exotic Weapons__**\n"
 
@@ -264,8 +252,8 @@ def exotic_weapons_fragment(
         exotic_weapons_fragment_ += (
             weapon_line_format(
                 exotic_weapon,
-                include_weapon_type=False if exotic_weapon.name == "Hawkmoon" else True,
-                include_perks=[1] if exotic_weapon.name == "Hawkmoon" else [],
+                include_weapon_type=exotic_weapon.name != "Hawkmoon",
+                include_perks=[2] if exotic_weapon.name == "Hawkmoon" else [],
                 include_lightgg_link=True,
                 emoji_include_list=emoji_include_list,
             )
@@ -275,7 +263,7 @@ def exotic_weapons_fragment(
 
 
 def exotic_catalysts_fragment(
-    exotic_catalysts: t.List[api.DestinyItem], emoji_include_list: t.List[str]
+    exotic_catalysts: list[api.DestinyItem], emoji_include_list: t.Iterable[str]
 ) -> str:
     exotic_catalysts_fragment_ = "## **__Exotic Catalysts__**\n"
 
@@ -298,16 +286,18 @@ def exotic_catalysts_fragment(
     return exotic_catalysts_fragment_
 
 
-def last_two_active_perk_columns(perks: t.List[t.List[str]]) -> t.List[int]:
-    perks_to_return = []
-    for i, perk in enumerate(perks):
-        if len(perk) == 0:
+def last_two_active_perk_columns(perks: list[str]) -> list[int]:
+    # NOTE: ``perks`` is typed ``t.List[str]`` to match ``DestinyItem.perks`` but at
+    # runtime each element is itself a sequence of perk option strings (a "column").
+    perks_to_return: list[int] = []
+    for i, perk_column in enumerate(t.cast(list[t.Sequence[str]], perks)):
+        if len(perk_column) == 0:
             continue
-        elif len(perk) > 2:
+        elif len(perk_column) > 2:
             perks_to_return.append(i)
             continue
         else:
-            perk = perk[0]
+            perk = perk_column[0]
             if not (
                 "shader" in perk.lower()
                 or "tracker" in perk.lower()
@@ -319,8 +309,8 @@ def last_two_active_perk_columns(perks: t.List[t.List[str]]) -> t.List[int]:
 
 
 def legendary_weapons_fragment(
-    legendary_weapons: t.List[api.DestinyArmor],
-    emoji_include_list: t.List[str],
+    legendary_weapons: list[api.DestinyItem],
+    emoji_include_list: t.Iterable[str],
     include_title: str = "## **__Legendary Weapons__**",
 ) -> str:
     subfragments = []
@@ -344,30 +334,41 @@ def legendary_weapons_fragment(
     return "\n".join(subfragments) + "\n"
 
 
-def xurfboard_sparrow_fragment():
-    return (
-        "## **__Other Strange Offers__**"
-        "\n"
-        "Cost:  <:strange_coin:1248721499943075861> `x97`"
-        "\n"
-        "\n"
-        "<:sparrow:1296886350712406170>  [**The Xûrfboard (Skimmer)**]"
-        "(https://kyberscorner.com/wp-content/uploads/2024/10"
-        "/The-Xurfboard-Skimmer-1.png)"
-    )
+def legendary_armor_sets_fragment(
+    legendary_armor: list[api.DestinyArmor],
+    emoji_include_list: t.Iterable[str],
+    include_title: str = "## **__Legendary Armor Sets__**",
+) -> str:
+    subfragments: list[str] = []
+    if include_title:
+        subfragments.append(include_title)
+
+    subfragments.append(costs_string_from_items(legendary_armor, emoji_include_list))
+    subfragments.append("")
+
+    armor_set_names = {armor.collectible_set_name for armor in legendary_armor}
+
+    for armor_set_name in sorted(armor_set_names):
+        subfragments.append(f":armor: **{armor_set_name}**")
+
+    return "\n".join(subfragments) + "\n"
 
 
-XUR_FOOTER = """\n\n[**View More**](https://kyber3000.com/D2-Xur) ↗ 
+XUR_FOOTER = """\n\n[**View More**](https://kyber3000.com/D2-Xur) ↗
 
 Have a great weekend! :gscheer:"""
 
 
 async def format_xur_vendor(
     vendor: api.DestinyVendor,
-    bot: lb.BotApp,
+    bot: CachedFetchBot,
 ) -> HMessage:
-    xur_locations = xur_support_data.XurLocations.from_gspread_url(
-        cfg.sheets_ls_url, cfg.gsheets_credentials
+    # from_gspread_url does blocking gspread network I/O; offload it so the
+    # event loop keeps servicing other coroutines during the post.
+    xur_locations = await aio.to_thread(
+        xur_support_data.XurLocations.from_gspread_url,
+        cfg.sheets_ls_url,
+        cfg.gsheets_credentials,
     )
     # xur_armor_sets = xur_support_data.XurArmorSets.from_gspread_url(
     #     cfg.sheets_ls_url, cfg.gsheets_credentials
@@ -377,9 +378,11 @@ async def format_xur_vendor(
 
     description = "# [XÛR'S LOOT](https://kyber3000.com/D2-Xur)\n\n"
     description += xur_departure_string()
-    description += xur_location_fragment(vendor.location, xur_locations)
-    exotic_armor_pieces = [
-        item for item in vendor.sale_items if item.is_exotic and item.is_armor
+    description += xur_location_fragment(vendor.location or "", xur_locations)
+    exotic_armor_pieces: list[api.DestinyArmor] = [
+        t.cast(api.DestinyArmor, item)
+        for item in vendor.sale_items
+        if item.is_exotic and item.is_armor
     ]
     exotic_armor_pieces.sort(key=lambda x: x.class_)
     description += exotic_armor_fragment(
@@ -394,11 +397,18 @@ async def format_xur_vendor(
         [item for item in vendor.sale_items if item.is_exotic and item.is_catalyst],
         emoji_include_list=emoji_dict.keys(),
     )
+    description += legendary_armor_sets_fragment(
+        [
+            t.cast(api.DestinyArmor, item)
+            for item in vendor.sale_items
+            if item.is_legendary and item.is_armor
+        ],
+        emoji_include_list=emoji_dict.keys(),
+    )
     description += legendary_weapons_fragment(
         [item for item in vendor.sale_items if item.is_weapon and item.is_legendary],
         emoji_include_list=emoji_dict.keys(),
     )
-    description += xurfboard_sparrow_fragment()
 
     description += XUR_FOOTER
     description = await substitute_user_side_emoji(emoji_dict, description)
@@ -418,13 +428,11 @@ async def format_xur_vendor(
 
 async def fetch_vendor_data(
     webserver_runner: aiohttp.web.AppRunner,
-    vendor_hashes: t.List[int] | int,
+    vendor_hashes: list[int] | int,
     character_class: str = "Hunter",
 ) -> api.DestinyVendor:
-    try:
-        vendor_hashes.__iter__
-    except AttributeError:
-        vendor_hashes: t.List[int] = [vendor_hashes]
+    if isinstance(vendor_hashes, int):
+        vendor_hashes = [vendor_hashes]
 
     access_token = await api.refresh_api_tokens(webserver_runner)
 
@@ -460,17 +468,17 @@ async def fetch_xur_data(webserver_runner: aiohttp.web.AppRunner) -> api.Destiny
     return xur
 
 
-async def xur_message_constructor(bot: lb.BotApp) -> HMessage:
-    xur = await fetch_xur_data(bot.d.webserver_runner)
+async def xur_message_constructor(bot: CachedFetchBot) -> HMessage:
+    xur = await fetch_xur_data(api.get_webserver_runner())
     return await format_xur_vendor(xur, bot)
 
 
 async def api_to_discord_announcer(
-    bot: lb.BotApp,
+    bot: CachedFetchBot,
     channel_id: int,
-    construct_message_coro: t.Coroutine[t.Any, t.Any, HMessage] = None,
+    construct_message_coro: t.Callable[..., t.Awaitable[HMessage]],
     check_enabled: bool = False,
-    enabled_check_coro: t.Coroutine[t.Any, t.Any, bool] = None,
+    enabled_check_coro: t.Callable[[], t.Awaitable[bool | None]] | None = None,
     publish_message: bool = True,
 ):
     hmessage = HMessage(
@@ -489,35 +497,77 @@ async def api_to_discord_announcer(
         deduplicate=True,
     )
 
+    # ``retries`` / ``started`` live outside the loop so backoff actually grows and
+    # a long stall escalates exactly once (a reset-each-iteration counter would
+    # never back off and would log every spin).
+    retries = 0
+    started = time.monotonic()
+    alerted = False
     while True:
-        retries = 0
         try:
-            if check_enabled and not await enabled_check_coro():
+            if check_enabled and (
+                enabled_check_coro is None or not await enabled_check_coro()
+            ):
                 return
 
             await api.check_bungie_api_online(raise_exception=True)
 
-            hmessage: HMessage = await construct_message_coro(bot=bot)
-        except api.APIOfflineException as e:
-            logger.exception(e)
-            retries += 1
-            await aio.sleep(2 ** min(retries, 8))
+            hmessage = await construct_message_coro(bot=bot)
         except Exception as e:
-            logger.exception(e)
+            # Log the first failure with a traceback; keep retries quiet (the alert
+            # handler dedups, and a sustained stall escalates below).
+            if retries == 0:
+                logger.exception(e)
+            else:
+                logger.debug(
+                    "Announcer retry %d for channel %d: %r", retries, channel_id, e
+                )
             retries += 1
+            if not alerted and time.monotonic() - started > int(
+                cfg.announcer_offline_alert_after
+            ):
+                alerted = True
+                logger.critical(
+                    "Autopost for channel %d stalled for >%ds (still retrying): %r",
+                    channel_id,
+                    int(cfg.announcer_offline_alert_after),
+                    e,
+                )
             await aio.sleep(2 ** min(retries, 8))
         else:
             break
 
+    retries = 0
+    started = time.monotonic()
+    alerted = False
     while True:
-        retries = 0
         try:
-            if check_enabled and not await enabled_check_coro():
+            if check_enabled and (
+                enabled_check_coro is None or not await enabled_check_coro()
+            ):
                 return
             await msg.edit(**hmessage.to_message_kwargs())
         except Exception as e:
-            logger.exception(e)
+            if retries == 0:
+                logger.exception(e)
+            else:
+                logger.debug(
+                    "Announcer edit retry %d for channel %d: %r",
+                    retries,
+                    channel_id,
+                    e,
+                )
             retries += 1
+            if not alerted and time.monotonic() - started > int(
+                cfg.announcer_offline_alert_after
+            ):
+                alerted = True
+                logger.critical(
+                    "Autopost edit for channel %d stalled for >%ds (retrying): %r",
+                    channel_id,
+                    int(cfg.announcer_offline_alert_after),
+                    e,
+                )
             await aio.sleep(min(2**retries, 300))
         else:
             break
@@ -529,14 +579,17 @@ async def api_to_discord_announcer(
         await utils.crosspost_message_with_retries(bot, channel_id, msg.id)
 
 
-async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):
-    # Run every day at 17:00 UTC
+@loader.listener(h.StartedEvent)
+async def on_start_schedule_autoposts(
+    event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
+):
+    # Run every Friday at 17:00 UTC
     @aiocron.crontab("0 17 * * FRI", start=True)
     # Use below crontab for testing to post every minute
     # @aiocron.crontab("* * * * *", start=True)
     async def autopost_xur():
         await api_to_discord_announcer(
-            event.app,
+            bot,
             channel_id=cfg.followables["xur"],
             check_enabled=True,
             enabled_check_coro=schemas.AutoPostSettings.get_xur_enabled,
@@ -544,49 +597,52 @@ async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):
         )
 
 
-@lb.option(
-    "option", "Enable or disable", str, choices=["Enable", "Disable"], required=True
-)
-@lb.command(
-    "default_image",
-    "Control whether the default xur image is added to the embed",
-    auto_defer=True,
-    pass_options=True,
-)
-@lb.implements(lb.SlashSubCommand)
-async def control_xur_default_image(ctx: lb.Context, option: str):
-    """Control whether the default xur image is added to the embed"""
+class ControlXurDefaultImage(
+    lb.SlashCommand,
+    name="default_image",
+    description="Control whether the default xur image is added to the embed",
+):
+    option = lb.string(
+        "option",
+        "Enable or disable",
+        choices=[lb.Choice("Enable", "Enable"), lb.Choice("Disable", "Disable")],
+    )
 
-    desired_setting: bool = True if option.lower() == "enable" else False
-    current_setting = await schemas.AutoPostSettings.get_xur_default_image_enabled()
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context):
+        """Control whether the default xur image is added to the embed"""
 
-    if desired_setting == current_setting:
-        return await ctx.respond(
-            f"Xur's default image is already {'enabled' if desired_setting else 'disabled'}"
+        desired_setting: bool = self.option.lower() == "enable"
+        current_setting = await schemas.AutoPostSettings.get_xur_default_image_enabled()
+
+        if desired_setting == current_setting:
+            await ctx.respond(
+                f"Xur's default image is already "
+                f"{'enabled' if desired_setting else 'disabled'}"
+            )
+            return
+
+        await schemas.AutoPostSettings.set_xur_default_image_enabled(
+            enabled=desired_setting
+        )
+        await ctx.respond(
+            f"Xur's default image is now {'enabled' if desired_setting else 'disabled'}"
         )
 
-    await schemas.AutoPostSettings.set_xur_default_image_enabled(
-        enabled=desired_setting
-    )
-    await ctx.respond(
-        f"Xur's default image is now {'enabled' if desired_setting else 'disabled'}"
-    )
+
+async def _get_xur_enabled() -> bool:
+    return bool(await schemas.AutoPostSettings.get_xur_enabled())
 
 
-def register(bot: lb.BotApp) -> None:
-    bot.listen(lb.LightbulbStartedEvent)(on_start_schedule_autoposts)
-    xur_control_parent_group = make_autopost_control_commands(
-        autopost_name="xur",
-        enabled_getter=schemas.AutoPostSettings.get_xur_enabled,
-        enabled_setter=schemas.AutoPostSettings.set_xur,
-        channel_id=cfg.followables["xur"],
-        message_constructor_coro=xur_message_constructor,
-        message_announcer_coro=api_to_discord_announcer,
-    )
-    xur_control_parent_group.child(control_xur_default_image)
-    bot.command(xur_control_parent_group)
+_xur_autopost_group = make_autopost_control_commands(
+    autopost_name="xur",
+    enabled_getter=_get_xur_enabled,
+    enabled_setter=schemas.AutoPostSettings.set_xur,
+    channel_id=cfg.followables["xur"],
+    message_constructor_coro=xur_message_constructor,
+    message_announcer_coro=api_to_discord_announcer,
+)
 
+_xur_autopost_group.register(ControlXurDefaultImage)
 
-if __name__ == "__main__":
-    xur = aio.run(fetch_xur_data(api.webserver_runner_preparation()))
-    print(xur)
+loader.command(_xur_autopost_group)

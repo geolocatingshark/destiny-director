@@ -4,22 +4,29 @@ import lightbulb as lb
 
 from dd.hmessage import HMessage
 
-from ..common import cfg, schemas
-from ..common.utils import fetch_emoji_dict
-from . import bungie_api as api
-from . import xur
-from .autopost import make_autopost_control_commands
-from .embeds import substitute_user_side_emoji
+from ...common import cfg, schemas
+from ...common.bot import CachedFetchBot
+from ...common.utils import fetch_emoji_dict
+from ..autopost import make_autopost_control_commands
+from ..embeds import substitute_user_side_emoji
+from . import (
+    bungie_api as api,
+    xur,
+)
+
+loader = lb.Loader()
 
 
-async def gunsmith_message_constructor(bot: lb.BotApp) -> HMessage:
+async def gunsmith_message_constructor(bot: CachedFetchBot) -> HMessage:
     gunsmith_data = await xur.fetch_vendor_data(
-        bot.d.webserver_runner, vendor_hashes=[672118013]
+        api.get_webserver_runner(), vendor_hashes=[672118013]
     )
     return await format_gunsmith_vendor(gunsmith_data, bot)
 
 
-async def format_gunsmith_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
+async def format_gunsmith_vendor(
+    vendor: api.DestinyVendor, bot: CachedFetchBot
+) -> HMessage:
     emoji_dict = await fetch_emoji_dict(bot)
 
     # Sale items with a cost are the featured items for banshee / gunsmith
@@ -47,15 +54,18 @@ async def format_gunsmith_vendor(vendor: api.DestinyVendor, bot: lb.BotApp):
     return message
 
 
-async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):
-    # Run every day at 17:01 UTC
+@loader.listener(h.StartedEvent)
+async def on_start_schedule_autoposts(
+    event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
+):
+    # Run every Tuesday at 17:01 UTC
     # TO BE RECHECKED BASED ON KYBERS REPLY
     @aiocron.crontab("1 17 * * TUE", start=True)
     # Use below crontab for testing to post every minute
     # @aiocron.crontab("* * * * *", start=True)
     async def autopost_gunsmith():
         await xur.api_to_discord_announcer(
-            event.app,
+            bot,
             channel_id=cfg.followables["gunsmith"],
             check_enabled=True,
             enabled_check_coro=schemas.AutoPostSettings.get_gunsmith_enabled,
@@ -63,16 +73,17 @@ async def on_start_schedule_autoposts(event: lb.LightbulbStartedEvent):
         )
 
 
-def register(bot: lb.BotApp) -> None:
-    bot.listen(lb.LightbulbStartedEvent)(on_start_schedule_autoposts)
-    bot.command(
-        make_autopost_control_commands(
-            autopost_name="gunsmith",
-            enabled_getter=schemas.AutoPostSettings.get_gunsmith_enabled,
-            enabled_setter=schemas.AutoPostSettings.set_gunsmith,
-            # TO ADD BELOW
-            channel_id=cfg.followables["gunsmith"],
-            message_constructor_coro=gunsmith_message_constructor,
-            message_announcer_coro=xur.api_to_discord_announcer,
-        )
-    )
+async def _get_gunsmith_enabled() -> bool:
+    return bool(await schemas.AutoPostSettings.get_gunsmith_enabled())
+
+
+_gunsmith_autopost_group = make_autopost_control_commands(
+    autopost_name="gunsmith",
+    enabled_getter=_get_gunsmith_enabled,
+    enabled_setter=schemas.AutoPostSettings.set_gunsmith,
+    channel_id=cfg.followables["gunsmith"],
+    message_constructor_coro=gunsmith_message_constructor,
+    message_announcer_coro=xur.api_to_discord_announcer,
+)
+
+loader.command(_gunsmith_autopost_group)

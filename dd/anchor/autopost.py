@@ -21,97 +21,99 @@ import lightbulb as lb
 from dd.hmessage import HMessage
 
 from ..common import cfg
-from . import utils
+from ..common.bot import CachedFetchBot
 
 logger = logging.getLogger(__name__)
 
 
 def make_autopost_control_commands(
     autopost_name: str,
-    enabled_getter: t.Coroutine[t.Any, t.Any, bool],
-    enabled_setter: t.Coroutine[t.Any, t.Any, None],
+    enabled_getter: t.Callable[[], t.Awaitable[bool]],
+    enabled_setter: t.Callable[..., t.Awaitable[t.Any]],
     channel_id: int,
-    message_constructor_coro: t.Coroutine[t.Any, t.Any, HMessage],
-    message_announcer_coro: t.Coroutine[t.Any, t.Any, None] = None,
-) -> lb.CommandLike:
-    @lb.command(
+    message_constructor_coro: t.Callable[..., t.Awaitable[HMessage]],
+    message_announcer_coro: t.Callable[..., t.Awaitable[t.Any]] | None = None,
+) -> lb.Group:
+    parent_group = lb.Group(
         autopost_name if not cfg.test_env else "dev_" + autopost_name,
         "Commands for Kyber",
-        guilds=[cfg.control_discord_server_id],
     )
-    @lb.implements(lb.SlashCommandGroup)
-    def parent_group():
-        pass
 
-    @parent_group.child
-    @lb.option(
-        "option", "Enable or disable", str, choices=["Enable", "Disable"], required=True
-    )
-    @lb.command(
-        "auto",
-        "Enable or disable automated announcements",
-        auto_defer=True,
-        pass_options=True,
-    )
-    @lb.implements(lb.SlashSubCommand)
-    @utils.check_admin
-    async def autopost_control(ctx: lb.Context, option: str):
-        option = True if option.lower() == "enable" else False
-        enabled = await enabled_getter()
-        if option == enabled:
-            return await ctx.respond(
-                "{} announcements are already {}".format(
-                    autopost_name.capitalize(),
-                    "enabled" if option else "disabled",
+    @parent_group.register
+    class AutopostControl(
+        lb.SlashCommand,
+        name="auto",
+        description="Enable or disable automated announcements",
+    ):
+        option = lb.string(
+            "option",
+            "Enable or disable",
+            choices=[lb.Choice("Enable", "Enable"), lb.Choice("Disable", "Disable")],
+        )
+
+        @lb.invoke
+        async def invoke(self, ctx: lb.Context):
+            enable = self.option.lower() == "enable"
+            enabled = await enabled_getter()
+            if enable == enabled:
+                await ctx.respond(
+                    "{} announcements are already {}".format(
+                        autopost_name.capitalize(),
+                        "enabled" if enable else "disabled",
+                    )
                 )
-            )
-        else:
-            await enabled_setter(enabled=option)
-            await ctx.respond(
-                "{} announcements now {}".format(
-                    autopost_name.capitalize(),
-                    "Enabled" if option else "Disabled",
+            else:
+                await enabled_setter(enabled=enable)
+                await ctx.respond(
+                    "{} announcements now {}".format(
+                        autopost_name.capitalize(),
+                        "Enabled" if enable else "Disabled",
+                    )
                 )
-            )
 
-    @parent_group.child
-    @lb.option("publish", "Publish the announcement", bool, default=True)
-    @lb.command(
-        "send",
-        "Trigger a discord announcement manually",
-        auto_defer=True,
-        pass_options=True,
-    )
-    @lb.implements(lb.SlashSubCommand)
-    @utils.check_admin
-    async def manual_announce(ctx: lb.Context, publish: bool):
-        await ctx.respond("Announcing...")
-        try:
-            await message_announcer_coro(
-                bot=ctx.bot,
-                channel_id=channel_id,
-                check_enabled=False,
-                construct_message_coro=message_constructor_coro,
-                publish_message=publish,
-            )
-        except Exception as e:
-            logger.exception(e)
-            await ctx.edit_last_response("An error occurred!\n" + str(e))
-        else:
-            await ctx.edit_last_response("Announced")
+    @parent_group.register
+    class ManualAnnounce(
+        lb.SlashCommand,
+        name="send",
+        description="Trigger a discord announcement manually",
+    ):
+        publish = lb.boolean("publish", "Publish the announcement", default=True)
 
-    @parent_group.child
-    @lb.command("show", "Check what the post will look like", auto_defer=True)
-    @lb.implements(lb.SlashSubCommand)
-    @utils.check_admin
-    async def show(ctx: lb.Context):
-        await ctx.respond("Gathering data...")
-        try:
-            message: HMessage = await message_constructor_coro(bot=ctx.app)
-        except Exception as e:
-            logger.exception(e)
-            await ctx.edit_last_response("An error occurred!\n" + str(e))
-        else:
-            await ctx.edit_last_response(**message.to_message_kwargs())
+        @lb.invoke
+        async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+            initial = await ctx.respond("Announcing...")
+            if message_announcer_coro is None:
+                await ctx.edit_response(initial, "No announcer is configured")
+                return
+            try:
+                await message_announcer_coro(
+                    bot=bot,
+                    channel_id=channel_id,
+                    check_enabled=False,
+                    construct_message_coro=message_constructor_coro,
+                    publish_message=self.publish,
+                )
+            except Exception as e:
+                logger.exception(e)
+                await ctx.edit_response(initial, "An error occurred!\n" + str(e))
+            else:
+                await ctx.edit_response(initial, "Announced")
+
+    @parent_group.register
+    class Show(
+        lb.SlashCommand,
+        name="show",
+        description="Check what the post will look like",
+    ):
+        @lb.invoke
+        async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+            initial = await ctx.respond("Gathering data...")
+            try:
+                message: HMessage = await message_constructor_coro(bot=bot)
+            except Exception as e:
+                logger.exception(e)
+                await ctx.edit_response(initial, "An error occurred!\n" + str(e))
+            else:
+                await ctx.edit_response(initial, **message.to_message_kwargs())
 
     return parent_group

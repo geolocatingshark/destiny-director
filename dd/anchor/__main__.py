@@ -13,64 +13,93 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+"""Entry point for the anchor (secondary) Discord bot.
 
-import logging
+Run with ``python -OOm dd.anchor``. Wires up the hikari client, miru and
+lightbulb, loads the ``dd.anchor.extensions`` and starts the gateway.
+"""
 
 import hikari as h
 import lightbulb as lb
 import miru as m
-from lightbulb.ext import tasks
+
+import dd.anchor.extensions
 
 from ..common import cfg, utils
-from . import (
-    bungie_api,
-    controller,
-    eververse,
-    gunsmith,
-    lost_sector,
-    posts,
-    source,
-    xur,
+from ..common.auth import owner_check_error_handler, owner_only
+from ..common.bot import CachedFetchBot
+from ..common.discord_logging import (
+    aclose_discord_logging,
+    install_command_error_reporting,
+    install_discord_logging,
+)
+from ..common.extension_loader import load_extensions_strict
+
+bot = CachedFetchBot(
+    token=cfg.discord_token_anchor,
+    intents=h.Intents.ALL_UNPRIVILEGED,
 )
 
-bot: lb.BotApp = lb.BotApp(
-    **cfg.lightbulb_params(
-        include_message_content_intent=False,
-        central_guilds_only=True,
-        discord_token=cfg.discord_token_anchor,
-    )
+# In lightbulb v3 the command client is a separate object from the hikari bot.
+# The anchor bot is admin-only, so:
+#  - default_enabled_guilds scopes every command (without its own ``guilds=``) to the
+#    control guild (plus the test guild(s) in a test environment). ``guild_scope``
+#    strips any guild id of 0 (lightbulb's global key) so the list never collapses
+#    to a global (guild-0) registration. Context-menu commands and ``/post`` opt
+#    back into Kyber explicitly via their own ``guilds=``.
+#  - ``hooks=[owner_only]`` gates EVERY command to bot owners in the CHECKS step.
+client = lb.client_from_app(
+    bot,
+    utils.guild_scope(*cfg.test_env, cfg.control_discord_server_id),
+    hooks=[owner_only],
 )
 
-logger = logging.getLogger(__name__)
+# Make the bot injectable as CachedFetchBot in addition to the hikari.GatewayBot
+# registration lightbulb adds automatically.
+client.di.registry_for(lb.di.Contexts.DEFAULT).register_value(CachedFetchBot, bot)
+
+# Render owner-gate rejections ephemerally, ahead of the catch-all alert reporter so
+# they never page the alerts channel.
+client.error_handler(owner_check_error_handler)
+
+# Surface any otherwise-unhandled command failure to the alerts channel, labelled
+# with the command that failed.
+install_command_error_reporting(client)
 
 
-@bot.listen()
-async def on_start_guild_count(event: lb.LightbulbStartedEvent):
-    bot.d.guild_count = len(await bot.rest.fetch_my_guilds())
-    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
+@bot.listen(h.StartingEvent)
+async def on_starting_event(_event: h.StartingEvent):
+    await load_extensions_strict(client, dd.anchor.extensions)
+    await client.start()
 
 
-@bot.listen()
-async def on_guild_add(event: h.events.GuildJoinEvent):
-    bot.d.guild_count += 1
-    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
+@bot.listen(h.StartedEvent)
+async def on_start_guild_count(_event: h.StartedEvent):
+    bot.guild_count = len(await bot.rest.fetch_my_guilds())
+    await utils.update_status(bot, bot.guild_count, bool(cfg.test_env))
 
 
-@bot.listen()
-async def on_guild_rm(event: h.events.GuildLeaveEvent):
-    bot.d.guild_count -= 1
-    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
+@bot.listen(h.StartedEvent)
+async def on_start_install_logging(_event: h.StartedEvent):
+    await install_discord_logging(bot, bot_name="anchor")
 
 
-if __name__ == "__main__":
-    m.install(bot)
-    lost_sector.register(bot)
-    source.register(bot)
-    controller.register(bot)
-    posts.register(bot)
-    bungie_api.register(bot)
-    eververse.register(bot)
-    gunsmith.register(bot)
-    xur.register(bot)
-    tasks.load(bot)
-    bot.run()
+@bot.listen(h.StoppingEvent)
+async def on_stopping_close_logging(_event: h.StoppingEvent):
+    await aclose_discord_logging()
+
+
+@bot.listen(h.GuildJoinEvent)
+async def on_guild_add(_event: h.GuildJoinEvent):
+    bot.guild_count += 1
+    await utils.update_status(bot, bot.guild_count, bool(cfg.test_env))
+
+
+@bot.listen(h.GuildLeaveEvent)
+async def on_guild_rm(_event: h.GuildLeaveEvent):
+    bot.guild_count -= 1
+    await utils.update_status(bot, bot.guild_count, bool(cfg.test_env))
+
+
+m.install(bot)
+bot.run()
