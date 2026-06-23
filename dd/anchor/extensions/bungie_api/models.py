@@ -48,6 +48,30 @@ class APIOffline(Exception):
         return self.message + "\n" + pformat(self.api_response)
 
 
+class MissingResponseField(Exception):
+    def __init__(
+        self,
+        field_name: str,
+        api_response: dict[str, t.Any],
+        request_details: str = "",
+    ):
+        self.message = (
+            f"The expected field '{field_name}' was not found in the API response"
+        )
+        super().__init__(self.message)
+        self.api_response = api_response
+        self.request_details = request_details
+
+    def __str__(self) -> str:
+        return (
+            self.message
+            + "\n"
+            + self.request_details
+            + "\n"
+            + pformat(self.api_response)
+        )
+
+
 class DestinyMembership:
     @classmethod
     async def from_api(
@@ -616,6 +640,13 @@ class DestinyVendor:
 
             if response["ErrorCode"] == VENDOR_NOT_FOUND_ERROR_CODE:
                 raise VendorNotFound("Vendor not found", api_response=response)
+
+            if "Response" not in response:
+                raise MissingResponseField(
+                    "Response",
+                    api_response=response,
+                    request_details=f"Vendor hash: {vendor_hash}",
+                )
 
             response = response["Response"]
 
