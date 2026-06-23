@@ -167,3 +167,5 @@ Twitter Keys.txt
 .gitmodules
 .ripgreprc
 .idea
+# Ad-hoc investigation scratch (Portal API etc.) — not for commit
+scratch/
