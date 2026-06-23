@@ -14,7 +14,7 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 import datetime as dt
-import typing as t
+from typing import override
 
 import hikari as h
 import lightbulb as lb
@@ -25,10 +25,12 @@ from dd.hmessage import HMessage
 from ...common import cfg
 from ...common.utils import accumulate
 from .. import utils
-from ..nav import NavigatorView, NavPages
-from .autoposts import autopost_command_group, follow_control_command_maker
+from ..nav import NavPages, make_navigator_command, setup_nav_pages
+from .autoposts import follow_control_command_maker
 
-REFERENCE_DATE = dt.datetime(2023, 7, 14, 17, tzinfo=dt.timezone.utc)
+loader = lb.Loader()
+
+REFERENCE_DATE = dt.datetime(2023, 7, 14, 17, tzinfo=dt.UTC)
 
 FOLLOWABLE_CHANNEL = cfg.followables["xur"]
 
@@ -39,7 +41,10 @@ rgx_find_arrives_departs_text = re.compile(r"\n\*\*(Arrives|Departs):\*\*[^\n]*"
 
 
 class XurPages(NavPages):
-    def preprocess_messages(self, messages: t.List[HMessage | h.Message]) -> HMessage:
+    @override
+    def preprocess_messages(self, messages: list[h.Message]) -> HMessage:
+        if not messages:
+            return self.no_data_message
         # NOTE: This assumes that the xur message is sent with the
         # location gif as a link, not as an attachment
         # This will need to be updated if this is changed
@@ -74,39 +79,32 @@ class XurPages(NavPages):
         return msg_proto
 
 
-async def on_start(event: h.StartedEvent):
-    global xur_pages
-    xur_pages = await XurPages.from_channel(
-        event.app,
-        FOLLOWABLE_CHANNEL,
-        history_len=12,
-        period=dt.timedelta(days=7),
-        reference_date=REFERENCE_DATE,
-        no_data_message=HMessage(
-            embeds=[
-                h.Embed(
-                    description=(
-                        "Xûr arrives at the Tower (Bazaar) every *Friday at reset* "
-                        "(<t:1734109200:t>) and departs on *Tuesday at reset*."
-                    ),
-                    color=cfg.embed_default_color,
+_pages = setup_nav_pages(
+    loader,
+    pages_cls=XurPages,
+    followable_channel=FOLLOWABLE_CHANNEL,
+    history_len=12,
+    period=dt.timedelta(days=7),
+    reference_date=REFERENCE_DATE,
+    no_data_message=HMessage(
+        embeds=[
+            h.Embed(
+                description=(
+                    "Xûr arrives at the Tower (Bazaar) every *Friday at reset* "
+                    "(<t:1734109200:t>) and departs on *Tuesday at reset*."
                 ),
-            ]
-        ),
+                color=cfg.embed_default_color,
+            ),
+        ]
+    ),
+)
+
+loader.command(
+    make_navigator_command(
+        _pages,
+        name="xur",
+        description="Find out what Xur has and where Xur is",
     )
+)
 
-
-@lb.command("xur", "Find out what Xur has and where Xur is")
-@lb.implements(lb.SlashCommand)
-async def xur_command(ctx: lb.Context):
-    navigator = NavigatorView(pages=xur_pages)
-    await navigator.send(ctx.interaction)
-
-
-def register(bot):
-    bot.command(xur_command)
-    bot.listen()(on_start)
-
-    autopost_command_group.child(
-        follow_control_command_maker(FOLLOWABLE_CHANNEL, "xur", "Xur", "Xur auto posts")
-    )
+follow_control_command_maker(FOLLOWABLE_CHANNEL, "xur", "Xur", "Xur auto posts")

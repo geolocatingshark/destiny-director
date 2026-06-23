@@ -13,8 +13,10 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+import asyncio
 import datetime as dt
 import typing as t
+from typing import override
 
 import hikari as h
 import lightbulb as lb
@@ -22,23 +24,31 @@ import lightbulb as lb
 from dd.hmessage import HMessage
 
 from ...common import cfg
+from ...common.bot import ServerEmojiEnabledBot
 from ...common.lost_sector import format_post
 from ...common.utils import accumulate
 from ...sector_accounting import sector_accounting
 from .. import utils
-from ..bot import CachedFetchBot, ServerEmojiEnabledBot, UserCommandBot
-from ..nav import NO_DATA_HERE_EMBED, NavigatorView, NavPages
-from .autoposts import autopost_command_group, follow_control_command_maker
+from ..nav import (
+    NO_DATA_HERE_EMBED,
+    NavPages,
+    make_navigator_command,
+    setup_nav_pages,
+)
+from .autoposts import follow_control_command_maker
 
-REFERENCE_DATE = dt.datetime(2023, 7, 20, 17, tzinfo=dt.timezone.utc)
+loader = lb.Loader()
+
+REFERENCE_DATE = dt.datetime(2023, 7, 20, 17, tzinfo=dt.UTC)
 
 FOLLOWABLE_CHANNEL = cfg.followables["lost_sector"]
 
 
 class SectorMessages(NavPages):
-    bot: ServerEmojiEnabledBot
-
-    def preprocess_messages(self, messages: t.List[h.Message | HMessage]):
+    @override
+    def preprocess_messages(self, messages: list[h.Message]):
+        if not messages:
+            return self.no_data_message
         for m in messages:
             m.embeds = utils.filter_discord_autoembeds(m)
         processed_messages = [
@@ -54,10 +64,17 @@ class SectorMessages(NavPages):
 
         return processed_message
 
-    async def lookahead(self, after: dt.datetime) -> t.Dict[dt.datetime, HMessage]:
+    @override
+    async def lookahead(self, after: dt.datetime) -> dict[dt.datetime, HMessage]:
         start_date = after
-        sector_on = sector_accounting.Rotation.from_gspread_url(
-            cfg.sheets_ls_url, cfg.gsheets_credentials, buffer=1
+        bot = t.cast(ServerEmojiEnabledBot, self.bot)
+        # from_gspread_url does blocking gspread network I/O; offload it so the
+        # event loop keeps servicing other coroutines during the lookahead.
+        sector_on = await asyncio.to_thread(
+            sector_accounting.Rotation.from_gspread_url,
+            cfg.sheets_ls_url,
+            cfg.gsheets_credentials,
+            buffer=1,
         )
 
         lookahead_dict = {}
@@ -69,7 +86,8 @@ class SectorMessages(NavPages):
                 sectors = sector_on(date)
             except KeyError:
                 # A KeyError will be raised if TBC is selected for the google sheet
-                # In this case, we will just return a message saying that there is no data
+                # In this case, we will just return a message saying that there
+                # is no data
                 lookahead_dict = {
                     **lookahead_dict,
                     date: HMessage(embeds=[NO_DATA_HERE_EMBED]),
@@ -78,63 +96,43 @@ class SectorMessages(NavPages):
                 lookahead_dict = {
                     **lookahead_dict,
                     date: await format_post(
-                        bot=self.bot,
+                        bot=bot,
                         sectors=sectors,
                         date=date,
-                        emoji_dict=self.bot.emoji,
+                        emoji_dict=bot.emoji,
                     ),
                 }
 
         return lookahead_dict
 
 
-async def on_start(event: h.StartedEvent):
-    global sectors
-    sectors = await SectorMessages.from_channel(
-        event.app,
-        FOLLOWABLE_CHANNEL,
-        history_len=14,
-        lookahead_len=7,
-        period=dt.timedelta(days=1),
-        reference_date=REFERENCE_DATE,
+_pages = setup_nav_pages(
+    loader,
+    pages_cls=SectorMessages,
+    followable_channel=FOLLOWABLE_CHANNEL,
+    history_len=14,
+    lookahead_len=7,
+    period=dt.timedelta(days=1),
+    reference_date=REFERENCE_DATE,
+)
+
+ls_group = lb.Group("ls", "Find out about today's lost sector")
+ls_group.register(
+    make_navigator_command(
+        _pages, name="today", description="Find out about today's lost sector"
     )
+)
 
-
-@lb.command("ls", "Find out about today's lost sector")
-@lb.implements(lb.SlashCommandGroup)
-async def ls_group():
-    pass
-
-
-@ls_group.child
-@lb.command("today", "Find out about today's lost sector")
-@lb.implements(lb.SlashSubCommand)
-async def ls_today_command(ctx: lb.Context):
-    navigator = NavigatorView(pages=sectors)
-    await navigator.send(ctx.interaction)
-
-
-@lb.command("lost", "Find out about today's lost sector")
-@lb.implements(lb.SlashCommandGroup)
-async def ls_group_2():
-    pass
-
-
-@ls_group_2.child
-@lb.command("sector", "Find out about today's lost sector")
-@lb.implements(lb.SlashSubCommand)
-async def lost_sector_command(ctx: lb.Context):
-    navigator = NavigatorView(pages=sectors)
-    await navigator.send(ctx.interaction)
-
-
-def register(bot: t.Union[CachedFetchBot, UserCommandBot]):
-    bot.command(ls_group)
-    bot.command(ls_group_2)
-    bot.listen()(on_start)
-
-    autopost_command_group.child(
-        follow_control_command_maker(
-            FOLLOWABLE_CHANNEL, "lost_sector", "Lost sector", "Lost sector auto posts"
-        )
+ls_group_2 = lb.Group("lost", "Find out about today's lost sector")
+ls_group_2.register(
+    make_navigator_command(
+        _pages, name="sector", description="Find out about today's lost sector"
     )
+)
+
+loader.command(ls_group)
+loader.command(ls_group_2)
+
+follow_control_command_maker(
+    FOLLOWABLE_CHANNEL, "lost_sector", "Lost sector", "Lost sector auto posts"
+)

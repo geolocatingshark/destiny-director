@@ -13,5 +13,10 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-# Extension modules in this package are discovered and loaded by
-# ``dd.common.extension_loader.load_extensions_strict`` from each bot's __main__.
+
+import lightbulb as lb
+
+from ...common.help import make_help_command
+
+loader = lb.Loader()
+loader.command(make_help_command())

@@ -13,45 +13,52 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+
 import hikari as h
 import lightbulb as lb
 
 from dd.hmessage import HMessage
 
 from ...common import cfg
-from ..bot import CachedFetchBot
-from .autoposts import autopost_command_group, follow_control_command_maker
+from ...common.bot import CachedFetchBot
+from .autoposts import follow_control_command_maker
+
+loader = lb.Loader()
 
 # Followable channel from which to pull messages for the command and autoposts
 FOLLOWABLE_CHANNEL = cfg.followables["free_games"]
 
 HELP_STRING = "See the current free games on The Epic Store, etc"
 
+last_message_in_channel: h.PartialMessage
+last_message_in_channel_id: int
+
 
 async def refresh_message_for_command(bot: CachedFetchBot):
     global last_message_in_channel_id
     global last_message_in_channel
 
-    async for message in (await bot.fetch_channel(FOLLOWABLE_CHANNEL)).fetch_history():
+    channel = await bot.fetch_channel(FOLLOWABLE_CHANNEL)
+    if not isinstance(channel, h.TextableChannel):
+        raise TypeError("Free games followable channel is not textable")
+    async for message in channel.fetch_history():
         last_message_in_channel = message
         last_message_in_channel_id = message.id
         break
 
 
-async def on_message_create(
-    event: h.MessageCreateEvent,
-):
+@loader.listener(h.MessageCreateEvent)
+async def on_message_create(event: h.MessageCreateEvent):
     global last_message_in_channel
     global last_message_in_channel_id
 
     if event.channel_id == FOLLOWABLE_CHANNEL:
         last_message_in_channel = event.message
-        last_message_in_channel_id = event.channel_id
+        last_message_in_channel_id = event.message.id
 
 
-async def on_message_update(
-    event: h.MessageUpdateEvent,
-):
+@loader.listener(h.MessageUpdateEvent)
+async def on_message_update(event: h.MessageUpdateEvent):
     global last_message_in_channel
     global last_message_in_channel_id
 
@@ -60,52 +67,43 @@ async def on_message_update(
         and event.message.id == last_message_in_channel_id
     ):
         last_message_in_channel = event.message
-        last_message_in_channel_id = event.channel_id
+        last_message_in_channel_id = event.message.id
 
 
+@loader.listener(h.MessageDeleteEvent)
 async def on_message_delete(
-    event: h.MessageDeleteEvent,
+    event: h.MessageDeleteEvent, bot: CachedFetchBot = lb.di.INJECTED
 ):
+    global last_message_in_channel
+    global last_message_in_channel_id
     if (
         event.channel_id == FOLLOWABLE_CHANNEL
         and event.message_id == last_message_in_channel_id
     ):
-        await refresh_message_for_command(event.app)
+        await refresh_message_for_command(bot)
 
 
-async def on_start(event: h.StartedEvent):
-    await refresh_message_for_command(event.app)
+@loader.listener(h.StartedEvent)
+async def on_start(event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED):
+    await refresh_message_for_command(bot)
 
 
-@lb.command(
-    "free",
-    "See the current free games on The Epic Store, etc",
+slash_command_group = lb.Group(
+    "free", "See the current free games on The Epic Store, etc"
 )
-@lb.implements(lb.SlashCommandGroup)
-async def slash_command_group():
-    pass
 
 
-@slash_command_group.child
-@lb.command("games", HELP_STRING)
-@lb.implements(lb.SlashSubCommand)
-async def slash_subcommand(ctx: lb.Context):
-    global last_message_in_channel
-
-    await ctx.respond(
-        **(HMessage.from_message(last_message_in_channel).to_message_kwargs())
-    )
-
-
-def register(bot: lb.BotApp):
-    bot.command(slash_command_group)
-    bot.listen()(on_start)
-    bot.listen()(on_message_create)
-    bot.listen()(on_message_update)
-    bot.listen()(on_message_delete)
-
-    autopost_command_group.child(
-        follow_control_command_maker(
-            FOLLOWABLE_CHANNEL, "free_games", "Free Games", HELP_STRING
+@slash_command_group.register
+class FreeGames(lb.SlashCommand, name="games", description=HELP_STRING):
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context):
+        await ctx.respond(
+            **(HMessage.from_message(last_message_in_channel).to_message_kwargs())
         )
-    )
+
+
+loader.command(slash_command_group)
+
+follow_control_command_maker(
+    FOLLOWABLE_CHANNEL, "free_games", "Free Games", HELP_STRING
+)

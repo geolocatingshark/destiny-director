@@ -16,18 +16,16 @@
 import lightbulb as lb
 
 from ...common import cfg
-from .autoposts import autopost_command_group, follow_control_command_maker
+from .autoposts import follow_control_command_maker
+
+loader = lb.Loader()
 
 # Followable channel from which to pull messages for the command and autoposts
 FOLLOWABLE_CHANNEL = cfg.followables["emblems_and_cosmetics"]
 
-
-def register(bot: lb.BotApp):
-    autopost_command_group.child(
-        follow_control_command_maker(
-            FOLLOWABLE_CHANNEL,
-            "emblems_and_cosmetics",
-            "Emblems and Cosmetics",
-            "D2 Emblems and Cosmetics auto posts",
-        )
-    )
+follow_control_command_maker(
+    FOLLOWABLE_CHANNEL,
+    "emblems_and_cosmetics",
+    "Emblems and Cosmetics",
+    "D2 Emblems and Cosmetics auto posts",
+)

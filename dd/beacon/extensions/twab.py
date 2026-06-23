@@ -14,7 +14,7 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 import datetime as dt
-import typing as t
+from typing import override
 
 import hikari as h
 import lightbulb as lb
@@ -24,16 +24,21 @@ from dd.hmessage import HMessage
 from ...common import cfg
 from ...common.utils import accumulate
 from .. import utils
-from ..nav import NavigatorView, NavPages
-from .autoposts import autopost_command_group, follow_control_command_maker
+from ..nav import NavPages, make_navigator_command, setup_nav_pages
+from .autoposts import follow_control_command_maker
 
-REFERENCE_DATE = dt.datetime(2025, 3, 20, 17, tzinfo=dt.timezone.utc)
+loader = lb.Loader()
+
+REFERENCE_DATE = dt.datetime(2025, 3, 20, 17, tzinfo=dt.UTC)
 
 FOLLOWABLE_CHANNEL = cfg.followables["twab"]
 
 
 class TWIDPages(NavPages):
-    def preprocess_messages(self, messages: t.List[HMessage | h.Message]) -> HMessage:
+    @override
+    def preprocess_messages(self, messages: list[h.Message]) -> HMessage:
+        if not messages:
+            return self.no_data_message
         msg: HMessage = accumulate([HMessage.from_message(m) for m in messages])
         msg.embeds = utils.filter_discord_autoembeds(msg)
 
@@ -46,7 +51,7 @@ class TWIDPages(NavPages):
             filter(
                 lambda embed: any(
                     [
-                        embed.url.lower().endswith(extension)
+                        (embed.url or "").lower().endswith(extension)
                         for extension in cfg.IMAGE_EXTENSIONS_LIST
                     ]
                 ),
@@ -69,7 +74,7 @@ class TWIDPages(NavPages):
         msg.merge_content_into_embed(0)
 
         for embed in list(image_autoembeds_from_discord):
-            msg.merge_url_as_image_into_embed(embed.url, 0)
+            msg.merge_url_as_image_into_embed(embed.url, 0, default_url=cfg.default_url)
 
         msg.remove_all_embed_thumbnails()
         msg.embeds = list(filter(lambda embed: embed.description, msg.embeds))
@@ -77,41 +82,27 @@ class TWIDPages(NavPages):
         return msg
 
 
-async def on_start(event: h.StartedEvent):
-    global twidpages
-    twidpages = await TWIDPages.from_channel(
-        event.app,
-        FOLLOWABLE_CHANNEL,
-        history_len=4,
-        period=dt.timedelta(days=7),
-        reference_date=REFERENCE_DATE,
-    )
+_pages = setup_nav_pages(
+    loader,
+    pages_cls=TWIDPages,
+    followable_channel=FOLLOWABLE_CHANNEL,
+    history_len=4,
+    period=dt.timedelta(days=7),
+    reference_date=REFERENCE_DATE,
+)
 
+_TWID_DESCRIPTION = "Find out about This Week In Destiny (formerly the TWAB)"
 
-@lb.command("twid", "Find out about This Week In Destiny (formerly the TWAB)")
-@lb.implements(lb.SlashCommand)
-async def twid(ctx: lb.Context):
-    navigator = NavigatorView(pages=twidpages, autodefer=True)
-    await navigator.send(ctx.interaction)
+loader.command(
+    make_navigator_command(_pages, name="twid", description=_TWID_DESCRIPTION)
+)
+loader.command(
+    make_navigator_command(_pages, name="twab", description=_TWID_DESCRIPTION)
+)
 
-
-@lb.command("twab", "Find out about This Week In Destiny (formerly the TWAB)")
-@lb.implements(lb.SlashCommand)
-async def twab(ctx: lb.Context):
-    navigator = NavigatorView(pages=twidpages, autodefer=True)
-    await navigator.send(ctx.interaction)
-
-
-def register(bot):
-    bot.command(twid)
-    bot.command(twab)
-    bot.listen()(on_start)
-
-    autopost_command_group.child(
-        follow_control_command_maker(
-            FOLLOWABLE_CHANNEL,
-            "twid",
-            "TWID",
-            "This Week In Destiny weekly auto posts",
-        )
-    )
+follow_control_command_maker(
+    FOLLOWABLE_CHANNEL,
+    "twid",
+    "TWID",
+    "This Week In Destiny weekly auto posts",
+)

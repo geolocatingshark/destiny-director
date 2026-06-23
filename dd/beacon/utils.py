@@ -22,8 +22,6 @@ from toolbox.members import calculate_permissions
 
 from dd.hmessage import HMessage
 
-from ..common import cfg
-
 
 def get_function_name() -> str:
     """Get the name of the function this was called from"""
@@ -32,7 +30,7 @@ def get_function_name() -> str:
 
 async def check_invoker_has_perms(
     ctx: lb.Context,
-    permissions: h.Permissions | t.List[h.Permissions],
+    permissions: h.Permissions | list[h.Permissions],
     all_required: bool = False,
 ):
     bot: h.RESTAware = ctx.client.app
@@ -66,31 +64,14 @@ async def check_invoker_has_perms(
         )
 
 
-async def check_invoker_is_owner(ctx: lb.Context):
-    """Checks if the invoker of the command is the owner of the bot
-
-    Returns:
-        bool: True if the invoker is the owner, False otherwise.
-    """
-    bot = ctx.client.app
-    invoker = ctx.user
-    application = await bot.rest.fetch_application()
-    team = application.team
-    if team:
-        owners = team.members
-    else:
-        owners = (application.owner,)
-    return invoker.id in owners
-
-
-def filter_discord_autoembeds(msg: h.Message | HMessage) -> t.Sequence[h.Embed]:
+def filter_discord_autoembeds(msg: h.Message | HMessage) -> list[h.Embed]:
     content = msg.content or ""
-    filtered_embeds: t.List[h.Embed] = []
+    filtered_embeds: list[h.Embed] = []
 
     if not content:
         # If there is no content
         # there will be no autoembeds
-        return msg.embeds
+        return list(msg.embeds)
 
     for embed in msg.embeds or []:
         embed: h.Embed
@@ -104,10 +85,6 @@ def filter_discord_autoembeds(msg: h.Message | HMessage) -> t.Sequence[h.Embed]:
         ):
             filtered_embeds.append(embed)
     return filtered_embeds
-
-
-def followable_name(*, id: int) -> str | int:
-    return next((key for key, value in cfg.followables.items() if value == id), id)
 
 
 type self_ = t.Any
@@ -138,35 +115,17 @@ def ignore_own_user(
 def ignore_own_user(
     func: t.Callable[..., t.Awaitable[None]],
 ) -> t.Callable[..., t.Awaitable[None]]:
-    if inspect.ismethod(func):
+    # Use *args so this works both as a plain event listener (event,) and as a
+    # method decorator (self, event,) — inspect.ismethod is always False at class
+    # definition time, so the distinction cannot be made at decoration time.
+    async def _wrapped(*args: t.Any) -> None:
+        event = args[-1]
+        if not isinstance(event.app, h.GatewayBot):
+            return
+        own_user = event.app.get_me()
+        if own_user and event.author_id == own_user.id:
+            # Never respond to self or mirror self
+            return
+        await func(*args)
 
-        async def _wrapped_func(  # type: ignore
-            self: self_,
-            event: h.MessageCreateEvent | h.MessageUpdateEvent,
-        ):
-            if not isinstance(event.app, h.GatewayBot):
-                return
-            own_user = event.app.get_me()
-            if own_user and event.author_id == own_user.id:
-                # Never respond to self or mirror self
-                return
-
-            return await func(self, event)
-
-        return _wrapped_func
-
-    elif inspect.isfunction(func):
-
-        async def _wrapped_func(event: h.MessageCreateEvent | h.MessageUpdateEvent):
-            if not isinstance(event.app, h.GatewayBot):
-                return
-            own_user = event.app.get_me()
-            if own_user and event.author_id == own_user.id:
-                # Never respond to self or mirror self
-                return
-
-            return await func(event)
-    else:
-        raise ValueError
-
-    return _wrapped_func
+    return _wrapped

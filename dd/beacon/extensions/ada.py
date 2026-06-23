@@ -15,44 +15,52 @@
 
 import datetime as dt
 
-import hikari as h
 import lightbulb as lb
 
 from ...common import cfg
-from ..nav import NO_DATA_HERE_EMBED, NavigatorView, NavPages
-from .autoposts import autopost_command_group, follow_control_command_maker
+from ..nav import NO_DATA_HERE_EMBED, NavigatorView, setup_nav_pages
+from .autoposts import follow_control_command_maker
 
-REFERENCE_DATE = dt.datetime(2023, 7, 14, 17, tzinfo=dt.timezone.utc)
+loader = lb.Loader()
+
+REFERENCE_DATE = dt.datetime(2023, 7, 14, 17, tzinfo=dt.UTC)
 
 FOLLOWABLE_CHANNEL = cfg.followables["ada"]
 
 SINGLE_PAGE_MODE = True
 
-
-async def on_start(event: h.StartedEvent):
-    global ada_pages
-    ada_pages = await NavPages.from_channel(
-        event.app,
-        FOLLOWABLE_CHANNEL,
-        history_len=12,
-        period=dt.timedelta(days=7),
-        reference_date=REFERENCE_DATE,
-        suppress_content_autoembeds=False,
-    )
+_pages = setup_nav_pages(
+    loader,
+    followable_channel=FOLLOWABLE_CHANNEL,
+    history_len=12,
+    period=dt.timedelta(days=7),
+    reference_date=REFERENCE_DATE,
+    suppress_content_autoembeds=False,
+)
 
 
-if SINGLE_PAGE_MODE:
+class AdaCommand(
+    lb.SlashCommand, name="ada", description="Find out about ada's weekly items"
+):
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context):
+        pages = _pages.pages
+        if pages is None:
+            raise RuntimeError("Ada pages not yet initialised")
 
-    @lb.command("ada", "Find out about ada's weekly items", auto_defer=True)
-    @lb.implements(lb.SlashCommand)
-    async def ada_command(ctx: lb.Context):
+        if not SINGLE_PAGE_MODE:
+            navigator = NavigatorView(pages=pages, timeout=60)
+            await navigator.send(ctx.interaction)
+            return
+
+        await ctx.defer()
         page_no = 0
         while True:
             try:
-                page = ada_pages[page_no]
+                page = pages[page_no]
             except IndexError:
                 return await ctx.respond(NO_DATA_HERE_EMBED)
-            except:
+            except Exception:
                 page_no -= 1
                 continue
 
@@ -62,21 +70,9 @@ if SINGLE_PAGE_MODE:
             else:
                 return await ctx.respond(**page.to_message_kwargs())
 
-else:
 
-    @lb.command("ada", "Find out about ada's weekly items")
-    @lb.implements(lb.SlashCommand)
-    async def ada_command(ctx: lb.Context):
-        navigator = NavigatorView(pages=ada_pages, timeout=60)
-        await navigator.send(ctx.interaction)
+loader.command(AdaCommand)
 
-
-def register(bot):
-    bot.command(ada_command)
-    bot.listen()(on_start)
-
-    autopost_command_group.child(
-        follow_control_command_maker(
-            FOLLOWABLE_CHANNEL, "ada", "Ada", "Ada's weekly item auto posts"
-        )
-    )
+follow_control_command_maker(
+    FOLLOWABLE_CHANNEL, "ada", "Ada", "Ada's weekly item auto posts"
+)

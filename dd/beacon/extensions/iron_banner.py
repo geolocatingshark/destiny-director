@@ -13,15 +13,15 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+import lightbulb as lb
+
 from ...common import cfg
-from .autoposts import autopost_command_group, follow_control_command_maker
+from .autoposts import follow_control_command_maker
+
+loader = lb.Loader()
 
 FOLLOWABLE_CHANNEL = cfg.followables["iron_banner"]
 
-
-def register(bot):
-    autopost_command_group.child(
-        follow_control_command_maker(
-            FOLLOWABLE_CHANNEL, "iron_banner", "Iron Banner", "Iron Banner auto posts"
-        )
-    )
+follow_control_command_maker(
+    FOLLOWABLE_CHANNEL, "iron_banner", "Iron Banner", "Iron Banner auto posts"
+)

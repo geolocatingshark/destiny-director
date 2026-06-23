@@ -1,3 +1,5 @@
+from typing import override
+
 import hikari as h
 import lightbulb as lb
 
@@ -14,6 +16,7 @@ class GuildCounter:
     def __int__(self) -> int:
         return self._guild_count
 
+    @override
     def __str__(self) -> str:
         return f"Guild Counter ({self._guild_count})"
 
@@ -31,13 +34,20 @@ class GuildCounterDILoadable(lb.Loadable):
     def __init__(self):
         self.guild_counter = GuildCounter()
 
+    @override
     async def load(self, client: lb.Client) -> None:
         registry = client.di.registry_for(lb.di.Contexts.DEFAULT)
         registry.register_value(GuildCounter, self.guild_counter)
 
+    @override
     async def unload(self, client: lb.Client) -> None:
         # Unloading not supported
         pass
+
+
+# Register the GuildCounter into the DI container so the listeners below can
+# have it injected.
+loader.add(GuildCounterDILoadable())
 
 
 @loader.listener(h.StartedEvent)

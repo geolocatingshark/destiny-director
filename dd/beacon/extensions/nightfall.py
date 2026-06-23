@@ -15,7 +15,7 @@
 
 import datetime as dt
 import logging
-import typing as t
+from typing import override
 
 import hikari as h
 import lightbulb as lb
@@ -25,16 +25,22 @@ from dd.hmessage import HMessage
 from ...common import cfg
 from ...common.utils import accumulate
 from .. import utils
-from ..nav import NavigatorView, NavPages
-from .autoposts import autopost_command_group, follow_control_command_maker
+from ..nav import NavPages, make_navigator_command, setup_nav_pages
+from .autoposts import follow_control_command_maker
 
-REFERENCE_DATE = dt.datetime(2023, 7, 18, 17, tzinfo=dt.timezone.utc)
+loader = lb.Loader()
+
+REFERENCE_DATE = dt.datetime(2023, 7, 18, 17, tzinfo=dt.UTC)
 
 FOLLOWABLE_CHANNEL = cfg.followables["weekly_nightfall"]
 
 
 class NightfallPages(NavPages):
-    def preprocess_messages(self, messages: t.List[HMessage | h.Message]) -> HMessage:
+    @override
+    def preprocess_messages(self, messages: list[h.Message]) -> HMessage:
+        if not messages:
+            return self.no_data_message
+
         for m in messages:
             m.embeds = utils.filter_discord_autoembeds(m)
 
@@ -64,33 +70,26 @@ class NightfallPages(NavPages):
         return msg_proto
 
 
-async def on_start(event: h.StartedEvent):
-    global nightfall_pages
-    nightfall_pages = await NightfallPages.from_channel(
-        event.app,
-        FOLLOWABLE_CHANNEL,
-        history_len=12,
-        period=dt.timedelta(days=7),
-        reference_date=REFERENCE_DATE,
+_pages = setup_nav_pages(
+    loader,
+    pages_cls=NightfallPages,
+    followable_channel=FOLLOWABLE_CHANNEL,
+    history_len=12,
+    period=dt.timedelta(days=7),
+    reference_date=REFERENCE_DATE,
+)
+
+loader.command(
+    make_navigator_command(
+        _pages,
+        name="nightfall",
+        description="Find out about this weeks nightfall",
     )
+)
 
-
-@lb.command("nightfall", "Find out about this weeks nightfall")
-@lb.implements(lb.SlashCommand)
-async def weekly_reset_command(ctx: lb.Context):
-    navigator = NavigatorView(pages=nightfall_pages)
-    await navigator.send(ctx.interaction)
-
-
-def register(bot):
-    bot.command(weekly_reset_command)
-    bot.listen()(on_start)
-
-    autopost_command_group.child(
-        follow_control_command_maker(
-            FOLLOWABLE_CHANNEL,
-            "nightfall",
-            "Nightfall",
-            "Nightfall weekly auto posts",
-        )
-    )
+follow_control_command_maker(
+    FOLLOWABLE_CHANNEL,
+    "nightfall",
+    "Nightfall",
+    "Nightfall weekly auto posts",
+)
