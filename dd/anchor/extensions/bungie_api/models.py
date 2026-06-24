@@ -1,29 +1,21 @@
 """Destiny domain models parsed from Bungie API / manifest data.
 
 Membership, items (weapons/armor), collectibles, presentation nodes, and vendors.
-The ``from_api`` / ``request_from_api`` classmethods still perform the HTTP calls
-themselves; separating fetching from parsing is deferred to a later refactor (see
-``plans/bungie_api_http_client_split.md``).
+These are pure parsers — the HTTP fetching lives in :mod:`.client`. The ``from_api``
+/ ``request_from_api`` / ``get_character_id`` methods are kept as thin deprecated
+wrappers (fetch via ``client`` then parse) so existing call sites keep working;
+prefer ``client.fetch_*`` + the ``from_*_response`` / ``parse_*`` parsers.
 """
 
 import typing as t
 from pprint import pformat
 
-import aiohttp
-
-from dd.common import schemas
-
 from .constants import (
-    API_GET_MEMBERSHIPS,
-    API_PROFILE,
-    API_VENDORS_AUTHENTICATED,
     DESTINY_CLASS_TYPE_IDS,
     DESTINY_CLASSES_ENUM,
     DESTINY_ITEM_TYPE_ARMOR,
     DESTINY_ITEM_TYPE_WEAPON,
-    VENDOR_NOT_FOUND_ERROR_CODE,
     XUR_VENDOR_HASH,
-    components,
     likely_emoji_name,
 )
 
@@ -76,18 +68,14 @@ class DestinyMembership:
     @classmethod
     async def from_api(
         cls,
-        session: aiohttp.ClientSession,
+        session: t.Any,
         access_token: str,
     ) -> t.Self:
-        url = API_GET_MEMBERSHIPS
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "X-API-Key": schemas.BungieCredentials.api_key,
-        }
+        """Deprecated thin wrapper — prefer ``client.fetch_memberships(...)`` +
+        :meth:`from_api_response`."""
+        from .client import fetch_memberships
 
-        async with session.get(url, headers=headers) as resp:
-            resp = (await resp.json())["Response"]
-            return cls.from_api_response(resp)
+        return cls.from_api_response(await fetch_memberships(session, access_token))
 
     @classmethod
     def from_api_response(cls, response) -> t.Self:
@@ -120,29 +108,29 @@ class DestinyMembership:
 
     async def get_character_id(
         self,
-        session: aiohttp.ClientSession,
+        session: t.Any,
         access_token: str,
         character_class: str = "Hunter",
     ):
-        url = API_PROFILE.format(
-            membership_type=self.membership_type,
-            membership_id=self.membership_id,
+        """Deprecated thin wrapper — prefer ``client.fetch_profile(...)`` +
+        :meth:`parse_character_id`."""
+        from .client import fetch_profile
+
+        profile = await fetch_profile(
+            session, access_token, self.membership_type, self.membership_id
         )
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "X-API-Key": schemas.BungieCredentials.api_key,
-        }
+        return self.parse_character_id(profile, character_class)
 
-        async with session.get(url, headers=headers) as resp:
-            data = await resp.json()
-            character_id_by_class = {}
-            for character_id in data["Response"]["profile"]["data"]["characterIds"]:
-                class_id = data["Response"]["characters"]["data"][character_id][
-                    "classType"
-                ]
-                character_id_by_class[DESTINY_CLASS_TYPE_IDS[class_id]] = character_id
+    def parse_character_id(
+        self, profile_response: dict[str, t.Any], character_class: str = "Hunter"
+    ) -> int:
+        """Resolve the character id for ``character_class`` from a profile response."""
+        character_id_by_class = {}
+        for character_id in profile_response["profile"]["data"]["characterIds"]:
+            class_id = profile_response["characters"]["data"][character_id]["classType"]
+            character_id_by_class[DESTINY_CLASS_TYPE_IDS[class_id]] = character_id
 
-            return character_id_by_class[character_class]
+        return character_id_by_class[character_class]
 
 
 class DestinyItem:
@@ -619,37 +607,19 @@ class DestinyVendor:
         manifest_table: dict[str, t.Any] | None = None,
         manifest_entry: dict[str, t.Any] | None = None,
     ) -> t.Self:
-        """Request a DestinyVendor object from the Bungie API.
+        """Deprecated thin wrapper — prefer ``client.fetch_vendor(...)`` +
+        :meth:`from_vendors_api_response`.
 
         Will raise a VendorNotFound exception if the vendor is not found."""
-        async with aiohttp.ClientSession() as session:
-            response = await session.get(
-                API_VENDORS_AUTHENTICATED.format(
-                    membershipType=destiny_membership.membership_type,
-                    destinyMembershipId=destiny_membership.membership_id,
-                    characterId=character_id,
-                    vendorHash=vendor_hash,
-                    components=components,
-                ),
-                headers={
-                    "X-API-Key": schemas.BungieCredentials.api_key,
-                    "Authorization": f"Bearer {access_token}",
-                },
-            )
-            response = await response.json()
+        from .client import fetch_vendor
 
-            if response["ErrorCode"] == VENDOR_NOT_FOUND_ERROR_CODE:
-                raise VendorNotFound("Vendor not found", api_response=response)
-
-            if "Response" not in response:
-                raise MissingResponseField(
-                    "Response",
-                    api_response=response,
-                    request_details=f"Vendor hash: {vendor_hash}",
-                )
-
-            response = response["Response"]
-
+        response = await fetch_vendor(
+            access_token,
+            destiny_membership.membership_type,
+            destiny_membership.membership_id,
+            character_id,
+            vendor_hash,
+        )
         return cls.from_vendors_api_response(
             response=response,
             manifest_table=manifest_table,

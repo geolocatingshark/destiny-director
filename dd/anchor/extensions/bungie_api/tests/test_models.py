@@ -15,9 +15,11 @@
 
 """Pure parsing tests for the Destiny models: hand-crafted manifest fixtures, no I/O."""
 
+from dd.anchor.extensions.bungie_api.constants import DESTINY_CLASS_TYPE_IDS
 from dd.anchor.extensions.bungie_api.models import (
     DestinyArmor,
     DestinyItem,
+    DestinyMembership,
     DestinyWeapon,
 )
 
@@ -88,3 +90,32 @@ def test_destiny_armor_maps_v2_stat_names_to_v3():
         "Melee": 0,
     }
     assert armor.stat_total == 60
+
+
+def test_membership_from_api_response_picks_primary():
+    response = {
+        "primaryMembershipId": "999",
+        "destinyMemberships": [
+            {"membershipId": "111", "membershipType": 1},
+            {"membershipId": "999", "membershipType": 3},
+        ],
+    }
+    membership = DestinyMembership.from_api_response(response)
+    assert membership.membership_id == 999
+    assert membership.membership_type == 3
+
+
+def test_parse_character_id_resolves_class():
+    membership = DestinyMembership(membership_id=1, membership_type=3)
+    profile = {
+        "profile": {"data": {"characterIds": ["charA", "charB"]}},
+        "characters": {
+            "data": {
+                "charA": {"classType": 0},
+                "charB": {"classType": 1},
+            }
+        },
+    }
+    # parse_character_id maps Destiny classType -> name via DESTINY_CLASS_TYPE_IDS.
+    assert membership.parse_character_id(profile, DESTINY_CLASS_TYPE_IDS[0]) == "charA"
+    assert membership.parse_character_id(profile, DESTINY_CLASS_TYPE_IDS[1]) == "charB"

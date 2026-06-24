@@ -12,6 +12,7 @@ manifest helpers, constants) so importers keep using
 import aiohttp
 import lightbulb as lb
 
+from . import client
 from .constants import (
     ARMOR_TYPE_NAMES,
     DESTINY_CLASS_TYPE_IDS,
@@ -44,6 +45,7 @@ from .oauth import (
 )
 
 __all__ = [
+    "client",
     "ARMOR_TYPE_NAMES",
     "DESTINY_CLASSES_ENUM",
     "DESTINY_CLASS_TYPE_IDS",
