@@ -23,6 +23,7 @@ from dd.anchor.extensions.bungie_api.models import DestinyItem
 from dd.anchor.extensions.eververse import (
     _bright_dust_rotator_hashes,
     _exotic_ornament_target_name,
+    _group_daily_offerings,
 )
 
 
@@ -132,3 +133,30 @@ def test_missing_manifest_entry_returns_none():
         _exotic_ornament_target_name(_item(), {"DestinyInventoryItemDefinition": {}})
         is None
     )
+
+
+def _daily_item(name: str, hash_: int, class_: str) -> DestinyItem:
+    return DestinyItem(
+        name=name,
+        hash_=hash_,
+        rarity="Legendary",
+        class_=class_,
+        bucket="",
+        item_type=2,
+        item_type_friendly_name="Ornament",
+    )
+
+
+def test_group_daily_offerings_splits_class_specific_from_common():
+    items = [
+        _daily_item("Hunter Orn", 1, "Hunter"),
+        _daily_item("Titan Orn", 2, "Titan"),
+        _daily_item("Warlock Orn", 3, "Warlock"),
+        _daily_item("Ghost", 4, "Unknown"),
+        _daily_item("Ship", 5, "Unknown"),
+    ]
+    by_class, common = _group_daily_offerings(items)
+    assert [i.name for i in by_class["Hunter"]] == ["Hunter Orn"]
+    assert [i.name for i in by_class["Titan"]] == ["Titan Orn"]
+    assert [i.name for i in by_class["Warlock"]] == ["Warlock Orn"]
+    assert [i.name for i in common] == ["Ghost", "Ship"]

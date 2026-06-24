@@ -68,6 +68,42 @@ def _exotic_ornament_target_name(
     return match.group(1) if match else None
 
 
+def _group_daily_offerings(
+    daily_items: list[api.DestinyItem],
+) -> tuple[dict[str, list[api.DestinyItem]], list[api.DestinyItem]]:
+    """Split daily offerings into per-class groups (class-specific armor ornaments,
+    keyed by ``item.class_``) and a class-agnostic remainder — mirroring the weekly
+    section's organisation so the post reads consistently."""
+    by_class: dict[str, list[api.DestinyItem]] = {
+        "Hunter": [],
+        "Titan": [],
+        "Warlock": [],
+    }
+    common: list[api.DestinyItem] = []
+    for item in daily_items:
+        if item.class_ in by_class:
+            by_class[item.class_].append(item)
+        else:
+            common.append(item)
+    return by_class, common
+
+
+def _daily_offering_line(
+    item: api.DestinyItem, manifest_table: dict[str, t.Any] | None
+) -> str:
+    """One rendered daily-offering line: ``name (cost) — type`` plus, for exotic
+    ornaments, a ``for <exotic>`` suffix."""
+    line = (
+        f"• [{item.name}]({item.lightgg_url}) "
+        f"({item.costs['Bright Dust']}) — {item.item_type_friendly_name}"
+    )
+    if item.is_exotic and manifest_table is not None:
+        target = _exotic_ornament_target_name(item, manifest_table)
+        if target:
+            line += f" for {target}"
+    return line
+
+
 async def fetch_daily_bright_dust_offerings(
     webserver_runner: aiohttp.web.AppRunner,
 ) -> tuple[list[api.DestinyItem], dict[str, t.Any]]:
@@ -88,33 +124,42 @@ async def fetch_daily_bright_dust_offerings(
             membership.membership_type,
             membership.membership_id,
         )
-        # These cosmetics are class-agnostic, so a single (Hunter) character is enough.
-        character_id = membership.parse_character_id(profile, "Hunter")
+        # Armor ornaments are class-specific: a vendor only returns the queried
+        # character's class's ornaments, so the rotators must be queried once per
+        # class to surface every class's offerings. Class-agnostic cosmetics (ghosts,
+        # ships, shaders, weapon ornaments, …) come back identically for each and
+        # dedupe by item hash below. Each item's ``class_`` is set from the manifest.
+        character_ids = [
+            membership.parse_character_id(profile, class_)
+            for class_ in ("Hunter", "Titan", "Warlock")
+        ]
 
     manifest_table = await api._build_manifest_dict(
         await api._get_latest_manifest(schemas.BungieCredentials.api_key)
     )
+    rotator_hashes = _bright_dust_rotator_hashes(manifest_table)
 
-    items: dict[int, api.DestinyItem] = {}  # dedupe by item hash
-    for vendor_hash in _bright_dust_rotator_hashes(manifest_table):
-        try:
-            response = await api.client.fetch_vendor(
-                access_token=access_token,
-                membership_type=membership.membership_type,
-                membership_id=membership.membership_id,
-                character_id=character_id,
-                vendor_hash=vendor_hash,
+    items: dict[int, api.DestinyItem] = {}  # dedupe by item hash across classes
+    for character_id in character_ids:
+        for vendor_hash in rotator_hashes:
+            try:
+                response = await api.client.fetch_vendor(
+                    access_token=access_token,
+                    membership_type=membership.membership_type,
+                    membership_id=membership.membership_id,
+                    character_id=character_id,
+                    vendor_hash=vendor_hash,
+                )
+            except api.VendorNotFound:
+                # Rotator is not currently active; skip it.
+                continue
+
+            vendor = api.DestinyVendor.from_vendors_api_response(
+                response=response, manifest_table=manifest_table
             )
-        except api.VendorNotFound:
-            # Rotator is not currently active; skip it.
-            continue
-
-        vendor = api.DestinyVendor.from_vendors_api_response(
-            response=response, manifest_table=manifest_table
-        )
-        for sale_item in vendor.sale_items:
-            if "bright dust" in str(sale_item.costs).lower():
-                items.setdefault(sale_item.hash, sale_item)
+            for sale_item in vendor.sale_items:
+                if "bright dust" in str(sale_item.costs).lower():
+                    items.setdefault(sale_item.hash, sale_item)
 
     return list(items.values()), manifest_table
 
@@ -245,16 +290,18 @@ async def format_eververse_vendor(
 
     if daily_items:
         description += "**__DAILY BRIGHT DUST OFFERINGS__** :bright_dust:\n\n"
-        for item in daily_items:
-            line = (
-                f"• [{item.name}]({item.lightgg_url}) "
-                f"({item.costs['Bright Dust']}) — {item.item_type_friendly_name}"
-            )
-            if item.is_exotic and manifest_table is not None:
-                target = _exotic_ornament_target_name(item, manifest_table)
-                if target:
-                    line += f" for {target}"
-            description += line + "\n"
+        daily_by_class, daily_common = _group_daily_offerings(daily_items)
+        # Class-specific daily items (armor ornaments) grouped by class, like the
+        # weekly section above; class-agnostic items follow.
+        for class_ in ("Hunter", "Titan", "Warlock"):
+            if not daily_by_class[class_]:
+                continue
+            description += f"**{class_} Specific Items**\n"
+            for item in daily_by_class[class_]:
+                description += _daily_offering_line(item, manifest_table) + "\n"
+            description += "\n"
+        for item in daily_common:
+            description += _daily_offering_line(item, manifest_table) + "\n"
         description += "\n"
 
     description = await substitute_user_side_emoji(emoji_dict, description)
