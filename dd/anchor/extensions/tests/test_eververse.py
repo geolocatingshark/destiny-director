@@ -22,8 +22,9 @@ hand-built fixtures that mirror the live manifest shapes (verified against dev d
 from dd.anchor.extensions.bungie_api.models import DestinyItem
 from dd.anchor.extensions.eververse import (
     _bright_dust_rotator_hashes,
+    _eververse_type_group,
     _exotic_ornament_target_name,
-    _group_daily_offerings,
+    _group_eververse_offerings,
 )
 
 
@@ -135,7 +136,9 @@ def test_missing_manifest_entry_returns_none():
     )
 
 
-def _daily_item(name: str, hash_: int, class_: str) -> DestinyItem:
+def _item_of(
+    class_: str, type_name: str, name: str = "X", hash_: int = 1
+) -> DestinyItem:
     return DestinyItem(
         name=name,
         hash_=hash_,
@@ -143,20 +146,43 @@ def _daily_item(name: str, hash_: int, class_: str) -> DestinyItem:
         class_=class_,
         bucket="",
         item_type=2,
-        item_type_friendly_name="Ornament",
+        item_type_friendly_name=type_name,
     )
 
 
-def test_group_daily_offerings_splits_class_specific_from_common():
+def test_eververse_type_group_buckets_class_specific_and_types():
+    # Class-specific armor ornaments → one Armor Ornaments group regardless of type.
+    assert _eververse_type_group(_item_of("Titan", "Titan Ornament"))[1:] == (
+        "armor",
+        "Armor Ornaments",
+    )
+    # Class-agnostic items → curated type group, or pluralised type name as fallback.
+    assert _eververse_type_group(_item_of("Unknown", "Weapon Ornament"))[1:] == (
+        "weapon",
+        "Weapon Ornaments",
+    )
+    assert _eververse_type_group(_item_of("Unknown", "Ghost Shell"))[1:] == (
+        "ghost",
+        "Ghosts",
+    )
+    assert _eververse_type_group(_item_of("Unknown", "Ship"))[1:] == (
+        "sparrow",
+        "Vehicles & Sparrows",
+    )
+    assert _eververse_type_group(_item_of("Unknown", "Shader")) == (4, "", "Shaders")
+
+
+def test_group_eververse_offerings_orders_groups_and_sorts_items():
     items = [
-        _daily_item("Hunter Orn", 1, "Hunter"),
-        _daily_item("Titan Orn", 2, "Titan"),
-        _daily_item("Warlock Orn", 3, "Warlock"),
-        _daily_item("Ghost", 4, "Unknown"),
-        _daily_item("Ship", 5, "Unknown"),
+        _item_of("Unknown", "Shader", name="Zeta Shader", hash_=10),
+        _item_of("Hunter", "Hunter Ornament", name="Hrafnagud", hash_=11),
+        _item_of("Titan", "Titan Ornament", name="Arcturus Engine", hash_=12),
+        _item_of("Unknown", "Ghost Shell", name="Drilldown Shell", hash_=13),
     ]
-    by_class, common = _group_daily_offerings(items)
-    assert [i.name for i in by_class["Hunter"]] == ["Hunter Orn"]
-    assert [i.name for i in by_class["Titan"]] == ["Titan Orn"]
-    assert [i.name for i in by_class["Warlock"]] == ["Warlock Orn"]
-    assert [i.name for i in common] == ["Ghost", "Ship"]
+    groups = _group_eververse_offerings(items)
+    headers = [header for _emoji, header, _items in groups]
+    # Curated rank: Armor Ornaments, then Ghosts, then the fallback Shaders group.
+    assert headers == ["Armor Ornaments", "Ghosts", "Shaders"]
+    armor = next(items for _e, h, items in groups if h == "Armor Ornaments")
+    # Items within a group are sorted by name.
+    assert [i.name for i in armor] == ["Arcturus Engine", "Hrafnagud"]
