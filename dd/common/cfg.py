@@ -64,6 +64,19 @@ def _getenv(key: str, default: int | str | None = None) -> int | str:
         return value
 
 
+def _getbool(key: str, default: bool) -> bool:
+    """Parse a boolean env var case-insensitively (``true``/``1``/``yes``/``on``).
+
+    Replaces the ad-hoc ``_getenv(...) == "true"`` checks, which were inconsistent:
+    case-sensitive for ``MYSQL_SSL`` (so ``MYSQL_SSL=True`` silently disabled SSL)
+    and case-insensitive for ``DISABLE_BAD_CHANNELS``.
+    """
+    value = __getenv(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"true", "1", "yes", "on"}
+
+
 def _test_env(var_name: str) -> tuple[int, ...] | tuple[()]:
     test_env = _getenv(var_name, default="false")
     test_env = test_env.lower()
@@ -109,7 +122,7 @@ def _db_config() -> tuple[
     }
 
     db_connect_args: t.Mapping[str, ssl.SSLContext] = {}
-    if _getenv("MYSQL_SSL", "true") == "true":
+    if _getbool("MYSQL_SSL", True):
         ssl_ctx = ssl.create_default_context(
             cafile="/etc/ssl/certs/ca-certificates.crt"
         )
@@ -175,12 +188,11 @@ logging.basicConfig(
 test_env = _test_env("TEST_ENV")
 discord_token_anchor = _getenv("DISCORD_TOKEN_ANCHOR", default="")
 discord_token_beacon = _getenv("DISCORD_TOKEN_BEACON", default="")
-disable_bad_channels = _getenv("DISABLE_BAD_CHANNELS", default="").lower() == "true"
+disable_bad_channels = _getbool("DISABLE_BAD_CHANNELS", False)
 
 # Discord control server config
 control_discord_server_id = int(_getenv("CONTROL_DISCORD_SERVER_ID", "-1"))
 control_discord_role_id = _getenv("CONTROL_DISCORD_ROLE_ID", "-1")
-admins = [int(admin.strip()) for admin in _getenv("ADMINS", default="-1").split(",")]
 kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", default=-1)
 log_channel = _getenv("LOG_CHANNEL_ID", default=0)
 alerts_channel = _getenv("ALERTS_CHANNEL_ID", default=0)
@@ -191,35 +203,36 @@ embed_default_color = h.Color(int(_getenv("EMBED_DEFAULT_COLOR", "0"), 16))
 embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR", "0"), 16))
 followables: dict[str, int] = json.loads(_getenv("FOLLOWABLES", "{}"), parse_int=int)
 default_url = _getenv("DEFAULT_URL", "")
-navigator_timeout = _getenv("NAVIGATOR_TIMEOUT", 120)
-kyber_ls_thumbnail = (
-    "https://kyberscorner.com/wp-content/uploads/2025/06/lost_sector_kyber.png"
-)
+# Seconds a paginator waits for interaction before timing out. Baked in — prod ran
+# NAVIGATOR_TIMEOUT=900, never per-deploy overridden.
+navigator_timeout = 900
 
 # Discord logging / alerting config (see dd/common/discord_logging.py)
 # Minimum log level forwarded to the alerts channel.
 alert_min_level = _getenv("ALERT_MIN_LEVEL", "ERROR")
 # Seconds the consumer waits collecting records before flushing a batch (lets
 # duplicate records within the window collapse into a single alert).
-alert_flush_interval = _getenv("ALERT_FLUSH_INTERVAL", 5)
+# The knobs below have baked-in sensible defaults and are never overridden
+# per-deploy, so they are plain constants (not env-backed) to keep the env contract
+# small. Re-introduce env-backing only if a per-deploy override is ever needed.
+alert_flush_interval = 5
 # Max queued records before new ones are dropped (back-pressure guard).
-alert_queue_maxsize = _getenv("ALERT_QUEUE_MAXSIZE", 1000)
+alert_queue_maxsize = 1000
 # Rolling window (seconds) and occurrence threshold for the "error storm"
 # escalation, plus a debounce so a sustained storm doesn't re-ping every flush.
-alert_freq_window = _getenv("ALERT_FREQ_WINDOW", 300)
-alert_freq_threshold = _getenv("ALERT_FREQ_THRESHOLD", 10)
-alert_escalation_debounce = _getenv("ALERT_ESCALATION_DEBOUNCE", 600)
+alert_freq_window = 300
+alert_freq_threshold = 10
+alert_escalation_debounce = 600
 # Fraction of a mirror run's targets that must fail (and minimum sample size)
-# before a "majority of mirrors failing" critical alert fires. _getenv only
-# coerces int/str, so the ratio is read as a string and parsed to float.
-mirror_failure_ratio_threshold = float(_getenv("MIRROR_FAILURE_RATIO_THRESHOLD", "0.5"))
-mirror_failure_min_sample = _getenv("MIRROR_FAILURE_MIN_SAMPLE", 10)
+# before a "majority of mirrors failing" critical alert fires.
+mirror_failure_ratio_threshold = 0.5
+mirror_failure_min_sample = 10
 # Seconds an autopost announcer may stall (API offline / edit failing) before a
 # single critical alert fires for that run.
-announcer_offline_alert_after = _getenv("ANNOUNCER_OFFLINE_ALERT_AFTER", 900)
+announcer_offline_alert_after = 900
 # Accent colours for alert severities (hex, like the other embed colours).
-embed_warning_color = h.Color(int(_getenv("EMBED_WARNING_COLOR", "F1C40F"), 16))
-embed_critical_color = h.Color(int(_getenv("EMBED_CRITICAL_COLOR", "992D22"), 16))
+embed_warning_color = h.Color(0xF1C40F)
+embed_critical_color = h.Color(0x992D22)
 
 # Database URLs
 db_url, db_url_async = _db_urls("MYSQL_PRIVATE_URL", "MYSQL_URL")
