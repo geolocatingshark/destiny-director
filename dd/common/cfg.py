@@ -227,6 +227,16 @@ alert_escalation_debounce = 600
 # before a "majority of mirrors failing" critical alert fires.
 mirror_failure_ratio_threshold = 0.5
 mirror_failure_min_sample = 10
+# Mirror fan-out tuning. These are baked-in defaults (not env-backed) to keep the
+# env contract small; re-introduce env-backing if a per-deploy override is ever
+# needed. mirror_max_concurrency caps in-flight kernel coroutines; mirror_rate_per_sec
+# is the global token-bucket rate shared across all runs (kept below Discord's ~50/s
+# global REST budget to leave headroom for interactive commands). The retry window is
+# the randomised delay (seconds) before a transient failure is retried.
+mirror_max_concurrency = 8
+mirror_rate_per_sec = 30.0
+mirror_retry_min = 180
+mirror_retry_max = 300
 # Seconds an autopost announcer may stall (API offline / edit failing) before a
 # single critical alert fires for that run.
 announcer_offline_alert_after = 900
