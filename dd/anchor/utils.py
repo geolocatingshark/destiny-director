@@ -221,9 +221,8 @@ async def download_linked_image(url: str) -> str | None:
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         name = _get_uri_name(resp.url)
-                        f = await aiofiles.open(name, mode="wb")
-                        await f.write(await resp.read())
-                        await f.close()
+                        async with aiofiles.open(name, mode="wb") as f:
+                            await f.write(await resp.read())
                         return name
                     else:
                         await aio.sleep(backoff_timer)

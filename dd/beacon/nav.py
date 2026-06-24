@@ -370,8 +370,15 @@ class NavPages(DateRangeDict):
     # Strong reference to the lookahead auto-update task, set in _setup_autoupdate
     # when lookahead_len > 0. Held only to keep the task from being garbage
     # collected; NavPages instances are process-lifetime singletons so the task is
-    # intentionally never cancelled.
+    # not cancelled in normal operation (see teardown()).
     _lookahead_task: "Task[None] | None" = None
+
+    # Auto-update teardown handles: the registered history-updater listener and a
+    # double-setup guard. NavPages are process-lifetime singletons today, so these
+    # are dormant; they let a future recreation/hot-reload path release the per-
+    # instance listener + lookahead task instead of leaking them (memory-leak N4).
+    _history_updater: "t.Callable[..., t.Coroutine[t.Any, t.Any, None]] | None" = None
+    _autoupdate_set_up: bool = False
 
     def __init__(
         self,
@@ -561,6 +568,9 @@ class NavPages(DateRangeDict):
         )
 
     def _setup_autoupdate(self):
+        if self._autoupdate_set_up:
+            return
+        self._autoupdate_set_up = True
         if self.history_len > 0:
 
             @self.bot.listen()
@@ -575,6 +585,8 @@ class NavPages(DateRangeDict):
                         await self._populate_history()
                 else:
                     await self._update_history(event)
+
+            self._history_updater = history_updater
 
         if self.lookahead_len > 0:
             # Lightbulb v3 removed lightbulb.ext.tasks, and this updater is created
@@ -597,6 +609,27 @@ class NavPages(DateRangeDict):
             # bare task, so without this the updater can be garbage-collected
             # mid-flight and silently stop.
             self._lookahead_task = create_task(lookahead_update_task())
+
+    def teardown(self) -> None:
+        """Release the auto-update listener + lookahead task.
+
+        Unsubscribes the history-updater from all three message events and cancels
+        the lookahead task. NavPages are created once per followable at startup, so
+        nothing accumulates in normal operation; this exists so a future
+        recreation/hot-reload path can avoid leaking them (memory-leak N4).
+        """
+        if self._history_updater is not None:
+            for event_type in (
+                h.MessageCreateEvent,
+                h.MessageUpdateEvent,
+                h.MessageDeleteEvent,
+            ):
+                self.bot.unsubscribe(event_type, self._history_updater)
+            self._history_updater = None
+        if self._lookahead_task is not None:
+            self._lookahead_task.cancel()
+            self._lookahead_task = None
+        self._autoupdate_set_up = False
 
     async def lookahead(self, after: dt.datetime) -> dict[dt.datetime, HMessage]:
         """Return the predicted messages for the periods after <after>

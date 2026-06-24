@@ -64,6 +64,15 @@ def test_expired_state_code_reports_absent():
     assert "expired" not in OAuthStateManager._oauth_state_codes
 
 
+def test_generate_sweeps_expired_codes():
+    """generate_oauth_state_code proactively drops abandoned/expired codes (N2)."""
+    OAuthStateManager._oauth_state_codes["stale"] = dt.datetime.now() - dt.timedelta(
+        minutes=1
+    )
+    OAuthStateManager.generate_oauth_state_code()
+    assert "stale" not in OAuthStateManager._oauth_state_codes
+
+
 def test_access_token_set_get_clear():
     OAuthStateManager.set_access_token("tok", 100)
     assert OAuthStateManager.get_access_token() == "tok"

@@ -270,6 +270,7 @@ class DiscordLogHandler(logging.Handler):
                 existing.count += rec.count
 
         now = time.monotonic()
+        self._prune_escalations(now)
         for rec in grouped.values():
             storm = self._is_storm(rec, now)
             await self._send_alert(rec, storm=storm, now=now)
@@ -297,6 +298,22 @@ class DiscordLogHandler(logging.Handler):
             return False
         self._last_escalation[signature] = now
         return True
+
+    def _prune_escalations(self, now: float) -> None:
+        """Evict escalation timestamps past the debounce window.
+
+        ``_ping_allowed`` records one entry per escalated signature but never
+        removes any; over uptime that grows with the diversity of signatures that
+        reach a ping. An entry older than the debounce window is useless (the next
+        ping would be allowed regardless), so drop it — symmetric to the
+        ``_sig_times`` cleanup in ``_is_storm``.
+        """
+        debounce = float(cfg.alert_escalation_debounce)
+        stale = [
+            sig for sig, last in self._last_escalation.items() if now - last >= debounce
+        ]
+        for sig in stale:
+            del self._last_escalation[sig]
 
     async def _send_alert(self, rec: _AlertRecord, *, storm: bool, now: float) -> None:
         # A storm promotes any lower level to CRITICAL; pinging is gated solely on

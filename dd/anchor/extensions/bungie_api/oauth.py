@@ -28,7 +28,20 @@ class OAuthStateManager:
     _access_token_expires: dt.datetime | None = None
 
     @classmethod
+    def _sweep_expired_state_codes(cls):
+        """Drop expired login codes proactively.
+
+        A code is otherwise only removed on consume or when something happens to
+        check it, so an abandoned ``/bungie login`` (code generated, login never
+        completed) leaks the entry. Sweeping here keeps the dict bounded.
+        """
+        now = dt.datetime.now()
+        for code in [c for c, exp in cls._oauth_state_codes.items() if exp <= now]:
+            cls._oauth_state_codes.pop(code, None)
+
+    @classmethod
     def generate_oauth_state_code(cls):
+        cls._sweep_expired_state_codes()
         while True:
             state_code = str(uuid4())
             if cls.check_state_code_exists(state_code):

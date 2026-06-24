@@ -15,7 +15,10 @@
 
 import logging
 
-from dd.common import discord_logging as dl
+from dd.common import (
+    cfg,
+    discord_logging as dl,
+)
 
 _FILE = "test_discord_logging.py"
 
@@ -60,3 +63,24 @@ def test_emit_carries_operation_and_reference_onto_alert_record():
     (alert,) = queued
     assert alert.operation == "Mirror update"
     assert alert.reference == dl.reference_code(dl._record_identity(rec))
+
+
+def test_prune_escalations_bounds_last_escalation():
+    """``_last_escalation`` is evicted past the debounce window (memory-leak N1)."""
+    handler = dl.DiscordLogHandler.__new__(dl.DiscordLogHandler)
+    logging.Handler.__init__(handler, level=logging.ERROR)
+    handler._last_escalation = {}
+
+    now = 1_000.0
+    for i in range(50):
+        assert handler._ping_allowed(f"sig-{i}", now)
+    assert len(handler._last_escalation) == 50
+
+    # Inside the debounce window: nothing evicted and a repeat ping stays debounced.
+    handler._prune_escalations(now)
+    assert len(handler._last_escalation) == 50
+    assert not handler._ping_allowed("sig-0", now)
+
+    # Past the debounce window: every entry evicted, so the dict stays bounded.
+    handler._prune_escalations(now + float(cfg.alert_escalation_debounce) + 1)
+    assert handler._last_escalation == {}
