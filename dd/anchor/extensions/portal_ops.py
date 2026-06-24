@@ -183,17 +183,25 @@ def ops_by_tab(ops: t.Iterable[PortalOp]) -> dict[str, list[PortalOp]]:
 # featured Pinnacle ops for that week, indexed modulo the rotation length, advancing
 # one step every weekly reset (Tue 17:00 UTC) since PINNACLE_REFERENCE_DATE.
 #
-# TODO: seed confirmed with user — the table below is an empty best-effort placeholder.
-# The current week's featured Pinnacle ops (featured raid + dungeon + Grandmaster
-# Nightfall) need to be confirmed in-game and seeded here, in weekly-reset order, before
-# Pinnacle Ops will render anything. Until then ``current_pinnacle_op`` returns ``[]``
-# and the Pinnacle Ops tab is simply omitted from the post.
-PINNACLE_REFERENCE_DATE = dt.datetime(2025, 7, 15, 17, tzinfo=dt.UTC)
+# Dev seed (week of 2026-06-23) sourced from the featured raids/dungeons on
+# kyberscorner.com. This is a SINGLE-week entry: with a one-element rotation
+# ``pinnacle_rotation_index`` is always 0, so Pinnacle Ops always shows this set.
+# TODO: replace with the full multi-week rotation cycle (in weekly-reset order) once
+# the upcoming-weeks schedule is confirmed, so it advances correctly each reset. A
+# Grandmaster Nightfall entry can be added when that source is confirmed.
+PINNACLE_REFERENCE_DATE = dt.datetime(2026, 6, 23, 17, tzinfo=dt.UTC)
 PINNACLE_PERIOD = dt.timedelta(days=7)
 
 # list[list[str]] — each inner list is one week's featured Pinnacle op names.
-# Empty until seeded (see TODO above).
-PINNACLE_ROTATION: list[list[str]] = []
+PINNACLE_ROTATION: list[list[str]] = [
+    [
+        "Root of Nightmares",
+        "Deep Stone Crypt",
+        "Ghosts of the Deep",
+        "Prophecy",
+        "Duality",
+    ],
+]
 
 
 def pinnacle_rotation_index(

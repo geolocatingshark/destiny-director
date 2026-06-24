@@ -175,7 +175,10 @@ def test_pinnacle_rotation_index_none_when_unseeded():
     assert pinnacle_rotation_index(_REF, reference_date=_REF, rotation_len=0) is None
 
 
-def test_current_pinnacle_op_empty_when_rotation_unseeded():
-    # The shipped PINNACLE_ROTATION is intentionally empty (awaiting the user's seed),
-    # so the current featured Pinnacle op is empty and the tab is omitted.
-    assert current_pinnacle_op() == []
+def test_current_pinnacle_op_returns_seeded_rotation():
+    # PINNACLE_ROTATION is seeded (dev), so the current featured Pinnacle ops are
+    # non-empty and match the seeded set; the unseeded (empty) path is covered by
+    # test_pinnacle_rotation_index_none_when_unseeded.
+    ops = current_pinnacle_op()
+    assert ops
+    assert "Root of Nightmares" in ops
