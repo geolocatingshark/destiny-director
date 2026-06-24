@@ -361,7 +361,7 @@ async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
         description += f"**{tab}**\n"
         for op in tab_ops:
             description += (
-                f"{op.reward_emoji} **{op.activity_name}** — "
+                f"• **{op.activity_name}** — {op.reward_emoji} "
                 f"[{op.reward_name}](https://light.gg/db/items/{op.reward_hash})\n"
             )
         description += "\n"
