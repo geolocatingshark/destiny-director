@@ -34,10 +34,8 @@ same short code, so a user-reported code maps straight to its deduped alert.
 """
 
 import asyncio as aio
-import base64
 import contextlib
 import dataclasses
-import hashlib
 import logging
 import sys
 import time
@@ -47,20 +45,22 @@ from collections import defaultdict, deque
 
 import hikari as h
 import lightbulb as lb
-import regex as re
 
 from . import cfg
 from .bot import CachedFetchBot
 from .components import build_container
 
+# ``identity_for_exc``/``reference_code`` live in ``utils`` (pure, Discord-free) so
+# the mirror subsystem can reuse them without importing this handler. Re-exported
+# here to keep this module's public surface unchanged.
+from .utils import _normalize, identity_for_exc, reference_code
+
+__all__ = ["identity_for_exc", "reference_code"]
+
 # Records from these logger trees are never forwarded: they are noisy and, more
 # importantly, hikari's REST logger can emit during our own send and would feed
 # the handler back into itself.
 _IGNORED_LOGGER_PREFIXES = ("hikari", "lightbulb", "asyncio", "aiosqlite")
-
-# Collapse digit runs (snowflakes, error references, counts) so that otherwise
-# identical messages share one signature / reference code.
-_DIGIT_RUN = re.compile(r"\d+")
 
 # Severity styling: emoji + accent colour per level bucket.
 _WARNING_STYLE = ("⚠️", cfg.embed_warning_color)
@@ -74,33 +74,11 @@ _MAX_MESSAGE_CHARS = 1000
 _installed_handler: "DiscordLogHandler | None" = None
 
 
-def _normalize(text: str) -> str:
-    return _DIGIT_RUN.sub("#", text)
-
-
-def identity_for_exc(exc: BaseException) -> str:
-    """The stable identity of an exception (type + normalized message).
-
-    Used by both :func:`reference_code` and the handler so the code shown to a
-    user matches the code on the deduped alert.
-    """
-    return f"{type(exc).__module__}.{type(exc).__qualname__}: {_normalize(str(exc))}"
-
-
 def _record_identity(record: logging.LogRecord) -> str:
     exc = record.exc_info[1] if record.exc_info else None
     if exc is not None:
         return identity_for_exc(exc)
     return f"{record.name}: {_normalize(record.getMessage())}"
-
-
-def reference_code(identity: str) -> str:
-    """A short, stable, human-friendly code for an error identity.
-
-    Base32 of a blake2s digest -> uppercase ``A-Z2-7``, 6 chars.
-    """
-    digest = hashlib.blake2s(identity.encode("utf-8"), digest_size=5).digest()
-    return base64.b32encode(digest).decode("ascii").rstrip("=")[:6]
 
 
 def _reference_for_record(

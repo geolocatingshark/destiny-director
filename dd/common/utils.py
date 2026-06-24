@@ -1,15 +1,138 @@
 import asyncio as aio
+import base64
+import hashlib
 import logging
 import typing as t
+from enum import Enum
 
 import aiohttp
 import hikari as h
 import regex as re
 
 from . import cfg
-from .discord_logging import identity_for_exc, reference_code
 
 re_user_side_emoji = re.compile(r"(<a?)?:(\w+)(~\d)*:(\d+>)?")
+
+# Collapse digit runs (snowflakes, references, counts) so otherwise-identical
+# messages share one error identity / reference code. Mirrors the same idea in
+# ``discord_logging`` (which re-imports the helpers below).
+_DIGIT_RUN = re.compile(r"\d+")
+
+
+def _normalize(text: str) -> str:
+    return _DIGIT_RUN.sub("#", text)
+
+
+def identity_for_exc(exc: BaseException) -> str:
+    """The stable identity of an exception (type + normalized message).
+
+    Used by :func:`reference_code`, the mirror kernels, and the logging handler so
+    the code shown to a user matches the code on the deduped alert. Lives here
+    (rather than in ``discord_logging``) as a pure, Discord-free helper that the
+    mirror subsystem can import without pulling in the logging handler.
+    """
+    return f"{type(exc).__module__}.{type(exc).__qualname__}: {_normalize(str(exc))}"
+
+
+def reference_code(identity: str) -> str:
+    """A short, stable, human-friendly code for an error identity.
+
+    Base32 of a blake2s digest -> uppercase ``A-Z2-7``, 6 chars.
+    """
+    digest = hashlib.blake2s(identity.encode("utf-8"), digest_size=5).digest()
+    return base64.b32encode(digest).decode("ascii").rstrip("=")[:6]
+
+
+def format_duration(seconds: float) -> str:
+    """Render an elapsed duration as ``"<x> seconds"`` or ``"<m> minutes <s> seconds"``.
+
+    Replaces the duplicated inline formatting in the mirror progress functions.
+    Under a minute reads as plain seconds (2 dp); from a minute up it reads as whole
+    minutes plus remaining seconds.
+    """
+    seconds = round(seconds, 2)
+    if seconds < 60:
+        return f"{seconds} seconds"
+    minutes = int(seconds // 60)
+    return f"{minutes} minutes {round(seconds % 60, 2)} seconds"
+
+
+class ErrorClass(Enum):
+    """Whether a failed Discord API call is worth retrying.
+
+    ``PERMANENT`` failures (missing perms/access, unknown channel/message, malformed
+    request, unauthorized) will not succeed on retry, so they are recorded and
+    excluded from further scheduling immediately. ``TRANSIENT`` failures (rate
+    limits, 5xx, timeouts, connection errors, and unknown exceptions) are retried
+    with backoff.
+    """
+
+    PERMANENT = 1
+    TRANSIENT = 2
+
+
+# Discord JSON error codes (the ``.code`` on a hikari ``HTTPResponseError``) that are
+# permanent even though their HTTP status might otherwise look retryable.
+_PERMANENT_400_CODES = frozenset({50035, 50006})
+
+# Connection-level exception types that mean "try again later" rather than a hard
+# rejection. ``aiohttp.ClientConnectionError`` covers DNS/connect/reset failures.
+_TRANSIENT_EXC_TYPES: tuple[type[BaseException], ...] = (
+    TimeoutError,
+    ConnectionError,
+    aiohttp.ClientConnectionError,
+)
+
+_unknown_error_logger = logging.getLogger("dd.common.classify_error")
+
+
+def classify_error(exc: BaseException) -> ErrorClass:
+    """Classify a Discord API exception as ``PERMANENT`` or ``TRANSIENT``.
+
+    Checked by ``isinstance`` first, then refined for the generic
+    :class:`hikari.HTTPResponseError` by HTTP ``status``. Unknown exceptions are
+    treated as ``TRANSIENT`` (so a stray bug retries rather than silently dropping a
+    target) but logged once so they surface.
+    """
+    # Permanent client errors: missing perms/access (403), unknown channel/message/
+    # guild (404), unauthorized (401). These never succeed on retry.
+    if isinstance(exc, (h.ForbiddenError, h.NotFoundError, h.UnauthorizedError)):
+        return ErrorClass.PERMANENT
+
+    # Bad request (400): malformed/invalid; treated as permanent. The "already
+    # crossposted" 400 is handled as success at the kernel call site, so it never
+    # reaches here.
+    if isinstance(exc, h.BadRequestError):
+        return ErrorClass.PERMANENT
+
+    # Rate limited (429): always retry after backoff.
+    if isinstance(exc, h.RateLimitTooLongError):
+        return ErrorClass.TRANSIENT
+
+    # Other HTTP responses: 5xx (and any unexpected status) → transient.
+    if isinstance(exc, h.HTTPResponseError):
+        if exc.status >= 500:
+            return ErrorClass.TRANSIENT
+        # A 4xx we did not special-case above is unlikely to fix itself; treat the
+        # specific permanent JSON codes as permanent, the rest as transient so we do
+        # not silently give up on something recoverable.
+        code = getattr(exc, "code", None)
+        if code in _PERMANENT_400_CODES:
+            return ErrorClass.PERMANENT
+        return ErrorClass.TRANSIENT
+
+    # Timeouts / connection resets / generic transport errors: retry.
+    if isinstance(exc, _TRANSIENT_EXC_TYPES):
+        return ErrorClass.TRANSIENT
+
+    # Unknown: retry but surface it once so it gets noticed.
+    _unknown_error_logger.warning(
+        "Unclassified mirror kernel error %s treated as transient",
+        identity_for_exc(exc),
+        exc_info=exc,
+    )
+    return ErrorClass.TRANSIENT
+
 
 # A Discord channel link embeds the guild id then the channel id; a message link adds
 # the message id as a third segment. These let commands accept links/mentions/ids for
