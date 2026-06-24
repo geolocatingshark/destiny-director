@@ -1397,6 +1397,14 @@ class AutoPostSettings(Base):
     async def set_gunsmith(cls, enabled: bool) -> None:
         return await cls.set_enabled("gunsmith", enabled)
 
+    @classmethod
+    async def get_portal_ops_enabled(cls) -> bool | None:
+        return await cls.get_enabled("portal_ops")
+
+    @classmethod
+    async def set_portal_ops(cls, enabled: bool) -> None:
+        return await cls.set_enabled("portal_ops", enabled)
+
 
 class BungieCredentials(Base):
     __tablename__ = "bungie_credentials"
