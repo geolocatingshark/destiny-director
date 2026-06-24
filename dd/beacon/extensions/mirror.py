@@ -796,12 +796,33 @@ async def message_create_repeater_impl(
             health_logger.warning(message)
 
 
+def is_content_edit(message: h.PartialMessage) -> bool:
+    """Whether a MessageUpdateEvent reflects a genuine *content* edit.
+
+    Discord deceptively fires a MessageUpdateEvent for things that are not content
+    edits at all: publishing/crossposting an announcement, embed unfurls, flag
+    changes, etc. Only a real content edit sets ``edited_timestamp``; the others
+    leave it ``None`` or ``UNDEFINED`` (both falsy).
+    """
+    return bool(message.edited_timestamp)
+
+
 @loader.listener(h.MessageUpdateEvent)
 @ignore_non_src_channels
 @utils.ignore_own_user
 async def message_update_repeater(
     event: h.MessageUpdateEvent, client: lb.Client = lb.di.INJECTED
 ):
+    # Skip non-content updates (publishes/crossposts, embed unfurls, flag changes).
+    # The automatic path runs a full *reconcile* (edit existing dests AND fresh-send to
+    # missing ones), so a publish update arriving before the create handler has recorded
+    # its MirroredMessage rows would see zero existing dests and double-send to every
+    # destination, racing the in-flight create. Gating on a real edit keeps the
+    # reconcile-on-edit convergence behaviour while making publishes a no-op here. The
+    # manual /mirror_update command bypasses this by calling the impl directly.
+    if not is_content_edit(event.message):
+        return
+
     await message_update_repeater_impl(
         t.cast(h.Message, event.message),
         t.cast(CachedFetchBot, event.app),
