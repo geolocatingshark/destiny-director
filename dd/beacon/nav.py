@@ -34,13 +34,16 @@ from ..common.cfg import (
     default_url,
     embed_default_color,
     navigator_timeout,
-    reset_time_tolerance,
     url_regex,
 )
 from ..common.utils import accumulate, discord_error_logger, get_ordinal_suffix
 from . import utils
 
 NO_DATA_HERE_EMBED = h.Embed(title="No data here!", color=embed_default_color)
+
+# Tolerance for binning Destiny reset-time messages into periods: a message
+# posted up to this long before a reset still bins into the period it belongs to.
+reset_time_tolerance = dt.timedelta(minutes=60)
 
 # Unicode play (▶) / reverse (◀) triangles used as the default next/prev button
 # emoji. Defined as module-level constants so they are not constructed in

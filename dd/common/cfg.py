@@ -13,7 +13,6 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import datetime as dt
 import json
 import logging
 import ssl
@@ -283,7 +282,6 @@ port = _getenv("PORT", 8080)
     db_engine_args,
 ) = _db_config()
 
-reset_time_tolerance = dt.timedelta(minutes=60)
 url_regex = re.compile(
     r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
 )
