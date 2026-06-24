@@ -1,8 +1,12 @@
+import typing as t
 from collections import defaultdict
 
 import aiocron
+import aiohttp
+import aiohttp.web
 import hikari as h
 import lightbulb as lb
+import regex as re
 
 from dd.hmessage import HMessage
 
@@ -17,6 +21,186 @@ from . import (
 )
 
 loader = lb.Loader()
+
+# Exotic ornaments carry the exotic they reskin only in their description, as
+# "...change the appearance of <Exotic Name>." This pulls that name out so the
+# daily-offerings line can show "for <Exotic>".
+_ORNAMENT_TARGET_RE = re.compile(r"change the appearance of (.+?)\.")
+# traitIds that mark an item as an ornament (vs. another exotic cosmetic like a
+# ghost shell or ship, which we deliberately leave without a "for ..." suffix).
+_ORNAMENT_TRAIT_IDS = frozenset({"item.ornament.weapon", "item.ornament.armor"})
+
+
+def _bright_dust_rotator_hashes(manifest_table: dict[str, t.Any]) -> list[int]:
+    """Discover the daily bright-dust rotator vendor hashes from the manifest.
+
+    These are the vendors whose ``vendorIdentifier`` starts with
+    ``EVERVERSE_BRIGHT_DUST_ROTATOR`` (e.g. ``..._EXOTIC_GHOSTS``).
+    """
+    return [
+        vendor_def["hash"]
+        for vendor_def in manifest_table["DestinyVendorDefinition"].values()
+        if vendor_def.get("vendorIdentifier", "").startswith(
+            api.EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX
+        )
+    ]
+
+
+def _exotic_ornament_target_name(
+    item: api.DestinyItem, manifest_table: dict[str, t.Any]
+) -> str | None:
+    """Resolve the exotic an exotic ornament reskins, or ``None``.
+
+    Only exotic ornaments (``traitIds`` containing ``item.ornament.weapon`` /
+    ``item.ornament.armor``) carry a base item; their manifest description reads
+    "...change the appearance of <Exotic>." Other exotic cosmetics (ghosts, ships,
+    vehicles, emotes) and anything that doesn't match return ``None`` so no suffix
+    is added.
+    """
+    manifest_entry = manifest_table["DestinyInventoryItemDefinition"].get(item.hash, {})
+
+    trait_ids = manifest_entry.get("traitIds") or []
+    if not _ORNAMENT_TRAIT_IDS.intersection(trait_ids):
+        return None
+
+    description = manifest_entry.get("displayProperties", {}).get("description", "")
+    match = _ORNAMENT_TARGET_RE.search(description)
+    return match.group(1) if match else None
+
+
+# Class names that appear as ``item.class_`` on class-specific (armor ornament) items.
+_CLASS_NAMES = ("Hunter", "Titan", "Warlock")
+
+
+def _eververse_type_group(item: api.DestinyItem) -> tuple[int, str, str]:
+    """Return ``(order, emoji_name, header)`` for an item's display group.
+
+    Type-first grouping: armor ornaments first (one group, each line tagged with its
+    class emoji), then weapon ornaments, ghosts, vehicles, and finally every other
+    cosmetic under its own pluralised type name. ``emoji_name`` is "" when no server
+    emoji fits the group; only the names verified present in the Kyber server are used.
+    """
+    if item.class_ in _CLASS_NAMES:  # class-specific armor ornament
+        return (0, "armor", "Armor Ornaments")
+    type_name = item.item_type_friendly_name or "Other"
+    if "Weapon Ornament" in type_name:
+        return (1, "weapon", "Weapon Ornaments")
+    if "Ghost" in type_name:
+        return (2, "ghost", "Ghosts")
+    if type_name in ("Ship", "Vehicle", "Sparrow"):
+        return (3, "sparrow", "Ships & Sparrows")
+    if "Emote" in type_name:  # merge "Emote" + "Multiplayer Emote"
+        return (4, "", "Emotes")
+    return (4, "", f"{type_name}s")
+
+
+def _group_eververse_offerings(
+    items: list[api.DestinyItem],
+) -> list[tuple[str, str, list[api.DestinyItem]]]:
+    """Bucket items into ordered ``(emoji_name, header, items)`` display groups.
+
+    Groups are ordered by :func:`_eververse_type_group`'s rank then header; each
+    group's items are sorted by name."""
+    groups: defaultdict[tuple[int, str, str], list[api.DestinyItem]] = defaultdict(list)
+    for item in items:
+        groups[_eververse_type_group(item)].append(item)
+    return [
+        (emoji, header, sorted(groups[key], key=lambda i: i.name))
+        for key in sorted(groups, key=lambda k: (k[0], k[2]))
+        for _order, emoji, header in (key,)
+    ]
+
+
+# Item types in the "Ships & Sparrows" group, mapped to their inline label (sparrows
+# are the "Vehicle" item type in the manifest).
+_SHIP_SPARROW_LABEL = {"Ship": "Ship", "Vehicle": "Sparrow", "Sparrow": "Sparrow"}
+
+
+def _eververse_line(
+    item: api.DestinyItem, manifest_table: dict[str, t.Any] | None
+) -> str:
+    """One rendered offering line: ``• [name](url) — cost (… target) · subtype``.
+
+    Every line starts with the item name for a uniform look; costs are bare numbers
+    (the header notes they're all Bright Dust). Armor ornaments put their class emoji
+    inside the parens before the exotic they reskin — ``(:titan: Hallowfire Heart)`` —
+    or the class emoji alone when no target resolves; weapon ornaments show just the
+    exotic; ships/sparrows get a Ship/Sparrow subtype label."""
+    line = f"• [{item.name}]({item.lightgg_url}) — {item.costs['Bright Dust']}"
+    target = (
+        _exotic_ornament_target_name(item, manifest_table)
+        if item.is_exotic and manifest_table is not None
+        else None
+    )
+    if item.class_ in _CLASS_NAMES:  # armor ornament
+        class_emoji = f":{item.class_.lower()}:"
+        line += f" ({class_emoji} {target})" if target else f" ({class_emoji})"
+    elif target:  # weapon ornament
+        line += f" ({target})"
+    subtype = _SHIP_SPARROW_LABEL.get(item.item_type_friendly_name)
+    if subtype:
+        line += f" · {subtype}"
+    return line
+
+
+async def fetch_daily_bright_dust_offerings(
+    webserver_runner: aiohttp.web.AppRunner,
+) -> tuple[list[api.DestinyItem], dict[str, t.Any]]:
+    """Fetch the deduped bright-dust items across all active rotator vendors.
+
+    Returns the items (deduped by item hash) plus the manifest table, which the
+    renderer needs for the exotic-ornament base-item lookup. Inactive rotators
+    (``VendorNotFound``) are skipped so the post still succeeds.
+    """
+    access_token = await api.refresh_api_tokens(webserver_runner)
+
+    async with aiohttp.ClientSession() as session:
+        memberships = await api.client.fetch_memberships(session, access_token)
+        membership = api.DestinyMembership.from_api_response(memberships)
+        profile = await api.client.fetch_profile(
+            session,
+            access_token,
+            membership.membership_type,
+            membership.membership_id,
+        )
+        # Armor ornaments are class-specific: a vendor only returns the queried
+        # character's class's ornaments, so the rotators must be queried once per
+        # class to surface every class's offerings. Class-agnostic cosmetics (ghosts,
+        # ships, shaders, weapon ornaments, …) come back identically for each and
+        # dedupe by item hash below. Each item's ``class_`` is set from the manifest.
+        character_ids = [
+            membership.parse_character_id(profile, class_)
+            for class_ in ("Hunter", "Titan", "Warlock")
+        ]
+
+    manifest_table = await api._build_manifest_dict(
+        await api._get_latest_manifest(schemas.BungieCredentials.api_key)
+    )
+    rotator_hashes = _bright_dust_rotator_hashes(manifest_table)
+
+    items: dict[int, api.DestinyItem] = {}  # dedupe by item hash across classes
+    for character_id in character_ids:
+        for vendor_hash in rotator_hashes:
+            try:
+                response = await api.client.fetch_vendor(
+                    access_token=access_token,
+                    membership_type=membership.membership_type,
+                    membership_id=membership.membership_id,
+                    character_id=character_id,
+                    vendor_hash=vendor_hash,
+                )
+            except api.VendorNotFound:
+                # Rotator is not currently active; skip it.
+                continue
+
+            vendor = api.DestinyVendor.from_vendors_api_response(
+                response=response, manifest_table=manifest_table
+            )
+            for sale_item in vendor.sale_items:
+                if "bright dust" in str(sale_item.costs).lower():
+                    items.setdefault(sale_item.hash, sale_item)
+
+    return list(items.values()), manifest_table
 
 
 async def eververse_message_constructor(bot: CachedFetchBot) -> HMessage:
@@ -66,69 +250,53 @@ async def eververse_message_constructor(bot: CachedFetchBot) -> HMessage:
         hunter_sale_items | titan_sale_items | warlock_sale_items | common_sale_items
     )
 
-    return await format_eververse_vendor(eververse_data, bot)
+    daily_items, daily_manifest_table = await fetch_daily_bright_dust_offerings(
+        api.get_webserver_runner()
+    )
+
+    return await format_eververse_vendor(
+        eververse_data,
+        bot,
+        daily_items=daily_items,
+        manifest_table=daily_manifest_table,
+    )
 
 
 async def format_eververse_vendor(
-    vendor: api.DestinyVendor, bot: CachedFetchBot
+    vendor: api.DestinyVendor,
+    bot: CachedFetchBot,
+    daily_items: list[api.DestinyItem] | None = None,
+    manifest_table: dict[str, t.Any] | None = None,
 ) -> HMessage:
-    # Sort items out into categories based on their item_type_friendly_name
-    # then sort packages into Hunter, Titan and Warlock based on the source
-    # data from the calling function
-
     emoji_dict = await fetch_emoji_dict(bot)
+    daily_items = daily_items or []
 
-    hunter_specific_items: list[api.DestinyItem] = []
-    titan_specific_items: list[api.DestinyItem] = []
-    warlock_specific_items: list[api.DestinyItem] = []
-    remaining_items: defaultdict[str, list[api.DestinyItem]] = defaultdict(list)
-
-    for sale_item in vendor.sale_items:
+    # Merge the weekly "This Week at Eververse" items with the daily rotator items
+    # into one Bright-Dust pool (deduped by item hash), excluding DokiDoki bundles,
+    # then present grouped by item type (see _group_eververse_offerings).
+    pool: dict[int, api.DestinyItem] = {}
+    for sale_item in [*vendor.sale_items, *daily_items]:
         if "bright dust" not in str(sale_item.costs).lower():
             continue
-
-        # Manually exclude DokiDoki Bundles from eververse returned from the API
-        # The below two lines should be removed at a later date when this is not a
-        # problem
+        # Manually exclude DokiDoki Bundles returned from the API (remove once the
+        # API stops returning them).
         if sale_item.name.startswith("Doki Doki Destiny "):
             continue
+        pool.setdefault(sale_item.hash, sale_item)
 
-        if sale_item.class_ == "Hunter":
-            hunter_specific_items.append(sale_item)
-        elif sale_item.class_ == "Titan":
-            titan_specific_items.append(sale_item)
-        elif sale_item.class_ == "Warlock":
-            warlock_specific_items.append(sale_item)
-        else:
-            remaining_items[sale_item.item_type_friendly_name].append(sale_item)
+    description = (
+        "# :eververse: [This Week 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)\n\n"
+    )
+    description += "⇣ _All items below cost_ :bright_dust: ⇣\n\n"
 
-    description = "# [This Week 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)\n\n"
-    description += "**__BRIGHT DUST OFFERINGS__** :bright_dust:\n\n"
-    description += "⇣ All items below cost Bright Dust ⇣\n\n"
-
-    for class_, class_specific_sale_items in zip(
-        ["Hunter", "Titan", "Warlock"],
-        [
-            hunter_specific_items,
-            titan_specific_items,
-            warlock_specific_items,
-        ],
-        strict=True,
-    ):
-        if not class_specific_sale_items:
-            continue
-
-        description += f"**{class_} Specific Items**\n"
-        for item in class_specific_sale_items:
-            description += f"• {item.name} ({item.costs['Bright Dust']})\n"
-        description += "\n"
-
-    for item_type, items in remaining_items.items():
-        description += f"**{item_type}s**\n"
+    groups = _group_eververse_offerings(list(pool.values()))
+    if not groups:
+        description += "No Bright Dust offerings are available right now.\n"
+    for emoji_name, header, items in groups:
+        header_prefix = f":{emoji_name}: " if emoji_name else ""
+        description += f"{header_prefix}**{header}**\n"
         for item in items:
-            description += (
-                f"• [{item.name}]({item.lightgg_url}) ({item.costs['Bright Dust']})\n"
-            )
+            description += _eververse_line(item, manifest_table) + "\n"
         description += "\n"
 
     description = await substitute_user_side_emoji(emoji_dict, description)
