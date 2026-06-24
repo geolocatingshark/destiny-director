@@ -132,3 +132,19 @@ def test_no_cancel_row_when_disabled() -> None:
     control = _control(op=MirrorOperationType.DELETE)
     container = _container(_render(control, enable_cancellation=False))
     assert _cancel_custom_ids(container) == []
+
+
+def test_cancel_row_dropped_once_cancellation_requested() -> None:
+    # Once cancel() fires (control.cancelled populated) the button is removed even
+    # though work is still draining, so it can't be pressed twice.
+    control = _control()
+    control.cancel()
+    container = _container(_render(control, enable_cancellation=True, final=False))
+    assert _cancel_custom_ids(container) == []
+    # Footer reflects the draining state.
+    text = " ".join(
+        c.content
+        for c in container.components
+        if isinstance(c, h.impl.TextDisplayComponentBuilder)
+    )
+    assert "Cancelling" in text

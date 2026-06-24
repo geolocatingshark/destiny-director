@@ -140,7 +140,9 @@ _PROGRESS_MAX_BREAKDOWN = 5
 
 def _status_footer(control: KernelWorkControl, *, final: bool) -> str:
     if not final:
-        return "⏳ In progress"
+        # ``cancelled`` is populated the moment cancel() fires, while in-flight
+        # workers are still draining — surface that distinct state.
+        return "🛑 Cancelling…" if control.cancelled else "⏳ In progress"
     base = "❌ Cancelled" if control.cancelled else "✅ Completed"
     return base + (" with errors" if control.failed_targets else "")
 
@@ -209,7 +211,9 @@ def render_mirror_progress(
         else cfg.embed_default_color,
     )
 
-    if enable_cancellation and not final:
+    # Drop the cancel button once a cancel has been requested (control.cancelled) or
+    # the run is finished, so it can't be pressed twice / after completion.
+    if enable_cancellation and not final and not control.cancelled:
         container.add_action_row(
             [
                 h.impl.InteractiveButtonBuilder(
@@ -230,6 +234,7 @@ def _cancel_custom_id(source_message_id: int) -> str:
 def _build_cancel_menu(
     control: KernelWorkControl,
     client: lb.Client,
+    render: collections.abc.Callable[[bool], list[h.api.ComponentBuilder]],
 ) -> tuple[lbc.Menu, lbc.MenuHandle]:
     """Build + attach a background lightbulb Menu that routes the cancel button.
 
@@ -243,15 +248,21 @@ def _build_cancel_menu(
     async def on_cancel(mctx: lbc.MenuContext) -> None:
         bot = t.cast(CachedFetchBot, mctx.client.app)
         if mctx.user.id not in await bot.fetch_owner_ids():
-            # Only owners may cancel; silently acknowledge for anyone else.
+            # Only owners may cancel; acknowledge ephemerally for anyone else.
             await mctx.respond(
                 "You are not allowed to cancel this mirror.", ephemeral=True
             )
             return
         # Graceful drain; the impl's post-run DB write persists successes-so-far so a
-        # later edit reconciles correctly.
+        # later edit reconciles correctly. Re-render immediately (the button drops out
+        # now that control.cancelled is set) to acknowledge the interaction; the
+        # background loop keeps updating until the in-flight workers finish.
         control.cancel()
-        await mctx.respond(edit=True, flags=h.MessageFlag.IS_COMPONENTS_V2)
+        await mctx.respond(
+            edit=True,
+            flags=h.MessageFlag.IS_COMPONENTS_V2,
+            components=render(False),
+        )
 
     menu.add_interactive_button(
         h.ButtonStyle.DANGER,
@@ -338,7 +349,7 @@ async def start_progress_logger(
 
             menu_handle: lbc.MenuHandle | None = None
             if enable_cancellation and client is not None:
-                _menu, menu_handle = _build_cancel_menu(control, client)
+                _menu, menu_handle = _build_cancel_menu(control, client, render)
 
             log_message = await log_channel.send(
                 components=render(not control.is_work_left_to_do),
