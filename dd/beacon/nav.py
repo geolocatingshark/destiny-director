@@ -17,17 +17,21 @@
 import datetime as dt
 import logging
 import typing as t
-from asyncio import sleep
+from asyncio import Task, create_task, sleep
 from random import randint
+from typing import override
 
 import hikari as h
 import lightbulb as lb
 import miru as m
-from hmessage import HMessage as MessagePrototype
-from lightbulb.ext import tasks
+import regex as re
 from miru.ext import nav
 
+from dd.hmessage import HMessage
+
+from ..common.bot import CachedFetchBot
 from ..common.cfg import (
+    default_url,
     embed_default_color,
     navigator_timeout,
     reset_time_tolerance,
@@ -35,12 +39,17 @@ from ..common.cfg import (
 )
 from ..common.utils import accumulate, discord_error_logger, get_ordinal_suffix
 from . import utils
-from .bot import CachedFetchBot
 
 NO_DATA_HERE_EMBED = h.Embed(title="No data here!", color=embed_default_color)
 
+# Unicode play (▶) / reverse (◀) triangles used as the default next/prev button
+# emoji. Defined as module-level constants so they are not constructed in
+# function-argument defaults (ruff B008).
+NEXT_PAGE_EMOJI = chr(9654)
+PREV_PAGE_EMOJI = chr(9664)
 
-class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
+
+class DateRangeDict(dict[dt.datetime, HMessage]):
     """Dict with keys that are contiguous date ranges up to limits
 
     The keys of the backing dict are the start of the date ranges.
@@ -52,13 +61,13 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
     period: dt.timedelta
         The period between each key
 
-    limits: t.Tuple[dt.datetime, dt.datetime]
+    limits: tuple[dt.datetime, dt.datetime]
         The upper and lower bounds of the dict"""
 
     def __init__(
         self,
         period: dt.timedelta,
-        limits: t.Optional[t.Tuple[dt.datetime, dt.datetime]] = None,
+        limits: tuple[dt.datetime, dt.datetime] | None = None,
     ):
         if not isinstance(period, dt.timedelta):
             raise TypeError("period must be of type datetime.timedelta")
@@ -86,7 +95,7 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
     def round_down(
         self,
         key: dt.datetime,
-        tolerance: t.Optional[dt.timedelta] = reset_time_tolerance,
+        tolerance: dt.timedelta = reset_time_tolerance,
     ) -> dt.datetime:
         """Round down key to nearest period with tolerance in the negative direction
 
@@ -96,15 +105,16 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
         ) * self.period + self.limits[0]
 
     def index_to_date(
-        self, index: int, tolerance: t.Optional[dt.timedelta] = reset_time_tolerance
+        self, index: int, tolerance: dt.timedelta = reset_time_tolerance
     ) -> dt.datetime:
         """Return the datetime of the period at <index>"""
         return (
-            self.round_down(dt.datetime.now(tz=dt.timezone.utc), tolerance=tolerance)
+            self.round_down(dt.datetime.now(tz=dt.UTC), tolerance=tolerance)
             + index * self.period
         )
 
-    def __getitem__(self, key: dt.datetime | int) -> MessagePrototype:
+    @override
+    def __getitem__(self, key: dt.datetime | int) -> HMessage:
         if isinstance(key, int):
             key = self.index_to_date(key)
         if not isinstance(key, dt.datetime):
@@ -118,7 +128,8 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
         key = self.round_down(key)
         return super().__getitem__(key)
 
-    def __contains__(self, __key: dt.datetime | int) -> bool:
+    @override
+    def __contains__(self, __key: object) -> bool:
         if isinstance(__key, int):
             __key = self.index_to_date(__key)
         if not isinstance(__key, dt.datetime):
@@ -132,7 +143,8 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
         __key = self.round_down(__key)
         return super().__contains__(__key)
 
-    def __setitem__(self, key: dt.datetime, value: MessagePrototype) -> None:
+    @override
+    def __setitem__(self, key: dt.datetime, value: HMessage) -> None:
         if not isinstance(key, dt.datetime):
             raise TypeError("Key must be of type datetime.datetime")
 
@@ -151,21 +163,21 @@ class DateRangeDict(t.Dict[dt.datetime, MessagePrototype]):
 
     def purge_history(self) -> None:
         """Removes all keys in the past including now"""
-        now = dt.datetime.now(tz=dt.timezone.utc)
+        now = dt.datetime.now(tz=dt.UTC)
         for key in list(self.keys()):
             if key <= now:
                 self.pop(key)
 
     @staticmethod
     def nearest_limit_from_period_and_ref(period: dt.timedelta, ref: dt.datetime):
-        """Return the nearest lower limit to ref that is an integer multiple of period"""
+        """Return the nearest lower limit to ref that is an int multiple of period"""
         if not isinstance(period, dt.timedelta):
             raise TypeError("period must be of type datetime.timedelta")
 
         if not isinstance(ref, dt.datetime):
             raise TypeError("ref must be of type datetime.datetime")
 
-        now = dt.datetime.now(tz=dt.timezone.utc)
+        now = dt.datetime.now(tz=dt.UTC)
         return ((now - ref) // period) * period + ref
 
 
@@ -174,7 +186,7 @@ class NavigatorView(nav.NavigatorView):
         self,
         *,
         pages: "NavPages",
-        timeout: t.Optional[t.Union[float, int, dt.timedelta]] = navigator_timeout,
+        timeout: float | int | dt.timedelta | None = navigator_timeout,
         autodefer: bool = True,
         allow_start_on_blank_page: bool = False,
         display_date_offset: dt.timedelta = dt.timedelta(days=0),
@@ -183,13 +195,11 @@ class NavigatorView(nav.NavigatorView):
         # The only differences between this and the original is that
         # the pages object is not checked to be non-empty and
         # the default buttons are always added to the view
-        self._pages: t.Sequence[
-            t.Union[str, h.Embed, t.Sequence[h.Embed], nav.Page]
-        ] = pages
+        self._pages: NavPages = pages
         self._current_page: int = 0
         self._ephemeral: bool = False
         # The last interaction received, used for inter-based handling
-        self._inter: t.Optional[h.MessageResponseMixin[t.Any]] = None
+        self._inter: h.MessageResponseMixin[t.Any] | None = None
         super(nav.NavigatorView, self).__init__(timeout=timeout, autodefer=autodefer)
         self.display_date_offset = display_date_offset
 
@@ -197,7 +207,6 @@ class NavigatorView(nav.NavigatorView):
         for default_button in default_buttons:
             self.add_item(default_button)
 
-        self._pages = pages
         ### hikari-miru NavigatorView init end ###
 
         if allow_start_on_blank_page:
@@ -211,14 +220,14 @@ class NavigatorView(nav.NavigatorView):
             else:
                 self.current_page = 0
 
+    @override
     async def send(
         self,
-        to: t.Union[
-            h.SnowflakeishOr[h.TextableChannel],
-            h.MessageResponseMixin[t.Any],
-        ],
+        to: h.SnowflakeishOr[h.TextableChannel]
+        | h.MessageResponseMixin[t.Any]
+        | m.Context[t.Any],
         *,
-        start_at: t.Optional[int] = None,
+        start_at: int | None = None,
         ephemeral: bool = False,
         responded: bool = False,
     ):
@@ -230,14 +239,16 @@ class NavigatorView(nav.NavigatorView):
             responded=responded,
         )
 
+    @override
     def _get_page_payload(
-        self, page: t.Union[str, h.Embed, t.Sequence[h.Embed], MessagePrototype]
+        self, page: str | h.Embed | t.Sequence[h.Embed] | nav.Page | HMessage
     ) -> t.MutableMapping[str, t.Any]:
         """Get the page content that is to be sent."""
 
-        if not isinstance(page, MessagePrototype):
+        if not isinstance(page, HMessage):
             raise TypeError(
-                f"Expected type 'MessagePrototype' to send as page, not '{page.__class__.__name__}'."
+                f"Expected type 'HMessage' to send as page, "
+                f"not '{page.__class__.__name__}'."
             )
 
         return_dict = page.to_message_kwargs()
@@ -248,8 +259,9 @@ class NavigatorView(nav.NavigatorView):
 
         return return_dict
 
+    @override
     async def send_page(
-        self, context: m.Context[t.Any], page_index: t.Optional[int] = None
+        self, context: m.Context[t.Any], page_index: int | None = None
     ) -> None:
         """Send a page, editing the original message.
 
@@ -258,7 +270,8 @@ class NavigatorView(nav.NavigatorView):
         context : Context
             The context object that should be used to send this page
         page_index : Optional[int], optional
-            The index of the page to send, if not specifed, sends the current page, by default None
+            The index of the page to send, if not specifed, sends the current
+            page, by default None
         """
         if page_index is not None:
             self.current_page = page_index
@@ -283,9 +296,10 @@ class NavigatorView(nav.NavigatorView):
             # Note: attachments=[] does not clear attachments.
             payload = {"attachment": None, **payload}
 
-        await context.edit_response(**payload)
+        await context.edit_response(**payload)  # ty: ignore[invalid-argument-type]
 
-    def get_default_buttons(self) -> t.Sequence[nav.NavButton]:
+    @override
+    def get_default_buttons(self) -> list[nav.NavButton]:
         if (self.pages.history_len + self.pages.lookahead_len) == 1:
             return []
         else:
@@ -296,6 +310,7 @@ class NavigatorView(nav.NavigatorView):
             ]
 
     @property
+    @override
     def pages(self) -> "NavPages":
         """
         The pages that the navigator is navigating.
@@ -303,6 +318,7 @@ class NavigatorView(nav.NavigatorView):
         return self._pages
 
     @property
+    @override
     def current_page(self) -> int:
         """
         The current page of the navigator, zero-indexed integer.
@@ -324,7 +340,7 @@ class NavPages(DateRangeDict):
     """Class to maintain a dict of slash command responses over time.
 
     The key for the dict is the datetime after which the response was posted
-    and the value is the MessagePrototype instance for the response.
+    and the value is the HMessage instance for the response.
     Additionally the key also accepts an int and interprets it as n periods
     since the currrent datetime rounded down.
 
@@ -347,42 +363,56 @@ class NavPages(DateRangeDict):
     suppress_content_autoembeds: bool
         Instructs the default preprocess_messages method to stop discord link auto
         embeds based on message content
-    no_data_message: MessagePrototype
+    no_data_message: HMessage
         Message to use when no data is available
     """
+
+    # Strong reference to the lookahead auto-update task, set in _setup_autoupdate
+    # when lookahead_len > 0. Held only to keep the task from being garbage
+    # collected; NavPages instances are process-lifetime singletons so the task is
+    # not cancelled in normal operation (see teardown()).
+    _lookahead_task: "Task[None] | None" = None
+
+    # Auto-update teardown handles: the registered history-updater listener and a
+    # double-setup guard. NavPages are process-lifetime singletons today, so these
+    # are dormant; they let a future recreation/hot-reload path release the per-
+    # instance listener + lookahead task instead of leaking them (memory-leak N4).
+    _history_updater: "t.Callable[..., t.Coroutine[t.Any, t.Any, None]] | None" = None
+    _autoupdate_set_up: bool = False
 
     def __init__(
         self,
         channel: h.GuildNewsChannel,
         period: dt.timedelta,
         reference_date: dt.datetime,
-        history_len: t.Optional[int] = 7,
-        lookahead_len: t.Optional[int] = 0,
-        lookahead_update_interval: t.Optional[int] = 1800,
-        suppress_content_autoembeds: t.Optional[bool] = True,
-        no_data_message: t.Optional[MessagePrototype] = MessagePrototype(
-            embeds=[NO_DATA_HERE_EMBED]
-        ),
+        history_len: int = 7,
+        lookahead_len: int = 0,
+        lookahead_update_interval: int = 1800,
+        suppress_content_autoembeds: bool = True,
+        no_data_message: HMessage | None = None,
     ):
         super().__init__(period)
         self.history_len = history_len
         self.lookahead_len = lookahead_len
         self.channel = channel
-        self.bot: CachedFetchBot = channel.app
+        self.bot: CachedFetchBot = t.cast(CachedFetchBot, channel.app)
         self.lookahead_update_interval = lookahead_update_interval
 
         self._reference_date = reference_date
         self._suppress_content_autoembeds = suppress_content_autoembeds
+        if no_data_message is None:
+            no_data_message = HMessage(embeds=[NO_DATA_HERE_EMBED])
         self.no_data_message = no_data_message
 
-    def __getitem__(self, key: dt.datetime | int) -> MessagePrototype:
+    @override
+    def __getitem__(self, key: dt.datetime | int) -> HMessage:
         try:
             return super().__getitem__(key)
         except KeyError:
             return self.no_data_message
 
     @property
-    def limits(self) -> t.Tuple[dt.datetime, dt.datetime]:
+    def limits(self) -> tuple[dt.datetime, dt.datetime]:
         midpoint = self.nearest_limit_from_period_and_ref(
             period=self.period, ref=self._reference_date
         )
@@ -390,12 +420,10 @@ class NavPages(DateRangeDict):
         limit_high = midpoint + self.period * self.lookahead_len
         return (limit_low, limit_high)
 
-    def preprocess_messages(
-        self, messages: t.List[MessagePrototype | h.Message]
-    ) -> MessagePrototype:
-        msg: MessagePrototype = accumulate(
-            [MessagePrototype.from_message(msg) for msg in messages]
-        )
+    def preprocess_messages(self, messages: list[h.Message]) -> HMessage:
+        if not messages:
+            return self.no_data_message
+        msg: HMessage = accumulate([HMessage.from_message(msg) for msg in messages])
 
         if self._suppress_content_autoembeds:
             # Stop discord from making new auto embeds
@@ -413,7 +441,7 @@ class NavPages(DateRangeDict):
         return msg
 
     @classmethod
-    async def from_channel(cls, bot: CachedFetchBot, channel, **kwargs) -> t.Self:
+    async def from_channel(cls, bot: h.RESTAware, channel, **kwargs) -> t.Self:
         """
         Create a NavPages instance from a channel ID or channel object.
 
@@ -435,15 +463,15 @@ class NavPages(DateRangeDict):
             suppress_content_autoembeds (bool, optional): If True, instructs the
                 default preprocess_messages method to stop Discord link auto
                 embeds based on message content. Default is True.
-            no_data_message (MessagePrototype, optional): Message to use when no
-                data is available. Default is MessagePrototype(embeds=[NO_DATA_HERE_EMBED]).
+            no_data_message (HMessage, optional): Message to use when no
+                data is available. Default is HMessage(embeds=[NO_DATA_HERE_EMBED]).
             **kwargs: Additional keyword arguments for the class constructor.
 
         Returns:
             An instance of NavPages.
         """
         if isinstance(channel, (int, h.Snowflake)):
-            channel = await bot.fetch_channel(int(channel))
+            channel = await t.cast(CachedFetchBot, bot).fetch_channel(int(channel))
 
         if not isinstance(channel, h.GuildNewsChannel):
             raise TypeError(
@@ -464,29 +492,24 @@ class NavPages(DateRangeDict):
         after = self.limits[0]
 
         # Bin messages into periods
+        binned_messages: dict[dt.datetime, list[h.Message]] = {}
         async for msg in self.channel.fetch_history(after=after - reset_time_tolerance):
-            msg_time = msg.timestamp
-
-            start_of_period = self.round_down(msg_time)
-
-            if not self.get(start_of_period):
-                self[start_of_period] = []
-
-            self[start_of_period].append(msg)
+            start_of_period = self.round_down(msg.timestamp)
+            binned_messages.setdefault(start_of_period, []).append(msg)
 
         # Preprocess messages
         key = self.limits[0]
-        now = dt.datetime.now(tz=dt.timezone.utc)
+        now = dt.datetime.now(tz=dt.UTC)
         while key <= now:
-            if self.get(key):
-                self[key] = self.preprocess_messages(self[key])
+            if binned_messages.get(key):
+                self[key] = self.preprocess_messages(binned_messages[key])
             key += self.period
 
-    @utils.ignore_self_for_method
+    @utils.ignore_own_user
     async def _update_history(self, event: h.MessageCreateEvent | h.MessageUpdateEvent):
         """Updates the history with any changes or new messages in self.channel"""
 
-        if not event.channel_id == self.channel.id:
+        if event.channel_id != self.channel.id:
             return
 
         logging.info(
@@ -529,7 +552,7 @@ class NavPages(DateRangeDict):
                 self[from_] = self.preprocess_messages(msgs_from_api)
 
             except Exception as e:
-                await discord_error_logger(self.bot, e)
+                await discord_error_logger(e, operation="Nav backfill")
                 await sleep(2**retry_no)
             else:
                 break
@@ -545,6 +568,9 @@ class NavPages(DateRangeDict):
         )
 
     def _setup_autoupdate(self):
+        if self._autoupdate_set_up:
+            return
+        self._autoupdate_set_up = True
         if self.history_len > 0:
 
             @self.bot.listen()
@@ -560,30 +586,56 @@ class NavPages(DateRangeDict):
                 else:
                     await self._update_history(event)
 
+            self._history_updater = history_updater
+
         if self.lookahead_len > 0:
+            # Lightbulb v3 removed lightbulb.ext.tasks, and this updater is created
+            # per-NavPages-instance (not at module load) so it cannot use the loader's
+            # task registry. Self-schedule it with an asyncio loop instead.
+            async def lookahead_update_task():
+                while True:
+                    await sleep(self.lookahead_update_interval)
+                    try:
+                        # Introduce a 5% jitter to the update interval
+                        # to avoid ratelimit issues
+                        await sleep(
+                            randint(0, int(self.lookahead_update_interval / 20))
+                        )
+                        await self._update_lookahead()
+                    except Exception as e:
+                        await discord_error_logger(e, operation="Nav lookahead")
 
-            @tasks.task(
-                s=self.lookahead_update_interval,
-                auto_start=True,
-                wait_before_execution=False,
-                pass_app=True,
-            )
-            async def lookahead_update_task(bot: lb.BotApp):
-                try:
-                    # Introduce a 5% jitter to the update interval
-                    # to avoid ratelimit issues
-                    await sleep(randint(0, int(self.lookahead_update_interval / 20)))
-                    await self._update_lookahead()
-                except Exception as e:
-                    await discord_error_logger(bot, e)
+            # Keep a strong reference: the event loop only holds a weak ref to a
+            # bare task, so without this the updater can be garbage-collected
+            # mid-flight and silently stop.
+            self._lookahead_task = create_task(lookahead_update_task())
 
-    async def lookahead(
-        self, after: dt.datetime
-    ) -> t.Dict[dt.datetime, MessagePrototype]:
+    def teardown(self) -> None:
+        """Release the auto-update listener + lookahead task.
+
+        Unsubscribes the history-updater from all three message events and cancels
+        the lookahead task. NavPages are created once per followable at startup, so
+        nothing accumulates in normal operation; this exists so a future
+        recreation/hot-reload path can avoid leaking them (memory-leak N4).
+        """
+        if self._history_updater is not None:
+            for event_type in (
+                h.MessageCreateEvent,
+                h.MessageUpdateEvent,
+                h.MessageDeleteEvent,
+            ):
+                self.bot.unsubscribe(event_type, self._history_updater)
+            self._history_updater = None
+        if self._lookahead_task is not None:
+            self._lookahead_task.cancel()
+            self._lookahead_task = None
+        self._autoupdate_set_up = False
+
+    async def lookahead(self, after: dt.datetime) -> dict[dt.datetime, HMessage]:
         """Return the predicted messages for the periods after <after>
 
         The dict must have <self.lookahead_len> entries, indexed by the start of the
-        period and must contain the MessagePrototype for that period."""
+        period and must contain the HMessage for that period."""
         return {}
 
 
@@ -595,9 +647,9 @@ class IndicatorButton(nav.IndicatorButton):
     def __init__(
         self,
         *,
-        custom_id: t.Optional[str] = None,
-        emoji: t.Union[h.Emoji, str, None] = None,
-        row: t.Optional[int] = None,
+        custom_id: str | None = None,
+        emoji: h.Emoji | str | None = None,
+        row: int | None = None,
         display_date_offset: dt.timedelta = dt.timedelta(days=0),
     ):
         super().__init__(
@@ -605,11 +657,14 @@ class IndicatorButton(nav.IndicatorButton):
         )
         self.display_date_offset = display_date_offset
 
+    @override
     async def callback(self, context: m.ViewContext) -> None:
         pass
 
+    @override
     async def before_page_change(self) -> None:
-        date = self.view.pages.index_to_date(self.view.current_page)
+        view = t.cast(NavigatorView, self.view)
+        date = view.pages.index_to_date(view.current_page)
         date += self.display_date_offset
         suffix = get_ordinal_suffix(date.day)
         self.label = f"{date.strftime('%B %-d')}{suffix}"
@@ -623,25 +678,25 @@ class NextButton(nav.NavButton):
     def __init__(
         self,
         *,
-        style: t.Union[h.ButtonStyle, int] = h.ButtonStyle.PRIMARY,
-        label: t.Optional[str] = None,
-        custom_id: t.Optional[str] = None,
-        emoji: t.Union[h.Emoji, str, None] = chr(9654),
-        row: t.Optional[int] = None,
+        style: h.ButtonStyle = h.ButtonStyle.PRIMARY,
+        label: str | None = None,
+        custom_id: str | None = None,
+        emoji: h.Emoji | str | None = NEXT_PAGE_EMOJI,
+        row: int | None = None,
     ):
         super().__init__(
             style=style, label=label, custom_id=custom_id, emoji=emoji, row=row
         )
 
+    @override
     async def callback(self, context: m.ViewContext) -> None:
         self.view.current_page += 1
         await self.view.send_page(context)
 
+    @override
     async def before_page_change(self) -> None:
-        if self.view.current_page >= self.view.pages.lookahead_len:
-            self.disabled = True
-        else:
-            self.disabled = False
+        view = t.cast(NavigatorView, self.view)
+        self.disabled = view.current_page >= view.pages.lookahead_len
 
 
 class PrevButton(nav.NavButton):
@@ -652,22 +707,123 @@ class PrevButton(nav.NavButton):
     def __init__(
         self,
         *,
-        style: t.Union[h.ButtonStyle, int] = h.ButtonStyle.PRIMARY,
-        label: t.Optional[str] = None,
-        custom_id: t.Optional[str] = None,
-        emoji: t.Union[h.Emoji, str, None] = chr(9664),
-        row: t.Optional[int] = None,
+        style: h.ButtonStyle = h.ButtonStyle.PRIMARY,
+        label: str | None = None,
+        custom_id: str | None = None,
+        emoji: h.Emoji | str | None = PREV_PAGE_EMOJI,
+        row: int | None = None,
     ):
         super().__init__(
             style=style, label=label, custom_id=custom_id, emoji=emoji, row=row
         )
 
+    @override
     async def callback(self, context: m.ViewContext) -> None:
         self.view.current_page -= 1
         await self.view.send_page(context)
 
+    @override
     async def before_page_change(self) -> None:
-        if self.view.current_page <= 1 - self.view.pages.history_len:
-            self.disabled = True
-        else:
-            self.disabled = False
+        view = t.cast(NavigatorView, self.view)
+        self.disabled = view.current_page <= 1 - view.pages.history_len
+
+
+# Regex matching the "**From**"/"**Till**" lines that the anchor bot adds to
+# reset/gunsmith posts; these are stripped from the mirrored embed.
+rgx_find_from_till_text = re.compile(r"\n\*\*(From|Till)\*\*[^\n]*")
+
+
+class ResetPages(NavPages):
+    """NavPages for posts that share the weekly-reset anchor formatting.
+
+    Both the weekly-reset and gunsmith posts use identical preprocessing, so
+    they share this subclass: merge the message content and attachments into the
+    embed and strip the redundant From/Till lines.
+    """
+
+    @override
+    def preprocess_messages(self, messages: list[h.Message]) -> HMessage:
+        if not messages:
+            return self.no_data_message
+        for message in messages:
+            message.embeds = utils.filter_discord_autoembeds(message)
+        msg_proto = (
+            accumulate([HMessage.from_message(message) for message in messages])
+            .merge_content_into_embed()
+            .merge_attachements_into_embed(default_url=default_url)
+        )
+
+        # Remove duplicate From/Till text from anchor embed
+        for embed in msg_proto.embeds:
+            embed.description = rgx_find_from_till_text.sub("", embed.description or "")
+
+        return msg_proto
+
+
+class NavPagesHolder:
+    """Late-bound container for a :class:`NavPages` built on ``StartedEvent``.
+
+    The pages object can only be built once the bot has started (it reads
+    channel history), but command callbacks need it at invoke time. The holder
+    lets a shared ``StartedEvent`` listener populate ``.pages`` while commands
+    close over the holder and read ``.pages`` lazily.
+    """
+
+    def __init__(self) -> None:
+        self.pages: NavPages | None = None
+
+
+def setup_nav_pages(
+    loader: lb.Loader,
+    *,
+    followable_channel: int,
+    pages_cls: type[NavPages] = NavPages,
+    **from_channel_kwargs: t.Any,
+) -> NavPagesHolder:
+    """Register a ``StartedEvent`` listener that builds the pages into a holder.
+
+    ``pages_cls`` is built from ``followable_channel`` once the bot starts.
+    Extra keyword arguments are forwarded to :meth:`NavPages.from_channel`
+    (``period``, ``reference_date``, ``history_len``, ``lookahead_len``,
+    ``suppress_content_autoembeds``, ``no_data_message`` ...).
+    """
+    holder = NavPagesHolder()
+
+    @loader.listener(h.StartedEvent)
+    async def _on_start(event: h.StartedEvent) -> None:
+        holder.pages = await pages_cls.from_channel(
+            event.app, followable_channel, **from_channel_kwargs
+        )
+
+    return holder
+
+
+def make_navigator_command(
+    holder: NavPagesHolder,
+    *,
+    name: str,
+    description: str,
+    autodefer: bool = True,
+    allow_start_on_blank_page: bool = False,
+    display_date_offset: dt.timedelta = dt.timedelta(days=0),
+) -> type[lb.SlashCommand]:
+    """Build a SlashCommand that shows ``holder.pages`` in a NavigatorView.
+
+    The returned class is *not* registered; the caller registers it with
+    ``loader.command(...)`` or ``group.register(...)`` as appropriate.
+    """
+
+    class _NavCommand(lb.SlashCommand, name=name, description=description):
+        @lb.invoke
+        async def invoke(self, ctx: lb.Context):
+            if holder.pages is None:
+                raise RuntimeError(f"Navigator pages for '{name}' not yet initialised")
+            navigator = NavigatorView(
+                pages=holder.pages,
+                autodefer=autodefer,
+                allow_start_on_blank_page=allow_start_on_blank_page,
+                display_date_offset=display_date_offset,
+            )
+            await navigator.send(ctx.interaction)
+
+    return _NavCommand

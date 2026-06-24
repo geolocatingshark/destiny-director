@@ -1,7 +1,9 @@
 import asyncio as aio
+import base64
+import hashlib
 import logging
 import typing as t
-from random import randint
+from enum import Enum
 
 import aiohttp
 import hikari as h
@@ -10,7 +12,199 @@ import regex as re
 from . import cfg
 
 re_user_side_emoji = re.compile(r"(<a?)?:(\w+)(~\d)*:(\d+>)?")
-error_logger_semaphore = aio.Semaphore(1)
+
+# Collapse digit runs (snowflakes, references, counts) so otherwise-identical
+# messages share one error identity / reference code. Mirrors the same idea in
+# ``discord_logging`` (which re-imports the helpers below).
+_DIGIT_RUN = re.compile(r"\d+")
+
+
+def _normalize(text: str) -> str:
+    return _DIGIT_RUN.sub("#", text)
+
+
+def identity_for_exc(exc: BaseException) -> str:
+    """The stable identity of an exception (type + normalized message).
+
+    Used by :func:`reference_code`, the mirror kernels, and the logging handler so
+    the code shown to a user matches the code on the deduped alert. Lives here
+    (rather than in ``discord_logging``) as a pure, Discord-free helper that the
+    mirror subsystem can import without pulling in the logging handler.
+    """
+    return f"{type(exc).__module__}.{type(exc).__qualname__}: {_normalize(str(exc))}"
+
+
+def reference_code(identity: str) -> str:
+    """A short, stable, human-friendly code for an error identity.
+
+    Base32 of a blake2s digest -> uppercase ``A-Z2-7``, 6 chars.
+    """
+    digest = hashlib.blake2s(identity.encode("utf-8"), digest_size=5).digest()
+    return base64.b32encode(digest).decode("ascii").rstrip("=")[:6]
+
+
+def format_duration(seconds: float) -> str:
+    """Render an elapsed duration as ``"<x> seconds"`` or ``"<m> minutes <s> seconds"``.
+
+    Replaces the duplicated inline formatting in the mirror progress functions.
+    Under a minute reads as plain seconds (2 dp); from a minute up it reads as whole
+    minutes plus remaining seconds.
+    """
+    seconds = round(seconds, 2)
+    if seconds < 60:
+        return f"{seconds} seconds"
+    minutes = int(seconds // 60)
+    return f"{minutes} minutes {round(seconds % 60, 2)} seconds"
+
+
+class ErrorClass(Enum):
+    """Whether a failed Discord API call is worth retrying.
+
+    ``PERMANENT`` failures (missing perms/access, unknown channel/message, malformed
+    request, unauthorized) will not succeed on retry, so they are recorded and
+    excluded from further scheduling immediately. ``TRANSIENT`` failures (rate
+    limits, 5xx, timeouts, connection errors, and unknown exceptions) are retried
+    with backoff.
+    """
+
+    PERMANENT = 1
+    TRANSIENT = 2
+
+
+# Discord JSON error codes (the ``.code`` on a hikari ``HTTPResponseError``) that are
+# permanent even though their HTTP status might otherwise look retryable.
+_PERMANENT_400_CODES = frozenset({50035, 50006})
+
+# Connection-level exception types that mean "try again later" rather than a hard
+# rejection. ``aiohttp.ClientConnectionError`` covers DNS/connect/reset failures.
+_TRANSIENT_EXC_TYPES: tuple[type[BaseException], ...] = (
+    TimeoutError,
+    ConnectionError,
+    aiohttp.ClientConnectionError,
+)
+
+_unknown_error_logger = logging.getLogger("dd.common.classify_error")
+
+
+def classify_error(exc: BaseException) -> ErrorClass:
+    """Classify a Discord API exception as ``PERMANENT`` or ``TRANSIENT``.
+
+    Checked by ``isinstance`` first, then refined for the generic
+    :class:`hikari.HTTPResponseError` by HTTP ``status``. Unknown exceptions are
+    treated as ``TRANSIENT`` (so a stray bug retries rather than silently dropping a
+    target) but logged once so they surface.
+    """
+    # Permanent client errors: missing perms/access (403), unknown channel/message/
+    # guild (404), unauthorized (401). These never succeed on retry.
+    if isinstance(exc, (h.ForbiddenError, h.NotFoundError, h.UnauthorizedError)):
+        return ErrorClass.PERMANENT
+
+    # Bad request (400): malformed/invalid; treated as permanent. The "already
+    # crossposted" 400 is handled as success at the kernel call site, so it never
+    # reaches here.
+    if isinstance(exc, h.BadRequestError):
+        return ErrorClass.PERMANENT
+
+    # Rate limited (429): always retry after backoff.
+    if isinstance(exc, h.RateLimitTooLongError):
+        return ErrorClass.TRANSIENT
+
+    # Other HTTP responses: 5xx (and any unexpected status) → transient.
+    if isinstance(exc, h.HTTPResponseError):
+        if exc.status >= 500:
+            return ErrorClass.TRANSIENT
+        # A 4xx we did not special-case above is unlikely to fix itself; treat the
+        # specific permanent JSON codes as permanent, the rest as transient so we do
+        # not silently give up on something recoverable.
+        code = getattr(exc, "code", None)
+        if code in _PERMANENT_400_CODES:
+            return ErrorClass.PERMANENT
+        return ErrorClass.TRANSIENT
+
+    # Timeouts / connection resets / generic transport errors: retry.
+    if isinstance(exc, _TRANSIENT_EXC_TYPES):
+        return ErrorClass.TRANSIENT
+
+    # Unknown: retry but surface it once so it gets noticed.
+    _unknown_error_logger.warning(
+        "Unclassified mirror kernel error %s treated as transient",
+        identity_for_exc(exc),
+        exc_info=exc,
+    )
+    return ErrorClass.TRANSIENT
+
+
+# A Discord channel link embeds the guild id then the channel id; a message link adds
+# the message id as a third segment. These let commands accept links/mentions/ids for
+# channels in *other* servers — the slash-command channel option type can't, since its
+# picker only lists channels in the guild the command was invoked from.
+_re_channel_link = re.compile(
+    r"(?:https?://)?(?:\w+\.)?discord(?:app)?\.com/channels/(\d+)/(\d+)"
+)
+_re_channel_mention = re.compile(r"<#(\d+)>")
+_re_message_link = re.compile(
+    r"(?:https?://)?(?:\w+\.)?discord(?:app)?\.com/channels/\d+/(\d+)/(\d+)"
+)
+
+
+def parse_channel_ref(value: str) -> tuple[int, int | None]:
+    """Parse a channel link, channel mention, or raw id.
+
+    Returns ``(channel_id, guild_id)``; ``guild_id`` is only populated when a full
+    channel link is supplied (a mention or bare id carries no guild). Lets commands
+    target channels outside the current server, which the slash-command channel option
+    type cannot.
+    """
+    value = value.strip()
+    if match := _re_channel_link.search(value):
+        guild_id, channel_id = int(match.group(1)), int(match.group(2))
+        return channel_id, guild_id
+    if match := _re_channel_mention.search(value):
+        return int(match.group(1)), None
+    try:
+        return int(value), None
+    except ValueError as e:
+        raise ValueError(f"{value!r} is not a channel link, mention, or id") from e
+
+
+def parse_message_link(value: str) -> tuple[int, int]:
+    """Parse a Discord message link into ``(channel_id, message_id)``.
+
+    Accepts ``.../channels/<guild_id>/<channel_id>/<message_id>`` (the guild segment
+    is ignored — a message is uniquely addressed by its channel and id).
+    """
+    value = value.strip()
+    if match := _re_message_link.search(value):
+        return int(match.group(1)), int(match.group(2))
+    raise ValueError(f"{value!r} is not a Discord message link")
+
+
+# lightbulb registers global commands under guild key 0, so a guild id of 0 in a
+# ``guilds=`` list silently turns a guild-scoped command into a global one.
+GLOBAL_COMMAND_KEY = 0
+
+
+def guild_scope(*guild_ids: int) -> list[int]:
+    """Build a ``guilds=`` list safe to pass to lightbulb, dropping the 0 sentinel.
+
+    A guild id of ``0`` is lightbulb's global-command key, so letting it through
+    would register a guild-scoped command globally. Drop any such ids (warning when
+    we do, since it usually means a guild-id env var is unset), and raise if nothing
+    valid remains rather than registering globally by accident. Non-zero sentinels
+    like ``-1`` are kept — they harmlessly scope to a nonexistent guild.
+    """
+    scoped = [gid for gid in guild_ids if gid != GLOBAL_COMMAND_KEY]
+    if len(scoped) != len(guild_ids):
+        logging.getLogger("main/" + __name__).warning(
+            "Dropped guild id(s) equal to the global-command key (0) from a command "
+            "registration scope; check that guild-id env vars are set."
+        )
+    if not scoped:
+        raise ValueError(
+            "Guild registration scope collapsed to empty after removing the "
+            "global-command key (0); refusing to register globally by accident."
+        )
+    return list(dict.fromkeys(scoped))  # de-dupe, preserve order
 
 
 async def fetch_emoji_dict(bot: h.GatewayBot):
@@ -21,11 +215,11 @@ async def fetch_emoji_dict(bot: h.GatewayBot):
 
 
 def construct_emoji_substituter(
-    emoji_dict: t.Dict[str, h.Emoji],
-) -> t.Callable[[re.Match], str]:
+    emoji_dict: dict[str, h.Emoji],
+) -> t.Callable[[t.Any], str]:
     """Constructs a substituter for user-side emoji to be used in re.sub"""
 
-    def func(match: re.Match) -> str:
+    def func(match: t.Any) -> str:
         maybe_emoji_name = str(match.group(2))
         return str(
             emoji_dict.get(maybe_emoji_name)
@@ -60,16 +254,23 @@ def get_ordinal_suffix(day: int) -> str:
 async def update_status(bot: h.GatewayBot, guild_count: int, test_env: bool):
     await bot.update_presence(
         activity=h.Activity(
-            name="{} servers : )".format(guild_count) if not test_env else "DEBUG MODE",
+            name=f"{guild_count} servers : )" if not test_env else "DEBUG MODE",
             type=h.ActivityType.LISTENING,
         )
     )
 
 
+# Cap link-following HTTP requests so a hung redirect host can't block a
+# coroutine indefinitely (aiohttp's implicit default is a 5-minute total).
+_LINK_FOLLOW_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
+
 async def follow_link_single_step(
-    url: str, logger=logging.getLogger("main/" + __name__)
+    url: str, logger: logging.Logger | None = None
 ) -> str:
-    async with aiohttp.ClientSession() as session:
+    if logger is None:
+        logger = logging.getLogger("main/" + __name__)
+    async with aiohttp.ClientSession(timeout=_LINK_FOLLOW_TIMEOUT) as session:
         retries = 10
         retry_delay = 10
         for i in range(retries):
@@ -82,7 +283,7 @@ async def follow_link_single_step(
                     if resp.status >= 400:
                         logger.error(
                             "Could not find redirect for url "
-                            + "{}, (status {})".format(url, resp.status)
+                            + f"{url}, (status {resp.status})"
                         )
                         if i < retries - 1:
                             logger.error("Retrying...")
@@ -90,6 +291,12 @@ async def follow_link_single_step(
                         continue
                     else:
                         return url
+        return url
+
+
+def followable_name(*, id: int) -> str | int:
+    """Return the configured name for a followable channel id, or the id itself."""
+    return next((key for key, value in cfg.followables.items() if value == id), id)
 
 
 class FriendlyValueError(ValueError):
@@ -97,14 +304,17 @@ class FriendlyValueError(ValueError):
 
 
 def check_number_of_layers(
-    ln_names: list | int, min_layers: int = 1, max_layers: int = 3
+    ln_names: t.Sequence[t.Any] | int, min_layers: int = 1, max_layers: int = 3
 ):
     """Raises FriendlyValueError on too many layers of commands
 
     This is a simple helper function to check if ln_names is between min_layers and
     max_layers. If it is not, a FriendlyValueError is raised."""
 
-    ln_name_length = len(ln_names) if ln_names is not int else ln_names
+    # ``ln_names`` is either an already-computed length (int) or a sequence of layer
+    # names (list/tuple) to count. Narrow on int so the len() branch covers both
+    # lists and tuples (callers pass ``*ln_names`` tuples).
+    ln_name_length = ln_names if isinstance(ln_names, int) else len(ln_names)
 
     if ln_name_length > max_layers:
         raise FriendlyValueError(
@@ -123,13 +333,14 @@ def ensure_session(sessionmaker):
 
     Caution: Always put below `@classmethod` and `@staticmethod`"""
 
-    def ensured_session(f: t.Coroutine):
-        async def wrapper(*args, **kwargs):
+    def ensured_session(
+        f: t.Callable[..., t.Awaitable[t.Any]],
+    ) -> t.Callable[..., t.Awaitable[t.Any]]:
+        async def wrapper(*args: t.Any, **kwargs: t.Any) -> t.Any:
             session = kwargs.pop("session", None)
             if session is None:
-                async with sessionmaker() as session:
-                    async with session.begin():
-                        return await f(*args, **kwargs, session=session)
+                async with sessionmaker() as session, session.begin():
+                    return await f(*args, **kwargs, session=session)
             else:
                 return await f(*args, **kwargs, session=session)
 
@@ -138,34 +349,42 @@ def ensure_session(sessionmaker):
     return ensured_session
 
 
-T = t.TypeVar("T")
-
-
-def accumulate(iterable: t.Iterable[T]) -> T:
+def accumulate[T](iterable: t.Sequence[T], /, empty_value: T | None = None) -> T:
+    if not iterable:
+        if empty_value is None:
+            raise ValueError("accumulate() arg is an empty sequence")
+        return empty_value
     final = iterable[0]
     for arg in iterable[1:]:
-        final = final + arg
+        final = final + arg  # ty: ignore[unsupported-operator]
     return final
 
 
 async def discord_error_logger(
-    bot: h.GatewayBot, e: Exception, error_reference: int = None
-):
-    """Logs discord errors to the log channel and the console"""
+    e: Exception,
+    error_reference: str | int | None = None,
+    *,
+    operation: str | None = None,
+) -> str:
+    """Surface an exception to the Discord alerts channel and the console.
 
-    if not error_reference:
-        error_reference = randint(1000000, 9999999)
+    Routes through ``logging`` so the installed ``DiscordLogHandler`` renders a
+    rich, deduplicated Components V2 alert (with traceback + severity) — it no
+    longer sends to the channel directly. Returns the reference code shown to
+    the user, which is deterministic per error identity so it matches the code
+    on the resulting alert.
 
-    alerts_channel: h.TextableGuildChannel = bot.cache.get_guild_channel(
-        cfg.alerts_channel
-    ) or await bot.rest.fetch_channel(cfg.alerts_channel)
-
-    async with error_logger_semaphore:
-        task = aio.create_task(
-            alerts_channel.send(
-                f"Exception {type(e)} with reference {error_reference} occurred"
-            )
-        )
-        logging.error(f"Error reference: {error_reference}")
-        logging.exception(e)
-        await task
+    ``operation`` is a short human label for what was being attempted (e.g.
+    ``"Mirror update"``); when given it is surfaced in the alert header so the
+    failure reads at a glance.
+    """
+    code = (
+        str(error_reference) if error_reference else reference_code(identity_for_exc(e))
+    )
+    logging.getLogger("dd.error").error(
+        "Error reference: %s",
+        code,
+        exc_info=e,
+        extra={"dd_operation": operation} if operation else None,
+    )
+    return code

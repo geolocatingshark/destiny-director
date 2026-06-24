@@ -19,12 +19,20 @@ import asyncio as aio
 import datetime as dt
 import logging
 import sys
-from typing import Dict, List, Optional, Self, Set, Tuple
+import typing as t
+from typing import Self
 
 import regex as re
 from atlas_provider_sqlalchemy.ddl import print_ddl
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import declarative_base, sessionmaker, validates
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import Mapped, declarative_base, mapped_column, validates
 from sqlalchemy.sql import insert, select, text, update
 from sqlalchemy.sql.expression import and_, delete, desc
 from sqlalchemy.sql.functions import coalesce, func
@@ -33,6 +41,7 @@ from sqlalchemy.sql.sqltypes import (
     VARCHAR,
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Integer,
     String,
@@ -43,10 +52,71 @@ from dd.common import cfg
 from dd.common.utils import FriendlyValueError, check_number_of_layers, ensure_session
 
 Base = declarative_base()
-db_engine = create_async_engine(
-    cfg.db_url_async, connect_args=cfg.db_connect_args, **cfg.db_engine_args
-)
-db_session = sessionmaker(db_engine, **cfg.db_session_kwargs)
+
+
+class _SessionmakerProxy:
+    """Stable indirection over an ``async_sessionmaker``.
+
+    The object identity is captured by ``@ensure_session`` at import time and by
+    ``from schemas import db_session`` in the beacon extensions. Calling the proxy
+    forwards to the *current* inner sessionmaker, so rebinding the inner maker (via
+    ``configure_test_db``) transparently repoints every existing call site at a new
+    engine without re-importing or re-decorating anything."""
+
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        self._sessionmaker = sessionmaker
+
+    def __call__(self) -> AsyncSession:
+        return self._sessionmaker()
+
+    def rebind(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        self._sessionmaker = sessionmaker
+
+
+def _build_engine() -> AsyncEngine:
+    return create_async_engine(
+        cfg.db_url_async, connect_args=cfg.db_connect_args, **cfg.db_engine_args
+    )
+
+
+db_engine: AsyncEngine = _build_engine()
+db_session = _SessionmakerProxy(async_sessionmaker(db_engine, **cfg.db_session_kwargs))
+
+
+def configure_test_db(engine: AsyncEngine) -> None:
+    """Repoint the module-global engine and the ``db_session`` proxy at ``engine``.
+
+    Used by the test harness to swap the production MySQL engine for a throwaway
+    SQLite engine. Affects every ``@ensure_session`` method, every direct
+    ``db_session()`` call site, and every module-level ``db_engine`` reader at once."""
+    global db_engine
+    db_engine = engine
+    db_session.rebind(async_sessionmaker(engine, **cfg.db_session_kwargs))
+
+
+def reset_db() -> None:
+    """Restore the production engine/sessionmaker (call on test teardown)."""
+    global db_engine
+    db_engine = _build_engine()
+    db_session.rebind(async_sessionmaker(db_engine, **cfg.db_session_kwargs))
+
+
+# Sentinel used as default for session parameters in @ensure_session-decorated methods.
+# The decorator always supplies a real AsyncSession before the function body runs.
+_UNSET: AsyncSession = t.cast(AsyncSession, None)
+
+
+async def wait_for_db(retry_interval: float = 10.0) -> None:
+    """Block until the database accepts a connection, retrying every
+    retry_interval seconds."""
+    while True:
+        try:
+            async with db_engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            return
+        except OperationalError:
+            logging.warning("Database unavailable, retrying in %ss...", retry_interval)
+            await aio.sleep(retry_interval)
 
 
 rgx_cmd_name_is_valid = re.compile("^[a-z][a-z0-9_-]{1,31}$")
@@ -86,7 +156,7 @@ class MirroredChannel(Base):
         dest_server_id: int,
         legacy: bool,
         enabled: bool,
-        role_mention_id: Optional[int],
+        role_mention_id: int | None,
     ):
         super().__init__()
         self.src_id = int(src_id)
@@ -105,9 +175,9 @@ class MirroredChannel(Base):
         dest_server_id: int,
         legacy: bool,
         enabled: bool = True,
-        role_mention_id: Optional[int] = 0,
-        session: Optional[AsyncSession] = None,
-    ):
+        role_mention_id: int | None = 0,
+        session: AsyncSession = _UNSET,
+    ) -> None:
         src_id = int(src_id)
         dest_id = int(dest_id)
         await session.merge(
@@ -131,8 +201,8 @@ class MirroredChannel(Base):
         src_id: int,
         legacy: bool | None = True,
         enabled: bool | None = True,
-        session: Optional[AsyncSession] = None,
-    ) -> List[int]:
+        session: AsyncSession = _UNSET,
+    ) -> list[int]:
         """Fetch all dests for a given src_id
 
         src_id -> The source channel ID
@@ -168,8 +238,8 @@ class MirroredChannel(Base):
     async def fetch_mirror_and_role_mention_id(
         cls,
         src_id: int,
-        session: Optional[AsyncSession] = None,
-    ) -> Dict[int, int]:
+        session: AsyncSession = _UNSET,
+    ) -> dict[int, int]:
         """Fetch all dests with corresponding mirror_ping_role id for a given src_id
 
         src_id -> The source channel ID
@@ -190,8 +260,8 @@ class MirroredChannel(Base):
         dest_id: int,
         legacy: bool | None = True,
         enabled: bool | None = True,
-        session: Optional[AsyncSession] = None,
-    ) -> List[int]:
+        session: AsyncSession = _UNSET,
+    ) -> list[int]:
         dest_id = int(dest_id)
         srcs = (
             await session.execute(
@@ -213,8 +283,8 @@ class MirroredChannel(Base):
     async def get_or_fetch_all_srcs(
         cls,
         legacy: bool | None = True,
-        session: Optional[AsyncSession] = None,
-    ) -> Set[int]:
+        session: AsyncSession = _UNSET,
+    ) -> set[int]:
         """Fetch all srcs
 
         WARNING: This is function has a silent failure mode where it will return
@@ -237,8 +307,8 @@ class MirroredChannel(Base):
     async def fetch_all_srcs(
         cls,
         legacy: bool | None = True,
-        session: Optional[AsyncSession] = None,
-    ) -> Set[int]:
+        session: AsyncSession = _UNSET,
+    ) -> set[int]:
         srcs = (
             await session.execute(select(cls.src_id).where(cls.legacy == legacy))
         ).fetchall()
@@ -252,7 +322,7 @@ class MirroredChannel(Base):
         cls,
         src_id: int,
         legacy_only: bool | None = True,
-        session: Optional[AsyncSession] = None,
+        session: AsyncSession = _UNSET,
     ) -> int:
         src_id = int(src_id)
         dests_count = (
@@ -278,7 +348,7 @@ class MirroredChannel(Base):
     async def count_total_dests(
         cls,
         legacy_only: bool | None = True,
-        session: Optional[AsyncSession] = None,
+        session: AsyncSession = _UNSET,
     ) -> int:
         dests_count = (
             await session.execute(
@@ -299,7 +369,7 @@ class MirroredChannel(Base):
         src_id: int,
         dest_id: int,
         legacy: bool = True,
-        session: Optional[AsyncSession] = None,
+        session: AsyncSession = _UNSET,
     ) -> None:
         src_id = int(src_id)
         dest_id = int(dest_id)
@@ -318,7 +388,7 @@ class MirroredChannel(Base):
     @classmethod
     @ensure_session(db_session)
     async def remove_mirror(
-        cls, src_id: int, dest_id: int, session: Optional[AsyncSession] = None
+        cls, src_id: int, dest_id: int, session: AsyncSession = _UNSET
     ) -> None:
         src_id = int(src_id)
         dest_id = int(dest_id)
@@ -338,7 +408,7 @@ class MirroredChannel(Base):
     @classmethod
     @ensure_session(db_session)
     async def remove_all_mirrors(
-        cls, dest_id: int, session: Optional[AsyncSession] = None
+        cls, dest_id: int, session: AsyncSession = _UNSET
     ) -> None:
         dest_id = int(dest_id)
         await session.execute(
@@ -357,7 +427,7 @@ class MirroredChannel(Base):
     @classmethod
     @ensure_session(db_session)
     async def log_legacy_mirror_success(
-        cls, src_id: int, dest_id: int, session: Optional[AsyncSession] = None
+        cls, src_id: int, dest_id: int, session: AsyncSession = _UNSET
     ) -> None:
         """Log the successful use of a mirror
 
@@ -381,8 +451,8 @@ class MirroredChannel(Base):
     @classmethod
     @ensure_session(db_session)
     async def log_legacy_mirror_success_in_batch(
-        cls, src_id: int, dest_ids: List[int], session: Optional[AsyncSession] = None
-    ):
+        cls, src_id: int, dest_ids: list[int], session: AsyncSession = _UNSET
+    ) -> None:
         """Log the successful use of a batch of mirror pairs
 
         In case of a successful mirror, the error rate is set to 0
@@ -405,7 +475,7 @@ class MirroredChannel(Base):
     @classmethod
     @ensure_session(db_session)
     async def log_legacy_mirror_failure(
-        cls, src_id: int, dest_id: int, session: Optional[AsyncSession] = None
+        cls, src_id: int, dest_id: int, session: AsyncSession = _UNSET
     ) -> None:
         """Log the failure of a mirror
 
@@ -429,8 +499,8 @@ class MirroredChannel(Base):
     @classmethod
     @ensure_session(db_session)
     async def log_legacy_mirror_failure_in_batch(
-        cls, src_id: int, dest_ids: List[int], session: Optional[AsyncSession] = None
-    ):
+        cls, src_id: int, dest_ids: list[int], session: AsyncSession = _UNSET
+    ) -> None:
         """Log the failure of a batch of mirror pairs
 
         In case of a failure, the error rate is increased by 1
@@ -455,8 +525,8 @@ class MirroredChannel(Base):
     async def get_legacy_failing_mirrors(
         cls,
         threshold: int = 3,
-        session: Optional[AsyncSession] = None,
-    ) -> List[Tuple[int, int]]:
+        session: AsyncSession = _UNSET,
+    ) -> list[tuple[int, int]]:
         """Return mirrors that have failed too many times
 
         Mirrors that have failed more than `threshold` times are disabled
@@ -480,8 +550,8 @@ class MirroredChannel(Base):
     async def disable_legacy_failing_mirrors(
         cls,
         threshold: int = 3,
-        session: Optional[AsyncSession] = None,
-    ) -> List[Tuple[int, int]]:
+        session: AsyncSession = _UNSET,
+    ) -> list[tuple[int, int]]:
         """Disable mirrors that have failed too many times
 
         Mirrors that have failed more than `threshold` times are disabled
@@ -500,7 +570,7 @@ class MirroredChannel(Base):
             )
             .values(
                 enabled=False,
-                legacy_disable_for_failure_on_date=dt.datetime.now(tz=dt.timezone.utc),
+                legacy_disable_for_failure_on_date=dt.datetime.now(tz=dt.UTC),
             )
         )
 
@@ -516,8 +586,8 @@ class MirroredChannel(Base):
     @classmethod
     @ensure_session(db_session)
     async def get_legacy_mirrors_disabled_for_failure(
-        cls, since: Optional[dt.datetime], session: Optional[AsyncSession] = None
-    ) -> List[Tuple[int, int]]:
+        cls, since: dt.datetime | None, session: AsyncSession = _UNSET
+    ) -> list[tuple[int, int]]:
         """Return mirrors that have been disabled for failure
 
         Mirrors that have been disabled for failure since `since` are returned
@@ -526,7 +596,7 @@ class MirroredChannel(Base):
         disabled_mirrors = await session.execute(
             select(cls.src_id, cls.dest_id).where(
                 and_(
-                    not cls.enabled,
+                    ~cls.enabled,
                     cls.legacy,
                     cls.legacy_disable_for_failure_on_date >= since,
                 )
@@ -541,9 +611,9 @@ class MirroredChannel(Base):
     @ensure_session(db_session)
     async def undo_auto_disable_for_failure(
         cls,
-        since: Optional[dt.datetime],
-        session: Optional[AsyncSession] = None,
-    ) -> List[Tuple[int, int]]:
+        since: dt.datetime | None,
+        session: AsyncSession = _UNSET,
+    ) -> list[tuple[int, int]]:
         """Undo auto disable for failure of mirrors
 
         Mirrors that have been disabled for failure since `since` are re-enabled
@@ -580,7 +650,7 @@ class MirroredMessage(Base):
     source_msg = Column("source_msg", BigInteger)
     source_channel = Column("src_ch", BigInteger)
     creation_datetime = Column(
-        "creation_datetime", DateTime, default=dt.datetime.utcnow
+        "creation_datetime", DateTime, default=lambda: dt.datetime.now(tz=dt.UTC)
     )
 
     def __init__(
@@ -596,9 +666,7 @@ class MirroredMessage(Base):
         self.dest_channel = int(dest_channel)
         self.source_msg = int(source_msg)
         self.source_channel = int(source_channel)
-        self.creation_datetime = creation_datetime or dt.datetime.now(
-            tz=dt.timezone.utc
-        )
+        self.creation_datetime = creation_datetime or dt.datetime.now(tz=dt.UTC)
 
     @classmethod
     @ensure_session(db_session)
@@ -608,7 +676,7 @@ class MirroredMessage(Base):
         dest_channel: int,
         source_msg: int,
         source_channel: int,
-        session: Optional[AsyncSession] = None,
+        session: AsyncSession = _UNSET,
     ) -> None:
         """Create a session, begin it and add a message pair"""
         dest_msg = int(dest_msg)
@@ -629,12 +697,12 @@ class MirroredMessage(Base):
     @ensure_session(db_session)
     async def add_msgs_in_batch(
         cls,
-        dest_msgs: List[int],
-        dest_channels: List[int],
+        dest_msgs: list[int],
+        dest_channels: list[int],
         source_msg: int,
         source_channel: int,
-        session: Optional[AsyncSession] = None,
-    ):
+        session: AsyncSession = _UNSET,
+    ) -> None:
         """Create a session, begin it and add a message pair"""
         dest_msgs = [int(dest_msg) for dest_msg in dest_msgs]
         dest_channels = [int(dest_channel) for dest_channel in dest_channels]
@@ -650,7 +718,9 @@ class MirroredMessage(Base):
                         "source_msg": source_msg,
                         "source_channel": source_channel,
                     }
-                    for dest_msg, dest_channel in zip(dest_msgs, dest_channels)
+                    for dest_msg, dest_channel in zip(
+                        dest_msgs, dest_channels, strict=True
+                    )
                 ]
             )
         )
@@ -660,8 +730,8 @@ class MirroredMessage(Base):
     async def get_dest_msgs_and_channels(
         cls,
         source_msg: int,
-        session: Optional[AsyncSession] = None,
-    ):
+        session: AsyncSession = _UNSET,
+    ) -> list[tuple[int, int]]:
         """Return dest message and channel ids from source message id"""
         source_msg = int(source_msg)
         dest_msgs = (
@@ -680,13 +750,11 @@ class MirroredMessage(Base):
     async def prune(
         cls,
         age: None | dt.timedelta = dt.timedelta(days=21),
-        session: Optional[AsyncSession] = None,
-    ):
+        session: AsyncSession = _UNSET,
+    ) -> None:
         """Delete entries older than <age>"""
         await session.execute(
-            delete(cls).where(
-                dt.datetime.now(tz=dt.timezone.utc) - age > cls.creation_datetime
-            )
+            delete(cls).where(dt.datetime.now(tz=dt.UTC) - age > cls.creation_datetime)
         )
 
 
@@ -709,8 +777,8 @@ class ServerStatistics(Base):
         cls,
         id: int,
         population: int = 10**12,
-        session: Optional[AsyncSession] = None,
-    ):
+        session: AsyncSession = _UNSET,
+    ) -> None:
         id = int(id)
         await session.merge(cls(id, population))
 
@@ -718,10 +786,10 @@ class ServerStatistics(Base):
     @ensure_session(db_session)
     async def add_servers_in_batch(
         cls,
-        ids: List[int],
-        populations: List[int],
-        session: Optional[AsyncSession] = None,
-    ):
+        ids: list[int],
+        populations: list[int],
+        session: AsyncSession = _UNSET,
+    ) -> None:
         ids = [int(id) for id in ids]
         populations = [int(population) for population in populations]
         if len(ids) != len(populations):
@@ -734,7 +802,7 @@ class ServerStatistics(Base):
             insert(cls),
             [
                 {"id": id, "population": population}
-                for id, population in zip(ids, populations)
+                for id, population in zip(ids, populations, strict=True)
             ],
         )
 
@@ -742,8 +810,8 @@ class ServerStatistics(Base):
     @ensure_session(db_session)
     async def fetch_server_ids(
         cls,
-        session: Optional[AsyncSession] = None,
-    ) -> List[int]:
+        session: AsyncSession = _UNSET,
+    ) -> list[int]:
         ids = await session.execute(select(cls.id))
         ids = ids if ids else []
         ids = [id[0] for id in ids]
@@ -752,8 +820,8 @@ class ServerStatistics(Base):
     @classmethod
     @ensure_session(db_session)
     async def fetch_server_populations(
-        cls, session: Optional[AsyncSession] = None
-    ) -> Tuple[int, int]:
+        cls, session: AsyncSession = _UNSET
+    ) -> list[tuple[int, int]]:
         """Returns tuples of server id to population"""
         populations = (await session.execute(select(cls.id, cls.population))).fetchall()
         populations = populations if populations else []
@@ -765,8 +833,8 @@ class ServerStatistics(Base):
         cls,
         id: int,
         population: int,
-        session: Optional[AsyncSession] = None,
-    ):
+        session: AsyncSession = _UNSET,
+    ) -> None:
         id = int(id)
         await session.execute(
             update(cls).where(cls.id == id).values(population=population)
@@ -776,19 +844,56 @@ class ServerStatistics(Base):
     @ensure_session(db_session)
     async def update_population_in_batch(
         cls,
-        ids: List[int],
-        populations: List[int],
-        session: Optional[AsyncSession] = None,
-    ):
+        ids: list[int],
+        populations: list[int],
+        session: AsyncSession = _UNSET,
+    ) -> None:
         ids = [int(id) for id in ids]
         populations = [int(population) for population in populations]
         await session.execute(
             update(cls),
             [
                 {"id": id, "population": population}
-                for id, population in zip(ids, populations)
+                for id, population in zip(ids, populations, strict=True)
             ],
         )
+
+
+class CommandUsage(Base):
+    """Per-command, per-day invocation counts for user-facing slash commands.
+
+    Daily buckets keep growth bounded (commands × days) while supporting both
+    all-time totals and time-windowed queries. Writes use a MySQL upsert with an
+    atomic ``count = count + 1`` so concurrent increments are race-free with no
+    in-memory buffering.
+    """
+
+    __tablename__ = "command_usage"
+    __mapper_args__ = {"eager_defaults": True}
+
+    command_name = Column("command_name", String(length=128), primary_key=True)
+    date = Column("date", Date, primary_key=True)  # daily bucket, UTC
+    count = Column("count", BigInteger, nullable=False, default=0)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def increment(
+        cls, command_name: str, *, session: AsyncSession = _UNSET
+    ) -> None:
+        today = dt.datetime.now(tz=dt.UTC).date()
+        stmt = mysql_insert(cls).values(command_name=command_name, date=today, count=1)
+        await session.execute(stmt.on_duplicate_key_update(count=cls.count + 1))
+
+    @classmethod
+    @ensure_session(db_session)
+    async def fetch_totals(
+        cls, *, since: dt.date | None = None, session: AsyncSession = _UNSET
+    ) -> list[tuple[str, int]]:
+        q = select(cls.command_name, func.sum(cls.count).label("total"))
+        if since is not None:
+            q = q.where(cls.date >= since)
+        q = q.group_by(cls.command_name).order_by(desc("total"))
+        return [(name, int(total)) for name, total in (await session.execute(q)).all()]
 
 
 class UserCommand(Base):
@@ -802,24 +907,27 @@ class UserCommand(Base):
         # Make sure if l2_name is empty, the so is l3
         CheckConstraint("(l2_name = '' AND l3_name = '') OR (l2_name <> '')"),
     )
-    id = Column("id", Integer, primary_key=True)
-    l1_name = Column("l1_name", String(length=32))
-    l2_name = Column("l2_name", String(length=32))
-    l3_name = Column("l3_name", String(length=32))
+    id: Mapped[int] = mapped_column("id", Integer, primary_key=True)
+    l1_name: Mapped[str] = mapped_column("l1_name", String(length=32), nullable=True)
+    l2_name: Mapped[str] = mapped_column("l2_name", String(length=32), nullable=True)
+    l3_name: Mapped[str] = mapped_column("l3_name", String(length=32), nullable=True)
     # command_name can include spaces, must match rgx_command_name_is_valid
-    description = Column("description", String(length=256))
-    response_type = Column("response_type", Integer)
+    description: Mapped[str] = mapped_column(
+        "description", String(length=256), nullable=True
+    )
+    response_type: Mapped[int] = mapped_column("response_type", Integer, nullable=True)
     # response_types are as follows:
     # 0: No response, ie this is a command group
     # 1: Plain text, respondes directly with response_data column text
-    # 2: Message id, copies the content of message id if possible and
-    #    responds with the same. Note: please check that message id is
-    #    accessible before adding to db
-    #    response_data must be in the form channel_id:message_id
+    # 2: Message copy, fetches a message and responds with a copy of its content,
+    #    embeds, components and attachments. response_data must be a Discord message
+    #    link (…/channels/<guild_id>/<channel_id>/<message_id>); the channel_id and
+    #    message_id are taken from the last two path segments. Note: the bot must be
+    #    able to fetch the message, so check it is accessible before adding to db
     # 3: Embed, responds by parsing response data, parsing the same as
     #    json, and passing it to hikari.Embed(...). This embed is sent
     #    as a response
-    response_data = Column(Text)
+    response_data: Mapped[str] = mapped_column(Text, nullable=True)
 
     def __init__(
         self,
@@ -844,12 +952,15 @@ class UserCommand(Base):
         )
 
     @validates("l1_name", "l2_name", "l3_name")
-    def command_name_validator(self, key, value: str):
+    def command_name_validator(self, key: str, value: str) -> str:
         """Restrict to valid discord command names"""
         value = str(value)
-        if key == "l1_name" and rgx_cmd_name_is_valid.match(value):
-            return value
-        elif key in ["l2_name", "l3_name"] and rgx_sub_cmd_name_is_valid.match(value):
+        if (
+            key == "l1_name"
+            and rgx_cmd_name_is_valid.match(value)
+            or key in ["l2_name", "l3_name"]
+            and rgx_sub_cmd_name_is_valid.match(value)
+        ):
             return value
         else:
             raise FriendlyValueError(
@@ -860,21 +971,19 @@ class UserCommand(Base):
 
     @classmethod
     @ensure_session(db_session)
-    async def fetch_commands(
-        cls, session: Optional[AsyncSession] = None
-    ) -> List[UserCommand]:
+    async def fetch_commands(cls, session: AsyncSession = _UNSET) -> list[UserCommand]:
         commands = (
             await session.execute(select(cls).where(cls.response_type != 0))
         ).fetchall()
-        commands = [] if not commands else commands
+        commands = commands if commands else []
         commands = [command[0] for command in commands]
         return commands
 
     @classmethod
     @ensure_session(db_session)
     async def fetch_command_groups(
-        cls, session: Optional[AsyncSession] = None
-    ) -> List[UserCommand]:
+        cls, session: AsyncSession = _UNSET
+    ) -> list[UserCommand]:
         commands = (
             await session.execute(
                 select(cls)
@@ -882,15 +991,15 @@ class UserCommand(Base):
                 .order_by(cls.l1_name, cls.l2_name, cls.l3_name)
             )
         ).fetchall()
-        commands = [] if not commands else commands
+        commands = commands if commands else []
         commands = [command[0] for command in commands]
         return commands
 
     @classmethod
     @ensure_session(db_session)
     async def fetch_command(
-        cls, *ln_names, session: Optional[AsyncSession] = None
-    ) -> UserCommand:
+        cls, *ln_names: str, session: AsyncSession = _UNSET
+    ) -> UserCommand | None:
         check_number_of_layers(ln_names)
 
         # Pad ln_names with "" up to len 3
@@ -913,8 +1022,8 @@ class UserCommand(Base):
     @classmethod
     @ensure_session(db_session)
     async def fetch_command_group(
-        cls, *ln_names, session: Optional[AsyncSession] = None
-    ) -> UserCommand:
+        cls, *ln_names: str, session: AsyncSession = _UNSET
+    ) -> UserCommand | None:
         if len(ln_names) >= 3:
             raise FriendlyValueError(
                 "Discord does not support slash command groups more than "
@@ -942,8 +1051,12 @@ class UserCommand(Base):
     @classmethod
     @ensure_session(db_session)
     async def _autocomplete(
-        cls, l1_name="", l2_name="", l3_name="", session: Optional[AsyncSession] = None
-    ) -> List[List[str]]:
+        cls,
+        l1_name: str = "",
+        l2_name: str = "",
+        l3_name: str = "",
+        session: AsyncSession = _UNSET,
+    ) -> list[UserCommand]:
         completions = (
             await session.execute(
                 select(cls).where(
@@ -953,7 +1066,7 @@ class UserCommand(Base):
                 )
             )
         ).fetchall()
-        completions = [] if not completions else completions
+        completions = completions if completions else []
         completions = [completion[0] for completion in completions]
         return completions
 
@@ -961,12 +1074,12 @@ class UserCommand(Base):
     @ensure_session(db_session)
     async def add_command(
         cls,
-        *ln_names,  # Layer n names
+        *ln_names: str,  # Layer n names
         description: str,
         response_type: int,
         response_data: str,
-        session: Optional[AsyncSession] = None,
-    ):
+        session: AsyncSession = _UNSET,
+    ) -> UserCommand:
         check_number_of_layers(ln_names)
         await cls.check_parent_command_groups_exist(*ln_names, session=session)
 
@@ -974,7 +1087,8 @@ class UserCommand(Base):
         existing_command = await cls.fetch_command(*ln_names, session=session)
         if existing_command:
             raise FriendlyValueError(
-                f"Command {' -> '.join(filter(lambda n: n != '', ln_names))} already exists"
+                f"Command {' -> '.join(filter(lambda n: n != '', ln_names))} "
+                "already exists"
             )
 
         self = cls(
@@ -989,8 +1103,8 @@ class UserCommand(Base):
     @classmethod
     @ensure_session(db_session)
     async def add_command_group(
-        cls, *ln_names, description, session: Optional[AsyncSession] = None
-    ):
+        cls, *ln_names, description, session: AsyncSession = _UNSET
+    ) -> UserCommand:
         return await cls.add_command(
             *ln_names,
             description=description,
@@ -1006,8 +1120,8 @@ class UserCommand(Base):
         l1_name: str,
         l2_name: str = "",
         l3_name: str = "",
-        session: Optional[AsyncSession] = None,
-    ):
+        session: AsyncSession = _UNSET,
+    ) -> bool:
         """Check if the parent command groups exist
 
         Note, this is different from the command existing (response_type must be 0)
@@ -1060,8 +1174,8 @@ class UserCommand(Base):
     @classmethod
     @ensure_session(db_session)
     async def fetch_subcommands(
-        cls, l1_name, l2_name: str = "", session: Optional[AsyncSession] = None
-    ):
+        cls, l1_name, l2_name: str = "", session: AsyncSession = _UNSET
+    ) -> list[UserCommand]:
         return (
             await session.execute(
                 select(cls).where(
@@ -1085,7 +1199,7 @@ class UserCommand(Base):
         l2_name: str = "",
         l3_name: str = "",
         fetch_deleted: bool = True,
-        session: Optional[AsyncSession] = None,
+        session: AsyncSession = _UNSET,
     ) -> UserCommand:
         commands_to_delete = (
             (
@@ -1124,8 +1238,8 @@ class UserCommand(Base):
         l2_name: str = "",
         cascade: bool = False,
         fetch_deleted: bool = True,
-        session: Optional[AsyncSession] = None,
-    ) -> List[UserCommand]:
+        session: AsyncSession = _UNSET,
+    ) -> list[UserCommand]:
         subcommands = await cls.fetch_subcommands(l1_name, l2_name, session=session)
         if subcommands and not cascade:
             # Handle the case where subcommands are found and we aren't supposed
@@ -1163,24 +1277,24 @@ class UserCommand(Base):
                     )
                 )
             )
-            deleted = [] if not deleted else deleted
+            deleted = deleted if deleted else []
             deleted = [item[0] for item in deleted]
             return deleted
 
     @property
-    def is_command_group(self):
+    def is_command_group(self) -> bool:
         return self.response_type == 0
 
     @property
-    def is_subcommand_or_subgroup(self):
+    def is_subcommand_or_subgroup(self) -> bool:
         return self.depth > 1
 
     @property
-    def depth(self):
+    def depth(self) -> int:
         return len(self.ln_names)
 
     @property
-    def ln_names(self):
+    def ln_names(self) -> list[str]:
         return [
             ln_name for ln_name in [self.l1_name, self.l2_name, self.l3_name] if ln_name
         ]
@@ -1207,7 +1321,9 @@ class AutoPostSettings(Base):
 
     @classmethod
     @ensure_session(db_session)
-    async def get_enabled(cls, auto_post_name: str, session: AsyncSession = None):
+    async def get_enabled(
+        cls, auto_post_name: str, session: AsyncSession = _UNSET
+    ) -> bool | None:
         enabled = (
             await session.execute(select(cls.enabled).where(cls.name == auto_post_name))
         ).scalar()
@@ -1216,8 +1332,8 @@ class AutoPostSettings(Base):
     @classmethod
     @ensure_session(db_session)
     async def set_enabled(
-        cls, auto_post_name: str, enabled: bool, session: AsyncSession = None
-    ):
+        cls, auto_post_name: str, enabled: bool, session: AsyncSession = _UNSET
+    ) -> None:
         currently_enabled = await cls.get_enabled(auto_post_name, session=session)
 
         if currently_enabled == enabled:
@@ -1234,51 +1350,51 @@ class AutoPostSettings(Base):
             )
 
     @classmethod
-    async def get_eververse_enabled(cls):
+    async def get_eververse_enabled(cls) -> bool | None:
         return await cls.get_enabled("eververse")
 
     @classmethod
-    async def set_eververse(cls, enabled: bool):
+    async def set_eververse(cls, enabled: bool) -> None:
         return await cls.set_enabled("eververse", enabled)
 
     @classmethod
-    async def get_lost_sector_enabled(cls):
+    async def get_lost_sector_enabled(cls) -> bool | None:
         return await cls.get_enabled("lost_sector")
 
     @classmethod
-    async def set_lost_sector(cls, enabled: bool):
+    async def set_lost_sector(cls, enabled: bool) -> None:
         return await cls.set_enabled("lost_sector", enabled)
 
     @classmethod
-    async def get_lost_sector_details_enabled(cls):
+    async def get_lost_sector_details_enabled(cls) -> bool | None:
         return await cls.get_enabled("lost_sector_details")
 
     @classmethod
-    async def set_lost_sector_details(cls, enabled: bool):
+    async def set_lost_sector_details(cls, enabled: bool) -> None:
         return await cls.set_enabled("lost_sector_details", enabled)
 
     @classmethod
-    async def get_xur_enabled(cls):
+    async def get_xur_enabled(cls) -> bool | None:
         return await cls.get_enabled("xur")
 
     @classmethod
-    async def set_xur(cls, enabled: bool):
+    async def set_xur(cls, enabled: bool) -> None:
         return await cls.set_enabled("xur", enabled)
 
     @classmethod
-    async def get_xur_default_image_enabled(cls):
+    async def get_xur_default_image_enabled(cls) -> bool | None:
         return await cls.get_enabled("xur_default_image")
 
     @classmethod
-    async def set_xur_default_image_enabled(cls, enabled: bool):
+    async def set_xur_default_image_enabled(cls, enabled: bool) -> None:
         return await cls.set_enabled("xur_default_image", enabled)
 
     @classmethod
-    async def get_gunsmith_enabled(cls):
+    async def get_gunsmith_enabled(cls) -> bool | None:
         return await cls.get_enabled("gunsmith")
 
     @classmethod
-    async def set_gunsmith(cls, enabled: bool):
+    async def set_gunsmith(cls, enabled: bool) -> None:
         return await cls.set_enabled("gunsmith", enabled)
 
 
@@ -1305,7 +1421,7 @@ class BungieCredentials(Base):
 
     @classmethod
     @ensure_session(db_session)
-    async def get_credentials(cls, id=1, session: AsyncSession = None) -> Self:
+    async def get_credentials(cls, id=1, session: AsyncSession = _UNSET) -> Self:
         return (await session.execute(select(cls).where(cls.id == id))).scalar()
 
     @classmethod
@@ -1315,13 +1431,13 @@ class BungieCredentials(Base):
         id=1,
         refresh_token=None,
         refresh_token_expires=None,
-        session: AsyncSession = None,
-    ):
+        session: AsyncSession = _UNSET,
+    ) -> None:
         refresh_token_expires = dt.datetime.now() + dt.timedelta(
             seconds=refresh_token_expires * 0.8  # 20% Factor of Safety
         )
 
-        self: cls = (await session.execute(select(cls.id).where(cls.id == id))).scalar()
+        self = (await session.execute(select(cls.id).where(cls.id == id))).scalar()
 
         if self:
             await session.execute(
@@ -1346,10 +1462,8 @@ class BungieCredentials(Base):
             )
 
 
-async def destroy_all():
-    # db_engine = create_engine(cfg.db_url, connect_args=cfg.db_connect_args)
-    db_engine = create_async_engine(cfg.db_url_async, connect_args=cfg.db_connect_args)
-    # db_session = sessionmaker(db_engine, **cfg.db_session_kwargs)
+async def destroy_all() -> None:
+    await wait_for_db()
 
     async with db_engine.begin() as conn:
         logging.info(f"Dropping tables: {list(Base.metadata.tables.keys())}")
@@ -1358,18 +1472,14 @@ async def destroy_all():
     await destroy_atlas_metadata()
 
 
-async def destroy_atlas_metadata():
-    db_engine = create_async_engine(cfg.db_url_async, connect_args=cfg.db_connect_args)
-
+async def destroy_atlas_metadata() -> None:
     async with db_engine.begin() as conn:
         logging.info("Dropping table: atlas_schema_revisions")
         await conn.execute(text("DROP TABLE IF EXISTS atlas_schema_revisions"))
 
 
-async def create_all():
-    # db_engine = create_engine(cfg.db_url, connect_args=cfg.db_connect_args)
-    db_engine = create_async_engine(cfg.db_url_async, connect_args=cfg.db_connect_args)
-    # db_session = sessionmaker(db_engine, **cfg.db_session_kwargs)
+async def create_all() -> None:
+    await wait_for_db()
 
     async with db_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

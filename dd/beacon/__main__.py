@@ -13,62 +13,77 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import logging
+"""Entry point for the beacon (main) Discord bot.
+
+Run with ``python -OOm dd.beacon``. Wires up the hikari client, miru and
+lightbulb, loads the ``dd.beacon.extensions`` and starts the gateway.
+"""
 
 import hikari as h
 import lightbulb as lb
 import miru
-from lightbulb.ext import tasks
 
-from ..common import cfg, schemas, utils
-from . import help, modules
-from .bot import CachedFetchBot, CustomHelpBot, ServerEmojiEnabledBot, UserCommandBot
+import dd.beacon.extensions
+import dd.beacon.extensions.user_commands
+from dd.beacon.extensions.statistics import track_command_usage
 
+from ..common import cfg, schemas
+from ..common.auth import owner_check_error_handler
+from ..common.bot import CachedFetchBot, ServerEmojiEnabledBot
+from ..common.discord_logging import (
+    aclose_discord_logging,
+    install_command_error_reporting,
+    install_discord_logging,
+)
+from ..common.extension_loader import load_extensions_strict
 
-class Bot(ServerEmojiEnabledBot, UserCommandBot, CachedFetchBot, CustomHelpBot):
-    pass
-
-
-bot = Bot(
-    **cfg.lightbulb_params(
-        include_message_content_intent=True,
-        central_guilds_only=False,
-        discord_token=cfg.discord_token_beacon,
-    ),
-    user_command_schema=schemas.UserCommand,
-    help_class=help.HelpCommand,
-    help_slash_command=True,
+bot = ServerEmojiEnabledBot(
+    token=cfg.discord_token_beacon,
+    intents=h.Intents.ALL_UNPRIVILEGED | h.Intents.MESSAGE_CONTENT,
+    max_rate_limit=600,
     emoji_servers=[cfg.kyber_discord_server_id],
 )
 
+client = lb.client_from_app(
+    bot,
+    cfg.test_env or (),  # Lightbulb enabled guilds
+    hooks=[track_command_usage],  # client-wide command-usage counter
+)
 
-@bot.listen()
-async def on_start(event: lb.events.LightbulbStartedEvent):
-    bot.d.guild_count = len(await bot.rest.fetch_my_guilds())
-    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
+# Make the bot injectable as CachedFetchBot (its concrete subclass type) in
+# addition to the hikari.GatewayBot registration lightbulb adds automatically.
+client.di.registry_for(lb.di.Contexts.DEFAULT).register_value(CachedFetchBot, bot)
+# Make the live command client injectable so the dynamic user-command system can
+# reach it to (re)register commands at runtime.
+client.di.registry_for(lb.di.Contexts.DEFAULT).register_value(lb.Client, client)
+
+# Render owner-gate rejections ephemerally, ahead of the catch-all alert reporter so
+# they never page the alerts channel.
+client.error_handler(owner_check_error_handler)
+
+# Surface any otherwise-unhandled command failure to the alerts channel, labelled
+# with the command that failed.
+install_command_error_reporting(client)
 
 
-@bot.listen()
-async def on_guild_add(event: h.events.GuildJoinEvent):
-    bot.d.guild_count += 1
-    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
+@bot.listen(h.StartingEvent)
+async def on_starting_event(_event: h.StartingEvent):
+    await schemas.wait_for_db()
+    await load_extensions_strict(client, dd.beacon.extensions)
+    await dd.beacon.extensions.user_commands.resync_user_commands(client, sync=False)
+    await client.start()
 
 
-@bot.listen()
-async def on_guild_rm(event: h.events.GuildLeaveEvent):
-    bot.d.guild_count -= 1
-    await utils.update_status(bot, bot.d.guild_count, cfg.test_env)
+@bot.listen(h.StartedEvent)
+async def on_start_install_logging(_event: h.StartedEvent):
+    await install_discord_logging(bot, bot_name="beacon")
 
 
-_modules = map(modules.__dict__.get, modules.__all__)
+@bot.listen(h.StoppingEvent)
+async def on_stopping_event(_event: h.StoppingEvent):
+    await aclose_discord_logging()
+    await schemas.db_engine.dispose()
 
-for module in _modules:
-    logging.info(f"Loading module {module.__name__.split('.')[-1]}")
-    if (hasattr(module, "IGNORE") and module.IGNORE) or not hasattr(module, "register"):
-        logging.info(f"Skipping module {module.__name__.split('.')[-1]}")
-        continue
-    module.register(bot)
 
-tasks.load(bot)
 miru.install(bot)
 bot.run()

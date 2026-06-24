@@ -1,0 +1,91 @@
+[[overrides]]
+include = ["dd/common/schemas.py"]
+
+# SQLAlchemy 2.0's Core/ORM query layer isn't fully modelled by ty, so these are
+# suppressed file-wide. All six still fire (verified by flipping them to "error");
+# fixing them would need per-line inline ignores across ~40 query sites.
+[overrides.rules]
+# `_UNSET` sentinel cast (None -> AsyncSession) and narrowing reassignments such as
+# `result = result.fetchall()` that change a variable's type
+invalid-assignment = "ignore"
+# select()/where()/and_()/insert().values() and async_sessionmaker(**kwargs) args
+invalid-argument-type = "ignore"
+# returning session.execute().fetchall()/.scalar() as list[tuple]/Self
+invalid-return-type = "ignore"
+# .in_()/.fetchall() on Column/Result not seen on the inferred type
+unresolved-attribute = "ignore"
+# select() and column-operator overloads ty can't resolve
+no-matching-overload = "ignore"
+# ~column (SQL NOT) and datetime minus (None | timedelta) arithmetic
+unsupported-operator = "ignore"
+
+[[overrides]]
+include = ["dd/hmessage/message.py"]
+
+[overrides.rules]
+# attrs `.validator` decorator not understood by ty
+unresolved-attribute = "ignore"
+# HMessage.attachments stores URLs (str) but field is typed list[Attachment] by design
+invalid-argument-type = "ignore"
+
+[[overrides]]
+include = ["dd/sector_accounting/sector_accounting.py"]
+
+[overrides.rules]
+# attrs @attr.s classes: ty doesn't understand attr.ib()-generated __init__ params
+unknown-argument = "ignore"
+too-many-positional-arguments = "ignore"
+# gspread stubs: variable type changes after reassignment from Spreadsheet → list
+invalid-assignment = "ignore"
+# gspread stubs + attrs: various argument type mismatches
+invalid-argument-type = "ignore"
+# defaultdict(EntityRotation) + Sector.__add__ not understood through attrs
+no-matching-overload = "ignore"
+unsupported-operator = "ignore"
+# Minutes type alias used as default; ty can't resolve it as int-compatible
+invalid-parameter-default = "ignore"
+
+[[overrides]]
+include = ["dd/sector_accounting/xur.py"]
+
+[overrides.rules]
+# attrs @attr.s classes: ty doesn't understand attr.ib()-generated __init__ params
+unknown-argument = "ignore"
+too-many-positional-arguments = "ignore"
+invalid-argument-type = "ignore"
+# SpreadsheetBackedData subclasses override from_gspread with narrower signatures
+invalid-method-override = "ignore"
+# cls() on dict subclass not seen as callable by ty
+call-non-callable = "ignore"
+
+[[overrides]]
+include = ["dd/sector_accounting/utils.py"]
+
+[overrides.rules]
+# EntityRotation(list) narrows __getitem__ to int-only; slice variant not needed
+invalid-method-override = "ignore"
+
+[[overrides]]
+include = ["dd/common/tests/test_utils.py"]
+
+[overrides.rules]
+# construct_emoji_substituter is typed for dict[str, h.Emoji] but only calls
+# str() on the values, so the tests pass plain strings.
+invalid-argument-type = "ignore"
+
+[[overrides]]
+include = ["dd/hmessage/tests/test_message.py"]
+
+[overrides.rules]
+# HMessage.attachments stores URLs (str) but is typed list[Attachment] by design
+# (mirrors the override on dd/hmessage/message.py).
+invalid-argument-type = "ignore"
+
+[[overrides]]
+include = ["dd/sector_accounting/tests/test_sector_accounting.py"]
+
+[overrides.rules]
+# Rotation is built from plain dict literals for sector_rot/sector_data; ty wants
+# defaultdict/SectorData but a dict suffices at runtime (mirrors the overrides on
+# dd/sector_accounting/sector_accounting.py).
+invalid-argument-type = "ignore"

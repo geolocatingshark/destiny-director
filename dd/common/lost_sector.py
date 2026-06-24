@@ -1,10 +1,13 @@
+"""Shared rendering of the Lost Sector post used by both bots."""
+
+import asyncio
 import datetime as dt
 import typing as t
 
 import aiohttp
 import hikari as h
-import lightbulb as lb
-from hmessage import HMessage as MessagePrototype
+
+from dd.hmessage import HMessage
 
 from ..common import cfg, schemas
 from ..common.utils import discord_error_logger, fetch_emoji_dict
@@ -48,15 +51,15 @@ def format_data(sector: sector_accounting.Sector) -> str:
 
 
 async def format_post(
-    bot: lb.BotApp | None = None,
-    sectors: sector_accounting.Sector | None = None,
+    bot: h.GatewayBot | None = None,
+    sectors: list[sector_accounting.Sector] | None = None,
     date: dt.datetime | None = None,
-    emoji_dict: t.Dict[str, h.Emoji] | None = None,
-) -> MessagePrototype:
+    emoji_dict: dict[str, h.Emoji] | None = None,
+) -> HMessage:
     """Format a lost sector announcement message
 
     Args:
-        bot (lb.BotApp | None, optional): The bot instance. Must be specified if
+        bot (h.GatewayBot | None, optional): The bot instance. Must be specified if
         emoji_dict is not.
 
         sector (sector_accounting.Sector | None, optional): The sector to announce.
@@ -81,14 +84,18 @@ async def format_post(
     if emoji_dict is None:
         if bot is None:
             raise ValueError("bot must be provided if emoji_dict is not")
-        emoji_dict = await fetch_emoji_dict(bot)
+        emoji_dict = t.cast(dict[str, h.Emoji], await fetch_emoji_dict(bot))
 
     if sectors is None:
-        sectors: t.List[sector_accounting.Sector] = (
-            sector_accounting.Rotation.from_gspread_url(
-                cfg.sheets_ls_url, cfg.gsheets_credentials, buffer=5
-            )(date)
+        # from_gspread_url does blocking gspread network I/O; offload it so the
+        # event loop keeps servicing other coroutines during the autopost.
+        rotation = await asyncio.to_thread(
+            sector_accounting.Rotation.from_gspread_url,
+            cfg.sheets_ls_url,
+            cfg.gsheets_credentials,
+            buffer=5,
         )
+        sectors = rotation(date)
 
     # Follow the hyperlink to have the newest image embedded
     try:
@@ -112,42 +119,47 @@ async def format_post(
         await schemas.AutoPostSettings.get_lost_sector_details_enabled()
     )
 
+    description = embed.description or ""
+
     for sector in sectors:
         sector: sector_accounting.Sector
-        embed.description += f":LS: **[{sector.name}]({sector.shortlink_gfx})**\n"
+        description += f":LS: **[{sector.name}]({sector.shortlink_gfx})**\n"
         if ls_extra_details_enabled:
-            embed.description += format_data(sector)
+            description += format_data(sector)
 
     if not ls_extra_details_enabled:
-        embed.description += "\n"
+        description += "\n"
 
-    embed.description += (
+    description += (
         "Rewards:\n"
         + ":enhancement_core: Enhancement Core\n"
         + ":exotic_engram: Exotic Engram (If-Solo)\n"
         + ":legendary_weap: Legendary Weapon (If-Solo)\n"
         + "\n"
     )
-    embed.description += (
+    description += (
         "[View more details](https://lostsectortoday.com) ↗\n"
         "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
     )
 
-    embed.description = re_user_side_emoji.sub(
-        construct_emoji_substituter(emoji_dict), embed.description
+    description = re_user_side_emoji.sub(
+        construct_emoji_substituter(emoji_dict), description
     )
 
-    if len(embed.description) >= 4096:
+    if len(description) >= 4096:
         await discord_error_logger(
-            bot, ValueError("WARNING: Embed is greater than 4096 characters!")
+            ValueError("WARNING: Embed is greater than 4096 characters!"),
+            operation="Lost sector embed",
         )
         # TODO: Mention owners for above
-        embed.description = embed.description[:4096]
+        description = description[:4096]
+
+    embed.description = description
 
     if ls_gif_url:
         embed.set_image(ls_gif_url)
 
-    return MessagePrototype(embeds=[embed])
+    return HMessage(embeds=[embed])
 
 
 async def format_sector(sector: sector_accounting.Sector) -> str:

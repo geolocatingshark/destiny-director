@@ -1,4 +1,3 @@
-import typing as t
 from itertools import dropwhile
 
 import attr
@@ -21,7 +20,7 @@ def _parse_counts(count: str) -> int:
 
 def all_values_from_sheet(
     sheet: gspread.Worksheet, columns_are_major: bool = True
-) -> list:
+) -> list[list[str]]:
     # Returns all values from a sheet with columns as the major dimension
     if columns_are_major:
         return sheet.get_values(major_dimension=gspread.utils.Dimension.cols)
@@ -29,8 +28,9 @@ def all_values_from_sheet(
         return sheet.get_values(major_dimension=gspread.utils.Dimension.rows)
 
 
-class EntityRotation(list):
-    def __init__(self, entity_list: list):
+class EntityRotation(list[str]):
+    def __init__(self, entity_list: list[str]):
+        super().__init__()
         self.extend(entity_list)
 
     def __getitem__(self, days_since_reference_date: int) -> str:
@@ -43,7 +43,7 @@ class EntityRotation(list):
 
     @classmethod
     def from_gspread(
-        cls, sheet_or_values: t.Union[gspread.Worksheet, list], column: int
+        cls, sheet_or_values: gspread.Worksheet | list[list[str]], column: int
     ):
         values = (
             all_values_from_sheet(sheet_or_values)
@@ -61,12 +61,12 @@ class EntityRotation(list):
 
 @attr.s
 class SectorV1Compat:
-    name = attr.ib()
-    shortlink_gfx = attr.ib()
-    reward = attr.ib(default=None)
-    champions = attr.ib(default=None)
-    shields = attr.ib(default=None)
-    burn = attr.ib(default=None)
-    modifiers = attr.ib(default=None)
-    overcharged_weapon = attr.ib(default=None)
-    surge = attr.ib(default=None)
+    name: str = attr.ib()
+    shortlink_gfx: str = attr.ib()
+    reward: str | None = attr.ib(default=None)
+    champions: str | None = attr.ib(default=None)
+    shields: str | None = attr.ib(default=None)
+    burn: str | None = attr.ib(default=None)
+    modifiers: str | None = attr.ib(default=None)
+    overcharged_weapon: str | None = attr.ib(default=None)
+    surge: str | None = attr.ib(default=None)

@@ -103,6 +103,7 @@ celerybeat.pid
 
 # Environments
 *.env
+.venv
 .venv_lb_2.0
 .venv_lb_3.0
 env/
@@ -152,3 +153,19 @@ Twitter Keys.txt
 .stfolder/
 .stignore
 .trash/
+
+# Claude Code sandbox (bubblewrap) phantom mount-points.
+# These don't exist on disk; they only appear as /dev/null bind-mounts inside
+# the sandbox at runtime. Ignored so `git add -A` can't re-stage them as empty
+# blobs. (.mcp.json deliberately not ignored — it's a real project-MCP file.)
+.bash_profile
+.bashrc
+.profile
+.zshrc
+.zprofile
+.gitconfig
+.gitmodules
+.ripgreprc
+.idea
+# Ad-hoc investigation scratch (Portal API etc.) — not for commit
+scratch/

@@ -13,17 +13,20 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import asyncio
-
 import pytest
+import pytest_asyncio
 
 from dd.common import schemas
 from dd.common.schemas import ServerStatistics
 
+pytestmark = pytest.mark.integration
 
-def setup_function(function):
-    asyncio.run(schemas.destroy_all())
-    asyncio.run(schemas.create_all())
+
+@pytest_asyncio.fixture(autouse=True)
+async def _fresh_db():
+    await schemas.destroy_all()
+    await schemas.create_all()
+    yield
 
 
 @pytest.mark.asyncio
@@ -71,7 +74,7 @@ async def test_add_servers_in_batch():
     server_2_population = 30
 
     await ServerStatistics.add_servers_in_batch(
-        (server_id_1, server_id_2), (server_1_population, server_2_population)
+        [server_id_1, server_id_2], [server_1_population, server_2_population]
     )
     assert await ServerStatistics.fetch_server_populations() == [
         (server_id_1, server_1_population),
@@ -91,12 +94,12 @@ async def test_update_populations_in_batch():
     server_3_population = 50
 
     await ServerStatistics.add_servers_in_batch(
-        (server_id_1, server_id_2, server_id_3),
-        (server_1_population, server_2_population, server_3_population),
+        [server_id_1, server_id_2, server_id_3],
+        [server_1_population, server_2_population, server_3_population],
     )
     await ServerStatistics.update_population_in_batch(
-        (server_id_1, server_id_2),
-        (server_1_population_2, server_2_population_2),
+        [server_id_1, server_id_2],
+        [server_1_population_2, server_2_population_2],
     )
     assert await ServerStatistics.fetch_server_populations() == [
         (server_id_1, server_1_population_2),

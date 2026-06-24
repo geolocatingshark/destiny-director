@@ -13,19 +13,22 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import asyncio
-
 import pytest
+import pytest_asyncio
 
 from dd.beacon.utils import get_function_name
 from dd.common import schemas
 from dd.common.schemas import UserCommand
 from dd.common.utils import FriendlyValueError
 
+pytestmark = pytest.mark.integration
 
-def setup_function():
-    asyncio.run(schemas.destroy_all())
-    asyncio.run(schemas.create_all())
+
+@pytest_asyncio.fixture(autouse=True)
+async def _fresh_db():
+    await schemas.destroy_all()
+    await schemas.create_all()
+    yield
 
 
 @pytest.fixture(scope="function")
@@ -110,6 +113,7 @@ async def test_add_duplicate_command():
     response_type = 1
     response_data = "Hello"
 
+    i = 0
     with pytest.raises(FriendlyValueError):
         # Adding a command with a duplicate name should raise
         # a custom value error
