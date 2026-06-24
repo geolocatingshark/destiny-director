@@ -138,12 +138,17 @@ def test_missing_manifest_entry_returns_none():
 
 
 def _item_of(
-    class_: str, type_name: str, name: str = "X", hash_: int = 1, cost: int = 100
+    class_: str,
+    type_name: str,
+    name: str = "X",
+    hash_: int = 1,
+    cost: int = 100,
+    rarity: str = "Legendary",
 ) -> DestinyItem:
     return DestinyItem(
         name=name,
         hash_=hash_,
-        rarity="Legendary",
+        rarity=rarity,
         class_=class_,
         bucket="",
         item_type=2,
@@ -195,14 +200,38 @@ def test_group_eververse_offerings_orders_groups_and_sorts_items():
     assert [i.name for i in armor] == ["Arcturus Engine", "Hrafnagud"]
 
 
-def test_eververse_line_format():
-    # Uniform start (name first), class emoji after the name, bare cost.
-    line = _eververse_line(
-        _item_of("Titan", "Titan Ornament", name="Arcturus Engine", cost=1500), None
+def test_eververse_line_armor_ornament_puts_class_emoji_with_target():
+    manifest = {
+        "DestinyInventoryItemDefinition": {
+            7: {
+                "traitIds": ["item.ornament.armor"],
+                "displayProperties": {
+                    "description": (
+                        "Equip this ornament to change the appearance of "
+                        "Hallowfire Heart."
+                    )
+                },
+            }
+        }
+    }
+    armor = _item_of(
+        "Titan",
+        "Titan Ornament",
+        name="Arcturus Engine",
+        hash_=7,
+        cost=1500,
+        rarity="Exotic",
     )
+    line = _eververse_line(armor, manifest)
     assert line.startswith("• [Arcturus Engine](")
-    assert ":titan:" in line
-    assert "— 1500" in line
+    assert "— 1500 (:titan: Hallowfire Heart)" in line
+
+
+def test_eververse_line_subtypes_and_classless_armor():
+    # Armor ornament with no resolvable target → class emoji alone in parens.
+    assert _eververse_line(
+        _item_of("Hunter", "Hunter Ornament", cost=300), None
+    ).endswith("(:hunter:)")
     # Ships/sparrows get a subtype label (sparrows are the "Vehicle" item type).
     assert _eververse_line(_item_of("Unknown", "Ship", cost=2000), None).endswith(
         "· Ship"

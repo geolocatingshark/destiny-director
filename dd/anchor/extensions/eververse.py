@@ -119,20 +119,24 @@ _SHIP_SPARROW_LABEL = {"Ship": "Ship", "Vehicle": "Sparrow", "Sparrow": "Sparrow
 def _eververse_line(
     item: api.DestinyItem, manifest_table: dict[str, t.Any] | None
 ) -> str:
-    """One rendered offering line: ``• [name](url) [class] — cost (target) · subtype``.
+    """One rendered offering line: ``• [name](url) — cost (… target) · subtype``.
 
-    Every line starts with the item name for a uniform look; armor ornaments carry
-    their class emoji right after the name, exotic ornaments show the exotic they
-    reskin in parens, and ships/sparrows get a Ship/Sparrow subtype label. Costs are
-    bare numbers — the post header states they are all in Bright Dust."""
-    line = f"• [{item.name}]({item.lightgg_url})"
-    if item.class_ in _CLASS_NAMES:
-        line += f" :{item.class_.lower()}:"
-    line += f" — {item.costs['Bright Dust']}"
-    if item.is_exotic and manifest_table is not None:
-        target = _exotic_ornament_target_name(item, manifest_table)
-        if target:
-            line += f" ({target})"
+    Every line starts with the item name for a uniform look; costs are bare numbers
+    (the header notes they're all Bright Dust). Armor ornaments put their class emoji
+    inside the parens before the exotic they reskin — ``(:titan: Hallowfire Heart)`` —
+    or the class emoji alone when no target resolves; weapon ornaments show just the
+    exotic; ships/sparrows get a Ship/Sparrow subtype label."""
+    line = f"• [{item.name}]({item.lightgg_url}) — {item.costs['Bright Dust']}"
+    target = (
+        _exotic_ornament_target_name(item, manifest_table)
+        if item.is_exotic and manifest_table is not None
+        else None
+    )
+    if item.class_ in _CLASS_NAMES:  # armor ornament
+        class_emoji = f":{item.class_.lower()}:"
+        line += f" ({class_emoji} {target})" if target else f" ({class_emoji})"
+    elif target:  # weapon ornament
+        line += f" ({target})"
     subtype = _SHIP_SPARROW_LABEL.get(item.item_type_friendly_name)
     if subtype:
         line += f" · {subtype}"
