@@ -14,6 +14,8 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 
+import enum
+
 import hikari as h
 import lightbulb as lb
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,14 +73,31 @@ def bot_missing_permissions_embed(bot_owners: list[h.User]):
     )
 
 
-def _is_missing_perms(e: Exception) -> bool:
-    """True if a hikari error indicates the bot lacks channel permissions.
+class MirrorOutcome(enum.Enum):
+    """Classification of a hikari error hit while (un)following a channel."""
 
-    NOTE: this matches on the error's message text, which is fragile — see the
-    ToDo.md entry for the planned exception-type/error-code state-machine
-    rewrite of FollowControl.invoke."""
-    args = str(e.args).lower()
-    return "missing permissions" in args or "missing access" in args
+    MISSING_PERMS = enum.auto()  # bot lacks channel perms → tell the user
+    NEEDS_LEGACY = enum.auto()  # announce channel → use a legacy mirror instead
+    CHANNEL_GONE = enum.auto()  # no such channel/webhook (e.g. forum) → ignore
+    OTHER = enum.auto()  # unclassified → re-raise
+
+
+# Discord JSON error codes — stable across wording/locale/version, unlike the message
+# text the old substring matching relied on.
+_OUTCOME_BY_CODE: dict[int, MirrorOutcome] = {
+    50001: MirrorOutcome.MISSING_PERMS,  # Missing Access
+    50013: MirrorOutcome.MISSING_PERMS,  # Missing Permissions
+    50024: MirrorOutcome.NEEDS_LEGACY,  # Cannot execute action on this channel type
+    10003: MirrorOutcome.CHANNEL_GONE,  # Unknown Channel
+}
+
+
+def classify_mirror_error(exc: BaseException) -> MirrorOutcome:
+    """Classify a hikari error by its Discord error code into a MirrorOutcome.
+
+    Code-based, so it no longer breaks when Discord changes the message wording,
+    locale, or API version. A non-hikari error (no ``code``) classifies as OTHER."""
+    return _OUTCOME_BY_CODE.get(getattr(exc, "code", None), MirrorOutcome.OTHER)
 
 
 async def respond_missing_perms(ctx: lb.Context, bot: CachedFetchBot) -> None:
@@ -161,6 +180,85 @@ async def disable_mirror(
         )
 
 
+def insufficient_permissions_embed(bot_owners: list[h.User]) -> h.Embed:
+    return set_owners_footer(
+        h.Embed(
+            title="Insufficient permissions",
+            description="You have insufficient permissions to use this command.\n"
+            + "Any one of the following permissions is needed:\n```\n"
+            + "- Manage Webhooks\n"
+            + "- Manage Guild\n"
+            + "- Manage Channel\n"
+            + "- Administrator\n```\n"
+            + "Make sure that you have this permission in this channel and not "
+            + "just in this guild\n"
+            + "Feel free to contact me on discord if you are having issues!\n",
+            color=cfg.embed_error_color,
+        ),
+        bot_owners,
+    )
+
+
+def autopost_error_embed(bot_owners: list[h.User], error_reference: str) -> h.Embed:
+    return set_owners_footer(
+        h.Embed(
+            title="Pardon our dust!",
+            description="An error occurred while trying to update autopost settings. "
+            + "Please contact me **(username at the bottom of the embed)** with the "
+            + f"error reference `{error_reference}` and we will fix this for you.",
+            color=cfg.embed_error_color,
+        ),
+        bot_owners,
+    )
+
+
+async def _respond_autopost_error(
+    ctx: lb.Context, bot: CachedFetchBot, e: Exception
+) -> None:
+    error_reference = await discord_error_logger(e, operation="Autopost")
+    await ctx.respond(autopost_error_embed(await bot.fetch_owners(), error_reference))
+
+
+async def _drop_existing_follow(
+    bot: CachedFetchBot, followable_channel: int, target_channel: int
+) -> None:
+    """Remove any existing follow webhook when switching to a legacy mirror.
+
+    A forum channel has no webhooks to remove (Unknown Channel → CHANNEL_GONE) and is
+    ignored; a permissions error propagates so the caller can report MISSING_PERMS."""
+    try:
+        await unfollow_channel(bot, followable_channel, target_channel)
+    except h.NotFoundError as e:
+        if classify_mirror_error(e) is not MirrorOutcome.CHANNEL_GONE:
+            raise
+
+
+async def _enable_autopost(
+    bot: CachedFetchBot,
+    followable_channel: int,
+    ctx: lb.Context,
+    ping_role: h.Role | None,
+    session: AsyncSession,
+) -> None:
+    """Enable an autopost mirror for ``ctx``'s channel.
+
+    New-style (follow-webhook) mirrors can't ping roles, so when a ping role is
+    requested we go straight to a legacy mirror and drop any prior follow webhook.
+    Otherwise we try a new-style mirror first and fall back to legacy only when the
+    channel can't be followed (announce channel → NEEDS_LEGACY)."""
+    if ping_role:
+        await enable_legacy_mirror(bot, followable_channel, ctx, ping_role, session)
+        await _drop_existing_follow(bot, followable_channel, ctx.channel_id)
+        return
+
+    try:
+        await enable_non_legacy_mirror(bot, followable_channel, ctx, session)
+    except h.BadRequestError as e:
+        if classify_mirror_error(e) is not MirrorOutcome.NEEDS_LEGACY:
+            raise
+        await enable_legacy_mirror(bot, followable_channel, ctx, ping_role, session)
+
+
 def follow_control_command_maker(
     followable_channel: int,
     autoposts_name: str,
@@ -200,188 +298,57 @@ def follow_control_command_maker(
         async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
             await ctx.defer()
 
-            option = bool(self.option)
+            enabling = bool(self.option)
             ping_role: h.Role | None = self.ping_role
 
-            # SIM117: deliberately kept nested rather than combined into a single
-            # `async with` — the body is a large, deeply-nested transaction block and
-            # flattening one indent level off it hurts readability more than it helps.
-            async with db_session() as session:  # noqa: SIM117
-                async with session.begin():
+            async with db_session() as session, session.begin():
+                try:
+                    # Preflight 1 — the bot must be able to see the channel. Use the
+                    # REST (not the cache): a stale cache can mask a later permissions
+                    # change and make the invoker-perms check pass spuriously.
                     try:
-                        try:
-                            # Note: Using the cache here seems to result in
-                            # utils.check_invoker_has_perms failing if
-                            # bot.rest.fetch_channel returns a forbidden error later
-                            # due to what I am assuming is a change in permissions
-                            # after the cache is initially populated
-                            await bot.rest.fetch_channel(ctx.channel_id)
-                        except h.ForbiddenError:
-                            await respond_missing_perms(ctx, bot)
-                            return
+                        await bot.rest.fetch_channel(ctx.channel_id)
+                    except h.ForbiddenError:
+                        await respond_missing_perms(ctx, bot)
+                        return
 
-                        if not (
-                            await check_invoker_is_owner(ctx)
-                            or await utils.check_invoker_has_perms(
-                                ctx, end_user_allowed_perms
-                            )
-                        ):
-                            bot_owners = await bot.fetch_owners()
-                            await ctx.respond(
-                                set_owners_footer(
-                                    h.Embed(
-                                        title="Insufficient permissions",
-                                        description="You have insufficient "
-                                        "permissions to use this command.\n"
-                                        + "Any one of the following permissions is "
-                                        + "needed:\n```\n"
-                                        + "- Manage Webhooks\n"
-                                        + "- Manage Guild\n"
-                                        + "- Manage Channel\n"
-                                        + "- Administrator\n```\n"
-                                        + "Make sure that you have this permission "
-                                        + "in this channel and not "
-                                        + "just in this guild\n"
-                                        + "Feel free to contact me on discord if "
-                                        + "you are having issues!\n",
-                                        color=cfg.embed_error_color,
-                                    ),
-                                    bot_owners,
-                                )
-                            )
-                            return
-
-                        try:
-                            if option:
-                                # If we are enabling autoposts:
-                                try:
-                                    if ping_role:
-                                        raise ValueError(
-                                            "Role pings are not supported by "
-                                            "new style mirrors"
-                                        )
-                                    await enable_non_legacy_mirror(
-                                        bot=bot,
-                                        followable_channel=followable_channel,
-                                        ctx=ctx,
-                                        session=session,
-                                    )
-                                except h.BadRequestError as e:
-                                    if (
-                                        "cannot execute action on this channel type"
-                                        in str(e.args).lower()
-                                    ):
-                                        # If this is an announce channel, then
-                                        # the above error is thrown. In this
-                                        # case, add a legacy mirror instead
-
-                                        # Test sending a message to the channel
-                                        # before adding the mirror
-                                        await enable_legacy_mirror(
-                                            bot=bot,
-                                            followable_channel=followable_channel,
-                                            ctx=ctx,
-                                            role=ping_role,
-                                            session=session,
-                                        )
-                                    else:
-                                        raise e
-                                except ValueError as e:
-                                    if (
-                                        "role pings are not supported by new "
-                                        "style mirrors" in str(e.args).lower()
-                                    ):
-                                        await enable_legacy_mirror(
-                                            bot=bot,
-                                            followable_channel=followable_channel,
-                                            ctx=ctx,
-                                            role=ping_role,
-                                            session=session,
-                                        )
-
-                                        try:
-                                            await unfollow_channel(
-                                                bot=bot,
-                                                news_channel=followable_channel,
-                                                target_channel=ctx.channel_id,
-                                            )
-                                        except h.ForbiddenError as e2:
-                                            if _is_missing_perms(e2):
-                                                # Can't delete the webhook without
-                                                # permissions; notify the user with
-                                                # a list of possibly missing perms.
-                                                await respond_missing_perms(ctx, bot)
-                                                return
-                                            else:
-                                                raise e2
-                                        except h.NotFoundError as e2:
-                                            if (
-                                                "unknown channel"
-                                                in str(e2.args).lower()
-                                            ):
-                                                # In case we cannot fetch the
-                                                # webhooks part of the channel we
-                                                # get a not found error. This
-                                                # happens in forum channels. We
-                                                # can safely ignore this error
-                                                # since its impossible for users
-                                                # to be subscribed through
-                                                # webhooks in these types of
-                                                # channels
-                                                pass
-                                            else:
-                                                raise e2
-                                    else:
-                                        raise e
-                            else:
-                                await disable_mirror(
-                                    ctx=ctx,
-                                    followable_channel=followable_channel,
-                                    bot=bot,
-                                    session=session,
-                                )
-
-                        except h.ForbiddenError as e:
-                            if _is_missing_perms(e):
-                                # Can't delete the webhook without permissions;
-                                # notify the user with a list of possibly missing
-                                # perms.
-                                await respond_missing_perms(ctx, bot)
-                                return
-                            else:
-                                raise e
-                    except Exception as e:
-                        error_reference = await discord_error_logger(
-                            e, operation="Autopost"
+                    # Preflight 2 — the invoker must own the bot or hold a managing
+                    # permission in this channel.
+                    if not (
+                        await check_invoker_is_owner(ctx)
+                        or await utils.check_invoker_has_perms(
+                            ctx, end_user_allowed_perms
                         )
-                        bot_owners = await bot.fetch_owners()
+                    ):
                         await ctx.respond(
-                            set_owners_footer(
-                                h.Embed(
-                                    title="Pardon our dust!",
-                                    description="An error occurred while trying to "
-                                    "update autopost settings. "
-                                    + "Please contact "
-                                    + "me **(username at the bottom of the embed)** "
-                                    + "with the "
-                                    + f"error reference `{error_reference}` and we "
-                                    + "will fix this "
-                                    + "for you.",
-                                    color=cfg.embed_error_color,
-                                ),
-                                bot_owners,
-                            )
+                            insufficient_permissions_embed(await bot.fetch_owners())
                         )
-                        raise e
+                        return
+
+                    # Apply the change. NEEDS_LEGACY (announce channel) and
+                    # CHANNEL_GONE (forum webhooks) are resolved inside the helpers;
+                    # only MISSING_PERMS and unclassified errors surface here.
+                    if enabling:
+                        await _enable_autopost(
+                            bot, followable_channel, ctx, ping_role, session
+                        )
                     else:
-                        await ctx.respond(
-                            h.Embed(
-                                title=f"{autoposts_friendly_name} autoposts "
-                                + ("enabled" if option else "disabled")
-                                + "!",
-                                color=cfg.embed_default_color,
-                            )
+                        await disable_mirror(ctx, followable_channel, bot, session)
+                except Exception as e:
+                    if classify_mirror_error(e) is MirrorOutcome.MISSING_PERMS:
+                        await respond_missing_perms(ctx, bot)
+                        return
+                    await _respond_autopost_error(ctx, bot, e)
+                    raise
+                else:
+                    await ctx.respond(
+                        h.Embed(
+                            title=f"{autoposts_friendly_name} autoposts "
+                            + ("enabled" if enabling else "disabled")
+                            + "!",
+                            color=cfg.embed_default_color,
                         )
+                    )
 
     return FollowControl
 
