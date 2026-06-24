@@ -20,7 +20,6 @@ import lightbulb as lb
 
 from dd.hmessage import HMessage
 
-from ..common import cfg
 from ..common.bot import CachedFetchBot
 
 logger = logging.getLogger(__name__)
@@ -34,10 +33,7 @@ def make_autopost_control_commands(
     message_constructor_coro: t.Callable[..., t.Awaitable[HMessage]],
     message_announcer_coro: t.Callable[..., t.Awaitable[t.Any]] | None = None,
 ) -> lb.Group:
-    parent_group = lb.Group(
-        autopost_name if not cfg.test_env else "dev_" + autopost_name,
-        "Commands for Kyber",
-    )
+    parent_group = lb.Group(autopost_name, "Commands for Kyber")
 
     @parent_group.register
     class AutopostControl(

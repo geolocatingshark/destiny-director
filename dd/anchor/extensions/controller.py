@@ -20,13 +20,9 @@ import lightbulb as lb
 from ...common import cfg
 from ...common.bot import CachedFetchBot
 
-control_group_name = "ddv1"
-if cfg.test_env:
-    control_group_name = "dev_ddv1"
-
 loader = lb.Loader()
 
-kyber = lb.Group(control_group_name, "Commands for Kyber")
+kyber = lb.Group("ddv1", "Commands for Kyber")
 
 
 @kyber.register
