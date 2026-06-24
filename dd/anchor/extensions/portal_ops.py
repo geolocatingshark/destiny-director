@@ -339,7 +339,8 @@ async def fetch_portal_ops() -> list[PortalOp]:
 # ── Rendering ──────────────────────────────────────────────────────────────────
 
 PORTAL_OPS_FOOTER = (
-    "\n\n[**View More**](https://kyber3000.com) ↗\n\nGood luck out there! :gscheer:"
+    "[View more details](https://kyber3000.com) ↗\n"
+    "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
 )
 
 
@@ -347,22 +348,21 @@ async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
     ops = await fetch_portal_ops()
     emoji_dict = await fetch_emoji_dict(bot)
 
-    description = "# [PORTAL OPS](https://kyber3000.com)\n\n"
-    description += f":time:  Featured ops reset <t:{_next_daily_reset_unix()}:R>\n"
+    description = "# :Daily_Portal_Focus: [Portal Ops](https://kyber3000.com)\n\n"
+    description += f":time: Featured ops reset <t:{_next_daily_reset_unix()}:R>\n\n"
 
     grouped = ops_by_tab(ops)
-
     if not grouped:
-        description += "\nNo featured ops are currently available.\n"
+        description += "No featured ops are currently available.\n\n"
 
     for tab in TAB_ORDER + [name for name in grouped if name not in TAB_ORDER]:
         tab_ops = grouped.get(tab)
         if not tab_ops:
             continue
-        description += f"## **__{tab}__**\n"
+        description += f"**{tab}**\n"
         for op in tab_ops:
             description += (
-                f"{op.reward_emoji}  **{op.activity_name}** — "
+                f"{op.reward_emoji} **{op.activity_name}** — "
                 f"[{op.reward_name}](https://light.gg/db/items/{op.reward_hash})\n"
             )
         description += "\n"
