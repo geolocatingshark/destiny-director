@@ -338,10 +338,9 @@ async def fetch_portal_ops() -> list[PortalOp]:
 
 # ── Rendering ──────────────────────────────────────────────────────────────────
 
-PORTAL_OPS_FOOTER = (
-    "[View more details](https://kyber3000.com) ↗\n"
-    "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
-)
+# No "View more details" link: there's no Portal-specific page to point at, so a
+# generic-homepage "details" link would be disingenuous (see commit history).
+PORTAL_OPS_FOOTER = "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
 
 
 async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
