@@ -26,6 +26,7 @@ from ...common.bot import CachedFetchBot
 from ...common.schemas import MirroredChannel, db_session
 from ...common.utils import discord_error_logger
 from .. import utils
+from . import mirror_tracing
 
 loader = lb.Loader()
 
@@ -178,6 +179,9 @@ async def disable_mirror(
         await MirroredChannel.remove_mirror(
             followable_channel, ctx.channel_id, session=session
         )
+        # Drop it from the in-memory crosspost trace cache so it doesn't leak or go
+        # stale (the tracer would otherwise re-add a mirror just removed).
+        mirror_tracing.forget_traced_mirror(followable_channel, int(ctx.channel_id))
 
 
 def insufficient_permissions_embed(bot_owners: list[h.User]) -> h.Embed:

@@ -41,6 +41,24 @@ followable_servers_list = (cfg.kyber_discord_server_id, cfg.control_discord_serv
 non_legacy_mirrors = defaultdict(list)
 
 
+def forget_traced_mirror(src_ch_id: int, dest_ch_id: int) -> None:
+    """Drop a traced ``src -> dest`` mirror from the in-memory cache.
+
+    Called when a non-legacy mirror is disabled/removed so ``non_legacy_mirrors``
+    does not (a) grow without bound and (b) go stale relative to the DB — the
+    ``message_tracer`` gate (``channel_id in non_legacy_mirrors``) would otherwise
+    keep re-adding a mirror a user just removed. The source key is dropped once its
+    dest list empties.
+    """
+    dests = non_legacy_mirrors.get(src_ch_id)
+    if not dests:
+        return
+    while dest_ch_id in dests:
+        dests.remove(dest_ch_id)
+    if not dests:
+        del non_legacy_mirrors[src_ch_id]
+
+
 @loader.listener(h.MessageCreateEvent)
 async def message_tracer(event: h.MessageCreateEvent):
     if not event.message.flags.all(h.MessageFlag.IS_CROSSPOST):
