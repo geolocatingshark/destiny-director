@@ -274,6 +274,29 @@ def _build_cancel_menu(
     return menu, handle
 
 
+# The wrapped message listeners (@ignore_non_src_channels / @utils.ignore_own_user)
+# strip lightbulb's DI, so a ``client: lb.Client = lb.di.INJECTED`` param on them never
+# resolves — it stays the DI Marker, which has no ``safe_create_task`` and crashes
+# ``Menu.attach_persistent``. Capture the real client once at startup via an unwrapped
+# listener (DI works there, as in the autopost StartedEvent listeners) so the
+# auto-mirror progress logger can still attach the cancel menu. Commands inject their
+# own client directly and don't depend on this.
+_client: lb.Client | None = None
+
+
+@loader.listener(h.StartedEvent)
+async def _capture_client(
+    _event: h.StartedEvent, client: lb.Client = lb.di.INJECTED
+) -> None:
+    global _client
+    _client = client
+
+
+# Progress logging is best-effort and is awaited *before* the mirror runs, so an
+# unbounded retry here would block the mirror entirely. Cap the attempts and give up.
+_PROGRESS_LOGGER_MAX_TRIES = 5
+
+
 async def start_progress_logger(
     bot: CachedFetchBot,
     control: KernelWorkControl,
@@ -347,9 +370,13 @@ async def start_progress_logger(
                     enable_cancellation=enable_cancellation,
                 )
 
+            # The threaded client may be the unresolved DI Marker (wrapped listeners)
+            # or None (direct calls); fall back to the captured real client. Only a
+            # genuine lb.Client can back the cancel menu — never the Marker.
+            cancel_client = client if isinstance(client, lb.Client) else _client
             menu_handle: lbc.MenuHandle | None = None
-            if enable_cancellation and client is not None:
-                _menu, menu_handle = _build_cancel_menu(control, client, render)
+            if enable_cancellation and cancel_client is not None:
+                _menu, menu_handle = _build_cancel_menu(control, cancel_client, render)
 
             log_message = await log_channel.send(
                 components=render(not control.is_work_left_to_do),
@@ -360,6 +387,15 @@ async def start_progress_logger(
             e.add_note("Failed to log mirror progress due to exception\n")
             logging.exception(e)
             tries += 1
+            if tries >= _PROGRESS_LOGGER_MAX_TRIES:
+                # Give up rather than loop forever — the mirror itself is awaited
+                # after this returns and must not be blocked by a progress-log fault.
+                logging.error(
+                    "Giving up on the mirror progress logger after %d attempts; "
+                    "the mirror itself will still run.",
+                    tries,
+                )
+                return
             await aio.sleep(min(60, 5 * (tries + 1)))
 
     aio.create_task(_update_progress_loop(log_message, control, render, menu_handle))
