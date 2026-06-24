@@ -22,20 +22,16 @@ remove-last-deploy:
 	railway down
 
 run-beacon-local: .env
-	. .venv/bin/activate
-	python -OOm dd.beacon
+	uv run python -OOm dd.beacon
 
 run-anchor-local: .env
-	. .venv/bin/activate
-	python -OOm dd.anchor
+	uv run python -OOm dd.anchor
 
 destroy-schemas: .env
-	. .venv/bin/activate
-	python -m dd.common.schemas --destroy-all
+	uv run python -m dd.common.schemas --destroy-all
 
 create-schemas: .env
-	. .venv/bin/activate
-	python -m dd.common.schemas --create-all
+	uv run python -m dd.common.schemas --create-all
 
 atlas-migration-plan: .env
 	atlas migrate diff --env sqlalchemy
@@ -48,8 +44,44 @@ atlas-migration-apply:
 	@echo "atlas migrate apply -u <MYSQL_URL>"
 	atlas migrate apply -u ${MYSQL_URL}
 
+lint:
+	uv run ruff check dd
+
+format:
+	uv run ruff format dd
+	uv run ruff check --fix dd
+
+typecheck:
+	uv run ty check dd
+
 test: .env
-	poetry run honcho run python -m pytest
+	uv run --env-file .env python -m pytest -m "not discord"
+
+test-unit: .env
+	uv run --env-file .env python -m pytest -m "not integration"
+
+coverage: .env
+	uv run --env-file .env python -m pytest -m "not discord" --cov=dd --cov-report=term-missing
+
+# All live Discord integration tests (marker `discord`). Opt-in: these hit Discord
+# and need a real bot token, so they're excluded from `test`/`coverage`/`check`.
+# The bot token comes from .env (DISCORD_TOKEN_BEACON) via --env-file.
+test-integration: .env
+	uv run --env-file .env python -m pytest -m discord -v
+
+# Just the mirror integration tests (a subset of `test-integration`). Each run
+# reuses the dedicated test guild and isolates by sweeping its test channels.
+test-mirror-integration: .env
+	uv run --env-file .env python -m pytest \
+		dd/beacon/tests/test_mirror_integration.py -v
+
+# Every test, including the live Discord integration tests (no marker filter).
+# Needs a real bot token in .env (DISCORD_TOKEN_BEACON), same as
+# `test-integration`. Use this for a full run before a release.
+test-all: .env
+	uv run --env-file .env python -m pytest -v
+
+check: lint typecheck test
 
 .env:
 	@echo "Please create a .env file with all variables as per beacon.cfg"

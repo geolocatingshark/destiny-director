@@ -4,21 +4,14 @@ import attr
 import gspread
 
 from .sector_accounting import SpreadsheetBackedData
-from .utils import (
-    all_values_from_sheet,
-)
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
+from .utils import all_values_from_sheet
 
 
 @attr.s
 class XurLocation:
     api_location_name: str = attr.ib()
-    friendly_location_name: str = attr.ib(default=None)
-    link: str = attr.ib(default=None)
+    friendly_location_name: str | None = attr.ib(default=None)
+    link: str | None = attr.ib(default=None)
 
     def __str__(self) -> str:
         str_ = ""
@@ -33,10 +26,10 @@ class XurLocation:
         return str_
 
 
-class XurLocations(SpreadsheetBackedData, dict):
+class XurLocations(SpreadsheetBackedData, dict[str, XurLocation]):
     @classmethod
     def from_gspread(
-        cls: Self,
+        cls,
         sheet: gspread.Spreadsheet,
         api_location_name_col: int = 0,
         friendly_location_name_col: int = 1,
@@ -45,7 +38,8 @@ class XurLocations(SpreadsheetBackedData, dict):
         values = all_values_from_sheet(sheet.get_worksheet(7), columns_are_major=False)
         values = values[1:]
 
-        self = cls()
+        self: XurLocations = cls.__new__(cls)
+        dict.__init__(self)
 
         for row in values:
             loc = XurLocation(
@@ -68,11 +62,11 @@ class XurLocations(SpreadsheetBackedData, dict):
 
 @attr.s
 class XurArmorSet:
-    friendly_name = attr.ib()
-    api_name_hunter = attr.ib(default=None)
-    api_name_titan = attr.ib(default=None)
-    api_name_warlock = attr.ib(default=None)
-    link = attr.ib(default=None)
+    friendly_name: str = attr.ib()
+    api_name_hunter: str | None = attr.ib(default=None)
+    api_name_titan: str | None = attr.ib(default=None)
+    api_name_warlock: str | None = attr.ib(default=None)
+    link: str | None = attr.ib(default=None)
 
     def __str__(self) -> str:
         str_ = f"{self.friendly_name}"
@@ -82,21 +76,22 @@ class XurArmorSet:
         return str_
 
 
-class XurArmorSets(SpreadsheetBackedData, dict):
+class XurArmorSets(SpreadsheetBackedData, dict[str, XurArmorSet]):
     @classmethod
     def from_gspread(
-        cls: Self,
+        cls,
         sheet: gspread.Spreadsheet,
         api_name_hunter_col: int = 0,
         api_name_titan_col: int = 1,
         api_name_warlock_col: int = 2,
         friendly_name_col: int = 3,
         link_col: int = 4,
-    ) -> XurArmorSet:
+    ) -> XurArmorSets:
         values = all_values_from_sheet(sheet.get_worksheet(6), columns_are_major=False)
         values = values[1:]
 
-        self = cls()
+        self: XurArmorSets = cls.__new__(cls)
+        dict.__init__(self)
 
         for row in values:
             armor_set = XurArmorSet(
@@ -106,13 +101,20 @@ class XurArmorSets(SpreadsheetBackedData, dict):
                 friendly_name=row[friendly_name_col],
                 link=row[link_col],
             )
-            self[armor_set.api_name_hunter] = armor_set
-            if armor_set.api_name_titan not in self:
+            if armor_set.api_name_hunter is not None:
+                self[armor_set.api_name_hunter] = armor_set
+            if (
+                armor_set.api_name_titan is not None
+                and armor_set.api_name_titan not in self
+            ):
                 self[armor_set.api_name_titan] = armor_set
-            if armor_set.api_name_warlock not in self:
+            if (
+                armor_set.api_name_warlock is not None
+                and armor_set.api_name_warlock not in self
+            ):
                 self[armor_set.api_name_warlock] = armor_set
 
-        return self
+        return self  # type: ignore[return-value]
 
     def __getitem__(self, key: str) -> XurArmorSet:
         if key in self:

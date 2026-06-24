@@ -16,11 +16,10 @@ dependencies = [
     "attrs>=22.2.0",
     "dateparser>=1.1",
     "gspread>=5.9",
-    "hikari-lightbulb>=2.3.5,<3",
-    "hikari-message",
+    "hikari-lightbulb>=3.0.0",
     "hikari-miru>=3.4.0,<4",
     "hikari-toolbox>=0.1.5",
-    "hikari==2.0.0.dev126",
+    "hikari==2.5.0",
     "python-dotenv>=1.2.1",
     "regex>=2023.6.3",
     "roman>=4.1",
@@ -36,6 +35,10 @@ dev = [
     "rope>=1.6",
     "pytest>=7.2",
     "pytest-asyncio>=0.20",
+    "ruff>=0.15.18",
+    "ty>=0.0.51",
+    "pre-commit>=4.6.0",
+    "pytest-cov>=7.1.0",
 ]
 
 speedups = [
@@ -46,9 +49,6 @@ speedups = [
 [tool.uv]
 concurrent-installs = 1
 default-groups = ["dev", "speedups"]
-
-[tool.uv.sources]
-hikari-message = { git = "https://github.com/gsfernandes81/hikari-message.git", rev = "e0b7e5f" }
 
 [tool.hatch.build.targets.sdist]
 include = ["dd"]
@@ -62,3 +62,21 @@ build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+force-wrap-aliases = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["dd"]
+markers = [
+    "integration: exercises the database layer (SQLite by default; set TEST_USE_MYSQL=1 for MySQL)",
+    "discord: hits live Discord and needs a real bot token (DISCORD_TOKEN_BEACON); excluded from the default suite",
+]
+
+[tool.coverage.run]
+source = ["dd"]

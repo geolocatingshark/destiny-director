@@ -13,7 +13,6 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import datetime as dt
 import json
 import logging
 import ssl
@@ -24,79 +23,71 @@ import hikari as h
 import regex as re
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.pool import NullPool, Pool
 
 load_dotenv()
+T = t.TypeVar("T")
 
 
-def _getenv(
-    var_name: str,
-    default: t.Optional[str] = None,
-    *,
-    optional: bool = False,
-    cast_to: t.Type[t.Any] = str,
-) -> str:
-    if not optional and str(__getenv("DD_IGNORE_MISSING_CFGS")).lower() == "true":
-        return _getenv(var_name, default, optional=True, cast_to=cast_to)
+@t.overload
+def _getenv(key: str, default: int) -> int: ...
 
-    var = __getenv(var_name)
-    if var is not None:
-        return cast_to(var)
-    elif default is not None:
-        return default
-    elif optional:
-        return None
+
+@t.overload
+def _getenv(key: str, default: str) -> str: ...
+
+
+@t.overload
+def _getenv(key: str) -> str: ...
+
+
+def _getenv(key: str, default: int | str | None = None) -> int | str:
+    value = __getenv(key)
+
+    if value is None:
+        if default is None:
+            raise ValueError(f"Environment variable '{key}' not found.")
+        elif isinstance(default, int):
+            return int(default)
+        else:
+            return default
     else:
-        raise ValueError(f"Environment variable {var_name} not set")
+        if isinstance(default, int):
+            try:
+                return int(value)
+            except ValueError:
+                raise ValueError(
+                    f"Environment variable '{key}' must be an integer."
+                ) from None
+
+        return value
 
 
-def _test_env(var_name: str) -> list[int] | bool:
+def _getbool(key: str, default: bool) -> bool:
+    """Parse a boolean env var case-insensitively (``true``/``1``/``yes``/``on``).
+
+    Replaces the ad-hoc ``_getenv(...) == "true"`` checks, which were inconsistent:
+    case-sensitive for ``MYSQL_SSL`` (so ``MYSQL_SSL=True`` silently disabled SSL)
+    and case-insensitive for ``DISABLE_BAD_CHANNELS``.
+    """
+    value = __getenv(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _test_env(var_name: str) -> tuple[int, ...] | tuple[()]:
     test_env = _getenv(var_name, default="false")
     test_env = test_env.lower()
     test_env = (
-        [int(env.strip()) for env in test_env.split(",")]
+        tuple(int(env.strip()) for env in test_env.split(","))
         if test_env != "false"
-        else False
+        else ()
     )
     return test_env
 
 
-def lightbulb_params(
-    include_message_content_intent: bool,
-    central_guilds_only: bool,
-    discord_token: str,
-) -> dict:
-    """
-    Returns configuration parameters for lightbulb code within the bot
-
-    Args:
-        include_message_content_intent (bool): Whether the bot should receive message
-        contents from the api
-
-        central_guilds_only (bool): Whether the bot should only be enabled in the
-        central servers
-    """
-    intents = h.Intents.ALL_UNPRIVILEGED
-
-    if include_message_content_intent:
-        intents = intents | h.Intents.MESSAGE_CONTENT
-
-    lightbulb_params = {
-        "token": discord_token,
-        "intents": intents,
-        "max_rate_limit": 600,
-    }
-    # Only use the test env for testing if it is specified
-    if test_env:
-        lightbulb_params["default_enabled_guilds"] = test_env
-    elif central_guilds_only:
-        lightbulb_params["default_enabled_guilds"] = [
-            kyber_discord_server_id,
-            control_discord_server_id,
-        ]
-    return lightbulb_params
-
-
-def _db_urls(var_name: str, var_name_alternative) -> tuple[str, str]:
+def _db_urls(var_name: str, var_name_alternative: str) -> tuple[str, str]:
     try:
         db_url = _getenv(var_name)
     except ValueError:
@@ -116,28 +107,46 @@ def _db_urls(var_name: str, var_name_alternative) -> tuple[str, str]:
     return db_url, db_url_async
 
 
-def _db_config():
-    db_session_kwargs_sync = {
+def _db_config() -> tuple[
+    t.Mapping[str, bool | type[AsyncSession]],
+    t.Mapping[str, bool],
+    t.Mapping[str, ssl.SSLContext],
+    t.Mapping[str, int | str | bool | type[Pool]],
+]:
+    db_session_kwargs_sync: dict[str, t.Any] = {
         "expire_on_commit": False,
     }
     db_session_kwargs = db_session_kwargs_sync | {
         "class_": AsyncSession,
     }
 
-    db_connect_args = {}
-    if _getenv("MYSQL_SSL", "true") == "true":
+    db_connect_args: t.Mapping[str, ssl.SSLContext] = {}
+    if _getbool("MYSQL_SSL", True):
         ssl_ctx = ssl.create_default_context(
             cafile="/etc/ssl/certs/ca-certificates.crt"
         )
         ssl_ctx.verify_mode = ssl.CERT_REQUIRED
         db_connect_args.update({"ssl": ssl_ctx})
 
-    db_engine_args = {
+    db_engine_args: dict[str, int | str | bool | type[Pool]] = {
         "max_overflow": -1,
         "isolation_level": "READ COMMITTED",
         "pool_pre_ping": True,
         "pool_recycle": 3600,
+        "pool_use_lifo": True,
     }
+    # Under pytest the engine is driven from many short-lived event loops
+    # (every asyncio.run() in test setup/teardown opens a new loop). asyncmy
+    # connections are bound to their creating loop, so pooled connections that
+    # outlive that loop blow up with "Event loop is closed" when the pool later
+    # terminates them. NullPool closes each connection on return, within the
+    # live loop, so nothing survives to a dead loop.
+    if __getenv("PYTEST_VERSION") is not None:
+        db_engine_args["poolclass"] = NullPool
+        # max_overflow and pool_use_lifo are QueuePool-specific and rejected
+        # by create_engine when combined with NullPool.
+        del db_engine_args["max_overflow"]
+        del db_engine_args["pool_use_lifo"]
     return db_session_kwargs, db_session_kwargs_sync, db_connect_args, db_engine_args
 
 
@@ -150,7 +159,7 @@ def _sheets_credentials(
     client_x509_cert_url: str,
 ) -> dict[str, str]:
     priv_key = _getenv(priv_key)
-    priv_key = priv_key.replace("\\n", "\n") if priv_key else None
+    priv_key = priv_key.replace("\\n", "\n")
     gsheets_credentials = {
         "type": "service_account",
         "project_id": _getenv(proj_id),
@@ -176,33 +185,63 @@ logging.basicConfig(
 
 # Discord environment config
 test_env = _test_env("TEST_ENV")
-discord_token_anchor = _getenv("DISCORD_TOKEN_ANCHOR", optional=True)
-discord_token_beacon = _getenv("DISCORD_TOKEN_BEACON", optional=True)
-disable_bad_channels = (
-    _getenv("DISABLE_BAD_CHANNELS", default="", optional=True).lower() == "true"
-)
+discord_token_anchor = _getenv("DISCORD_TOKEN_ANCHOR", default="")
+discord_token_beacon = _getenv("DISCORD_TOKEN_BEACON", default="")
+disable_bad_channels = _getbool("DISABLE_BAD_CHANNELS", False)
 
 # Discord control server config
-control_discord_server_id = _getenv("CONTROL_DISCORD_SERVER_ID", cast_to=int)
-control_discord_role_id = _getenv("CONTROL_DISCORD_ROLE_ID", optional=True, cast_to=int)
-admins = [
-    int(admin.strip())
-    for admin in _getenv("ADMINS", default="-1", optional=True).split(",")
-]
-kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", cast_to=int)
-log_channel = _getenv("LOG_CHANNEL_ID", cast_to=int)
-alerts_channel = _getenv("ALERTS_CHANNEL_ID", cast_to=int)
+control_discord_server_id = int(_getenv("CONTROL_DISCORD_SERVER_ID", "-1"))
+control_discord_role_id = _getenv("CONTROL_DISCORD_ROLE_ID", "-1")
+kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", default=-1)
+log_channel = _getenv("LOG_CHANNEL_ID", default=0)
+alerts_channel = _getenv("ALERTS_CHANNEL_ID", default=0)
 
 
 # Discord constants
 embed_default_color = h.Color(int(_getenv("EMBED_DEFAULT_COLOR", "0"), 16))
 embed_error_color = h.Color(int(_getenv("EMBED_ERROR_COLOR", "0"), 16))
-followables: t.Dict[str, int] = json.loads(_getenv("FOLLOWABLES", "{}"), parse_int=int)
-default_url = _getenv("DEFAULT_URL", optional=True)
-navigator_timeout = _getenv("NAVIGATOR_TIMEOUT", optional=True, cast_to=int) or 120
-kyber_ls_thumbnail = (
-    "https://kyberscorner.com/wp-content/uploads/2025/06/lost_sector_kyber.png"
-)
+followables: dict[str, int] = json.loads(_getenv("FOLLOWABLES", "{}"), parse_int=int)
+default_url = _getenv("DEFAULT_URL", "")
+# Seconds a paginator waits for interaction before timing out. Baked in — prod ran
+# NAVIGATOR_TIMEOUT=900, never per-deploy overridden.
+navigator_timeout = 900
+
+# Discord logging / alerting config (see dd/common/discord_logging.py)
+# Minimum log level forwarded to the alerts channel.
+alert_min_level = _getenv("ALERT_MIN_LEVEL", "ERROR")
+# Seconds the consumer waits collecting records before flushing a batch (lets
+# duplicate records within the window collapse into a single alert).
+# The knobs below have baked-in sensible defaults and are never overridden
+# per-deploy, so they are plain constants (not env-backed) to keep the env contract
+# small. Re-introduce env-backing only if a per-deploy override is ever needed.
+alert_flush_interval = 5
+# Max queued records before new ones are dropped (back-pressure guard).
+alert_queue_maxsize = 1000
+# Rolling window (seconds) and occurrence threshold for the "error storm"
+# escalation, plus a debounce so a sustained storm doesn't re-ping every flush.
+alert_freq_window = 300
+alert_freq_threshold = 10
+alert_escalation_debounce = 600
+# Fraction of a mirror run's targets that must fail (and minimum sample size)
+# before a "majority of mirrors failing" critical alert fires.
+mirror_failure_ratio_threshold = 0.5
+mirror_failure_min_sample = 10
+# Mirror fan-out tuning. These are baked-in defaults (not env-backed) to keep the
+# env contract small; re-introduce env-backing if a per-deploy override is ever
+# needed. mirror_max_concurrency caps in-flight kernel coroutines; mirror_rate_per_sec
+# is the global token-bucket rate shared across all runs (kept below Discord's ~50/s
+# global REST budget to leave headroom for interactive commands). The retry window is
+# the randomised delay (seconds) before a transient failure is retried.
+mirror_max_concurrency = 8
+mirror_rate_per_sec = 30.0
+mirror_retry_min = 180
+mirror_retry_max = 300
+# Seconds an autopost announcer may stall (API offline / edit failing) before a
+# single critical alert fires for that run.
+announcer_offline_alert_after = 900
+# Accent colours for alert severities (hex, like the other embed colours).
+embed_warning_color = h.Color(0xF1C40F)
+embed_critical_color = h.Color(0x992D22)
 
 # Database URLs
 db_url, db_url_async = _db_urls("MYSQL_PRIVATE_URL", "MYSQL_URL")
@@ -224,12 +263,12 @@ lost_sector_gif_url = _getenv("LOST_SECTOR_GIF_URL")
 xur_image_url = _getenv("XUR_IMAGE_URL")
 
 # Bungie credentials
-bungie_api_key = _getenv("BUNGIE_API_KEY", optional=True)
-bungie_client_id = _getenv("BUNGIE_CLIENT_ID", optional=True)
-bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET", optional=True)
+bungie_api_key = _getenv("BUNGIE_API_KEY", "")
+bungie_client_id = _getenv("BUNGIE_CLIENT_ID", "")
+bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET", "")
 
 
-port = _getenv("PORT", 8080, cast_to=int)
+port = _getenv("PORT", 8080)
 #### Environment variables end ####
 
 ###################################
@@ -243,7 +282,6 @@ port = _getenv("PORT", 8080, cast_to=int)
     db_engine_args,
 ) = _db_config()
 
-reset_time_tolerance = dt.timedelta(minutes=60)
 url_regex = re.compile(
     r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+"
 )

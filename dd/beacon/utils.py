@@ -13,16 +13,14 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import datetime as dt
 import inspect
 import typing as t
 
 import hikari as h
 import lightbulb as lb
-from hmessage import HMessage as MessagePrototype
 from toolbox.members import calculate_permissions
 
-from ..common import cfg
+from dd.hmessage import HMessage
 
 
 def get_function_name() -> str:
@@ -32,74 +30,48 @@ def get_function_name() -> str:
 
 async def check_invoker_has_perms(
     ctx: lb.Context,
-    permissions: h.Permissions | t.List[h.Permissions],
-    all_required=False,
+    permissions: h.Permissions | list[h.Permissions],
+    all_required: bool = False,
 ):
-    bot: lb.BotApp = ctx.bot
-    invoker = ctx.author
+    bot: h.RESTAware = ctx.client.app
+    invoker = ctx.user
     if not isinstance(permissions, (list, tuple)):
-        permissions = (permissions,)
+        permissions_ = (permissions,)
+    else:
+        permissions_ = permissions
+
+    if not ctx.guild_id:
+        return False
 
     channel = await bot.rest.fetch_channel(ctx.channel_id)
+
+    if isinstance(channel, h.GuildThreadChannel):
+        channel = await bot.rest.fetch_channel(channel.parent_id)
+
+    if not isinstance(channel, h.PermissibleGuildChannel):
+        return False
+
     member = await bot.rest.fetch_member(ctx.guild_id, invoker.id)
     invoker_perms = calculate_permissions(member, channel)
 
     if all_required:
         return all(
-            [permission == (permission & invoker_perms) for permission in permissions]
+            [permission == (permission & invoker_perms) for permission in permissions_]
         )
     else:
         return any(
-            [permission == (permission & invoker_perms) for permission in permissions]
+            [permission == (permission & invoker_perms) for permission in permissions_]
         )
 
 
-async def check_invoker_is_owner(ctx: lb.Context):
-    bot: lb.BotApp = ctx.bot
-    invoker = ctx.author
-    return invoker.id in await bot.fetch_owner_ids()
-
-
-def daily_reset_period(now: dt.datetime = None) -> t.Tuple[dt.datetime]:
-    now = (now or dt.datetime.now(tz=dt.timezone.utc)) - dt.timedelta(hours=17)
-    now = dt.datetime(now.year, now.month, now.day, 17, 0, 0, tzinfo=dt.timezone.utc)
-    start = now
-    end = start + dt.timedelta(days=1)
-    return start, end
-
-
-def weekly_reset_period(now: dt.datetime = None) -> t.Tuple[dt.datetime]:
-    now = (now or dt.datetime.now(tz=dt.timezone.utc)) - dt.timedelta(hours=17)
-    now = dt.datetime(now.year, now.month, now.day, 17, 0, 0, tzinfo=dt.timezone.utc)
-    start = now - dt.timedelta(days=(now.weekday() - 1) % 7)
-    # Ends at the same day and time next week
-    end = start + dt.timedelta(days=7)
-    return start, end
-
-
-def xur_period(now: dt.datetime = None) -> t.Tuple[dt.datetime]:
-    now = (now or dt.datetime.now(tz=dt.timezone.utc)) - dt.timedelta(hours=17)
-    now = dt.datetime(now.year, now.month, now.day, 17, 0, 0, tzinfo=dt.timezone.utc)
-    start = now - dt.timedelta(days=(now.weekday() + 3) % 7)
-    # Ends at the same day and time next week
-    end = start + dt.timedelta(days=7)
-    return start, end
-
-
-async def wait_till_lightbulb_started(bot: lb.BotApp):
-    if not bot.d.has_lb_started:
-        await bot.wait_for(lb.LightbulbStartedEvent, timeout=None)
-        bot.d.has_lightbulb_started = True
-
-
-def filter_discord_autoembeds(msg: h.Message | MessagePrototype):
+def filter_discord_autoembeds(msg: h.Message | HMessage) -> list[h.Embed]:
     content = msg.content or ""
-    filtered_embeds = []
+    filtered_embeds: list[h.Embed] = []
 
     if not content:
         # If there is no content
         # there will be no autoembeds
-        return msg.embeds
+        return list(msg.embeds)
 
     for embed in msg.embeds or []:
         embed: h.Embed
@@ -115,27 +87,45 @@ def filter_discord_autoembeds(msg: h.Message | MessagePrototype):
     return filtered_embeds
 
 
-def followable_name(*, id: int) -> str | int:
-    return next((key for key, value in cfg.followables.items() if value == id), id)
+type self_ = t.Any
 
 
-def ignore_self(func):
-    async def wrapped_func(event: h.MessageEvent):
-        if event.author_id == event.app.get_me().id:
+@t.overload
+def ignore_own_user(
+    func: t.Callable[
+        [self_, h.MessageCreateEvent | h.MessageUpdateEvent], t.Awaitable[None]
+    ],
+) -> t.Callable[
+    [self_, h.MessageCreateEvent | h.MessageUpdateEvent], t.Awaitable[None]
+]: ...
+
+
+@t.overload
+def ignore_own_user(
+    func: t.Callable[[h.MessageCreateEvent], t.Coroutine[t.Any, t.Any, None]],
+) -> t.Callable[[h.MessageCreateEvent], t.Coroutine[t.Any, t.Any, None]]: ...
+
+
+@t.overload
+def ignore_own_user(
+    func: t.Callable[[h.MessageUpdateEvent], t.Coroutine[t.Any, t.Any, None]],
+) -> t.Callable[[h.MessageUpdateEvent], t.Coroutine[t.Any, t.Any, None]]: ...
+
+
+def ignore_own_user(
+    func: t.Callable[..., t.Awaitable[None]],
+) -> t.Callable[..., t.Awaitable[None]]:
+    # Use *args so this works both as a plain event listener (event,) and as a
+    # method decorator (self, event,) — inspect.ismethod is always False at class
+    # definition time, so the distinction cannot be made at decoration time.
+    async def _wrapped(*args: t.Any) -> None:
+        event = args[-1]
+        if not isinstance(event.app, h.GatewayBot):
+            return
+        own_user = event.app.get_me()
+        if own_user and event.author_id == own_user.id:
             # Never respond to self or mirror self
             return
+        await func(*args)
 
-        return await func(event)
-
-    return wrapped_func
-
-
-def ignore_self_for_method(func):
-    async def wrapped_func(self, event: h.MessageEvent):
-        if event.author_id == event.app.get_me().id:
-            # Never respond to self or mirror self
-            return
-
-        return await func(self, event)
-
-    return wrapped_func
+    return _wrapped
