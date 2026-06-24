@@ -22,6 +22,7 @@ hand-built fixtures that mirror the live manifest shapes (verified against dev d
 from dd.anchor.extensions.bungie_api.models import DestinyItem
 from dd.anchor.extensions.eververse import (
     _bright_dust_rotator_hashes,
+    _eververse_line,
     _eververse_type_group,
     _exotic_ornament_target_name,
     _group_eververse_offerings,
@@ -137,7 +138,7 @@ def test_missing_manifest_entry_returns_none():
 
 
 def _item_of(
-    class_: str, type_name: str, name: str = "X", hash_: int = 1
+    class_: str, type_name: str, name: str = "X", hash_: int = 1, cost: int = 100
 ) -> DestinyItem:
     return DestinyItem(
         name=name,
@@ -147,6 +148,7 @@ def _item_of(
         bucket="",
         item_type=2,
         item_type_friendly_name=type_name,
+        costs={"Bright Dust": cost},
     )
 
 
@@ -167,9 +169,14 @@ def test_eververse_type_group_buckets_class_specific_and_types():
     )
     assert _eververse_type_group(_item_of("Unknown", "Ship"))[1:] == (
         "sparrow",
-        "Vehicles & Sparrows",
+        "Ships & Sparrows",
     )
     assert _eververse_type_group(_item_of("Unknown", "Shader")) == (4, "", "Shaders")
+    # "Emote" and "Multiplayer Emote" both merge into one "Emotes" group.
+    assert _eververse_type_group(_item_of("Unknown", "Emote"))[2] == "Emotes"
+    assert (
+        _eververse_type_group(_item_of("Unknown", "Multiplayer Emote"))[2] == "Emotes"
+    )
 
 
 def test_group_eververse_offerings_orders_groups_and_sorts_items():
@@ -186,3 +193,20 @@ def test_group_eververse_offerings_orders_groups_and_sorts_items():
     armor = next(items for _e, h, items in groups if h == "Armor Ornaments")
     # Items within a group are sorted by name.
     assert [i.name for i in armor] == ["Arcturus Engine", "Hrafnagud"]
+
+
+def test_eververse_line_format():
+    # Uniform start (name first), class emoji after the name, bare cost.
+    line = _eververse_line(
+        _item_of("Titan", "Titan Ornament", name="Arcturus Engine", cost=1500), None
+    )
+    assert line.startswith("• [Arcturus Engine](")
+    assert ":titan:" in line
+    assert "— 1500" in line
+    # Ships/sparrows get a subtype label (sparrows are the "Vehicle" item type).
+    assert _eververse_line(_item_of("Unknown", "Ship", cost=2000), None).endswith(
+        "· Ship"
+    )
+    assert _eververse_line(_item_of("Unknown", "Vehicle", cost=2500), None).endswith(
+        "· Sparrow"
+    )

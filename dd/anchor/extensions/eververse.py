@@ -88,7 +88,9 @@ def _eververse_type_group(item: api.DestinyItem) -> tuple[int, str, str]:
     if "Ghost" in type_name:
         return (2, "ghost", "Ghosts")
     if type_name in ("Ship", "Vehicle", "Sparrow"):
-        return (3, "sparrow", "Vehicles & Sparrows")
+        return (3, "sparrow", "Ships & Sparrows")
+    if "Emote" in type_name:  # merge "Emote" + "Multiplayer Emote"
+        return (4, "", "Emotes")
     return (4, "", f"{type_name}s")
 
 
@@ -109,23 +111,31 @@ def _group_eververse_offerings(
     ]
 
 
+# Item types in the "Ships & Sparrows" group, mapped to their inline label (sparrows
+# are the "Vehicle" item type in the manifest).
+_SHIP_SPARROW_LABEL = {"Ship": "Ship", "Vehicle": "Sparrow", "Sparrow": "Sparrow"}
+
+
 def _eververse_line(
     item: api.DestinyItem, manifest_table: dict[str, t.Any] | None
 ) -> str:
-    """One rendered offering line: ``• [class] [name](url) — cost (exotic target)``.
+    """One rendered offering line: ``• [name](url) [class] — cost (target) · subtype``.
 
-    Armor ornaments get their class emoji inline; exotic ornaments (weapon or armor)
-    get the exotic they reskin in parentheses. Costs are bare numbers — the post
-    header states they are all in Bright Dust."""
-    class_prefix = f":{item.class_.lower()}: " if item.class_ in _CLASS_NAMES else ""
-    line = (
-        f"• {class_prefix}[{item.name}]({item.lightgg_url}) "
-        f"— {item.costs['Bright Dust']}"
-    )
+    Every line starts with the item name for a uniform look; armor ornaments carry
+    their class emoji right after the name, exotic ornaments show the exotic they
+    reskin in parens, and ships/sparrows get a Ship/Sparrow subtype label. Costs are
+    bare numbers — the post header states they are all in Bright Dust."""
+    line = f"• [{item.name}]({item.lightgg_url})"
+    if item.class_ in _CLASS_NAMES:
+        line += f" :{item.class_.lower()}:"
+    line += f" — {item.costs['Bright Dust']}"
     if item.is_exotic and manifest_table is not None:
         target = _exotic_ornament_target_name(item, manifest_table)
         if target:
             line += f" ({target})"
+    subtype = _SHIP_SPARROW_LABEL.get(item.item_type_friendly_name)
+    if subtype:
+        line += f" · {subtype}"
     return line
 
 
