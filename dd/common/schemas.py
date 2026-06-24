@@ -24,6 +24,7 @@ from typing import Self
 
 import regex as re
 from atlas_provider_sqlalchemy.ddl import print_ddl
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -40,6 +41,7 @@ from sqlalchemy.sql.sqltypes import (
     VARCHAR,
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     Integer,
     String,
@@ -855,6 +857,43 @@ class ServerStatistics(Base):
                 for id, population in zip(ids, populations, strict=True)
             ],
         )
+
+
+class CommandUsage(Base):
+    """Per-command, per-day invocation counts for user-facing slash commands.
+
+    Daily buckets keep growth bounded (commands × days) while supporting both
+    all-time totals and time-windowed queries. Writes use a MySQL upsert with an
+    atomic ``count = count + 1`` so concurrent increments are race-free with no
+    in-memory buffering.
+    """
+
+    __tablename__ = "command_usage"
+    __mapper_args__ = {"eager_defaults": True}
+
+    command_name = Column("command_name", String(length=128), primary_key=True)
+    date = Column("date", Date, primary_key=True)  # daily bucket, UTC
+    count = Column("count", BigInteger, nullable=False, default=0)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def increment(
+        cls, command_name: str, *, session: AsyncSession = _UNSET
+    ) -> None:
+        today = dt.datetime.now(tz=dt.UTC).date()
+        stmt = mysql_insert(cls).values(command_name=command_name, date=today, count=1)
+        await session.execute(stmt.on_duplicate_key_update(count=cls.count + 1))
+
+    @classmethod
+    @ensure_session(db_session)
+    async def fetch_totals(
+        cls, *, since: dt.date | None = None, session: AsyncSession = _UNSET
+    ) -> list[tuple[str, int]]:
+        q = select(cls.command_name, func.sum(cls.count).label("total"))
+        if since is not None:
+            q = q.where(cls.date >= since)
+        q = q.group_by(cls.command_name).order_by(desc("total"))
+        return [(name, int(total)) for name, total in (await session.execute(q)).all()]
 
 
 class UserCommand(Base):

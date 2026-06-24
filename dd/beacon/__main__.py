@@ -25,6 +25,7 @@ import miru
 
 import dd.beacon.extensions
 import dd.beacon.extensions.user_commands
+from dd.beacon.extensions.statistics import track_command_usage
 
 from ..common import cfg, schemas
 from ..common.auth import owner_check_error_handler
@@ -46,6 +47,7 @@ bot = ServerEmojiEnabledBot(
 client = lb.client_from_app(
     bot,
     cfg.test_env or (),  # Lightbulb enabled guilds
+    hooks=[track_command_usage],  # client-wide command-usage counter
 )
 
 # Make the bot injectable as CachedFetchBot (its concrete subclass type) in

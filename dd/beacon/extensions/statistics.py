@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+import datetime as dt
 import logging
 import math
 import tempfile
@@ -26,6 +27,44 @@ from ...common.bot import CachedFetchBot
 from ...common.utils import guild_scope
 
 loader = lb.Loader()
+
+# Top-level command names that are NOT user-facing usage (owner/admin groups).
+# Custom user-commands get admin-chosen top-level names that can't collide with
+# these (registration rejects collisions), so they're tracked automatically.
+_EXCLUDED_ROOTS = frozenset({"autopost", "stats", "mirror", "testing", "command"})
+
+
+def _should_track(qualified_name: str, command_type: h.CommandType) -> bool:
+    """Whether an invocation of this command should be counted.
+
+    Only slash commands (not message/user context menus), and only those whose
+    top-level group is not an owner/admin group.
+    """
+    if command_type is not h.CommandType.SLASH:
+        return False
+    return qualified_name.split(" ", 1)[0] not in _EXCLUDED_ROOTS
+
+
+@lb.hook(lb.ExecutionSteps.PRE_INVOKE, skip_when_failed=True)
+async def track_command_usage(_pl: lb.ExecutionPipeline, ctx: lb.Context) -> None:
+    """Client-wide hook: count each user-facing slash-command invocation.
+
+    Runs at PRE_INVOKE (after CHECKS pass, so owner-gate / permission rejections
+    are not counted) and once per leaf-command pipeline. A stats-write failure must
+    never break the user's command, so the DB write is swallowed.
+    """
+    data = ctx.command_data
+    if not _should_track(data.qualified_name, data.type):
+        return
+    try:
+        await schemas.CommandUsage.increment(data.qualified_name)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to record command usage for %s",
+            data.qualified_name,
+            exc_info=True,
+        )
+
 
 stats_command_group = lb.Group("stats", "Bot statistics command group")
 
@@ -178,6 +217,48 @@ class MirrorStatsCommand(
             )
 
         await ctx.respond(embed)
+
+
+@stats_command_group.register
+class CommandUsageStatsCommand(
+    lb.SlashCommand,
+    name="commands",
+    description="Leaderboard of user-facing command usage",
+    hooks=[owner_only],
+):
+    days = lb.integer(
+        "days",
+        "Days to look back (0 = all time)",
+        default=0,
+        min_value=0,
+    )
+
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context):
+        await ctx.defer()
+        since = (
+            dt.datetime.now(tz=dt.UTC).date() - dt.timedelta(days=self.days)
+            if self.days
+            else None
+        )
+        totals = await schemas.CommandUsage.fetch_totals(since=since)
+
+        window = f"last {self.days} days" if self.days else "all time"
+        if not totals:
+            description = "No command usage recorded yet."
+        else:
+            description = "\n".join(
+                f"{i + 1}. **/{name}**: {count:,d}"
+                for i, (name, count) in enumerate(totals[:25])
+            )
+
+        await ctx.respond(
+            h.Embed(
+                title=f"Command usage ({window})",
+                description=description,
+                color=cfg.embed_default_color,
+            )
+        )
 
 
 loader.command(stats_command_group, guilds=guild_scope(cfg.control_discord_server_id))
