@@ -1,8 +1,12 @@
+import typing as t
 from collections import defaultdict
 
 import aiocron
+import aiohttp
+import aiohttp.web
 import hikari as h
 import lightbulb as lb
+import regex as re
 
 from dd.hmessage import HMessage
 
@@ -17,6 +21,102 @@ from . import (
 )
 
 loader = lb.Loader()
+
+# Exotic ornaments carry the exotic they reskin only in their description, as
+# "...change the appearance of <Exotic Name>." This pulls that name out so the
+# daily-offerings line can show "for <Exotic>".
+_ORNAMENT_TARGET_RE = re.compile(r"change the appearance of (.+?)\.")
+# traitIds that mark an item as an ornament (vs. another exotic cosmetic like a
+# ghost shell or ship, which we deliberately leave without a "for ..." suffix).
+_ORNAMENT_TRAIT_IDS = frozenset({"item.ornament.weapon", "item.ornament.armor"})
+
+
+def _bright_dust_rotator_hashes(manifest_table: dict[str, t.Any]) -> list[int]:
+    """Discover the daily bright-dust rotator vendor hashes from the manifest.
+
+    These are the vendors whose ``vendorIdentifier`` starts with
+    ``EVERVERSE_BRIGHT_DUST_ROTATOR`` (e.g. ``..._EXOTIC_GHOSTS``).
+    """
+    return [
+        vendor_def["hash"]
+        for vendor_def in manifest_table["DestinyVendorDefinition"].values()
+        if vendor_def.get("vendorIdentifier", "").startswith(
+            api.EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX
+        )
+    ]
+
+
+def _exotic_ornament_target_name(
+    item: api.DestinyItem, manifest_table: dict[str, t.Any]
+) -> str | None:
+    """Resolve the exotic an exotic ornament reskins, or ``None``.
+
+    Only exotic ornaments (``traitIds`` containing ``item.ornament.weapon`` /
+    ``item.ornament.armor``) carry a base item; their manifest description reads
+    "...change the appearance of <Exotic>." Other exotic cosmetics (ghosts, ships,
+    vehicles, emotes) and anything that doesn't match return ``None`` so no suffix
+    is added.
+    """
+    manifest_entry = manifest_table["DestinyInventoryItemDefinition"].get(item.hash, {})
+
+    trait_ids = manifest_entry.get("traitIds") or []
+    if not _ORNAMENT_TRAIT_IDS.intersection(trait_ids):
+        return None
+
+    description = manifest_entry.get("displayProperties", {}).get("description", "")
+    match = _ORNAMENT_TARGET_RE.search(description)
+    return match.group(1) if match else None
+
+
+async def fetch_daily_bright_dust_offerings(
+    webserver_runner: aiohttp.web.AppRunner,
+) -> tuple[list[api.DestinyItem], dict[str, t.Any]]:
+    """Fetch the deduped bright-dust items across all active rotator vendors.
+
+    Returns the items (deduped by item hash) plus the manifest table, which the
+    renderer needs for the exotic-ornament base-item lookup. Inactive rotators
+    (``VendorNotFound``) are skipped so the post still succeeds.
+    """
+    access_token = await api.refresh_api_tokens(webserver_runner)
+
+    async with aiohttp.ClientSession() as session:
+        memberships = await api.client.fetch_memberships(session, access_token)
+        membership = api.DestinyMembership.from_api_response(memberships)
+        profile = await api.client.fetch_profile(
+            session,
+            access_token,
+            membership.membership_type,
+            membership.membership_id,
+        )
+        # These cosmetics are class-agnostic, so a single (Hunter) character is enough.
+        character_id = membership.parse_character_id(profile, "Hunter")
+
+    manifest_table = await api._build_manifest_dict(
+        await api._get_latest_manifest(schemas.BungieCredentials.api_key)
+    )
+
+    items: dict[int, api.DestinyItem] = {}  # dedupe by item hash
+    for vendor_hash in _bright_dust_rotator_hashes(manifest_table):
+        try:
+            response = await api.client.fetch_vendor(
+                access_token=access_token,
+                membership_type=membership.membership_type,
+                membership_id=membership.membership_id,
+                character_id=character_id,
+                vendor_hash=vendor_hash,
+            )
+        except api.VendorNotFound:
+            # Rotator is not currently active; skip it.
+            continue
+
+        vendor = api.DestinyVendor.from_vendors_api_response(
+            response=response, manifest_table=manifest_table
+        )
+        for sale_item in vendor.sale_items:
+            if "bright dust" in str(sale_item.costs).lower():
+                items.setdefault(sale_item.hash, sale_item)
+
+    return list(items.values()), manifest_table
 
 
 async def eververse_message_constructor(bot: CachedFetchBot) -> HMessage:
@@ -66,11 +166,23 @@ async def eververse_message_constructor(bot: CachedFetchBot) -> HMessage:
         hunter_sale_items | titan_sale_items | warlock_sale_items | common_sale_items
     )
 
-    return await format_eververse_vendor(eververse_data, bot)
+    daily_items, daily_manifest_table = await fetch_daily_bright_dust_offerings(
+        api.get_webserver_runner()
+    )
+
+    return await format_eververse_vendor(
+        eververse_data,
+        bot,
+        daily_items=daily_items,
+        manifest_table=daily_manifest_table,
+    )
 
 
 async def format_eververse_vendor(
-    vendor: api.DestinyVendor, bot: CachedFetchBot
+    vendor: api.DestinyVendor,
+    bot: CachedFetchBot,
+    daily_items: list[api.DestinyItem] | None = None,
+    manifest_table: dict[str, t.Any] | None = None,
 ) -> HMessage:
     # Sort items out into categories based on their item_type_friendly_name
     # then sort packages into Hunter, Titan and Warlock based on the source
@@ -129,6 +241,20 @@ async def format_eververse_vendor(
             description += (
                 f"• [{item.name}]({item.lightgg_url}) ({item.costs['Bright Dust']})\n"
             )
+        description += "\n"
+
+    if daily_items:
+        description += "**__DAILY BRIGHT DUST OFFERINGS__** :bright_dust:\n\n"
+        for item in daily_items:
+            line = (
+                f"• [{item.name}]({item.lightgg_url}) "
+                f"({item.costs['Bright Dust']}) — {item.item_type_friendly_name}"
+            )
+            if item.is_exotic and manifest_table is not None:
+                target = _exotic_ornament_target_name(item, manifest_table)
+                if target:
+                    line += f" for {target}"
+            description += line + "\n"
         description += "\n"
 
     description = await substitute_user_side_emoji(emoji_dict, description)

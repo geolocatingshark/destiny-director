@@ -30,6 +30,12 @@ API_VENDORS_AUTHENTICATED = (
 XUR_VENDOR_HASH = 2190858386
 XUR_STRANGE_GEAR_VENDOR_HASH = 3751514131
 
+# Eververse "daily bright dust" rotator vendors are identified in the manifest by a
+# ``vendorIdentifier`` starting with this prefix (e.g.
+# ``EVERVERSE_BRIGHT_DUST_ROTATOR_EXOTIC_GHOSTS``). Several of these rotate the daily
+# exotic/legendary cosmetics sold for Bright Dust.
+EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX = "EVERVERSE_BRIGHT_DUST_ROTATOR"
+
 # Bungie API ErrorCode returned when a vendor is not currently available.
 VENDOR_NOT_FOUND_ERROR_CODE = 1627
 
