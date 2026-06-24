@@ -17,11 +17,17 @@
 
 import datetime as dt
 
+import hikari as h
+
 from dd.beacon.extensions.distortion import (
+    DISTORTION_DESTINATIONS,
     REFERENCE_DATE,
     _format_countdown,
     distortion_at,
+    render_distortion,
+    rotation_schedule,
 )
+from dd.common import cfg
 
 
 def test_reference_date_is_cosmodrome():
@@ -64,3 +70,29 @@ def test_format_countdown():
     assert _format_countdown(dt.timedelta(minutes=39)) == "39m"
     assert _format_countdown(dt.timedelta(hours=1, minutes=5)) == "1h 5m"
     assert _format_countdown(dt.timedelta(hours=1)) == "1h 0m"
+
+
+def test_rotation_schedule_full_cycle():
+    schedule = rotation_schedule(REFERENCE_DATE)
+    # Every destination appears once, in cycle order starting at the current one.
+    assert [dest for dest, _ in schedule] == list(DISTORTION_DESTINATIONS)
+    assert len(schedule) == len(DISTORTION_DESTINATIONS)
+    # First entry is the current hour's start; entries are 1h apart.
+    assert schedule[0][1] == REFERENCE_DATE
+    assert schedule[1][1] == REFERENCE_DATE + dt.timedelta(hours=1)
+    assert schedule[6][1] == REFERENCE_DATE + dt.timedelta(hours=6)
+
+
+def test_rotation_schedule_rotates_with_current_index():
+    # Six hours in, Nessus is current so the cycle should start at Nessus.
+    schedule = rotation_schedule(REFERENCE_DATE + dt.timedelta(hours=6))
+    assert schedule[0][0] == "Nessus"
+    assert schedule[1][0] == "Cosmodrome"
+
+
+def test_render_distortion_returns_accent_coloured_container():
+    components = render_distortion(REFERENCE_DATE)
+    assert len(components) == 1
+    container = components[0]
+    assert isinstance(container, h.impl.ContainerComponentBuilder)
+    assert container.accent_color == cfg.embed_default_color

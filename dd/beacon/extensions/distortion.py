@@ -20,11 +20,18 @@ destinations on a 7-hour loop. Bungie does not expose the active distortion as a
 clean API field, so this is computed from a known cycle (no Bungie API / manifest
 call), like ``/weekly reset`` and ``/source_code``. If Bungie ever realigns the
 cycle, only ``REFERENCE_DATE`` (or the destination order) needs updating.
+
+The response is rendered as a Discord Components V2 container (mirroring
+``render_mirror_progress``) so it shares the bot's accent colour and styling.
 """
 
 import datetime as dt
 
+import hikari as h
 import lightbulb as lb
+
+from ...common import cfg
+from ...common.components import build_container
 
 loader = lb.Loader()
 
@@ -62,11 +69,52 @@ def distortion_at(now: dt.datetime) -> tuple[str, str, dt.timedelta]:
     )
 
 
+def rotation_schedule(now: dt.datetime) -> list[tuple[str, dt.datetime]]:
+    """Full distortion cycle as ``(destination, becomes_distorted_at)`` pairs.
+
+    The first entry is the currently-distorted destination (its time is the start of
+    the current hour); the remaining six are the rest of the 7-hour loop in order.
+    Used to render live ``<t:unix:R>`` Discord timestamps for each rotation.
+    """
+    hours = int((now - REFERENCE_DATE).total_seconds()) // 3600
+    idx = hours % len(DISTORTION_DESTINATIONS)
+    current_start = REFERENCE_DATE + dt.timedelta(hours=hours)
+    return [
+        (
+            DISTORTION_DESTINATIONS[(idx + offset) % len(DISTORTION_DESTINATIONS)],
+            current_start + dt.timedelta(hours=offset),
+        )
+        for offset in range(len(DISTORTION_DESTINATIONS))
+    ]
+
+
 def _format_countdown(td: dt.timedelta) -> str:
     """Format a positive timedelta as ``Hh Mm`` (or ``Mm`` under an hour)."""
     total_minutes = int(td.total_seconds()) // 60
     hours, minutes = divmod(total_minutes, 60)
     return f"{hours}h {minutes}m" if hours else f"{minutes}m"
+
+
+def render_distortion(now: dt.datetime) -> list[h.api.ComponentBuilder]:
+    """Render the current distortion + upcoming rotation as a CV2 container.
+
+    Built from scratch each call (like ``render_mirror_progress``). Countdowns use
+    Discord's ``<t:unix:R>`` relative-timestamp markdown so they tick live client-side
+    rather than freezing at command-invocation time.
+    """
+    (current, _current_start), *upcoming = rotation_schedule(now)
+    next_at = upcoming[0][1]  # when the current destination rotates out
+
+    upcoming_lines = "\n".join(
+        f"{dest} — <t:{int(start.timestamp())}:R>" for dest, start in upcoming
+    )
+    sections = [
+        "## 🌀 Distortions",
+        f"### 📍 {current}\nDistorted now · rotates <t:{int(next_at.timestamp())}:R>",
+        f"**Upcoming**\n{upcoming_lines}",
+        "-# Rotation is computed from a known cycle; may drift if Bungie realigns it.",
+    ]
+    return [build_container(sections, accent_color=cfg.embed_default_color)]
 
 
 class Distortion(
@@ -76,12 +124,9 @@ class Distortion(
 ):
     @lb.invoke
     async def invoke(self, ctx: lb.Context):
-        current, upcoming, until = distortion_at(dt.datetime.now(dt.UTC))
         await ctx.respond(
-            f"**Distorted now:** {current}\n"
-            f"**Up next:** {upcoming} (in {_format_countdown(until)})\n"
-            "_Rotation is computed from a known cycle; may drift if Bungie "
-            "realigns it._"
+            flags=h.MessageFlag.IS_COMPONENTS_V2,
+            components=render_distortion(dt.datetime.now(dt.UTC)),
         )
 
 
