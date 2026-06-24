@@ -14,10 +14,8 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 """Pure-helper tests for Portal Ops: name normalisation, bucketing, dedup, grouping,
-and the Pinnacle fixed-rotation indexing. No DB / network / Discord — the live data
-path (``fetch_portal_ops``) is not exercised here."""
-
-import datetime as dt
+and reward-emoji mapping. No DB / network / Discord — the live data path
+(``fetch_portal_ops``) is not exercised here."""
 
 from dd.anchor.extensions.portal_ops import (
     MODE_CRUCIBLE,
@@ -25,12 +23,11 @@ from dd.anchor.extensions.portal_ops import (
     MODE_IRON_BANNER,
     MODE_TRIALS,
     PortalOp,
+    _reward_emoji,
     base_activity_name,
     bucket_for,
-    current_pinnacle_op,
     dedupe_ops,
     ops_by_tab,
-    pinnacle_rotation_index,
 )
 
 
@@ -41,6 +38,7 @@ def _op(
     activity_type="Mission",
     reward_name="Some Gun",
     reward_hash=1,
+    reward_emoji=":weapon:",
     tier=2,
 ) -> PortalOp:
     return PortalOp(
@@ -49,6 +47,7 @@ def _op(
         activity_type=activity_type,
         reward_name=reward_name,
         reward_hash=reward_hash,
+        reward_emoji=reward_emoji,
         tier=tier,
     )
 
@@ -141,44 +140,26 @@ def test_ops_by_tab_orders_tabs_and_sorts_within():
     ]
 
 
-# ── Pinnacle fixed rotation ────────────────────────────────────────────────────
-
-_REF = dt.datetime(2025, 7, 15, 17, tzinfo=dt.UTC)
-_ROTATION = [["Raid A"], ["Dungeon B"], ["GM C"]]
+# ── _reward_emoji ──────────────────────────────────────────────────────────────
 
 
-def test_pinnacle_rotation_index_advances_weekly():
-    week = dt.timedelta(days=7)
-    assert pinnacle_rotation_index(_REF, reference_date=_REF, rotation_len=3) == 0
+def test_reward_emoji_maps_weapon_armor_and_fallback():
+    # A weapon type with a matching server emoji → that specific emoji.
     assert (
-        pinnacle_rotation_index(_REF + week, reference_date=_REF, rotation_len=3) == 1
+        _reward_emoji({"itemType": 3, "itemTypeDisplayName": "Hand Cannon"})
+        == ":hand_cannon:"
     )
     assert (
-        pinnacle_rotation_index(_REF + 2 * week, reference_date=_REF, rotation_len=3)
-        == 2
+        _reward_emoji({"itemType": 3, "itemTypeDisplayName": "Sniper Rifle"})
+        == ":sniper_rifle:"
     )
-    # Wraps around after the rotation length.
+    # Bows map to the combat_bow emoji.
     assert (
-        pinnacle_rotation_index(_REF + 3 * week, reference_date=_REF, rotation_len=3)
-        == 0
+        _reward_emoji({"itemType": 3, "itemTypeDisplayName": "Combat Bow"})
+        == ":combat_bow:"
     )
-
-
-def test_pinnacle_rotation_index_clamps_before_reference():
-    week = dt.timedelta(days=7)
-    assert (
-        pinnacle_rotation_index(_REF - week, reference_date=_REF, rotation_len=3) == 0
-    )
-
-
-def test_pinnacle_rotation_index_none_when_unseeded():
-    assert pinnacle_rotation_index(_REF, reference_date=_REF, rotation_len=0) is None
-
-
-def test_current_pinnacle_op_returns_seeded_rotation():
-    # PINNACLE_ROTATION is seeded (dev), so the current featured Pinnacle ops are
-    # non-empty and match the seeded set; the unseeded (empty) path is covered by
-    # test_pinnacle_rotation_index_none_when_unseeded.
-    ops = current_pinnacle_op()
-    assert ops
-    assert "Root of Nightmares" in ops
+    # Armor (itemType 2) → :armor:.
+    assert _reward_emoji({"itemType": 2, "itemTypeDisplayName": "Helmet"}) == ":armor:"
+    # Unknown weapon type / missing def → generic :weapon:.
+    assert _reward_emoji({"itemType": 3, "itemTypeDisplayName": ""}) == ":weapon:"
+    assert _reward_emoji(None) == ":weapon:"

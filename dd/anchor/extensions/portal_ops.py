@@ -21,11 +21,10 @@ focused activities into Portal tabs, and renders + posts a daily summary. The be
 bot mirrors the post and provides the user-facing ``/portal`` navigator (see
 ``dd/beacon/extensions/portal_ops.py``).
 
-Pinnacle Ops (the weekly featured raid/dungeon/GM) is NOT in component 204 — Bungie
-does not expose the weekly featured raid/dungeon rotator (see the project memory note
-``bungie-api-no-featured-raid-dungeon``). It is sourced from a hardcoded
-fixed-rotation table keyed off the weekly-reset anchor date (see
-:data:`PINNACLE_ROTATION` / :func:`current_pinnacle_op`).
+Pinnacle Ops (the weekly featured raid/dungeon/GM) is intentionally omitted for now:
+it is NOT in component 204 — Bungie does not expose the weekly featured raid/dungeon
+rotator (see the project memory note ``bungie-api-no-featured-raid-dungeon``) — so it
+would need a hardcoded fixed-rotation table, deferred until that data is settled.
 
 Name resolution uses live manifest-entity resolution (``/Destiny2/Manifest/{entity}/
 {hash}/``) — a handful of hashes per post, far lighter than loading whole manifest
@@ -53,7 +52,7 @@ from . import (
     bungie_api as api,
     xur,
 )
-from .bungie_api.constants import API_ROOT
+from .bungie_api.constants import API_ROOT, DESTINY_ITEM_TYPE_ARMOR
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +86,6 @@ _PVP_TAB_BY_MODE = {
 TAB_ORDER = [
     "Solo Ops",
     "Fireteam Ops",
-    "Pinnacle Ops",
     "Crucible",
     "Gambit",
     "Trials",
@@ -110,6 +108,7 @@ class PortalOp(t.NamedTuple):
     activity_type: str
     reward_name: str
     reward_hash: int
+    reward_emoji: str
     tier: int | None
 
 
@@ -177,64 +176,46 @@ def ops_by_tab(ops: t.Iterable[PortalOp]) -> dict[str, list[PortalOp]]:
     return ordered
 
 
-# ── Pinnacle Ops fixed rotation (mechanism only — see module docstring) ────────
-# The weekly featured raid/dungeon/GM is NOT in component 204; it is computed from a
-# fixed weekly rotation keyed off the weekly-reset anchor. Each entry is the list of
-# featured Pinnacle ops for that week, indexed modulo the rotation length, advancing
-# one step every weekly reset (Tue 17:00 UTC) since PINNACLE_REFERENCE_DATE.
-#
-# Dev seed (week of 2026-06-23) sourced from the featured raids/dungeons on
-# kyberscorner.com. This is a SINGLE-week entry: with a one-element rotation
-# ``pinnacle_rotation_index`` is always 0, so Pinnacle Ops always shows this set.
-# TODO: replace with the full multi-week rotation cycle (in weekly-reset order) once
-# the upcoming-weeks schedule is confirmed, so it advances correctly each reset. A
-# Grandmaster Nightfall entry can be added when that source is confirmed.
-PINNACLE_REFERENCE_DATE = dt.datetime(2026, 6, 23, 17, tzinfo=dt.UTC)
-PINNACLE_PERIOD = dt.timedelta(days=7)
-
-# list[list[str]] — each inner list is one week's featured Pinnacle op names.
-PINNACLE_ROTATION: list[list[str]] = [
-    [
-        "Root of Nightmares",
-        "Deep Stone Crypt",
-        "Ghosts of the Deep",
-        "Prophecy",
-        "Duality",
-    ],
-]
+# Weapon-type emoji that exist in the Kyber server (matched off itemTypeDisplayName).
+_WEAPON_TYPE_EMOJI = frozenset(
+    {
+        "auto_rifle",
+        "hand_cannon",
+        "pulse_rifle",
+        "scout_rifle",
+        "sidearm",
+        "submachine_gun",
+        "shotgun",
+        "sniper_rifle",
+        "fusion_rifle",
+        "linear_fusion_rifle",
+        "grenade_launcher",
+        "rocket_launcher",
+        "machine_gun",
+        "sword",
+        "glaive",
+        "combat_bow",
+        "trace_rifle",
+    }
+)
 
 
-def pinnacle_rotation_index(
-    now: dt.datetime,
-    *,
-    reference_date: dt.datetime = PINNACLE_REFERENCE_DATE,
-    period: dt.timedelta = PINNACLE_PERIOD,
-    rotation_len: int | None = None,
-) -> int | None:
-    """Index into the weekly Pinnacle rotation for ``now``.
+def _reward_emoji(reward_def: dict[str, t.Any] | None) -> str:
+    """Emoji for a reward item: its specific weapon-type emoji, :armor: for armor,
+    else the generic :weapon:.
 
-    Returns the 0-based week index modulo ``rotation_len`` (defaults to
-    ``len(PINNACLE_ROTATION)``), or ``None`` when the rotation is empty/unseeded.
-    Weeks before the reference date clamp to week 0.
-    """
-    if rotation_len is None:
-        rotation_len = len(PINNACLE_ROTATION)
-    if rotation_len <= 0:
-        return None
-    weeks_elapsed = (now - reference_date) // period
-    if weeks_elapsed < 0:
-        weeks_elapsed = 0
-    return weeks_elapsed % rotation_len
-
-
-def current_pinnacle_op(now: dt.datetime | None = None) -> list[str]:
-    """The featured Pinnacle ops for the current week, or ``[]`` if unseeded."""
-    if now is None:
-        now = dt.datetime.now(tz=dt.UTC)
-    index = pinnacle_rotation_index(now)
-    if index is None:
-        return []
-    return PINNACLE_ROTATION[index]
+    Maps the item's ``itemTypeDisplayName`` (e.g. "Hand Cannon" -> :hand_cannon:) to a
+    server emoji, falling back to :weapon: for weapon types without one."""
+    if reward_def is None:
+        return ":weapon:"
+    if reward_def.get("itemType") == DESTINY_ITEM_TYPE_ARMOR:
+        return ":armor:"
+    slug = reward_def.get("itemTypeDisplayName", "").lower().replace(" ", "_")
+    if slug in _WEAPON_TYPE_EMOJI:
+        return f":{slug}:"
+    if "bow" in slug:
+        return ":combat_bow:"
+    return ":weapon:"
 
 
 # ── Live data path ─────────────────────────────────────────────────────────────
@@ -347,6 +328,7 @@ async def fetch_portal_ops() -> list[PortalOp]:
                     activity_type=type_name,
                     reward_name=_entity_name(reward_def),
                     reward_hash=reward_hash,
+                    reward_emoji=_reward_emoji(reward_def),
                     tier=activity.get("difficultyTier"),
                 )
             )
@@ -369,30 +351,18 @@ async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
     description += f":time:  Featured ops reset <t:{_next_daily_reset_unix()}:R>\n"
 
     grouped = ops_by_tab(ops)
-    pinnacle = current_pinnacle_op()
-    if pinnacle:
-        grouped.setdefault("Pinnacle Ops", [])
 
-    if not grouped and not pinnacle:
+    if not grouped:
         description += "\nNo featured ops are currently available.\n"
 
     for tab in TAB_ORDER + [name for name in grouped if name not in TAB_ORDER]:
-        if tab == "Pinnacle Ops":
-            if not pinnacle:
-                continue
-            description += "## **__Pinnacle Ops__**\n"
-            for name in pinnacle:
-                description += f":pinnacle:  **{name}**\n"
-            description += "\n"
-            continue
-
         tab_ops = grouped.get(tab)
         if not tab_ops:
             continue
         description += f"## **__{tab}__**\n"
         for op in tab_ops:
             description += (
-                f":weapon:  **{op.activity_name}** — "
+                f"{op.reward_emoji}  **{op.activity_name}** — "
                 f"[{op.reward_name}](https://light.gg/db/items/{op.reward_hash})\n"
             )
         description += "\n"
