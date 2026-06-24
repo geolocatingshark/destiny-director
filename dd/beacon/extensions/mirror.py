@@ -17,8 +17,6 @@ import asyncio as aio
 import collections.abc
 import logging
 import typing as t
-from collections import defaultdict
-from enum import Enum
 from random import randint
 from time import perf_counter
 from types import TracebackType
@@ -27,30 +25,60 @@ from typing import override
 import dateparser
 import hikari as h
 import lightbulb as lb
-import miru as m
 import regex as re
+from lightbulb import components as lbc
 
 from ...common import cfg
 from ...common.auth import owner_only
 from ...common.bot import CachedFetchBot
+from ...common.components import build_container
 from ...common.schemas import MirroredChannel, MirroredMessage, ServerStatistics
 from ...common.utils import (
+    ErrorClass,
+    classify_error,
     discord_error_logger,
     followable_name,
+    format_duration,
     guild_scope,
+    identity_for_exc,
     parse_channel_ref,
+    reference_code,
 )
 from .. import utils
+from ..mirror_core import (
+    KernelFailure,
+    KernelOutcome,
+    KernelSuccess,
+    KernelWorkControl,
+    MirrorOperationType,
+    build_reconcile_targets,
+    kernel_work_control_registry,
+    rate_limiter,
+)
 
 loader = lb.Loader()
 
 re_markdown_link = re.compile(r"\[(.*?)\]\(.*?\)")
 
+# Custom-id prefix for the per-progress-message "Cancel Mirror" button. The
+# source_message_id is appended (``dd_mirror_cancel:<source_message_id>``) so the
+# shared lightbulb-component router does not cross-fire between two concurrent
+# progress messages — a correctness requirement.
+_CANCEL_CUSTOM_ID_PREFIX = "dd_mirror_cancel"
+
+# How long the cancel-button menu stays live (matches the old miru 7-hour window).
+_CANCEL_MENU_TIMEOUT = 60 * 60 * 7
+
 
 class TimedSemaphore(aio.Semaphore):
     """Semaphore to ensure no more than value requests per period are made
 
-    This is to stay well within discord api rate limits while avoiding errors"""
+    This is to stay well within discord api rate limits while avoiding errors.
+
+    Retained for ``mirror_tracing`` (which throttles its DB writes with one); the
+    mirror fan-out itself now uses the token-bucket ``rate_limiter`` from
+    ``mirror_core`` for global rate limiting plus a per-batch concurrency semaphore.
+    """
 
     def __init__(self, value: int = 30, period: int = 1):
         super().__init__(value)
@@ -69,248 +97,6 @@ class TimedSemaphore(aio.Semaphore):
         tb: TracebackType | None,
     ) -> None:
         await self.arelease()
-
-
-# Discord allows up to 50 REST requests/second per bot; cap concurrent mirror
-# API calls a little below that to leave headroom for other traffic.
-DISCORD_API_CONCURRENCY_LIMIT = 45
-discord_api_semaphore = TimedSemaphore(value=DISCORD_API_CONCURRENCY_LIMIT)
-
-
-class MirrorOperationType(Enum):
-    """Enum to represent the type of mirror operation"""
-
-    SEND = 1
-    UPDATE = 2
-    DELETE = 3
-
-
-class KernelWorkControlRegistry:
-    """Registry to keep track of current KernelWorkControl instances"""
-
-    def __init__(self):
-        # Note: the dict is structured as follows:
-        # {
-        #    (
-        #       source_channel_id,
-        #       source_message_id,
-        #   ): KernelWorkControl
-        # }
-        self._registry: dict[tuple[int | None, int], KernelWorkControl] = {}
-        self._locks: dict[tuple[int | None, int], aio.Lock] = defaultdict(aio.Lock)
-
-    def register(self, control: "KernelWorkControl"):
-        """Register a KernelWorkControl instance"""
-        key = (
-            control.source_channel_id,
-            control.source_message_id,
-        )
-        if key in self._registry:
-            existing_control = self._registry[key]
-            if existing_control.is_work_left_to_do:
-                # Consider making this an async wait for the other task to finish
-                # Remember to alter the code for whether we will block for all
-                # operation types individually or cumulatively if you do make this
-                # change
-                raise ValueError(f"KernelWorkControl already registered for {key}")
-        self._registry[key] = control
-
-    def lock_source_message(self, control: "KernelWorkControl") -> aio.Lock:
-        """Wait for the lock for a KernelWorkControl instance"""
-        key = (
-            control.source_channel_id,
-            control.source_message_id,
-        )
-        return self._locks[key]
-
-    def cancel(
-        self,
-        source_channel_id: int | None,
-        source_message_id: int,
-    ):
-        """Cancel a KernelWorkControl instance"""
-        key = (source_channel_id, source_message_id)
-        if key in self._registry:
-            control = self._registry.pop(key)
-            if control.mirror_operation_type != MirrorOperationType.UPDATE:
-                raise ValueError(
-                    "Can only cancel mirror updates. This message has an operation "
-                    f"of type '{control.mirror_operation_type}' running"
-                )
-            control.cancel()
-        else:
-            raise ValueError("This message does not have any operations in progress")
-
-
-kernel_work_control_registry = KernelWorkControlRegistry()
-
-
-class KernelWorkTracker:
-    """Class to track the progress of all kernels for a particular mirror event
-
-    source: dict[int, int] = {source_channel_id: source_message_id} with size 1
-    targets: dict[int, int | None] = {target_channel_id: target_message_id}
-    """
-
-    def __init__(
-        self,
-        source: collections.abc.Mapping[int | None, int],
-        targets: collections.abc.Mapping[int, int | None],
-        mirror_operation_type: MirrorOperationType,
-        retry_threshold: int = 3,
-    ):
-        self.retry_threshold = retry_threshold
-        self.source_channel_id = source.keys().__iter__().__next__()
-        self.source_message_id = source[self.source_channel_id]
-        self.mirror_operation_type = mirror_operation_type
-        self._targets = targets
-        self._tries: dict[int, int] = {target_id: 0 for target_id in self._targets}
-        self._completed_successfully: dict[int, int] = {}
-        self._scheduled: dict[int, int | None] = {}
-        self.cancelled: dict[int, int | None] = {}
-
-    def _report_try(self, channel_id: int):
-        self._tries[channel_id] += 1
-        self._scheduled.pop(channel_id)
-
-    def report_scheduled(self, channel_id: int, message_id: int | None = None):
-        if channel_id in self._scheduled:
-            e = ValueError(
-                f"Target already scheduled. "
-                f"source_message_id: {self.source_message_id} id:"
-                f"{channel_id}.{self._scheduled[channel_id]} vs incoming: "
-                f"{channel_id}.{message_id}"
-            )
-            logging.exception(e)
-            raise e
-        else:
-            self._scheduled[channel_id] = message_id
-
-    def report_completed(self, channel_id: int, message_id: int):
-        self._report_try(channel_id)
-        self._completed_successfully[channel_id] = message_id
-
-    def report_failure(self, channel_id: int):
-        self._report_try(channel_id)
-
-    @property
-    def failed_targets(self) -> dict[int, int | None]:
-        "IDs that have failed more than the retry threshold and will not be retried"
-        return {
-            channel_id: message_id
-            for channel_id, message_id in self._targets.items()
-            if self._tries[channel_id] >= self.retry_threshold
-        }
-
-    @property
-    def successful_targets(self) -> dict[int, int]:
-        return self._completed_successfully
-
-    @property
-    def total_targets(self) -> int:
-        return len(self._targets)
-
-    @property
-    def _targets_tried_at_least_once(self) -> dict[int, int | None]:
-        return {
-            target: self._targets[target]
-            for target, tries_ in self._tries.items()
-            if tries_ > 0
-        }
-
-    @property
-    def targets_not_yet_tried(self) -> dict[int, int | None]:
-        return {
-            target: self._targets[target]
-            for target, tries_ in self._tries.items()
-            if tries_ == 0
-        }
-
-    @property
-    def is_every_target_tried(self) -> bool:
-        return len(self._targets_tried_at_least_once) == len(self._targets)
-
-    @property
-    def targets_to_schedule(self) -> dict[int, int | None]:
-        return {
-            channel_id: message_id
-            for channel_id, message_id in self._targets.items()
-            if channel_id not in self._scheduled
-            and channel_id not in self.failed_targets
-            and channel_id not in self.successful_targets
-            and channel_id not in self.cancelled
-        }
-
-    @property
-    def targets_being_retried(self) -> dict[int, int | None]:
-        return {
-            channel_id: message_id
-            for channel_id, message_id in self._targets.items()
-            if channel_id in self._targets_tried_at_least_once
-            and channel_id not in self.failed_targets
-            and channel_id not in self.successful_targets
-        }
-
-    @property
-    def is_work_left_to_do(self) -> bool:
-        return bool(self.targets_to_schedule) or bool(self._scheduled)
-
-
-class KernelWorkControl(KernelWorkTracker):
-    def __init__(
-        self,  #
-        source: collections.abc.Mapping[int | None, int],
-        targets: collections.abc.Mapping[int, int | None],
-        role_ping_per_ch_id: collections.abc.Mapping[int, int | None],
-        mirror_operation_type: MirrorOperationType,
-        kernel: collections.abc.Callable[..., t.Any],
-        retry_threshold: int = 3,
-    ):
-        super().__init__(
-            source,
-            targets,
-            mirror_operation_type=mirror_operation_type,
-            retry_threshold=retry_threshold,
-        )
-        self.role_ping_per_ch_id = role_ping_per_ch_id
-        # The kernel is supplied at construction time and is expected to have the
-        # signature ``async _kernel(self, ch_id: int, msg_id: int, delay: int = 0)``.
-        self._kernel: collections.abc.Callable[
-            ..., collections.abc.Coroutine[t.Any, t.Any, None]
-        ] = kernel
-        self._tasks: set[aio.Task[None]] = set()
-
-    async def run_till_completion(self):
-        async with kernel_work_control_registry.lock_source_message(self):
-            kernel_work_control_registry.register(self)
-
-            loop_number = 0
-            while self.is_work_left_to_do and loop_number < self.retry_threshold:
-                tasks = [
-                    aio.create_task(
-                        self._kernel(
-                            self,
-                            dest_ch_id,
-                            dest_msg_id,
-                            # First pass runs immediately; retries wait a
-                            # randomised 3-5 minutes to spread out load.
-                            delay=0 if loop_number == 0 else randint(180, 300),
-                        )
-                    )
-                    for dest_ch_id, dest_msg_id in self.targets_to_schedule.items()
-                ]
-                self._tasks.update(tasks)
-                await aio.wait(self._tasks, return_when=aio.ALL_COMPLETED)
-                loop_number += 1
-
-    def cancel(self):
-        for task in self._tasks:
-            task: aio.Task[None]
-            task.cancel()
-
-        self.cancelled.update(self._scheduled)
-        self.cancelled.update(self.targets_to_schedule)
-        self._scheduled.clear()
 
 
 def _get_message_summary(msg: h.Message, default: str = "Link") -> str:
@@ -346,116 +132,160 @@ def _get_message_summary(msg: h.Message, default: str = "Link") -> str:
     return summary
 
 
-async def _continue_logging_mirror_progress_till_completion(
-    log_message: h.Message, tracker: KernelWorkTracker, start_time: float
-):
-    COMPLETED = 2
-    RETRYING = 3
-    FAILED = 4
-    REMAINING = 5
-    TIME_TAKEN = 6
-    TIME_TAKE_TO_TRY_ALL_ONCE = 7
+# How often (seconds) the progress message is re-rendered while work continues.
+_PROGRESS_UPDATE_INTERVAL = 5
+# Max distinct reference codes listed in the failure breakdown of the progress UI.
+_PROGRESS_MAX_BREAKDOWN = 5
 
-    while True:
-        tries = 0
-        final_update = not tracker.is_work_left_to_do
-        while (tries < 1) or final_update:
-            try:
-                time_taken = round(perf_counter() - start_time, 2)
-                time_taken = (
-                    f"{time_taken} seconds"
-                    if time_taken < 60
-                    else (
-                        f"{time_taken // 60} minutes "
-                        f"{round(time_taken % 60, 2)} seconds"
-                    )
+
+def _status_footer(control: KernelWorkControl, *, final: bool) -> str:
+    if not final:
+        return "⏳ In progress"
+    base = "❌ Cancelled" if control.cancelled else "✅ Completed"
+    return base + (" with errors" if control.failed_targets else "")
+
+
+def render_mirror_progress(
+    control: KernelWorkControl,
+    *,
+    title: str,
+    source_message_link: str,
+    source_message_summary: str,
+    source_channel_link: str,
+    source_channel_name: str,
+    start_time: float,
+    final: bool,
+    enable_cancellation: bool,
+) -> list[h.api.ComponentBuilder]:
+    """Render the mirror progress as a Components V2 container.
+
+    Re-rendered from scratch on each update (no magic field-index mutation). The
+    cancel action row is included only when ``enable_cancellation`` and work is still
+    in progress; its ``custom_id`` is namespaced by ``source_message_id`` so two
+    concurrent progress messages never cross-fire.
+    """
+    elapsed = format_duration(perf_counter() - start_time)
+    time_to_first_pass = elapsed if control.is_every_target_tried else "TBC"
+
+    source_message_field = (
+        f"[{source_message_summary}]({source_message_link})"
+        if source_message_link
+        else source_message_summary
+    )
+    source_channel_field = (
+        f"[{source_channel_name}]({source_channel_link})"
+        if source_channel_link
+        else source_channel_name
+    )
+
+    sections = [
+        f"## {title}",
+        f"**Source message:** {source_message_field}\n"
+        f"**Source channel:** {source_channel_field}",
+        f"✅ Completed: **{len(control.successful_targets)}**\n"
+        f"🔁 Retrying: **{len(control.targets_being_retried)}**\n"
+        f"❌ Failed: **{len(control.failed_targets)}**\n"
+        f"⏳ Remaining: **{len(control.targets_not_yet_tried)}**",
+        f"Time taken: {elapsed}\nTime to try all channels once: {time_to_first_pass}",
+    ]
+
+    breakdown = control.failure_breakdown
+    if breakdown:
+        lines = [
+            f"`{group.reference_code}` ×{group.count} "
+            f"({group.error_class.name.lower()})"
+            for group in breakdown[:_PROGRESS_MAX_BREAKDOWN]
+        ]
+        if len(breakdown) > _PROGRESS_MAX_BREAKDOWN:
+            lines.append(f"…and {len(breakdown) - _PROGRESS_MAX_BREAKDOWN} more")
+        sections.append("**Failure breakdown**\n" + "\n".join(lines))
+
+    sections.append(_status_footer(control, final=final))
+
+    container = build_container(
+        sections,
+        accent_color=cfg.embed_error_color
+        if control.failed_targets
+        else cfg.embed_default_color,
+    )
+
+    if enable_cancellation and not final:
+        container.add_action_row(
+            [
+                h.impl.InteractiveButtonBuilder(
+                    style=h.ButtonStyle.DANGER,
+                    custom_id=_cancel_custom_id(control.source_message_id),
+                    label="Cancel Mirror",
                 )
+            ]
+        )
 
-                embed = log_message.embeds[0]
-                embed.edit_field(
-                    COMPLETED, h.UNDEFINED, str(len(tracker.successful_targets))
-                )
-                embed.edit_field(
-                    RETRYING, h.UNDEFINED, str(len(tracker.targets_being_retried))
-                )
-                embed.edit_field(FAILED, h.UNDEFINED, str(len(tracker.failed_targets)))
-                embed.edit_field(
-                    REMAINING,
-                    h.UNDEFINED,
-                    str(len(tracker.targets_not_yet_tried)),
-                )
-                embed.edit_field(TIME_TAKEN, h.UNDEFINED, str(time_taken))
-                if (
-                    tracker.is_every_target_tried
-                    and embed.fields[TIME_TAKE_TO_TRY_ALL_ONCE].value == "TBC"
-                ):
-                    embed.edit_field(
-                        TIME_TAKE_TO_TRY_ALL_ONCE, h.UNDEFINED, str(time_taken)
-                    )
-
-                if tracker.failed_targets:
-                    embed.color = cfg.embed_error_color
-
-                if final_update:
-                    if tracker.cancelled:
-                        embed.set_footer(
-                            text="❌ Cancelled"
-                            + (" with errors" if tracker.failed_targets else ""),
-                        )
-                    else:
-                        embed.set_footer(
-                            text="✅ Completed"
-                            + (" with errors" if tracker.failed_targets else ""),
-                        )
-
-                await log_message.edit(embeds=[embed], components=[])
-
-                if final_update:
-                    return
-
-            except Exception as e:
-                e.add_note("Failed to log mirror progress due to exception\n")
-                logging.exception(e)
-                tries += 1
-                await aio.sleep(5**tries)
-            else:
-                await aio.sleep(5)  # Wait 5 seconds between updates
-                break
+    return [container]
 
 
-class LogCancelButton(m.Button):
-    def __init__(self, callback: collections.abc.Callable[..., t.Any] | None = None):
-        super().__init__(style=h.ButtonStyle.DANGER, label="Cancel Mirror")
-        self._callback = callback
-
-    @override
-    async def callback(self, context: m.ViewContext):
-        if self._callback:
-            await self._callback(self, context)
+def _cancel_custom_id(source_message_id: int) -> str:
+    return f"{_CANCEL_CUSTOM_ID_PREFIX}:{source_message_id}"
 
 
-async def log_mirror_progress_to_discord(
+def _build_cancel_menu(
+    control: KernelWorkControl,
+    client: lb.Client,
+) -> tuple[lbc.Menu, lbc.MenuHandle]:
+    """Build + attach a background lightbulb Menu that routes the cancel button.
+
+    Mirrors the ``Paginator`` pattern: the menu exists purely as the custom-id ->
+    callback router; the visually-identical button is rendered inside the CV2
+    container by :func:`render_mirror_progress`. Returns the menu and its handle so
+    the update loop can stop it once the run finishes.
+    """
+    menu = lbc.Menu()
+
+    async def on_cancel(mctx: lbc.MenuContext) -> None:
+        bot = t.cast(CachedFetchBot, mctx.client.app)
+        if mctx.user.id not in await bot.fetch_owner_ids():
+            # Only owners may cancel; silently acknowledge for anyone else.
+            await mctx.respond(
+                "You are not allowed to cancel this mirror.", ephemeral=True
+            )
+            return
+        # Graceful drain; the impl's post-run DB write persists successes-so-far so a
+        # later edit reconciles correctly.
+        control.cancel()
+        await mctx.respond(edit=True, flags=h.MessageFlag.IS_COMPONENTS_V2)
+
+    menu.add_interactive_button(
+        h.ButtonStyle.DANGER,
+        on_cancel,
+        custom_id=_cancel_custom_id(control.source_message_id),
+        label="Cancel Mirror",
+    )
+    handle = menu.attach_persistent(client, timeout=_CANCEL_MENU_TIMEOUT)
+    return menu, handle
+
+
+async def start_progress_logger(
     bot: CachedFetchBot,
     control: KernelWorkControl,
     source_message: h.Message | None,
     start_time: float,
-    title: str | None = "Mirror progress",
+    *,
+    title: str = "Mirror progress",
     source_channel: h.GuildChannel | None = None,
-    enable_cancellation: bool | None = False,
-):
+    enable_cancellation: bool = False,
+    client: lb.Client | None = None,
+) -> None:
+    """Post the CV2 progress message and spawn the background update loop.
+
+    Resolves the source links once, sends the initial container (attaching the
+    lightbulb cancel menu when requested), then schedules ``_update_progress_loop``
+    to re-render every few seconds until the run finishes.
+    """
     tries = 0
     while True:
         try:
             log_channel = await bot.fetch_channel(cfg.log_channel)
             if not isinstance(log_channel, h.TextableGuildChannel):
                 raise ValueError("Log channel must be a TextableGuildChannel")
-
-            time_taken = round(perf_counter() - start_time, 2)
-            time_taken = (
-                f"{time_taken} seconds"
-                if time_taken < 60
-                else f"{time_taken // 60} minutes {round(time_taken % 60, 2)} seconds"
-            )
 
             if not source_channel and source_message:
                 channel_from_message = await bot.fetch_channel(
@@ -470,10 +300,9 @@ async def log_mirror_progress_to_discord(
             else:
                 source_message_link = ""
 
-            if source_message:
-                source_message_summary = _get_message_summary(source_message)
-            else:
-                source_message_summary = "Unknown"
+            source_message_summary = (
+                _get_message_summary(source_message) if source_message else "Unknown"
+            )
 
             if source_channel:
                 source_channel_link = (
@@ -482,91 +311,82 @@ async def log_mirror_progress_to_discord(
                     + "/"
                     + str(source_channel.id)
                 )
+                source_channel_name = source_channel.name or "Unknown"
             else:
                 source_channel_link = ""
+                source_channel_name = "Unknown"
 
-            embed = h.Embed(color=cfg.embed_default_color, title=title)
-            embed.add_field(
-                "Source message",
-                f"[{source_message_summary}]({source_message_link})"
-                if source_message_link
-                else source_message_summary,
-                inline=True,
-            ).add_field(
-                "Source channel",
-                f"[{source_channel.name}]({source_channel_link})"
-                if source_channel
-                else "Unknown",
-                inline=True,
-            ).add_field(
-                "Completed", str(len(control.successful_targets)), inline=True
-            ).add_field(
-                "Retrying", str(len(control.targets_being_retried)), inline=True
-            ).add_field(
-                "Failed", str(len(control.failed_targets)), inline=True
-            ).add_field(
-                "Remaining",
-                str(len(control.targets_not_yet_tried)),
-                inline=True,
-            ).add_field("Time taken", f"{time_taken}").add_field(
-                "Time to try all channels once",
-                time_taken if control.is_every_target_tried else "TBC",
+            def render(
+                final: bool,
+                *,
+                _scl=source_channel_link,
+                _scn=source_channel_name,
+                _sml=source_message_link,
+                _sms=source_message_summary,
+            ) -> list[h.api.ComponentBuilder]:
+                return render_mirror_progress(
+                    control,
+                    title=title,
+                    source_message_link=_sml,
+                    source_message_summary=_sms,
+                    source_channel_link=_scl,
+                    source_channel_name=_scn,
+                    start_time=start_time,
+                    final=final,
+                    enable_cancellation=enable_cancellation,
+                )
+
+            menu_handle: lbc.MenuHandle | None = None
+            if enable_cancellation and client is not None:
+                _menu, menu_handle = _build_cancel_menu(control, client)
+
+            log_message = await log_channel.send(
+                components=render(not control.is_work_left_to_do),
+                flags=h.MessageFlag.IS_COMPONENTS_V2,
             )
-
-            if source_message:
-                if source_message.embeds and source_message.embeds[0].image:
-                    embed.set_thumbnail(source_message.embeds[0].image.url)
-                elif (
-                    source_message.attachments
-                    and source_message.attachments[0].media_type
-                    and source_message.attachments[0].media_type.startswith("image")
-                ):
-                    embed.set_thumbnail(source_message.attachments[0].url)
-
-            if not control.is_work_left_to_do:
-                embed.set_footer(
-                    text="✅ Completed",
-                )
-            else:
-                embed.set_footer(
-                    text="⏳ In progress",
-                )
-
-            if enable_cancellation:
-
-                async def cancel(self: m.Button, ctx: m.ViewContext):
-                    # Cancel the kernel and remove the message
-                    bot = t.cast(CachedFetchBot, ctx.bot)
-                    if ctx.user.id not in await bot.fetch_owner_ids():
-                        # Ignore non owners
-                        return
-
-                    control.cancel()
-                    self.disabled = True
-                    await ctx.edit_response(components=ctx.view)
-                    self.view.stop()
-
-                cancel_button = LogCancelButton(callback=cancel)
-                view = m.View(timeout=60 * 60 * 7)
-                view.add_item(cancel_button)
-                log_message = await log_channel.send(embed, components=view)
-                await view.start(message=log_message)
-                # Do not await view.wait() since it will block the event loop
-                # and we want to continue logging progress
-            else:
-                log_message = await log_channel.send(embed)
             break
         except Exception as e:
             e.add_note("Failed to log mirror progress due to exception\n")
             logging.exception(e)
             tries += 1
-            await aio.sleep(5**tries)
+            await aio.sleep(min(60, 5 * (tries + 1)))
 
-    aio.create_task(
-        _continue_logging_mirror_progress_till_completion(
-            log_message, control, start_time
-        )
-    )
+    aio.create_task(_update_progress_loop(log_message, control, render, menu_handle))
+
+
+async def _update_progress_loop(
+    log_message: h.Message,
+    control: KernelWorkControl,
+    render: collections.abc.Callable[[bool], list[h.api.ComponentBuilder]],
+    menu_handle: "lbc.MenuHandle | None",
+) -> None:
+    """Re-render the progress container every few seconds until the run finishes.
+
+    Re-renders from scratch (no magic field indices). On the final update it drops
+    the cancel button (``final=True``) and stops the menu handle. Backs off linearly
+    (capped at 60 s) on transient edit failures rather than the old ``5**tries``.
+    """
+    tries = 0
+    while True:
+        final_update = not control.is_work_left_to_do
+        try:
+            await log_message.edit(
+                components=render(final_update),
+                flags=h.MessageFlag.IS_COMPONENTS_V2,
+            )
+        except Exception as e:
+            e.add_note("Failed to log mirror progress due to exception\n")
+            logging.exception(e)
+            tries += 1
+            await aio.sleep(min(60, 5 * tries))
+            continue
+
+        if final_update:
+            if menu_handle is not None:
+                menu_handle.stop_interacting()
+            return
+        tries = 0
+        await aio.sleep(_PROGRESS_UPDATE_INTERVAL)
 
 
 # Logger whose records surface to the Discord alerts channel (ERROR/CRITICAL) via
@@ -581,38 +401,59 @@ _DISABLE_ERROR_FRACTION = 0.05
 _DISABLE_ERROR_MIN = 5
 
 
-def _log_kernel_failure(exc: BaseException) -> None:
-    """Log a per-target kernel failure for local diagnostics only.
-
-    Deliberately below the alert threshold (WARNING, not ERROR) so individual
-    target failures stay in the Railway/console logs but do **not** reach the
-    Discord alert handler or feed storm promotion — only the per-run
-    majority-failing summary (:func:`flag_mirror_failure_ratio`) escalates to
-    Discord. (The kernel system is slated for rework; keeping this minimal.)
-    """
-    logging.warning(exc, exc_info=exc)
+def _failure_summary(control: KernelWorkControl) -> str:
+    """One-line-per-code summary of a run's failures for an alert message."""
+    return "; ".join(
+        f"{group.reference_code} ×{group.count} "
+        f"({group.error_class.name.lower()}): {group.sample_message}"
+        for group in control.failure_breakdown
+    )
 
 
 def flag_mirror_failure_ratio(control: KernelWorkControl) -> None:
-    """Emit a CRITICAL log when most of a mirror run's targets failed.
+    """Emit one aggregated alert per run summarising its failures.
 
-    Routed through ``logging`` so the Discord alert handler renders it and pings
-    owners (CRITICAL). A minimum-sample guard stops a single 1/1 failure — or any
-    tiny run — from paging anyone.
+    Replaces the old N-per-channel warnings with a single grouped, ref-coded record:
+
+    - CRITICAL when a majority of a sufficiently-large run failed (pings owners via
+      the Discord handler), enriched with the per-reference-code breakdown.
+    - else ERROR when there were any permanent failures (so they surface without
+      paging).
+    - else nothing (transient blips that the retries absorbed).
     """
     total = control.total_targets
-    if total < int(cfg.mirror_failure_min_sample):
-        return
     failed = len(control.failed_targets)
-    if failed / total < cfg.mirror_failure_ratio_threshold:
+    if not failed:
         return
-    health_logger.critical(
-        "Majority of mirrors failing: %d/%d %s targets failed for source %s",
-        failed,
-        total,
-        control.mirror_operation_type.name.lower(),
-        control.source_channel_id,
+
+    summary = _failure_summary(control)
+    has_permanent = any(
+        group.error_class is ErrorClass.PERMANENT for group in control.failure_breakdown
     )
+
+    majority_fail = (
+        total >= int(cfg.mirror_failure_min_sample)
+        and failed / total >= cfg.mirror_failure_ratio_threshold
+    )
+
+    if majority_fail:
+        health_logger.critical(
+            "Majority of mirrors failing: %d/%d %s targets failed for source %s — %s",
+            failed,
+            total,
+            control.mirror_operation_type.name.lower(),
+            control.source_channel_id,
+            summary,
+        )
+    elif has_permanent:
+        health_logger.error(
+            "%d/%d %s mirror targets failed (permanent) for source %s — %s",
+            failed,
+            total,
+            control.mirror_operation_type.name.lower(),
+            control.source_channel_id,
+            summary,
+        )
 
 
 def ignore_non_src_channels(func: collections.abc.Callable[..., t.Any]):
@@ -701,10 +542,83 @@ def add_role_ping_to_msg(
     return msg_content
 
 
+def _kernel_failure(ch_id: int, exc: BaseException) -> KernelFailure:
+    """Build a classified, ref-coded :class:`KernelFailure` and log it locally.
+
+    The per-target failure is logged at WARNING (below the Discord alert threshold)
+    so individual failures stay in the console/Railway logs while only the per-run
+    aggregated summary (:func:`flag_mirror_failure_ratio`) escalates to Discord.
+    """
+    logging.warning(exc, exc_info=exc)
+    return KernelFailure(
+        channel_id=ch_id,
+        exc=exc,
+        error_class=classify_error(exc),
+        reference_code=reference_code(identity_for_exc(exc)),
+    )
+
+
+async def _send_one(
+    bot: CachedFetchBot,
+    msg: h.Message,
+    ch_id: int,
+    role_ping_per_ch_id: collections.abc.Mapping[int, int | None],
+) -> int:
+    """Send ``msg`` to channel ``ch_id`` (rate-limited) and return the new msg id.
+
+    Crossposts as non-fatal post-success work for announcement channels (the
+    "already crossposted" 400 is treated as success/ignored). Shared by the SEND
+    kernel and the reconcile kernel's send branch.
+    """
+    channel = await bot.fetch_channel(ch_id)
+    if not isinstance(channel, h.TextableChannel):
+        raise ValueError("Channel is not textable")
+
+    msg_content = add_role_ping_to_msg(msg.content, ch_id, role_ping_per_ch_id)
+
+    async with rate_limiter:
+        # Note: components are no longer mirrored. This allows us to use buttons for
+        # admin purposes in the main server.
+        mirrored_msg = await channel.send(
+            msg_content,
+            attachments=msg.attachments,
+            embeds=msg.embeds,
+            role_mentions=True,
+        )
+
+    if isinstance(channel, h.GuildNewsChannel):
+        # If the channel is a news channel then crosspost the message as well. This is
+        # non-fatal: a crosspost failure does not fail the send (the message is sent).
+        crosspost_backoff = 30
+        for _ in range(3):
+            try:
+                async with rate_limiter:
+                    await bot.rest.crosspost_message(ch_id, mirrored_msg.id)
+            except Exception as e:
+                if (
+                    isinstance(e, h.BadRequestError)
+                    and "This message has already been crossposted" in e.message
+                ):
+                    # Already crossposted -> treat as success and stop.
+                    break
+                e.add_note(
+                    f"Failed to crosspost message in channel {ch_id} due to exception\n"
+                )
+                logging.warning(e, exc_info=e)
+                await aio.sleep(crosspost_backoff)
+                crosspost_backoff = crosspost_backoff * 2
+            else:
+                break
+
+    return mirrored_msg.id
+
+
 @loader.listener(h.MessageCreateEvent)
 @ignore_non_src_channels
 @utils.ignore_own_user
-async def message_create_repeater(event: h.MessageCreateEvent):
+async def message_create_repeater(
+    event: h.MessageCreateEvent, client: lb.Client = lb.di.INJECTED
+):
     cached_bot = t.cast(CachedFetchBot, event.app)
     await message_create_repeater_impl(
         event.message,
@@ -713,6 +627,7 @@ async def message_create_repeater(event: h.MessageCreateEvent):
             h.TextableChannel,
             await cached_bot.fetch_channel(event.message.channel_id),
         ),
+        client=client,
     )
 
 
@@ -721,6 +636,7 @@ async def message_create_repeater_impl(
     bot: CachedFetchBot,
     channel: h.TextableChannel,
     wait_for_crosspost: bool = True,
+    client: lb.Client | None = None,
 ):
     # Wait for message to be crossposted before mirroring if requested
     await handle_waiting_for_crosspost(
@@ -746,90 +662,31 @@ async def message_create_repeater_impl(
     # Remove discord auto image embeds
     msg.embeds = utils.filter_discord_autoembeds(msg)
 
-    async def kernel(
-        control: KernelWorkControl,
-        ch_id: int,
-        msg_id: int | None = None,
-        delay: int = 0,
-    ):
-        # NOTE: msg is passed as a closure to the kernel function here
-        control.report_scheduled(ch_id)
-        await aio.sleep(delay)
-
+    async def kernel(ch_id: int, msg_id: int | None) -> KernelOutcome:
+        # NOTE: msg is captured as a closure here.
         try:
-            channel = await bot.fetch_channel(ch_id)
-
-            if not isinstance(channel, h.TextableChannel):
-                # Ignore non textable channels
-                raise ValueError("Channel is not textable")
-
-            # msg_content = msg.content
-            msg_content = add_role_ping_to_msg(
-                msg.content, ch_id, control.role_ping_per_ch_id
-            )
-
-            async with discord_api_semaphore:
-                # Send the message
-                # Note: components are no longer mirrored. This allows use to
-                # use buttons for admin purposes in the main server
-                mirrored_msg = await channel.send(
-                    msg_content,
-                    attachments=msg.attachments,
-                    embeds=msg.embeds,
-                    role_mentions=True,
-                )
+            new_msg_id = await _send_one(bot, msg, ch_id, mirror_mention_ids)
         except Exception as e:
-            e.add_note(
-                f"Asking control for a retry for message-send to channel {ch_id} "
-                + "due to exception\n"
-            )
-            _log_kernel_failure(e)
-            control.report_failure(ch_id)
-            return
-        else:
-            control.report_completed(ch_id, mirrored_msg.id)
-
-        if isinstance(channel, h.GuildNewsChannel):
-            # If the channel is a news channel then crosspost the message as well
-            crosspost_backoff = 30
-            for _ in range(3):
-                try:
-                    async with discord_api_semaphore:
-                        await bot.rest.crosspost_message(ch_id, mirrored_msg.id)
-
-                except Exception as e:
-                    if (
-                        isinstance(e, h.BadRequestError)
-                        and "This message has already been crossposted" in e.message
-                    ):
-                        # If the message has already been crossposted
-                        # then we can ignore the error
-                        break
-
-                    e.add_note(
-                        f"Failed to crosspost message in channel {ch_id} "
-                        + "due to exception\n"
-                    )
-                    _log_kernel_failure(e)
-                    await aio.sleep(crosspost_backoff)
-                    crosspost_backoff = crosspost_backoff * 2
-                else:
-                    break
+            return _kernel_failure(ch_id, e)
+        return KernelSuccess(channel_id=ch_id, message_id=new_msg_id)
 
     control = KernelWorkControl(
-        source={channel.id: msg.id},
+        source_channel_id=channel.id,
+        source_message_id=msg.id,
         targets={ch_id: None for ch_id in mirrors},
         role_ping_per_ch_id=mirror_mention_ids,
         mirror_operation_type=MirrorOperationType.SEND,
         kernel=kernel,
     )
 
-    await log_mirror_progress_to_discord(
-        bot=bot,
-        control=control,
+    await start_progress_logger(
+        bot,
+        control,
         source_message=msg,
         start_time=mirror_start_time,
         title="Mirror send progress",
+        enable_cancellation=True,
+        client=client,
     )
 
     await control.run_till_completion()
@@ -846,9 +703,12 @@ async def message_create_repeater_impl(
         MirroredChannel.log_legacy_mirror_success_in_batch(
             channel.id, list(control.successful_targets.keys())
         ),
+        # Record only the freshly-sent dest message pairs. For a SEND every success is
+        # newly sent, but using ``newly_sent`` keeps this symmetric with the reconcile
+        # path and is a no-op for already-recorded edits.
         MirroredMessage.add_msgs_in_batch(
-            dest_msgs=list(control.successful_targets.values()),
-            dest_channels=list(control.successful_targets.keys()),
+            dest_msgs=list(control.newly_sent.values()),
+            dest_channels=list(control.newly_sent.keys()),
             source_msg=msg.id,
             source_channel=channel.id,
         ),
@@ -892,20 +752,33 @@ async def message_create_repeater_impl(
 @loader.listener(h.MessageUpdateEvent)
 @ignore_non_src_channels
 @utils.ignore_own_user
-async def message_update_repeater(event: h.MessageUpdateEvent):
+async def message_update_repeater(
+    event: h.MessageUpdateEvent, client: lb.Client = lb.di.INJECTED
+):
     await message_update_repeater_impl(
         t.cast(h.Message, event.message),
         t.cast(CachedFetchBot, event.app),
+        client=client,
     )
 
 
-async def message_update_repeater_impl(msg: h.Message, bot: CachedFetchBot):
+async def message_update_repeater_impl(
+    msg: h.Message, bot: CachedFetchBot, client: lb.Client | None = None
+):
     backoff_timer = 30
     while True:
         try:
-            msgs_to_update = await MirroredMessage.get_dest_msgs_and_channels(msg.id)
-            if not msgs_to_update:
-                # Return if this message was not mirrored for any reason
+            # Reconcile: bring every *desired* dest into sync with the source's
+            # current content. Existing mirrored messages are edited; desired dests
+            # that never received the message (e.g. a previously-cancelled send) get a
+            # fresh send, so all destinations converge on the source.
+            desired_dests = await MirroredChannel.fetch_dests(msg.channel_id)
+            existing_pairs = await MirroredMessage.get_dest_msgs_and_channels(msg.id)
+            existing = {
+                channel_id: dest_msg_id for dest_msg_id, channel_id in existing_pairs
+            }
+            if not desired_dests and not existing:
+                # Return if this message was not mirrored and has no desired dests
                 return
             mirror_mention_ids = await MirroredChannel.fetch_mirror_and_role_mention_id(
                 msg.channel_id
@@ -927,64 +800,74 @@ async def message_update_repeater_impl(msg: h.Message, bot: CachedFetchBot):
     # Remove discord auto image embeds
     msg.embeds = utils.filter_discord_autoembeds(msg)
 
-    async def kernel(
-        control: KernelWorkControl,
-        ch_id: int,
-        msg_id: int | None,
-        delay: int = 0,
-    ):
-        if msg_id is None:
-            raise ValueError("msg_id should not be None for message_update_repeater")
-        control.report_scheduled(ch_id, msg_id)
-        await aio.sleep(delay)
+    # Reconcile target map: edit dests that have a mirrored message, fresh-send to
+    # desired dests that are missing one, so all destinations converge on the source.
+    targets = build_reconcile_targets(
+        desired_dests, existing, source_channel_id=msg.channel_id
+    )
 
-        try:
-            async with discord_api_semaphore:
-                dest_msg = await bot.fetch_message(ch_id, msg_id)
-            async with discord_api_semaphore:
-                msg_content = add_role_ping_to_msg(
-                    msg.content, ch_id, control.role_ping_per_ch_id
-                )
-
-                # Note: components are no longer mirrored. This allows use to
-                # use buttons for admin purposes in the main server
-                await dest_msg.edit(
-                    msg_content,
-                    attachments=msg.attachments,
-                    embeds=msg.embeds,
-                    role_mentions=True,
-                )
-        except Exception as e:
-            e.add_note(
-                f"Asking control for a retry for message-update to channel {ch_id} "
-                + "due to exception\n"
+    async def edit_one(ch_id: int, dest_msg_id: int) -> int:
+        async with rate_limiter:
+            dest_msg = await bot.fetch_message(ch_id, dest_msg_id)
+        msg_content = add_role_ping_to_msg(msg.content, ch_id, mirror_mention_ids)
+        async with rate_limiter:
+            # Note: components are no longer mirrored.
+            await dest_msg.edit(
+                msg_content,
+                attachments=msg.attachments,
+                embeds=msg.embeds,
+                role_mentions=True,
             )
-            _log_kernel_failure(e)
-            control.report_failure(ch_id)
-        else:
-            control.report_completed(ch_id, msg_id)
+        return dest_msg_id
+
+    async def kernel(ch_id: int, msg_id: int | None) -> KernelOutcome:
+        try:
+            if msg_id is None:
+                # Missing dest -> fresh send (reconcile to the source's state).
+                new_msg_id = await _send_one(bot, msg, ch_id, mirror_mention_ids)
+                return KernelSuccess(channel_id=ch_id, message_id=new_msg_id)
+            # Existing dest -> edit in place.
+            edited_id = await edit_one(ch_id, msg_id)
+            return KernelSuccess(channel_id=ch_id, message_id=edited_id)
+        except Exception as e:
+            return _kernel_failure(ch_id, e)
 
     control = KernelWorkControl(
-        source={msg.channel_id: msg.id},
-        targets={channel_id: dest_msg_id for dest_msg_id, channel_id in msgs_to_update},
+        source_channel_id=msg.channel_id,
+        source_message_id=msg.id,
+        targets=targets,
         mirror_operation_type=MirrorOperationType.UPDATE,
         role_ping_per_ch_id=mirror_mention_ids,
         retry_threshold=2,
         kernel=kernel,
     )
 
-    await log_mirror_progress_to_discord(
-        bot=bot,
-        control=control,
+    await start_progress_logger(
+        bot,
+        control,
         source_message=msg,
         start_time=mirror_start_time,
         title="Mirror update progress",
         enable_cancellation=True,
+        client=client,
     )
 
     await control.run_till_completion()
 
     flag_mirror_failure_ratio(control)
+
+    # Record only the newly-sent pairs (dests reconciled via a fresh send); edited
+    # dests already have their MirroredMessage pair.
+    if control.newly_sent:
+        try:
+            await MirroredMessage.add_msgs_in_batch(
+                dest_msgs=list(control.newly_sent.values()),
+                dest_channels=list(control.newly_sent.keys()),
+                source_msg=msg.id,
+                source_channel=msg.channel_id,
+            )
+        except Exception as e:
+            logging.error("Error recording reconciled mirror messages: %s", e)
 
 
 @loader.listener(h.MessageDeleteEvent)
@@ -1017,33 +900,27 @@ async def message_delete_repeater_impl(
 
     mirror_start_time = perf_counter()
 
-    async def kernel(
-        tracker: KernelWorkControl,
-        ch_id: int,
-        msg_id: int,
-        delay: int = 0,
-    ):
-        tracker.report_scheduled(ch_id, msg_id)
-        await aio.sleep(delay)
-
-        try:
-            async with discord_api_semaphore:
-                dest_msg: h.Message = await bot.fetch_message(ch_id, msg_id)
-            async with discord_api_semaphore:
-                await dest_msg.delete()
-
-        except Exception as e:
-            e.add_note(
-                f"Asking control for a retry for message-delete to channel {ch_id} "
-                + "due to exception\n"
+    async def kernel(ch_id: int, msg_id: int | None) -> KernelOutcome:
+        # ``msg_id`` is the recorded dest message; ch_id is the dest channel it was
+        # recorded under. Both progress accounting and the success outcome key on
+        # ``ch_id`` (the scheduling key) — not ``dest_msg.channel_id``, which can
+        # diverge in thread/forum edge cases and would mis-record the completion.
+        if msg_id is None:
+            return _kernel_failure(
+                ch_id, ValueError("Missing dest message id for delete")
             )
-            _log_kernel_failure(e)
-            tracker.report_failure(ch_id)
-        else:
-            tracker.report_completed(dest_msg.channel_id, msg_id)
+        try:
+            async with rate_limiter:
+                dest_msg = await bot.fetch_message(ch_id, msg_id)
+            async with rate_limiter:
+                await dest_msg.delete()
+        except Exception as e:
+            return _kernel_failure(ch_id, e)
+        return KernelSuccess(channel_id=ch_id, message_id=msg_id)
 
     control = KernelWorkControl(
-        source={None: msg_id},
+        source_channel_id=None,
+        source_message_id=msg_id,
         targets={channel_id: dest_msg_id for dest_msg_id, channel_id in msgs_to_delete},
         mirror_operation_type=MirrorOperationType.DELETE,
         role_ping_per_ch_id={},
@@ -1051,9 +928,9 @@ async def message_delete_repeater_impl(
         kernel=kernel,
     )
 
-    await log_mirror_progress_to_discord(
-        bot=bot,
-        control=control,
+    await start_progress_logger(
+        bot,
+        control,
         source_message=msg,
         start_time=mirror_start_time,
         title="Mirror delete progress",
@@ -1295,7 +1172,12 @@ class ManualMirrorSend(
     hooks=[owner_only],
 ):
     @lb.invoke
-    async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+    async def invoke(
+        self,
+        ctx: lb.Context,
+        bot: CachedFetchBot = lb.di.INJECTED,
+        client: lb.Client = lb.di.INJECTED,
+    ):
         initial = await ctx.respond("Mirroring message...", ephemeral=True)
         logging.info(f"Manually mirroring for channel id {self.target.channel_id}")
         await message_create_repeater_impl(
@@ -1303,6 +1185,7 @@ class ManualMirrorSend(
             bot,
             t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id)),
             wait_for_crosspost=False,
+            client=client,
         )
         await ctx.edit_response(initial, "Mirrored message.")
 
@@ -1314,13 +1197,18 @@ class ManualMirrorUpdate(
     hooks=[owner_only],
 ):
     @lb.invoke
-    async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+    async def invoke(
+        self,
+        ctx: lb.Context,
+        bot: CachedFetchBot = lb.di.INJECTED,
+        client: lb.Client = lb.di.INJECTED,
+    ):
         initial = await ctx.respond("Updating message...", ephemeral=True)
         logging.info(
             f"Manually updating mirrored message {self.target.id} "
             f" in channel id {self.target.channel_id}"
         )
-        await message_update_repeater_impl(self.target, bot)
+        await message_update_repeater_impl(self.target, bot, client=client)
         await ctx.edit_response(initial, "Updated message.")
 
 

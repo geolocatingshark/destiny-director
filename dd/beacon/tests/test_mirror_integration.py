@@ -172,12 +172,12 @@ async def mirror_env() -> AsyncIterator[_MirrorEnv]:
 
 @pytest.fixture(autouse=True)
 def _silence_progress(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stop the impls posting a progress embed to ``cfg.log_channel`` during tests."""
+    """Stop the impls posting a CV2 progress message to ``cfg.log_channel`` in tests."""
 
     async def _noop(*_args: object, **_kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr(mirror, "log_mirror_progress_to_discord", _noop)
+    monkeypatch.setattr(mirror, "start_progress_logger", _noop)
 
 
 @pytest_asyncio.fixture(loop_scope="module", autouse=True)

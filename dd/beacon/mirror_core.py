@@ -57,6 +57,30 @@ class MirrorOperationType(Enum):
     DELETE = 3
 
 
+def build_reconcile_targets(
+    desired_dests: collections.abc.Iterable[int],
+    existing: collections.abc.Mapping[int, int],
+    source_channel_id: int | None = None,
+) -> dict[int, int | None]:
+    """Build the reconcile target map converging every dest on the source's state.
+
+    Each desired destination (other than the source channel) maps to its existing
+    mirrored-message id when it already has one (→ edit) or ``None`` when it does not
+    (→ fresh send). Any *recorded* dest that is no longer a desired dest is still
+    included keyed to its existing message id, so an existing mirror keeps tracking
+    the source even if the desired-dest mapping changed. ``None`` (the SEND/reconcile
+    sentinel for "needs a fresh send") is what the kernel branches on.
+    """
+    targets: dict[int, int | None] = {
+        ch_id: existing.get(ch_id)
+        for ch_id in desired_dests
+        if ch_id != source_channel_id
+    }
+    for ch_id, dest_msg_id in existing.items():
+        targets.setdefault(ch_id, dest_msg_id)
+    return targets
+
+
 @dataclass(frozen=True, slots=True)
 class KernelSuccess:
     """A destination handled successfully.
