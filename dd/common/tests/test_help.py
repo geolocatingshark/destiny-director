@@ -86,8 +86,8 @@ def test_command_type_defaults_to_slash() -> None:
 
 
 def test_format_command_line_slash() -> None:
-    assert help_mod._format_command_line("ping", "desc") == "`/ping` - desc"
-    assert help_mod._format_command_line("ping", "") == "`/ping`"
+    assert help_mod._format_command_line("ping", "desc") == "**`/ping`** - desc"
+    assert help_mod._format_command_line("ping", "") == "**`/ping`**"
 
 
 def test_format_command_line_message_command_has_marker_not_slash() -> None:
@@ -95,6 +95,7 @@ def test_format_command_line_message_command_has_marker_not_slash() -> None:
         "Post as JSON", "Post a message", command_type=h.CommandType.MESSAGE
     )
     assert line.startswith(help_mod.CONTEXT_MENU_MARKER)
+    assert "**`Post as JSON`**" in line  # name highlighted, no leading slash
     assert "/Post as JSON" not in line
     assert "right-click" in line
     assert line.endswith("- Post a message")
@@ -105,6 +106,7 @@ def test_format_command_line_user_command_has_marker() -> None:
         "Inspect", "d", command_type=h.CommandType.USER
     )
     assert line.startswith(help_mod.CONTEXT_MENU_MARKER)
+    assert "**`Inspect`**" in line
     assert "/Inspect" not in line
 
 
@@ -118,7 +120,7 @@ def test_group_commands_marks_message_commands() -> None:
 
     general = help_mod.group_commands(client, is_admin=False)[help_mod.GENERAL_CATEGORY]
 
-    assert any(line.startswith("`/ping`") for line in general)
+    assert any(line.startswith("**`/ping`**") for line in general)
     msg_line = next(line for line in general if "Post as JSON" in line)
     assert msg_line.startswith(help_mod.CONTEXT_MENU_MARKER)
     assert "/Post as JSON" not in msg_line

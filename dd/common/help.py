@@ -171,17 +171,17 @@ def _format_command_line(
 ) -> str:
     """Format a single command help line as markdown.
 
-    Slash commands render as ``/name``; context-menu (message/user) commands drop the
-    slash and gain the :data:`CONTEXT_MENU_MARKER` plus an invocation hint, so the two
-    are visually distinct.
+    The command name is highlighted with bold inline code. Slash commands render as
+    ``/name``; context-menu (message/user) commands drop the slash and gain the
+    :data:`CONTEXT_MENU_MARKER` plus an invocation hint, so they're visually distinct.
     """
     description = description.strip()
     if command_type is h.CommandType.MESSAGE:
-        head = f"{CONTEXT_MENU_MARKER} {qualified_name} ({_MESSAGE_HINT})"
+        head = f"{CONTEXT_MENU_MARKER} **`{qualified_name}`** ({_MESSAGE_HINT})"
     elif command_type is h.CommandType.USER:
-        head = f"{CONTEXT_MENU_MARKER} {qualified_name} ({_USER_HINT})"
+        head = f"{CONTEXT_MENU_MARKER} **`{qualified_name}`** ({_USER_HINT})"
     else:
-        head = f"`/{qualified_name}`"
+        head = f"**`/{qualified_name}`**"
     return f"{head} - {description}" if description else head
 
 
