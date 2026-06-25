@@ -390,6 +390,7 @@ async def on_start_schedule_autoposts(
             check_enabled=True,
             enabled_check_coro=schemas.AutoPostSettings.get_eververse_enabled,
             construct_message_coro=eververse_message_constructor,
+            cv2=True,
         )
 
 
@@ -404,6 +405,7 @@ _eververse_autopost_group = make_autopost_control_commands(
     channel_id=cfg.followables["eververse"],
     message_constructor_coro=eververse_message_constructor,
     message_announcer_coro=xur.api_to_discord_announcer,
+    cv2=True,
 )
 
 loader.command(_eververse_autopost_group)

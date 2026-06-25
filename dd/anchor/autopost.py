@@ -16,11 +16,13 @@
 import logging
 import typing as t
 
+import hikari as h
 import lightbulb as lb
 
 from dd.hmessage import HMessage
 
 from ..common.bot import CachedFetchBot
+from ..common.components import build_container
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ def make_autopost_control_commands(
     channel_id: int,
     message_constructor_coro: t.Callable[..., t.Awaitable[HMessage]],
     message_announcer_coro: t.Callable[..., t.Awaitable[t.Any]] | None = None,
+    cv2: bool = False,
 ) -> lb.Group:
     parent_group = lb.Group(autopost_name, "Commands for Kyber")
 
@@ -88,6 +91,7 @@ def make_autopost_control_commands(
                     check_enabled=False,
                     construct_message_coro=message_constructor_coro,
                     publish_message=self.publish,
+                    cv2=cv2,
                 )
             except Exception as e:
                 logger.exception(e)
@@ -103,12 +107,30 @@ def make_autopost_control_commands(
     ):
         @lb.invoke
         async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
-            initial = await ctx.respond("Gathering data...")
+            # Match the placeholder's type to the final message (CV2 vs embed) so the
+            # in-place edit never toggles IS_COMPONENTS_V2 — Discord forbids that, but
+            # editing a CV2 message's components (no flags arg) preserves the flag.
+            if cv2:
+                initial = await ctx.respond(
+                    flags=h.MessageFlag.IS_COMPONENTS_V2,
+                    components=[build_container(["Gathering data…"])],
+                )
+            else:
+                initial = await ctx.respond("Gathering data...")
             try:
                 message: HMessage = await message_constructor_coro(bot=bot)
             except Exception as e:
                 logger.exception(e)
-                await ctx.edit_response(initial, "An error occurred!\n" + str(e))
+                if cv2:
+                    await ctx.edit_response(
+                        initial,
+                        components=[build_container(["An error occurred!\n" + str(e)])],
+                    )
+                else:
+                    await ctx.edit_response(initial, "An error occurred!\n" + str(e))
+                return
+            if cv2:
+                await ctx.edit_response(initial, components=message.components)
             else:
                 await ctx.edit_response(initial, **message.to_message_kwargs())
 
