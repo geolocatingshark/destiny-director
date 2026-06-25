@@ -78,16 +78,34 @@ def test_bucket_for_pvp_modes_take_precedence():
     assert bucket_for("The Crucible", MODE_CRUCIBLE, 3) == "Crucible"
 
 
-def test_bucket_for_pve_solo_vs_fireteam():
+def test_bucket_for_pve_ops_tabs_by_activity_type():
+    # The four PvE Ops tabs are identified by the activity *type* name (verified live
+    # against the in-game Portal), not by fireteam size.
     assert bucket_for("Solo Ops", 3, 1) == "Solo Ops"
     assert bucket_for("Mission", 3, 3) == "Fireteam Ops"
-    assert bucket_for("Onslaught", 86, 3) == "Fireteam Ops"
-    # maxParty drives the solo/fireteam split even with a non-solo type name.
-    assert bucket_for("Vanguard Op", 3, 1) == "Solo Ops"
+    # Pinnacle Ops formats (exotic missions, Crawl, Onslaught) — maxParty > 1 used to
+    # mislabel these as Fireteam Ops.
+    assert bucket_for("Exotic Mission", 3, 3) == "Pinnacle Ops"
+    assert bucket_for("Crawl", 3, 3) == "Pinnacle Ops"
+    assert bucket_for("Onslaught", 86, 3) == "Pinnacle Ops"
+    # Seasonal Arena is an Arena Op.
+    assert bucket_for("Seasonal Arena", None, 6) == "Arena Ops"
+
+
+def test_bucket_for_vanguard_op_split_by_fireteam_size():
+    # "Vanguard Op" covers both the Fireteam and Arena "Vanguard Alert" playlists; the
+    # 6-player Arena variant is told apart by maxParty.
+    assert bucket_for("Vanguard Op", 3, 3) == "Fireteam Ops"
+    assert bucket_for("Vanguard Op", 3, 6) == "Arena Ops"
+
+
+def test_bucket_for_unknown_pve_type_falls_back_to_party_size():
+    assert bucket_for("Some Future Type", 3, 1) == "Solo Ops"
+    assert bucket_for("Some Future Type", 3, 3) == "Fireteam Ops"
 
 
 def test_bucket_for_pvp_by_type_name_when_mode_absent():
-    # Seasonal Arena PvP without a mapped modeType still buckets by type name.
+    # A PvP type without a mapped modeType still buckets by type name.
     assert bucket_for("Crucible Rumble", None, 6) == "Crucible"
 
 

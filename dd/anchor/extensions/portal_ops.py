@@ -82,10 +82,22 @@ _PVP_TAB_BY_MODE = {
     MODE_CRUCIBLE: "Crucible",
 }
 
-# Tab display order for the rendered post.
+# PvE Ops tabs are identified by the activity *type* name (activityTypeHash). Verified
+# live against the in-game Portal: Pinnacle Ops gathers the exotic/seasonal pinnacle
+# formats; Seasonal Arena is an Arena Op; "Vanguard Op" covers both the Fireteam and
+# Arena "Vanguard Alert" playlists and is split by fireteam size below.
+_PINNACLE_OPS_TYPES = {"exotic mission", "crawl", "onslaught"}
+_ARENA_OPS_TYPES = {"seasonal arena"}
+# A "Vanguard Op" with a fireteam this large is the 6-player Arena variant, not the
+# 3-player Fireteam one.
+_ARENA_FIRETEAM_SIZE = 6
+
+# Tab display order for the rendered post: the four PvE Ops tabs first, then PvP.
 TAB_ORDER = [
     "Solo Ops",
     "Fireteam Ops",
+    "Pinnacle Ops",
+    "Arena Ops",
     "Crucible",
     "Gambit",
     "Trials",
@@ -126,8 +138,11 @@ def bucket_for(
 ) -> str:
     """Map an activity to its Portal tab.
 
-    PvP modes are keyed off ``directActivityModeType`` first (most reliable), then
-    the activity-type name; PvE is Solo Ops when single-player, else Fireteam Ops.
+    PvP is keyed off ``directActivityModeType`` first (most reliable), then the
+    activity-type name. PvE Ops tabs (Solo/Fireteam/Pinnacle/Arena) are identified by
+    the activity *type* name — the in-game Portal groups PvE by activity type, not by
+    fireteam size — with ``Vanguard Op`` split into Fireteam vs Arena by fireteam size.
+    Unknown PvE types fall back to party size (solo when single-player, else Fireteam).
     """
     if mode_type in _PVP_TAB_BY_MODE:
         return _PVP_TAB_BY_MODE[mode_type]
@@ -142,7 +157,21 @@ def bucket_for(
     if "crucible" in type_lower:
         return "Crucible"
 
-    if max_party == 1 or type_lower == "solo ops":
+    # PvE Ops tabs, by activity type.
+    if type_lower == "solo ops":
+        return "Solo Ops"
+    if type_lower in _PINNACLE_OPS_TYPES:
+        return "Pinnacle Ops"
+    if type_lower in _ARENA_OPS_TYPES:
+        return "Arena Ops"
+    if type_lower == "vanguard op":
+        # Fireteam & Arena "Vanguard Alert" share this type; the 6-player one is Arena.
+        if (max_party or 0) >= _ARENA_FIRETEAM_SIZE:
+            return "Arena Ops"
+        return "Fireteam Ops"
+
+    # Unknown PvE type: best-effort by fireteam size.
+    if max_party == 1:
         return "Solo Ops"
     return "Fireteam Ops"
 
