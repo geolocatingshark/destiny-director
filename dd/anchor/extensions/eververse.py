@@ -366,8 +366,8 @@ async def format_eververse_vendor(
 async def on_start_schedule_autoposts(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
 ):
-    # Run every Tuesday at 17:00 UTC
-    @aiocron.crontab("0 17 * * TUE", start=True)
+    # Run daily at 17:00 UTC (the post carries the daily bright-dust + silver rotators)
+    @aiocron.crontab("0 17 * * *", start=True)
     # Use below crontab for testing to post every minute
     # @aiocron.crontab("* * * * *", start=True)
     async def autopost_eververse():
