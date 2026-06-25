@@ -36,6 +36,10 @@ XUR_STRANGE_GEAR_VENDOR_HASH = 3751514131
 # exotic/legendary cosmetics sold for Bright Dust.
 EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX = "EVERVERSE_BRIGHT_DUST_ROTATOR"
 
+# The Silver analogue of the above: the daily featured cosmetics sold for Silver (e.g.
+# ``EVERVERSE_SILVER_ROTATOR_EXOTIC_GHOSTS``). Same shape as the bright-dust rotators.
+EVERVERSE_SILVER_ROTATOR_PREFIX = "EVERVERSE_SILVER_ROTATOR"
+
 # Bungie API ErrorCode returned when a vendor is not currently available.
 VENDOR_NOT_FOUND_ERROR_CODE = 1627
 
