@@ -13,11 +13,16 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Anchor's bot-administration commands: ``/anchor restart | stop | info``.
+"""Beacon's bot-administration commands: ``/beacon restart | stop | info``.
 
-Thin wrapper over the shared :func:`dd.common.controller.make_controller_group`. The
-factory self-applies ``owner_only`` per subcommand; this wrapper scopes registration to
-the control guild (plus the test guild(s) in a test environment)."""
+Thin wrapper over the shared factory in :mod:`dd.common.controller`. Beacon's client
+has no client-wide owner gate, so the per-subcommand ``owner_only`` the factory applies
+restricts these to the bot team; this wrapper scopes registration to the control guild
+(plus the test guild(s) in a test environment).
+
+Note: ``/beacon stop`` exits cleanly and only truly stops the bot if prod beacon's
+Railway restart policy is flipped from ``ALWAYS`` to ``ON_FAILURE`` at the dev→main
+cutover (see :mod:`dd.common.controller`)."""
 
 import lightbulb as lb
 
@@ -27,6 +32,6 @@ from ...common.utils import guild_scope
 
 loader = lb.Loader()
 loader.command(
-    make_controller_group("anchor"),
+    make_controller_group("beacon"),
     guilds=guild_scope(*cfg.test_env, cfg.control_discord_server_id),
 )
