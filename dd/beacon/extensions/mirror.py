@@ -511,14 +511,20 @@ def ignore_non_src_channels(func: collections.abc.Callable[..., t.Any]):
         elif isinstance(event, h.MessageDeleteEvent):
             msg = event.old_message
 
-        if (
-            msg
-            and int(msg.channel_id) in await MirroredChannel.get_or_fetch_all_srcs()
-            # also keep going if we are running in a test env
-            # keep this towards the end so short circuiting in test_env
-            # does not hide logic errors
-            or cfg.test_env
-        ):
+        if msg is None:
+            return
+
+        in_src_channel = (
+            int(msg.channel_id) in await MirroredChannel.get_or_fetch_all_srcs()
+        )
+        # In a test env, also process messages that live in one of the test guild(s),
+        # so the live test bot can mirror arbitrary channels there. Scoped to
+        # msg.guild_id so the bot's presence in *other* servers (e.g. for custom-emoji
+        # access) never drags their channels into the mirror path. guild_id is None in
+        # DMs, which are never a test guild.
+        in_test_guild = msg.guild_id is not None and msg.guild_id in cfg.test_env
+
+        if in_src_channel or in_test_guild:
             return await func(event)
 
     return wrapped_func
@@ -567,9 +573,23 @@ async def handle_waiting_for_crosspost(
         except TimeoutError:
             return
         except Exception as e:
+            # A permanent error (missing access/perms, unknown channel/message) will
+            # never succeed on retry, so retrying would re-log a full traceback roughly
+            # every 30s forever. Skip this source's crosspost wait instead of flooding
+            # the alerts channel; any genuinely actionable failure surfaces downstream
+            # through the mirror send/edit's own classified path.
+            if classify_error(e) is ErrorClass.PERMANENT:
+                logging.warning(
+                    "Skipping crosspost wait for message %s in channel %s: source not "
+                    "fetchable (%s).",
+                    msg.id,
+                    str(followable_name(id=channel.id)),
+                    type(e).__name__,
+                )
+                return
             await discord_error_logger(e, operation="Mirror crosspost")
             await aio.sleep(backoff_timer)
-            backoff_timer += 30 / backoff_timer
+            backoff_timer = min(backoff_timer * 2, 600)
         else:
             break
 
@@ -853,9 +873,19 @@ async def message_update_repeater_impl(
             )
 
         except Exception as e:
+            # Don't retry permanent errors forever (symmetric with the crosspost wait);
+            # this loop only does DB reads today, so the guard is defensive while the
+            # capped backoff fixes the near-constant retry cadence.
+            if classify_error(e) is ErrorClass.PERMANENT:
+                logging.warning(
+                    "Skipping mirror update for message %s: %s",
+                    msg.id,
+                    type(e).__name__,
+                )
+                return
             await discord_error_logger(e, operation="Mirror update")
             await aio.sleep(backoff_timer)
-            backoff_timer += 30 / backoff_timer
+            backoff_timer = min(backoff_timer * 2, 600)
         else:
             break
 
@@ -960,9 +990,19 @@ async def message_delete_repeater_impl(
                 return
 
         except Exception as e:
+            # Don't retry permanent errors forever (symmetric with the crosspost wait);
+            # this loop only does DB reads today, so the guard is defensive while the
+            # capped backoff fixes the near-constant retry cadence.
+            if classify_error(e) is ErrorClass.PERMANENT:
+                logging.warning(
+                    "Skipping mirror delete for message %s: %s",
+                    msg_id,
+                    type(e).__name__,
+                )
+                return
             await discord_error_logger(e, operation="Mirror delete")
             await aio.sleep(backoff_timer)
-            backoff_timer += 30 / backoff_timer
+            backoff_timer = min(backoff_timer * 2, 600)
         else:
             break
 
