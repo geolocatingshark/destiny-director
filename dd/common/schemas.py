@@ -562,10 +562,16 @@ class MirroredChannel(Base):
         )
         await session.execute(
             update(cls)
+            # Match the failing rows by the SAME predicate the SELECT used. Rebuilding
+            # ``src_id IN (...) AND dest_id IN (...)`` from the pairs matches the
+            # Cartesian product of the two id sets, so it would also disable innocent
+            # ``(src, dest)`` rows (error_rate 0) that merely share a src or dest with a
+            # genuinely-failing pair.
             .where(
                 and_(
-                    cls.src_id.in_([mirror[0] for mirror in mirrors_to_disable]),
-                    cls.dest_id.in_([mirror[1] for mirror in mirrors_to_disable]),
+                    cls.enabled,
+                    cls.legacy,
+                    cls.legacy_error_rate >= threshold,
                 )
             )
             .values(
