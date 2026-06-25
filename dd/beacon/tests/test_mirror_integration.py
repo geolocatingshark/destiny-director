@@ -37,10 +37,11 @@ Note: Discord rate-limits channel create/delete, so this module is intentionally
 and shares one live client across its tests (module-scoped fixture).
 """
 
+import asyncio as aio
 import contextlib
 import os
 import typing as t
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
 import hikari as h
 import pytest
@@ -286,3 +287,78 @@ async def test_role_ping_is_appended(mirror_env: _MirrorEnv) -> None:
     (dest_msg_id, ch_id) = pairs[0]
     mirrored = await mirror_env.rest.fetch_message(ch_id, dest_msg_id)
     assert mirrored.content == f"ping me\n\n||<@&{role_id}>||"
+
+
+async def test_edit_during_send_takes_over_without_duplicate(
+    mirror_env: _MirrorEnv, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An edit landing mid-fan-out supersedes the in-flight send: the already-sent
+    dest is edited to the new content and the not-yet-reached dests get the new content
+    fresh — each destination ends with exactly one message (no double-send)."""
+    # One concurrency slot so the fan-out is strictly ordered: the first dest is sent
+    # while the rest wait, giving a deterministic in-flight window for the edit.
+    monkeypatch.setattr(cfg, "mirror_max_concurrency", 1, raising=False)
+
+    src = await mirror_env.make_channel("src-takeover")
+    dests = [await mirror_env.make_channel(f"dst-takeover{i}") for i in range(3)]
+    for dest in dests:
+        await MirroredChannel.add_mirror(
+            src.id, dest.id, dest_server_id=mirror_env.guild_id, legacy=True
+        )
+
+    posted = await mirror_env.rest.create_message(src.id, "before edit")
+    src_channel = t.cast(h.TextableChannel, await mirror_env.rest.fetch_channel(src.id))
+
+    # Gate the *first* send so the create's fan-out is in-flight when the edit lands;
+    # the reconcile's later sends pass straight through.
+    real_send_one = mirror._send_one  # noqa: SLF001
+    gate = aio.Event()
+    inflight = aio.Event()
+    first_send = True
+
+    async def gated_send_one(
+        bot: CachedFetchBot,
+        msg: h.Message,
+        ch_id: int,
+        mirror_mention_ids: Mapping[int, int | None],
+    ) -> int:
+        nonlocal first_send
+        if first_send:
+            first_send = False
+            inflight.set()
+            await gate.wait()
+        return await real_send_one(bot, msg, ch_id, mirror_mention_ids)
+
+    monkeypatch.setattr(mirror, "_send_one", gated_send_one)
+
+    send_task = aio.create_task(
+        mirror.message_create_repeater_impl(
+            posted, mirror_env.bot, src_channel, wait_for_crosspost=False
+        )
+    )
+    await aio.wait_for(inflight.wait(), timeout=15)
+
+    # Edit the source, then drive the update impl — it supersedes the in-flight send.
+    await mirror_env.rest.edit_message(src.id, posted.id, "after edit")
+    edited = await mirror_env.rest.fetch_message(src.id, posted.id)
+    update_task = aio.create_task(
+        mirror.message_update_repeater_impl(edited, mirror_env.bot)
+    )
+    # Let the update call cancel_if_active and block on the per-source lock before we
+    # release the in-flight send so it drains and hands over.
+    await aio.sleep(0.5)
+    gate.set()
+
+    await aio.wait_for(send_task, timeout=60)
+    await aio.wait_for(update_task, timeout=60)
+
+    # Every dest ends with exactly one message carrying the edited content.
+    for dest in dests:
+        msgs = [m async for m in mirror_env.rest.fetch_messages(dest.id)]
+        assert len(msgs) == 1, f"dest {dest.id} has {len(msgs)} messages (expected 1)"
+        assert msgs[0].content == "after edit"
+
+    # And exactly one recorded MirroredMessage pair per dest.
+    pairs = await MirroredMessage.get_dest_msgs_and_channels(posted.id)
+    assert {ch for _msg, ch in pairs} == {dest.id for dest in dests}
+    assert len(pairs) == len(dests)
