@@ -17,6 +17,7 @@ import datetime as dt
 import logging
 import math
 import tempfile
+from collections import defaultdict
 
 import hikari as h
 import lightbulb as lb
@@ -219,45 +220,168 @@ class MirrorStatsCommand(
         await ctx.respond(embed)
 
 
+# --------------------------------------------------------------------------------------
+# Text-chart helpers for the command-usage view (pure; unit-tested in
+# dd/beacon/tests/test_command_stats.py). Unicode block glyphs align inside a fenced
+# code block, so no charting dep is needed (keeps the Termux/Android build clean).
+# --------------------------------------------------------------------------------------
+
+_BAR_FULL = "█"
+_BAR_EMPTY = "░"
+_SPARK_LEVELS = "▁▂▃▄▅▆▇█"
+_NAME_WIDTH = 14
+_BAR_WIDTH = 11
+_SPARK_WIDTH = 7
+_TOP_N = 15
+
+
+def _bar(value: int, max_value: int, width: int = _BAR_WIDTH) -> str:
+    """Proportional block bar, width cells wide; any positive value fills >= 1 cell."""
+    if max_value <= 0 or value <= 0:
+        return _BAR_EMPTY * width
+    filled = max(1, min(width, round(width * value / max_value)))
+    return _BAR_FULL * filled + _BAR_EMPTY * (width - filled)
+
+
+def _downsample(series: list[int], width: int) -> list[int]:
+    """Sum series into at most width consecutive buckets (returned as-is if shorter)."""
+    if len(series) <= width:
+        return list(series)
+    buckets = [0] * width
+    n = len(series)
+    for i, value in enumerate(series):
+        buckets[min(width - 1, i * width // n)] += value
+    return buckets
+
+
+def _sparkline(series: list[int], width: int = _SPARK_WIDTH) -> str:
+    """Sparkline scaled to the series' own peak; flat baseline when all-zero/empty."""
+    buckets = _downsample(series, width) if series else [0]
+    peak = max(buckets)
+    if peak <= 0:
+        return _SPARK_LEVELS[0] * len(buckets)
+    top = len(_SPARK_LEVELS) - 1
+    return "".join(_SPARK_LEVELS[round(top * value / peak)] for value in buckets)
+
+
+def _delta(current: int, previous: int) -> str:
+    """Trend vs previous window: up/down %, '→0%' if unchanged, 'new' if no prior."""
+    if previous <= 0:
+        return "new" if current > 0 else "—"
+    pct = round((current - previous) / previous * 100)
+    if pct > 0:
+        return f"↑{pct}%"
+    if pct < 0:
+        return f"↓{abs(pct)}%"
+    return "→0%"
+
+
+def _truncate(name: str, width: int = _NAME_WIDTH) -> str:
+    """Ellipsize a name longer than width (the format spec does the padding)."""
+    return name if len(name) <= width else name[: width - 1] + "…"
+
+
+def _build_command_chart(
+    rows: list[tuple[str, dt.date, int]],
+    *,
+    today: dt.date,
+    window_days: int,
+    top_n: int = _TOP_N,
+) -> str:
+    """Aligned bars + count + sparkline + trend from daily ``(name, date, count)`` rows.
+
+    ``rows`` must cover the current window ``[today-window_days+1, today]`` and the
+    equal preceding window. Returns "" when no command has usage in the current window.
+    """
+    cur_start = today - dt.timedelta(days=window_days - 1)
+    prev_start = today - dt.timedelta(days=2 * window_days - 1)
+
+    current: dict[str, int] = defaultdict(int)
+    previous: dict[str, int] = defaultdict(int)
+    daily: dict[str, dict[dt.date, int]] = defaultdict(lambda: defaultdict(int))
+    for name, day, count in rows:
+        if cur_start <= day <= today:
+            current[name] += count
+            daily[name][day] += count
+        elif prev_start <= day < cur_start:
+            previous[name] += count
+
+    ranked = sorted(
+        (name for name in current if current[name] > 0),
+        key=lambda name: current[name],
+        reverse=True,
+    )[:top_n]
+    if not ranked:
+        return ""
+
+    max_cur = current[ranked[0]]
+    count_width = len(f"{max_cur:,d}")
+    window_dates = [cur_start + dt.timedelta(days=i) for i in range(window_days)]
+
+    lines: list[str] = []
+    for name in ranked:
+        cur = current[name]
+        series = [daily[name].get(day, 0) for day in window_dates]
+        lines.append(
+            f"/{_truncate(name):<{_NAME_WIDTH}} "
+            f"{_bar(cur, max_cur)} "
+            f"{cur:>{count_width},d}  "
+            f"{_sparkline(series)}  "
+            f"{_delta(cur, previous.get(name, 0))}"
+        )
+    return "\n".join(lines)
+
+
+def _build_totals_chart(totals: list[tuple[str, int]], *, top_n: int = _TOP_N) -> str:
+    """All-time bars + counts (no trend: there is no prior window to compare)."""
+    top = [(name, count) for name, count in totals if count > 0][:top_n]
+    if not top:
+        return ""
+    max_count = top[0][1]
+    count_width = len(f"{max_count:,d}")
+    lines = [
+        f"/{_truncate(name):<{_NAME_WIDTH}} {_bar(count, max_count)} "
+        f"{count:>{count_width},d}"
+        for name, count in top
+    ]
+    return "\n".join(lines)
+
+
 @stats_command_group.register
 class CommandUsageStatsCommand(
     lb.SlashCommand,
     name="commands",
-    description="Leaderboard of user-facing command usage",
+    description="Leaderboard of user-facing command usage, with trend",
     hooks=[owner_only],
 ):
     days = lb.integer(
         "days",
-        "Days to look back (0 = all time)",
-        default=0,
+        "Days to look back; 0 = all-time leaderboard (no trend)",
+        default=7,
         min_value=0,
+        max_value=365,
     )
 
     @lb.invoke
     async def invoke(self, ctx: lb.Context):
         await ctx.defer()
-        since = (
-            dt.datetime.now(tz=dt.UTC).date() - dt.timedelta(days=self.days)
-            if self.days
-            else None
-        )
-        totals = await schemas.CommandUsage.fetch_totals(since=since)
+        today = dt.datetime.now(tz=dt.UTC).date()
 
-        window = f"last {self.days} days" if self.days else "all time"
-        if not totals:
-            description = "No command usage recorded yet."
+        if self.days:
+            since = today - dt.timedelta(days=2 * self.days - 1)
+            rows = await schemas.CommandUsage.fetch_daily(since=since)
+            chart = _build_command_chart(rows, today=today, window_days=self.days)
+            title = f"Command usage — last {self.days}d (vs previous {self.days}d)"
+            empty = f"No command usage recorded for the last {self.days} days."
         else:
-            description = "\n".join(
-                f"{i + 1}. **/{name}**: {count:,d}"
-                for i, (name, count) in enumerate(totals[:25])
-            )
+            totals = await schemas.CommandUsage.fetch_totals()
+            chart = _build_totals_chart(totals)
+            title = "Command usage — all time"
+            empty = "No command usage recorded yet."
 
+        description = f"```\n{chart}\n```" if chart else empty
         await ctx.respond(
-            h.Embed(
-                title=f"Command usage ({window})",
-                description=description,
-                color=cfg.embed_default_color,
-            )
+            h.Embed(title=title, description=description, color=cfg.embed_default_color)
         )
 
 

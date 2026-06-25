@@ -895,6 +895,24 @@ class CommandUsage(Base):
         q = q.group_by(cls.command_name).order_by(desc("total"))
         return [(name, int(total)) for name, total in (await session.execute(q)).all()]
 
+    @classmethod
+    @ensure_session(db_session)
+    async def fetch_daily(
+        cls, *, since: dt.date, session: AsyncSession = _UNSET
+    ) -> list[tuple[str, dt.date, int]]:
+        """Per-command daily counts on/after ``since`` as ``(name, date, count)`` rows.
+
+        Ordered by name then date. The presentation layer derives both windowed totals
+        (for trend deltas) and per-day series (for sparklines) from these rows, so the
+        windowing math stays in pure, testable Python rather than SQL.
+        """
+        q = (
+            select(cls.command_name, cls.date, cls.count)
+            .where(cls.date >= since)
+            .order_by(cls.command_name, cls.date)
+        )
+        return [(n, d, int(c)) for n, d, c in (await session.execute(q)).all()]
+
 
 class UserCommand(Base):
     __tablename__ = "user_command"
