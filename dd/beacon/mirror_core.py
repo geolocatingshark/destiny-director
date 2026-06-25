@@ -186,6 +186,15 @@ class KernelWorkControlRegistry:
         # send).
         self._lock_refcounts: dict[tuple[int | None, int], int] = defaultdict(int)
 
+    @property
+    def in_progress_count(self) -> int:
+        """Number of mirror operations with work still left to do.
+
+        Filters on ``is_work_left_to_do`` because a finished control can briefly remain
+        in ``_registry`` until :meth:`release` pops it.
+        """
+        return sum(1 for c in self._registry.values() if c.is_work_left_to_do)
+
     def register(self, control: "KernelWorkControl"):
         """Register a KernelWorkControl instance"""
         key = (

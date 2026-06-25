@@ -13,39 +13,141 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Shared bot-administration command group for both bots.
+"""Shared bot-administration command group (stop / restart / info) for both bots.
 
-Factory mirroring ``make_source_command``: each call builds a *fresh* group named after
-the bot (``/anchor`` or ``/beacon``) with restart / stop / info subcommands. Lightbulb
-command objects carry per-client registration state, so a fresh group is built per call
-rather than shared across the two clients.
+Factory mirroring ``make_source_command``: each call builds a *fresh* group named
+after the bot (``/anchor`` or ``/beacon``). Lightbulb command objects carry per-client
+registration state, so a fresh group is built per call, not shared across clients. The
+factory applies ``owner_only`` to each subcommand itself rather than relying on a
+client-wide gate (anchor gates its whole client, beacon does not); harmless on anchor.
+The wrappers scope registration to the control guild.
 
-The factory applies ``owner_only`` to each subcommand itself rather than relying on a
-client-wide gate: anchor gates its whole client, but beacon does not, so the gate must
-travel with the commands (harmless/idempotent on anchor). The wrappers scope
-registration to the control guild.
+Beacon passes a ``mirror_check`` so stop/restart warn and require a DANGER override
+while mirror operations are in progress. Termination goes through
+:mod:`dd.common.lifecycle` (schedule ``close`` + exit on the main thread) so it works
+from a button callback too: a raw ``sys.exit`` in a component callback is swallowed by
+hikari's fire-and-forget task wrapper.
 
-``stop`` exits cleanly (code 0) and only truly stops a service whose restart policy is
-not ``ALWAYS``. Dev beacon and both anchors are ``ON_FAILURE``; prod beacon is
-``ALWAYS`` and would respawn, so flip it to ``ON_FAILURE`` at the dev→main cutover.
-``restart`` exits non-zero and works under any restart-on-failure policy.
+``stop`` exits cleanly (code 0) and only stops a service whose restart policy is not
+``ALWAYS``. All services are ``ON_FAILURE`` (prod beacon was flipped from ``ALWAYS`` on
+2026-06-25), so ``/beacon stop`` works everywhere. ``restart`` exits non-zero and works
+under any restart-on-failure policy.
 """
 
-import sys
+import contextlib
+import typing as t
 
+import hikari as h
 import lightbulb as lb
+from lightbulb import components as lbc
 
-from . import cfg
+from . import cfg, lifecycle
 from .auth import owner_only
 from .bot import CachedFetchBot
 
+_WARN_COLOR = h.Color(0xFEE75C)  # yellow
+_DANGER_COLOR = h.Color(0xED4245)  # red
+_NEUTRAL_COLOR = h.Color(0x5865F2)  # blurple
 
-def make_controller_group(bot_name: str) -> lb.Group:
+
+async def _run_lifecycle(
+    ctx: lb.Context,
+    bot: CachedFetchBot,
+    *,
+    exit_code: int,
+    action: str,
+    verb: str,
+    mirror_check: t.Callable[[], int] | None,
+) -> None:
+    """Stop/restart the bot; warn + require a DANGER override if mirrors are live."""
+    n = mirror_check() if mirror_check is not None else 0
+    if n == 0:
+        await ctx.respond(f"Bot is {action} now.", ephemeral=True)
+        await lifecycle.request_shutdown(bot, exit_code)
+        return
+
+    decided = False
+
+    async def on_confirm(mctx: lbc.MenuContext) -> None:
+        nonlocal decided
+        if mctx.user.id not in await bot.fetch_owner_ids():
+            await mctx.respond("You are not authorized.", ephemeral=True)
+            return
+        decided = True
+        await mctx.respond(
+            edit=True,
+            embed=h.Embed(description=f"Bot is {action} now.", color=_DANGER_COLOR),
+            components=[],
+        )
+        await lifecycle.request_shutdown(bot, exit_code)
+        mctx.stop_interacting()
+
+    async def on_cancel(mctx: lbc.MenuContext) -> None:
+        nonlocal decided
+        if mctx.user.id not in await bot.fetch_owner_ids():
+            await mctx.respond("You are not authorized.", ephemeral=True)
+            return
+        decided = True
+        await mctx.respond(
+            edit=True,
+            embed=h.Embed(
+                description="Aborted — no action taken.", color=_NEUTRAL_COLOR
+            ),
+            components=[],
+        )
+        mctx.stop_interacting()
+
+    menu = lbc.Menu()
+    menu.add_interactive_button(
+        h.ButtonStyle.DANGER,
+        on_confirm,
+        custom_id=f"dd_lifecycle_go:{ctx.interaction.id}",
+        label=f"{verb} now",
+    )
+    menu.add_interactive_button(
+        h.ButtonStyle.SECONDARY,
+        on_cancel,
+        custom_id=f"dd_lifecycle_no:{ctx.interaction.id}",
+        label="Cancel",
+    )
+
+    await ctx.respond(
+        embed=h.Embed(
+            title="⚠️ Mirrors in progress",
+            description=(
+                f"{n} mirror operation(s) are still running. {action.capitalize()} now "
+                "will interrupt them — already-sent destinations are recorded and the "
+                "rest reconcile on the next run. Wait for them to finish, or override."
+            ),
+            color=_WARN_COLOR,
+        ),
+        components=menu,
+        ephemeral=True,
+    )
+
+    with contextlib.suppress(TimeoutError):
+        await menu.attach(ctx.client, timeout=60)
+    if not decided:
+        # Timed out without a choice — disable the (now stale) buttons.
+        await ctx.interaction.edit_initial_response(
+            embed=h.Embed(
+                description="Timed out — no action taken.", color=_NEUTRAL_COLOR
+            ),
+            components=[],
+        )
+
+
+def make_controller_group(
+    bot_name: str, *, mirror_check: t.Callable[[], int] | None = None
+) -> lb.Group:
     """Build a fresh bot-administration group named after ``bot_name``.
 
     Args:
-        bot_name: The group name and top-level command, e.g. ``"anchor"`` or
-            ``"beacon"`` (yields ``/anchor restart`` etc.).
+        bot_name: The group name / top-level command, e.g. ``"anchor"`` or ``"beacon"``
+            (yields ``/anchor restart`` etc.).
+        mirror_check: Optional callable returning the number of in-progress mirror
+            operations. When it returns > 0, stop/restart warn and require a DANGER
+            override. Beacon supplies this; anchor (no mirrors) leaves it ``None``.
     """
     group = lb.Group(bot_name, "Bot administration")
 
@@ -57,10 +159,15 @@ def make_controller_group(bot_name: str) -> lb.Group:
         hooks=[owner_only],
     ):
         @lb.invoke
-        async def invoke(self, ctx: lb.Context):
-            await ctx.respond("Bot is restarting now.")
-            # Exit non-zero so Railway's restart-on-failure policy respawns the bot.
-            sys.exit(1)
+        async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+            await _run_lifecycle(
+                ctx,
+                bot,
+                exit_code=lifecycle.RESTART_EXIT_CODE,
+                action="restarting",
+                verb="Restart",
+                mirror_check=mirror_check,
+            )
 
     @group.register
     class Stop(
@@ -71,10 +178,14 @@ def make_controller_group(bot_name: str) -> lb.Group:
     ):
         @lb.invoke
         async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
-            await ctx.respond("Bot is going down now.")
-            # Clean exit (0): only actually stops if the service isn't set to always
-            # restart (see module docstring re: prod beacon).
-            await bot.close()
+            await _run_lifecycle(
+                ctx,
+                bot,
+                exit_code=lifecycle.STOP_EXIT_CODE,
+                action="shutting down",
+                verb="Shut down",
+                mirror_check=mirror_check,
+            )
 
     @group.register
     class Info(
@@ -86,7 +197,7 @@ def make_controller_group(bot_name: str) -> lb.Group:
         @lb.invoke
         async def invoke(self, ctx: lb.Context):
             await ctx.respond(
-                "**Configuration Info**\n"
+                f"**Configuration Info — {bot_name}**\n"
                 f"- Control Discord Server ID: {cfg.control_discord_server_id}\n"
                 f"- Test Environment: {cfg.test_env}\n"
                 f"- Lost Sector Channel: <#{cfg.followables['lost_sector']}>\n"

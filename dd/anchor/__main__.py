@@ -34,6 +34,7 @@ from ..common.discord_logging import (
     install_discord_logging,
 )
 from ..common.extension_loader import load_extensions_strict
+from ..common.lifecycle import consume_exit_code
 
 bot = CachedFetchBot(
     token=cfg.discord_token_anchor,
@@ -103,3 +104,6 @@ async def on_guild_rm(_event: h.GuildLeaveEvent):
 
 m.install(bot)
 bot.run()
+# Exit on the main thread with the code requested by a lifecycle command (0 if none).
+# This is reliable where a SystemExit raised inside an interaction-callback task is not.
+raise SystemExit(consume_exit_code())
