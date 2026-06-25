@@ -38,6 +38,7 @@ Design:
 
 import asyncio as aio
 import collections.abc
+import contextlib
 import time
 import typing as t
 from collections import Counter, defaultdict
@@ -178,6 +179,12 @@ class KernelWorkControlRegistry:
         # }
         self._registry: dict[tuple[int | None, int], KernelWorkControl] = {}
         self._locks: dict[tuple[int | None, int], aio.Lock] = defaultdict(aio.Lock)
+        # Count of coroutines holding OR waiting on each source-message lock, so
+        # ``source_message_critical_section`` evicts a lock only when truly idle (the
+        # bare ``release`` eviction is only safe when ``register`` guarantees no
+        # contender, which no longer holds once an edit can wait behind an in-flight
+        # send).
+        self._lock_refcounts: dict[tuple[int | None, int], int] = defaultdict(int)
 
     def register(self, control: "KernelWorkControl"):
         """Register a KernelWorkControl instance"""
@@ -245,6 +252,60 @@ class KernelWorkControlRegistry:
         else:
             raise ValueError("This message does not have any operations in progress")
 
+    def cancel_if_active(
+        self,
+        source_channel_id: int | None,
+        source_message_id: int,
+        *,
+        superseded_by_edit: bool = False,
+    ) -> bool:
+        """Cancel an in-flight SEND/UPDATE for this source if one is running.
+
+        Non-raising counterpart to :meth:`cancel`, used by the edit path to
+        *supersede* an in-flight send: the running op gracefully drains (remaining
+        dests unsent, already-sent dests recorded) and releases the per-source lock,
+        so the edit's reconcile can take over with the new content. Returns whether
+        anything was cancelled. A DELETE is never superseded.
+        """
+        key = (source_channel_id, source_message_id)
+        control = self._registry.get(key)
+        if (
+            control is None
+            or control.mirror_operation_type == MirrorOperationType.DELETE
+        ):
+            return False
+        control.cancel(superseded_by_edit=superseded_by_edit)
+        return True
+
+    @contextlib.asynccontextmanager
+    async def source_message_critical_section(
+        self, source_channel_id: int | None, source_message_id: int
+    ) -> collections.abc.AsyncIterator[None]:
+        """Hold a source message's per-op lock across a whole mirror operation.
+
+        The repeater impls use this so a SEND's row persist and an UPDATE's
+        existing-row read + target build run *inside* the same per-source lock as the
+        fan-out — making "a later op observes the earlier op's persisted rows" a hard
+        invariant (closing the create/edit double-send race). Reference-counted so the
+        lock is evicted only when no coroutine holds or is waiting on it.
+
+        A control's own ``run_till_completion(lock_held=True)`` resolves to the *same*
+        lock object (the ``defaultdict`` returns it for the same key) and must not
+        re-acquire it — the lock is non-reentrant.
+        """
+        key = (source_channel_id, source_message_id)
+        self._lock_refcounts[key] += 1
+        lock = self._locks[key]
+        try:
+            async with lock:
+                yield
+        finally:
+            self._lock_refcounts[key] -= 1
+            if self._lock_refcounts[key] <= 0:
+                self._lock_refcounts.pop(key, None)
+                if not lock.locked():
+                    self._locks.pop(key, None)
+
 
 kernel_work_control_registry = KernelWorkControlRegistry()
 
@@ -280,6 +341,9 @@ class KernelWorkTracker:
         self._permanently_failed: set[int] = set()
         self.cancelled: dict[int, int | None] = {}
         self._cancelled: bool = False
+        # Set when the cancel was an edit superseding an in-flight fan-out (vs a user
+        # pressing Cancel), so the progress UI can label it "superseded by edit".
+        self.superseded_by_edit: bool = False
 
     # -- mutation ----------------------------------------------------------
 
@@ -463,26 +527,38 @@ class KernelWorkControl(KernelWorkTracker):
         self._kernel: MirrorKernel = kernel
         self._tasks: set[aio.Task[None]] = set()
 
-    async def run_till_completion(self):
+    async def run_till_completion(self, *, lock_held: bool = False):
         try:
-            async with kernel_work_control_registry.lock_source_message(self):
+            if lock_held:
+                # The caller already holds this source message's lock (via
+                # kernel_work_control_registry.source_message_critical_section), so the
+                # impl's read/decide/persist is serialized with the fan-out. The lock
+                # is non-reentrant — do NOT re-acquire it here.
                 kernel_work_control_registry.register(self)
-
-                loop_number = 0
-                while self.is_work_left_to_do and loop_number < self.retry_threshold:
-                    await self._run_batch(
-                        list(self.targets_to_schedule.items()),
-                        # First pass runs immediately; retries wait a randomised
-                        # few minutes (outside the concurrency slot) to spread load.
-                        delay=loop_number != 0,
-                    )
-                    loop_number += 1
+                await self._run_loop()
+            else:
+                async with kernel_work_control_registry.lock_source_message(self):
+                    kernel_work_control_registry.register(self)
+                    await self._run_loop()
         finally:
             # Release per-source-message state so a completed (or cancelled) op leaves
-            # nothing pinned for the process lifetime (M1/M3 leaks). Runs *after* the
-            # ``async with`` has released the lock, so ``release`` can evict the now
-            # unheld lock.
+            # nothing pinned for the process lifetime (M1/M3 leaks). When we acquired
+            # the lock ourselves it has already been released by the ``async with``, so
+            # ``release`` can evict the now-unheld lock; when ``lock_held`` the caller's
+            # critical section still holds it, so ``release`` only de-registers and the
+            # critical section evicts the lock on exit.
             kernel_work_control_registry.release(self)
+
+    async def _run_loop(self) -> None:
+        loop_number = 0
+        while self.is_work_left_to_do and loop_number < self.retry_threshold:
+            await self._run_batch(
+                list(self.targets_to_schedule.items()),
+                # First pass runs immediately; retries wait a randomised few minutes
+                # (outside the concurrency slot) to spread load.
+                delay=loop_number != 0,
+            )
+            loop_number += 1
 
     async def _run_batch(
         self, batch: list[tuple[int, int | None]], *, delay: bool
@@ -520,7 +596,7 @@ class KernelWorkControl(KernelWorkTracker):
         self._scheduled.pop(ch_id, None)
         self.cancelled[ch_id] = msg_id
 
-    def cancel(self):
+    def cancel(self, *, superseded_by_edit: bool = False):
         """Gracefully drain: stop scheduling new targets, let in-flight ones finish.
 
         We do **not** ``task.cancel()`` running workers — that could leave a
@@ -533,6 +609,7 @@ class KernelWorkControl(KernelWorkTracker):
         the post-slot ``_cancelled`` check and be marked cancelled instead.
         """
         self._cancelled = True
+        self.superseded_by_edit = superseded_by_edit
         # Record targets that have neither finished nor been handed to a live worker
         # (e.g. ones that would only have run in a later, now-suppressed retry round).
         # Targets currently in ``_scheduled`` have a live worker that will resolve

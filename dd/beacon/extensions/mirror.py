@@ -141,9 +141,19 @@ _PROGRESS_MAX_BREAKDOWN = 5
 def _status_footer(control: KernelWorkControl, *, final: bool) -> str:
     if not final:
         # ``cancelled`` is populated the moment cancel() fires, while in-flight
-        # workers are still draining — surface that distinct state.
-        return "🛑 Cancelling…" if control.cancelled else "⏳ In progress"
-    base = "❌ Cancelled" if control.cancelled else "✅ Completed"
+        # workers are still draining — surface that distinct state. An edit that
+        # supersedes an in-flight fan-out reads as a handover, not a plain cancel.
+        if control.cancelled:
+            return (
+                "♻️ Superseding with edit…"
+                if control.superseded_by_edit
+                else "🛑 Cancelling…"
+            )
+        return "⏳ In progress"
+    if control.cancelled:
+        base = "♻️ Superseded by edit" if control.superseded_by_edit else "❌ Cancelled"
+    else:
+        base = "✅ Completed"
     return base + (" with errors" if control.failed_targets else "")
 
 
@@ -717,79 +727,92 @@ async def message_create_repeater_impl(
     # edit very close to the crosspost event
     msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
 
-    mirrors = await MirroredChannel.fetch_dests(channel.id)
-    mirror_mention_ids = await MirroredChannel.fetch_mirror_and_role_mention_id(
-        channel.id
-    )
-    # Always guard against infinite loops through posting to the source channel
-    mirrors = list(filter(lambda x: x != channel.id, mirrors))
+    # Serialize the whole send (dest read -> fan-out -> row persist) under this source
+    # message's lock, so a concurrent edit observes the rows we persist before it
+    # reconciles (and can supersede us mid-fan-out via cancel_if_active). The crosspost
+    # wait above is deliberately OUTSIDE the lock — it can block for hours and must not
+    # stall edits on this source.
+    async with kernel_work_control_registry.source_message_critical_section(
+        channel.id, msg.id
+    ):
+        mirrors = await MirroredChannel.fetch_dests(channel.id)
+        mirror_mention_ids = await MirroredChannel.fetch_mirror_and_role_mention_id(
+            channel.id
+        )
+        # Always guard against infinite loops through posting to the source channel
+        mirrors = list(filter(lambda x: x != channel.id, mirrors))
 
-    mirror_start_time = perf_counter()
+        mirror_start_time = perf_counter()
 
-    # Remove discord auto image embeds
-    msg.embeds = utils.filter_discord_autoembeds(msg)
+        # Remove discord auto image embeds
+        msg.embeds = utils.filter_discord_autoembeds(msg)
 
-    async def kernel(ch_id: int, msg_id: int | None) -> KernelOutcome:
-        # NOTE: msg is captured as a closure here.
-        try:
-            new_msg_id = await _send_one(bot, msg, ch_id, mirror_mention_ids)
-        except Exception as e:
-            return _kernel_failure(ch_id, e)
-        return KernelSuccess(channel_id=ch_id, message_id=new_msg_id)
+        async def kernel(ch_id: int, msg_id: int | None) -> KernelOutcome:
+            # NOTE: msg is captured as a closure here.
+            try:
+                new_msg_id = await _send_one(bot, msg, ch_id, mirror_mention_ids)
+            except Exception as e:
+                return _kernel_failure(ch_id, e)
+            return KernelSuccess(channel_id=ch_id, message_id=new_msg_id)
 
-    control = KernelWorkControl(
-        source_channel_id=channel.id,
-        source_message_id=msg.id,
-        targets={ch_id: None for ch_id in mirrors},
-        role_ping_per_ch_id=mirror_mention_ids,
-        mirror_operation_type=MirrorOperationType.SEND,
-        kernel=kernel,
-    )
-
-    await start_progress_logger(
-        bot,
-        control,
-        source_message=msg,
-        start_time=mirror_start_time,
-        title="Mirror send progress",
-        enable_cancellation=True,
-        client=client,
-    )
-
-    await control.run_till_completion()
-
-    flag_mirror_failure_ratio(control)
-
-    logging.info("Completed all mirrors in " + str(perf_counter() - mirror_start_time))
-
-    # Log successes, failures and message pairs to the db
-    maybe_exceptions = await aio.gather(
-        MirroredChannel.log_legacy_mirror_failure_in_batch(
-            channel.id, list(control.failed_targets.keys())
-        ),
-        MirroredChannel.log_legacy_mirror_success_in_batch(
-            channel.id, list(control.successful_targets.keys())
-        ),
-        # Record only the freshly-sent dest message pairs. For a SEND every success is
-        # newly sent, but using ``newly_sent`` keeps this symmetric with the reconcile
-        # path and is a no-op for already-recorded edits.
-        MirroredMessage.add_msgs_in_batch(
-            dest_msgs=list(control.newly_sent.values()),
-            dest_channels=list(control.newly_sent.keys()),
-            source_msg=msg.id,
-            source_channel=channel.id,
-        ),
-        return_exceptions=True,
-    )
-
-    # Log exceptions working with the db to the console
-    if any(maybe_exceptions):
-        logging.error(
-            "Error logging mirror success/failure in db: "
-            + ", ".join([str(exception) for exception in maybe_exceptions if exception])
+        control = KernelWorkControl(
+            source_channel_id=channel.id,
+            source_message_id=msg.id,
+            targets={ch_id: None for ch_id in mirrors},
+            role_ping_per_ch_id=mirror_mention_ids,
+            mirror_operation_type=MirrorOperationType.SEND,
+            kernel=kernel,
         )
 
-    # Auto disable persistently failing mirrors
+        await start_progress_logger(
+            bot,
+            control,
+            source_message=msg,
+            start_time=mirror_start_time,
+            title="Mirror send progress",
+            enable_cancellation=True,
+            client=client,
+        )
+
+        await control.run_till_completion(lock_held=True)
+
+        flag_mirror_failure_ratio(control)
+
+        logging.info(
+            "Completed all mirrors in " + str(perf_counter() - mirror_start_time)
+        )
+
+        # Log successes, failures and message pairs to the db
+        maybe_exceptions = await aio.gather(
+            MirroredChannel.log_legacy_mirror_failure_in_batch(
+                channel.id, list(control.failed_targets.keys())
+            ),
+            MirroredChannel.log_legacy_mirror_success_in_batch(
+                channel.id, list(control.successful_targets.keys())
+            ),
+            # Record only the freshly-sent dest message pairs. For a SEND every success
+            # is newly sent, but using ``newly_sent`` keeps this symmetric with the
+            # reconcile path and is a no-op for already-recorded edits.
+            MirroredMessage.add_msgs_in_batch(
+                dest_msgs=list(control.newly_sent.values()),
+                dest_channels=list(control.newly_sent.keys()),
+                source_msg=msg.id,
+                source_channel=channel.id,
+            ),
+            return_exceptions=True,
+        )
+
+        # Log exceptions working with the db to the console
+        if any(maybe_exceptions):
+            logging.error(
+                "Error logging mirror success/failure in db: "
+                + ", ".join(
+                    [str(exception) for exception in maybe_exceptions if exception]
+                )
+            )
+
+    # Auto disable persistently failing mirrors (outside the per-source lock: it
+    # operates on global legacy-failure state, not this source's rows).
     if cfg.disable_bad_channels:
         disabled_mirrors = await MirroredChannel.disable_legacy_failing_mirrors()
     else:
@@ -843,6 +866,14 @@ async def message_update_repeater(
     if not is_content_edit(event.message):
         return
 
+    # Ignore edits to messages that haven't been crossposted (published) yet — V2
+    # behaviour. Until publish, the create handler is still waiting to mirror the
+    # message, so an edit has nothing to update and acting now would race that pending
+    # send. Once published, edits reconcile (and can supersede an in-flight fan-out).
+    flags = event.message.flags
+    if not isinstance(flags, h.MessageFlag) or h.MessageFlag.CROSSPOSTED not in flags:
+        return
+
     await message_update_repeater_impl(
         t.cast(h.Message, event.message),
         t.cast(CachedFetchBot, event.app),
@@ -853,119 +884,138 @@ async def message_update_repeater(
 async def message_update_repeater_impl(
     msg: h.Message, bot: CachedFetchBot, client: lb.Client | None = None
 ):
-    backoff_timer = 30
-    while True:
-        try:
-            # Reconcile: bring every *desired* dest into sync with the source's
-            # current content. Existing mirrored messages are edited; desired dests
-            # that never received the message (e.g. a previously-cancelled send) get a
-            # fresh send, so all destinations converge on the source.
-            desired_dests = await MirroredChannel.fetch_dests(msg.channel_id)
-            existing_pairs = await MirroredMessage.get_dest_msgs_and_channels(msg.id)
-            existing = {
-                channel_id: dest_msg_id for dest_msg_id, channel_id in existing_pairs
-            }
-            if not desired_dests and not existing:
-                # Return if this message was not mirrored and has no desired dests
-                return
-            mirror_mention_ids = await MirroredChannel.fetch_mirror_and_role_mention_id(
-                msg.channel_id
-            )
+    # Supersede any in-flight send/update for this source: it gracefully drains
+    # (remaining dests unsent, already-sent dests recorded) and releases the per-source
+    # lock, so our reconcile below takes over with the edited content — editing the
+    # already-sent dests and fresh-sending the new content to the not-yet-reached ones.
+    kernel_work_control_registry.cancel_if_active(
+        msg.channel_id, msg.id, superseded_by_edit=True
+    )
 
-        except Exception as e:
-            # Don't retry permanent errors forever (symmetric with the crosspost wait);
-            # this loop only does DB reads today, so the guard is defensive while the
-            # capped backoff fixes the near-constant retry cadence.
-            if classify_error(e) is ErrorClass.PERMANENT:
-                logging.warning(
-                    "Skipping mirror update for message %s: %s",
-                    msg.id,
-                    type(e).__name__,
+    # Hold the per-source lock across the existing-row read, the reconcile, and the row
+    # persist, so we wait out (and observe the rows of) any op we just superseded, and
+    # never double-send.
+    async with kernel_work_control_registry.source_message_critical_section(
+        msg.channel_id, msg.id
+    ):
+        backoff_timer = 30
+        while True:
+            try:
+                # Reconcile: bring every *desired* dest into sync with the source's
+                # current content. Existing mirrored messages are edited; desired dests
+                # that never received the message (e.g. a previously-cancelled send) get
+                # a fresh send, so all destinations converge on the source.
+                desired_dests = await MirroredChannel.fetch_dests(msg.channel_id)
+                existing_pairs = await MirroredMessage.get_dest_msgs_and_channels(
+                    msg.id
                 )
-                return
-            await discord_error_logger(e, operation="Mirror update")
-            await aio.sleep(backoff_timer)
-            backoff_timer = min(backoff_timer * 2, 600)
-        else:
-            break
+                existing = {
+                    channel_id: dest_msg_id
+                    for dest_msg_id, channel_id in existing_pairs
+                }
+                if not desired_dests and not existing:
+                    # Return if this message was not mirrored and has no desired dests
+                    return
+                mirror_mention_ids = (
+                    await MirroredChannel.fetch_mirror_and_role_mention_id(
+                        msg.channel_id
+                    )
+                )
 
-    mirror_start_time = perf_counter()
+            except Exception as e:
+                # Don't retry permanent errors forever (symmetric with the crosspost
+                # wait); this loop only does DB reads today, so the guard is defensive
+                # while the capped backoff fixes the near-constant retry cadence.
+                if classify_error(e) is ErrorClass.PERMANENT:
+                    logging.warning(
+                        "Skipping mirror update for message %s: %s",
+                        msg.id,
+                        type(e).__name__,
+                    )
+                    return
+                await discord_error_logger(e, operation="Mirror update")
+                await aio.sleep(backoff_timer)
+                backoff_timer = min(backoff_timer * 2, 600)
+            else:
+                break
 
-    # Fetch message again since update events aren't guaranteed to
-    # include unchanged data
-    msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
+        mirror_start_time = perf_counter()
 
-    # Remove discord auto image embeds
-    msg.embeds = utils.filter_discord_autoembeds(msg)
+        # Fetch message again since update events aren't guaranteed to
+        # include unchanged data
+        msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
 
-    # Reconcile target map: edit dests that have a mirrored message, fresh-send to
-    # desired dests that are missing one, so all destinations converge on the source.
-    targets = build_reconcile_targets(
-        desired_dests, existing, source_channel_id=msg.channel_id
-    )
+        # Remove discord auto image embeds
+        msg.embeds = utils.filter_discord_autoembeds(msg)
 
-    async def edit_one(ch_id: int, dest_msg_id: int) -> int:
-        async with rate_limiter:
-            dest_msg = await bot.fetch_message(ch_id, dest_msg_id)
-        msg_content = add_role_ping_to_msg(msg.content, ch_id, mirror_mention_ids)
-        async with rate_limiter:
-            # Note: components are no longer mirrored.
-            await dest_msg.edit(
-                msg_content,
-                attachments=msg.attachments,
-                embeds=msg.embeds,
-                role_mentions=True,
-            )
-        return dest_msg_id
+        # Reconcile target map: edit dests that have a mirrored message, fresh-send to
+        # desired dests that are missing one, so all dests converge on the source.
+        targets = build_reconcile_targets(
+            desired_dests, existing, source_channel_id=msg.channel_id
+        )
 
-    async def kernel(ch_id: int, msg_id: int | None) -> KernelOutcome:
-        try:
-            if msg_id is None:
-                # Missing dest -> fresh send (reconcile to the source's state).
-                new_msg_id = await _send_one(bot, msg, ch_id, mirror_mention_ids)
-                return KernelSuccess(channel_id=ch_id, message_id=new_msg_id)
-            # Existing dest -> edit in place.
-            edited_id = await edit_one(ch_id, msg_id)
-            return KernelSuccess(channel_id=ch_id, message_id=edited_id)
-        except Exception as e:
-            return _kernel_failure(ch_id, e)
+        async def edit_one(ch_id: int, dest_msg_id: int) -> int:
+            async with rate_limiter:
+                dest_msg = await bot.fetch_message(ch_id, dest_msg_id)
+            msg_content = add_role_ping_to_msg(msg.content, ch_id, mirror_mention_ids)
+            async with rate_limiter:
+                # Note: components are no longer mirrored.
+                await dest_msg.edit(
+                    msg_content,
+                    attachments=msg.attachments,
+                    embeds=msg.embeds,
+                    role_mentions=True,
+                )
+            return dest_msg_id
 
-    control = KernelWorkControl(
-        source_channel_id=msg.channel_id,
-        source_message_id=msg.id,
-        targets=targets,
-        mirror_operation_type=MirrorOperationType.UPDATE,
-        role_ping_per_ch_id=mirror_mention_ids,
-        retry_threshold=2,
-        kernel=kernel,
-    )
+        async def kernel(ch_id: int, msg_id: int | None) -> KernelOutcome:
+            try:
+                if msg_id is None:
+                    # Missing dest -> fresh send (reconcile to the source's state).
+                    new_msg_id = await _send_one(bot, msg, ch_id, mirror_mention_ids)
+                    return KernelSuccess(channel_id=ch_id, message_id=new_msg_id)
+                # Existing dest -> edit in place.
+                edited_id = await edit_one(ch_id, msg_id)
+                return KernelSuccess(channel_id=ch_id, message_id=edited_id)
+            except Exception as e:
+                return _kernel_failure(ch_id, e)
 
-    await start_progress_logger(
-        bot,
-        control,
-        source_message=msg,
-        start_time=mirror_start_time,
-        title="Mirror update progress",
-        enable_cancellation=True,
-        client=client,
-    )
+        control = KernelWorkControl(
+            source_channel_id=msg.channel_id,
+            source_message_id=msg.id,
+            targets=targets,
+            mirror_operation_type=MirrorOperationType.UPDATE,
+            role_ping_per_ch_id=mirror_mention_ids,
+            retry_threshold=2,
+            kernel=kernel,
+        )
 
-    await control.run_till_completion()
+        await start_progress_logger(
+            bot,
+            control,
+            source_message=msg,
+            start_time=mirror_start_time,
+            title="Mirror update progress",
+            enable_cancellation=True,
+            client=client,
+        )
 
-    flag_mirror_failure_ratio(control)
+        await control.run_till_completion(lock_held=True)
 
-    # Record only the newly-sent pairs (dests reconciled via a fresh send); edited
-    # dests already have their MirroredMessage pair.
-    if control.newly_sent:
-        try:
-            await MirroredMessage.add_msgs_in_batch(
-                dest_msgs=list(control.newly_sent.values()),
-                dest_channels=list(control.newly_sent.keys()),
-                source_msg=msg.id,
-                source_channel=msg.channel_id,
-            )
-        except Exception as e:
-            logging.error("Error recording reconciled mirror messages: %s", e)
+        flag_mirror_failure_ratio(control)
+
+        # Record only the newly-sent pairs (dests reconciled via a fresh send); edited
+        # dests already have their MirroredMessage pair.
+        if control.newly_sent:
+            try:
+                await MirroredMessage.add_msgs_in_batch(
+                    dest_msgs=list(control.newly_sent.values()),
+                    dest_channels=list(control.newly_sent.keys()),
+                    source_msg=msg.id,
+                    source_channel=msg.channel_id,
+                )
+            except Exception as e:
+                logging.error("Error recording reconciled mirror messages: %s", e)
 
 
 @loader.listener(h.MessageDeleteEvent)
