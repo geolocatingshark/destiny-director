@@ -31,7 +31,7 @@ from lightbulb import components as lbc
 from ...common import cfg
 from ...common.auth import owner_only
 from ...common.bot import CachedFetchBot
-from ...common.components import build_container
+from ...common.components import build_container, rebuild_components
 from ...common.schemas import MirroredChannel, MirroredMessage, ServerStatistics
 from ...common.utils import (
     ErrorClass,
@@ -619,6 +619,34 @@ def add_role_ping_to_msg(
     return msg_content
 
 
+def _is_cv2(msg: h.Message) -> bool:
+    """Whether a message was sent as a Components V2 message."""
+    return h.MessageFlag.IS_COMPONENTS_V2 in (msg.flags or h.MessageFlag.NONE)
+
+
+def _cv2_components_for(
+    msg: h.Message,
+    dest_channel_id: int,
+    role_ping_per_ch_id: collections.abc.Mapping[int, int | None],
+) -> list[h.api.ComponentBuilder]:
+    """Rebuild a CV2 source message's components for re-sending to a destination.
+
+    A CV2 message has no content field, so the dest's spoilered role ping is appended
+    as a text display inside the (first) container rather than to message content.
+    """
+    components = rebuild_components(msg.components)
+    role_ping = int(role_ping_per_ch_id.get(dest_channel_id) or 0)
+    if role_ping:
+        suffix = f"||<@&{role_ping}>||"
+        for component in components:
+            if isinstance(component, h.impl.ContainerComponentBuilder):
+                component.add_text_display(suffix)
+                break
+        else:
+            components.append(h.impl.TextDisplayComponentBuilder(content=suffix))
+    return components
+
+
 def _kernel_failure(ch_id: int, exc: BaseException) -> KernelFailure:
     """Build a classified, ref-coded :class:`KernelFailure` and log it locally.
 
@@ -651,17 +679,28 @@ async def _send_one(
     if not isinstance(channel, h.TextableChannel):
         raise ValueError("Channel is not textable")
 
-    msg_content = add_role_ping_to_msg(msg.content, ch_id, role_ping_per_ch_id)
-
-    async with rate_limiter:
-        # Note: components are no longer mirrored. This allows us to use buttons for
-        # admin purposes in the main server.
-        mirrored_msg = await channel.send(
-            msg_content,
-            attachments=msg.attachments,
-            embeds=msg.embeds,
-            role_mentions=True,
-        )
+    if _is_cv2(msg):
+        # CV2 source (e.g. eververse): rebuild + re-send its components. Note: this is
+        # the only components we mirror — interactive admin buttons on other messages
+        # are still dropped (they ride embed messages and never hit this branch).
+        components = _cv2_components_for(msg, ch_id, role_ping_per_ch_id)
+        async with rate_limiter:
+            mirrored_msg = await channel.send(
+                components=components,
+                flags=h.MessageFlag.IS_COMPONENTS_V2,
+                role_mentions=True,
+            )
+    else:
+        msg_content = add_role_ping_to_msg(msg.content, ch_id, role_ping_per_ch_id)
+        async with rate_limiter:
+            # Note: components are no longer mirrored for embed messages. This allows
+            # us to use buttons for admin purposes in the main server.
+            mirrored_msg = await channel.send(
+                msg_content,
+                attachments=msg.attachments,
+                embeds=msg.embeds,
+                role_mentions=True,
+            )
 
     if isinstance(channel, h.GuildNewsChannel):
         # If the channel is a news channel then crosspost the message as well. This is
@@ -957,9 +996,18 @@ async def message_update_repeater_impl(
         async def edit_one(ch_id: int, dest_msg_id: int) -> int:
             async with rate_limiter:
                 dest_msg = await bot.fetch_message(ch_id, dest_msg_id)
+            if _is_cv2(msg):
+                components = _cv2_components_for(msg, ch_id, mirror_mention_ids)
+                async with rate_limiter:
+                    await dest_msg.edit(
+                        components=components,
+                        flags=h.MessageFlag.IS_COMPONENTS_V2,
+                        role_mentions=True,
+                    )
+                return dest_msg_id
             msg_content = add_role_ping_to_msg(msg.content, ch_id, mirror_mention_ids)
             async with rate_limiter:
-                # Note: components are no longer mirrored.
+                # Note: components are no longer mirrored for embed messages.
                 await dest_msg.edit(
                     msg_content,
                     attachments=msg.attachments,

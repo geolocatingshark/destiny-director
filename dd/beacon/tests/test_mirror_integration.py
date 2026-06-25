@@ -50,6 +50,7 @@ import pytest_asyncio
 from dd.beacon.extensions import mirror
 from dd.common import cfg, schemas
 from dd.common.bot import CachedFetchBot
+from dd.common.components import build_container
 from dd.common.schemas import MirroredChannel, MirroredMessage
 
 # Reuse existing config — no dedicated test env vars. The beacon token is read with
@@ -362,3 +363,53 @@ async def test_edit_during_send_takes_over_without_duplicate(
     pairs = await MirroredMessage.get_dest_msgs_and_channels(posted.id)
     assert {ch for _msg, ch in pairs} == {dest.id for dest in dests}
     assert len(pairs) == len(dests)
+
+
+def _cv2_text(message: h.Message) -> str:
+    """Flatten a fetched CV2 message's text-display contents into one string."""
+    return " ".join(
+        child.content
+        for component in message.components
+        for child in getattr(component, "components", [])
+        if hasattr(child, "content")
+    )
+
+
+async def test_cv2_message_is_mirrored(mirror_env: _MirrorEnv) -> None:
+    """A Components V2 source message is rebuilt and mirrored (exercises the
+    component model→builder converter and the mirror's CV2 send/edit branch); the dest
+    receives a CV2 message carrying the same text, and a source edit propagates."""
+    src = await mirror_env.make_channel("src-cv2")
+    dest = await mirror_env.make_channel("dst-cv2")
+    await MirroredChannel.add_mirror(
+        src.id, dest.id, dest_server_id=mirror_env.guild_id, legacy=True
+    )
+
+    posted = await mirror_env.rest.create_message(
+        src.id,
+        components=[build_container(["**CV2 header**", "line one\nline two"])],
+        flags=h.MessageFlag.IS_COMPONENTS_V2,
+    )
+    src_channel = t.cast(h.TextableChannel, await mirror_env.rest.fetch_channel(src.id))
+    await mirror.message_create_repeater_impl(
+        posted, mirror_env.bot, src_channel, wait_for_crosspost=False
+    )
+
+    pairs = await MirroredMessage.get_dest_msgs_and_channels(posted.id)
+    assert {ch for _m, ch in pairs} == {dest.id}
+    dest_msg_id, ch_id = pairs[0]
+    mirrored = await mirror_env.rest.fetch_message(ch_id, dest_msg_id)
+    assert h.MessageFlag.IS_COMPONENTS_V2 in mirrored.flags
+    assert "CV2 header" in _cv2_text(mirrored)
+    assert "line one" in _cv2_text(mirrored)
+
+    # An edit to the CV2 source reconciles to the dest (CV2 edit branch).
+    await mirror_env.rest.edit_message(
+        src.id,
+        posted.id,
+        components=[build_container(["**CV2 header**", "edited body"])],
+    )
+    edited = await mirror_env.rest.fetch_message(src.id, posted.id)
+    await mirror.message_update_repeater_impl(edited, mirror_env.bot)
+    remirrored = await mirror_env.rest.fetch_message(ch_id, dest_msg_id)
+    assert "edited body" in _cv2_text(remirrored)

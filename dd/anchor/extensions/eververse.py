@@ -298,6 +298,21 @@ async def eververse_message_constructor(bot: CachedFetchBot) -> HMessage:
     )
 
 
+def _render_offering_groups(
+    groups: list[tuple[str, str, list[api.DestinyItem]]],
+    manifest_table: dict[str, t.Any] | None,
+    currency: str,
+) -> str:
+    """Render the type-grouped offering lines for one currency pool as markdown."""
+    blocks: list[str] = []
+    for emoji_name, header, items in groups:
+        header_prefix = f":{emoji_name}: " if emoji_name else ""
+        lines = [f"{header_prefix}**{header}**"]
+        lines += [_eververse_line(item, manifest_table, currency) for item in items]
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 async def format_eververse_vendor(
     vendor: api.DestinyVendor,
     bot: CachedFetchBot,
@@ -321,44 +336,43 @@ async def format_eververse_vendor(
             continue
         pool.setdefault(sale_item.hash, sale_item)
 
-    description = (
-        "# :eververse: [Today 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)\n\n"
+    async def _sub(content: str) -> str:
+        return await substitute_user_side_emoji(emoji_dict, content)
+
+    # Components V2: a container with one text display per block, with separators
+    # giving visual space between each section's heading and its contents.
+    container = h.impl.ContainerComponentBuilder(
+        accent_color=h.Color(cfg.embed_default_color)
     )
-    description += "## :bright_dust: Bright Dust Offerings\n\n"
+    container.add_text_display(
+        await _sub(
+            "# :eververse: [Today 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)"
+        )
+    )
 
-    groups = _group_eververse_offerings(list(pool.values()))
-    if not groups:
-        description += "No Bright Dust offerings are available right now.\n"
-    for emoji_name, header, items in groups:
-        header_prefix = f":{emoji_name}: " if emoji_name else ""
-        description += f"{header_prefix}**{header}**\n"
-        for item in items:
-            description += _eververse_line(item, manifest_table) + "\n"
-        description += "\n"
+    bright_dust_body = (
+        _render_offering_groups(
+            _group_eververse_offerings(list(pool.values())),
+            manifest_table,
+            "Bright Dust",
+        )
+        or "No Bright Dust offerings are available right now."
+    )
+    container.add_separator(divider=True)
+    container.add_text_display(await _sub("## :bright_dust: Bright Dust Offerings"))
+    container.add_separator(spacing=h.SpacingType.SMALL, divider=False)
+    container.add_text_display(await _sub(bright_dust_body))
 
-    # Second section: the featured daily Silver rotator offerings, same style as the
-    # Bright-Dust section above (grouped by type, costs in Silver). The fetch already
-    # deduped these and dropped owned (0-Silver) items.
     silver_groups = _group_eververse_offerings(silver_items or [])
     if silver_groups:
-        description += "## :silver: Silver Offerings\n\n"
-        for emoji_name, header, items in silver_groups:
-            header_prefix = f":{emoji_name}: " if emoji_name else ""
-            description += f"{header_prefix}**{header}**\n"
-            for item in items:
-                description += _eververse_line(item, manifest_table, "Silver") + "\n"
-            description += "\n"
+        container.add_separator(divider=True)
+        container.add_text_display(await _sub("## :silver: Silver Offerings"))
+        container.add_separator(spacing=h.SpacingType.SMALL, divider=False)
+        container.add_text_display(
+            await _sub(_render_offering_groups(silver_groups, manifest_table, "Silver"))
+        )
 
-    description = await substitute_user_side_emoji(emoji_dict, description)
-
-    embed = h.Embed(
-        description=description,
-        color=h.Color(cfg.embed_default_color),
-        url="https://kyberscorner.com",
-    )
-
-    message = HMessage(embeds=[embed])
-    return message
+    return HMessage(components=[container])
 
 
 @loader.listener(h.StartedEvent)

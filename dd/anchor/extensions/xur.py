@@ -14,6 +14,7 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 import asyncio as aio
+import contextlib
 import datetime as dt
 import logging
 import time
@@ -537,40 +538,59 @@ async def api_to_discord_announcer(
         else:
             break
 
-    retries = 0
-    started = time.monotonic()
-    alerted = False
-    while True:
-        try:
-            if check_enabled and (
-                enabled_check_coro is None or not await enabled_check_coro()
-            ):
-                return
-            await msg.edit(**hmessage.to_message_kwargs())
-        except Exception as e:
-            if retries == 0:
-                logger.exception(e)
+    if hmessage.components:
+        # A Components V2 message cannot be produced by editing the embed placeholder
+        # (Discord forbids toggling IS_COMPONENTS_V2 on edit), so drop the placeholder
+        # and post the CV2 message fresh. ``send_message`` handles its own retries +
+        # dedup.
+        if check_enabled and (
+            enabled_check_coro is None or not await enabled_check_coro()
+        ):
+            return
+        with contextlib.suppress(Exception):
+            await msg.delete()
+        msg = await utils.send_message(
+            bot,
+            hmessage,
+            channel_id=channel_id,
+            crosspost=False,
+            deduplicate=True,
+        )
+    else:
+        retries = 0
+        started = time.monotonic()
+        alerted = False
+        while True:
+            try:
+                if check_enabled and (
+                    enabled_check_coro is None or not await enabled_check_coro()
+                ):
+                    return
+                await msg.edit(**hmessage.to_message_kwargs())
+            except Exception as e:
+                if retries == 0:
+                    logger.exception(e)
+                else:
+                    logger.debug(
+                        "Announcer edit retry %d for channel %d: %r",
+                        retries,
+                        channel_id,
+                        e,
+                    )
+                retries += 1
+                if not alerted and time.monotonic() - started > int(
+                    cfg.announcer_offline_alert_after
+                ):
+                    alerted = True
+                    logger.critical(
+                        "Autopost edit for channel %d stalled for >%ds (retrying): %r",
+                        channel_id,
+                        int(cfg.announcer_offline_alert_after),
+                        e,
+                    )
+                await aio.sleep(min(2**retries, 300))
             else:
-                logger.debug(
-                    "Announcer edit retry %d for channel %d: %r",
-                    retries,
-                    channel_id,
-                    e,
-                )
-            retries += 1
-            if not alerted and time.monotonic() - started > int(
-                cfg.announcer_offline_alert_after
-            ):
-                alerted = True
-                logger.critical(
-                    "Autopost edit for channel %d stalled for >%ds (retrying): %r",
-                    channel_id,
-                    int(cfg.announcer_offline_alert_after),
-                    e,
-                )
-            await aio.sleep(min(2**retries, 300))
-        else:
-            break
+                break
     if publish_message:
         # Wait 5 seconds before crossposting to allow time between the edit
         # and the crosspost events to avoid a race condition type error where
