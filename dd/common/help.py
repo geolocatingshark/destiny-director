@@ -425,16 +425,30 @@ async def render_help(
     await paginator.send(ctx)
 
 
+def _with_self_detail(
+    details: t.Sequence[CommandDetail],
+) -> dict[str, CommandDetail]:
+    """Index a bot's details by lookup key, always including :data:`HELP_SELF_DETAIL`.
+
+    Each bot passes only its own command details; the generic ``/help`` self-detail is
+    added here so neither bot has to repeat it. De-duped by key, so a bot passing it
+    explicitly is harmless.
+    """
+    return {d.command.casefold(): d for d in (HELP_SELF_DETAIL, *details)}
+
+
 def make_help_command(
     details: t.Sequence[CommandDetail] = (),
 ) -> type[lb.SlashCommand]:
     """Build a fresh ``/help`` command class for a bot's loader.
 
     ``details`` are this bot's per-command detailed pages, surfaced via the optional
-    autocompleted ``command`` argument. With no argument ``/help`` lists commands as
-    before. Only commands visible to the invoker are suggested and openable.
+    autocompleted ``command`` argument; the generic ``/help`` self-detail is included
+    automatically (see :func:`_with_self_detail`), so callers pass only their own. With
+    no argument ``/help`` lists commands as before. Only commands you can use are
+    suggested and openable.
     """
-    by_key: dict[str, CommandDetail] = {d.command.casefold(): d for d in details}
+    by_key: dict[str, CommandDetail] = _with_self_detail(details)
 
     async def autocomplete(ctx: lb.AutocompleteContext[str]) -> None:
         bot = t.cast(CachedFetchBot, ctx.client.app)

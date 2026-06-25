@@ -17,11 +17,11 @@
 
 Each :class:`~dd.common.help.CommandDetail` is keyed by its command's registered name
 and surfaced via ``/help command:<name>``. The mirror and ``/command`` entries are
-admin-only (control-guild scoped), so they are suggested to the bot team only;
-``HELP_SELF_DETAIL`` is public.
+admin-only (control-guild scoped), so they are suggested to the bot team only. (The
+generic ``/help`` self-detail is added by the shared factory, not listed here.)
 """
 
-from ..common.help import HELP_SELF_DETAIL, CommandDetail
+from ..common.help import CommandDetail
 
 MIRROR_SEND_DETAIL = CommandDetail(
     command="mirror_send",
@@ -100,7 +100,6 @@ COMMAND_GROUP_DETAIL = CommandDetail(
 )
 
 HELP_DETAILS: tuple[CommandDetail, ...] = (
-    HELP_SELF_DETAIL,
     MIRROR_SEND_DETAIL,
     MIRROR_UPDATE_DETAIL,
     MIRROR_CANCEL_DETAIL,

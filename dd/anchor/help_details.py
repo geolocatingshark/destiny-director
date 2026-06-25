@@ -20,7 +20,7 @@ and surfaced via ``/help command:<name>``. Anchor is owner-only, so these are vi
 the bot team only.
 """
 
-from ..common.help import HELP_SELF_DETAIL, CommandDetail
+from ..common.help import CommandDetail
 
 POST_JSON_DETAIL = CommandDetail(
     command="Post as JSON",
@@ -126,7 +126,6 @@ LS_UPDATE_DETAIL = CommandDetail(
 )
 
 HELP_DETAILS: tuple[CommandDetail, ...] = (
-    HELP_SELF_DETAIL,
     POST_JSON_DETAIL,
     CREATE_POST_DETAIL,
     EDIT_POST_DETAIL,

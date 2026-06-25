@@ -213,3 +213,10 @@ def test_detail_choices_caps_at_25() -> None:
         f"c{i:02d}": CommandDetail(f"c{i:02d}", f"Title {i}", "s") for i in range(40)
     }
     assert len(help_mod._detail_choices(visible, "")) == 25
+
+
+def test_with_self_detail_always_includes_help() -> None:
+    # The generic /help self-detail is auto-included so neither bot has to list it.
+    assert help_mod._with_self_detail(())["help"] is help_mod.HELP_SELF_DETAIL
+    indexed = help_mod._with_self_detail((CommandDetail("foo", "Foo", "summary"),))
+    assert set(indexed) == {"help", "foo"}
