@@ -17,6 +17,7 @@
 import lightbulb as lb
 
 from ...common.help import make_help_command
+from ..help_details import HELP_DETAILS
 
 loader = lb.Loader()
-loader.command(make_help_command())
+loader.command(make_help_command(details=HELP_DETAILS))
