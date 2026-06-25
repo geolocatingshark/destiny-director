@@ -322,9 +322,9 @@ async def format_eververse_vendor(
         pool.setdefault(sale_item.hash, sale_item)
 
     description = (
-        "# :eververse: [This Week 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)\n\n"
+        "# :eververse: [Today 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)\n\n"
     )
-    description += "⇣ _All items below cost_ :bright_dust: ⇣\n\n"
+    description += "## :bright_dust: Bright Dust Offerings\n\n"
 
     groups = _group_eververse_offerings(list(pool.values()))
     if not groups:
@@ -341,8 +341,7 @@ async def format_eververse_vendor(
     # deduped these and dropped owned (0-Silver) items.
     silver_groups = _group_eververse_offerings(silver_items or [])
     if silver_groups:
-        description += "## :silver: Daily Silver Offerings\n\n"
-        description += "⇣ _All items below cost_ :silver: ⇣\n\n"
+        description += "## :silver: Silver Offerings\n\n"
         for emoji_name, header, items in silver_groups:
             header_prefix = f":{emoji_name}: " if emoji_name else ""
             description += f"{header_prefix}**{header}**\n"
