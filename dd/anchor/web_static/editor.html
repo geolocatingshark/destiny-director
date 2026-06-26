@@ -6,6 +6,11 @@
   edits the document client-side and POSTs it to /rotation/preview and /rotation/edit.
   The server re-validates against the JSON schema, so this form is a convenience, not a
   trust boundary.
+
+  Layout is tabbed (Sectors / Planet cycles / Surges / Preview) so it stays usable on a
+  phone — only one section is visible at a time; the tab bar and Save button stay
+  pinned. All panels live in the DOM at once (hidden via CSS), so collect() always sees
+  every field regardless of the active tab.
 -->
 <html lang="en">
   <head>
@@ -18,11 +23,12 @@
       * { box-sizing: border-box; }
       body {
         font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        margin: 0; padding: 1.2rem; max-width: 880px; margin-inline: auto;
+        margin: 0; padding: 0 1.2rem 1.2rem; max-width: 880px; margin-inline: auto;
         background: #1b1d22; color: #e6e6e6; line-height: 1.4;
       }
+      header { padding-top: 1.2rem; }
       h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
-      h2 { font-size: 1.05rem; margin: 1.4rem 0 .5rem; border-bottom: 1px solid #333; padding-bottom: .25rem; }
+      h2 { font-size: 1.05rem; margin: .4rem 0 .5rem; border-bottom: 1px solid #333; padding-bottom: .25rem; }
       h3 { font-size: .95rem; margin: .2rem 0; }
       .muted { color: #9aa0a6; font-size: .85rem; }
       fieldset { border: 1px solid #333; border-radius: 8px; margin: .6rem 0; padding: .7rem .9rem; }
@@ -46,53 +52,88 @@
       button.secondary { background: #3a3d44; }
       button.tiny { padding: .15rem .5rem; font-size: .8rem; }
       button.danger { background: #6e2b2b; }
-      .toolbar { display: flex; gap: .6rem; align-items: center; margin-top: 1.4rem;
-        position: sticky; bottom: 0; background: #1b1d22; padding: .8rem 0; border-top: 1px solid #333; }
-      .grow { flex: 1 1 auto; }
+      /* Tab bar: horizontally scrollable pill row, pinned to the top. */
+      .tabs {
+        display: flex; gap: .4rem; overflow-x: auto; -webkit-overflow-scrolling: touch;
+        position: sticky; top: 0; z-index: 5; background: #1b1d22;
+        padding: .6rem 0; margin-bottom: .4rem; border-bottom: 1px solid #333;
+      }
+      .tabs button {
+        background: #24262c; color: #cfd3d8; border: 1px solid #3a3d44;
+        border-radius: 999px; padding: .45rem 1rem; white-space: nowrap; flex: 0 0 auto;
+      }
+      .tabs button.active { background: #2f81f7; color: #fff; border-color: #2f81f7; }
+      .panel { display: none; }
+      .panel.active { display: block; }
       details > summary { cursor: pointer; color: #9aa0a6; margin: .3rem 0; }
       .card { border: 1px solid #3a3d44; border-radius: 8px; padding: .6rem .8rem; margin: .5rem 0; }
       .card .card-head { display: flex; gap: .5rem; align-items: center; }
+      .toolbar { display: flex; gap: .6rem; align-items: center; margin-top: 1rem;
+        position: sticky; bottom: 0; background: #1b1d22; padding: .8rem 0; border-top: 1px solid #333; }
+      .grow { flex: 1 1 auto; }
       #status { font-size: .9rem; }
       #status.ok { color: #6cc070; }
       #status.err { color: #e5736f; white-space: pre-wrap; }
-      #previewBox { border: 1px solid #333; border-radius: 8px; padding: .8rem; margin-top: 1rem; background: #15171b; }
+      #previewBox { border: 1px solid #333; border-radius: 8px; padding: .8rem;
+        margin-top: .6rem; background: #15171b; white-space: pre-wrap; }
       .zone { margin: .4rem 0; }
       .diff-cols { display: flex; gap: 1rem; flex-wrap: wrap; }
       .diff-cols > div { flex: 1 1 240px; }
     </style>
   </head>
   <body>
-    <h1>Rotation Editor — <span id="typeName"></span></h1>
-    <p class="muted" id="authNote"></p>
+    <header>
+      <h1>Rotation Editor — <span id="typeName"></span></h1>
+      <p class="muted" id="authNote"></p>
+    </header>
 
-    <div class="field">
-      <label for="referenceDate">Rotation start date</label>
-      <input type="date" id="referenceDate" />
-    </div>
+    <nav class="tabs" id="tabBar" aria-label="Editor sections">
+      <button type="button" data-tab="sectors" class="active">Sectors</button>
+      <button type="button" data-tab="schedule">Planet cycles</button>
+      <button type="button" data-tab="surges">Surges</button>
+      <button type="button" data-tab="preview">Preview</button>
+    </nav>
 
-    <h2>Sectors</h2>
-    <p class="muted">Define each sector once; reference it by name in the schedule below.</p>
-    <div id="sectors"></div>
-    <button class="secondary tiny" id="addSector" type="button">+ Add sector</button>
+    <main>
+      <section class="panel active" data-panel="sectors">
+        <h2>Sectors</h2>
+        <p class="muted">Define each sector once; reference it by name under Planet cycles.</p>
+        <div id="sectors"></div>
+        <button class="secondary tiny" id="addSector" type="button">+ Add sector</button>
+      </section>
 
-    <h2>Daily schedule (per destination)</h2>
-    <p class="muted">Each destination cycles through these sectors, one per day, looping.</p>
-    <div id="schedule"></div>
+      <section class="panel" data-panel="schedule">
+        <div class="field">
+          <label for="referenceDate">Rotation start date</label>
+          <input type="date" id="referenceDate" />
+        </div>
+        <h2>Daily schedule (per destination)</h2>
+        <p class="muted">Each destination cycles through these sectors, one per day, looping.</p>
+        <div id="schedule"></div>
+      </section>
 
-    <h2>Surge cycle (per day)</h2>
-    <p class="muted">One row per day; loops independently of the schedule.</p>
-    <div id="surge"></div>
-    <button class="secondary tiny" id="addSurge" type="button">+ Add day</button>
+      <section class="panel" data-panel="surges">
+        <h2>Surge cycle (per day)</h2>
+        <p class="muted">One row per day; loops independently of the schedule.</p>
+        <div id="surge"></div>
+        <button class="secondary tiny" id="addSurge" type="button">+ Add day</button>
+      </section>
+
+      <section class="panel" data-panel="preview">
+        <h2>Preview</h2>
+        <p class="muted">Rendered from the current form. Re-open this tab or refresh after edits.</p>
+        <button class="secondary tiny" id="refreshPreview" type="button">↻ Refresh preview</button>
+        <div id="previewBox">Switch to this tab to render a preview.</div>
+      </section>
+    </main>
 
     <datalist id="sectorNames"></datalist>
 
     <div class="toolbar">
-      <button id="previewBtn" class="secondary" type="button">👁 Preview</button>
       <button id="saveBtn" type="button">💾 Save</button>
       <span class="grow"></span>
       <span id="status"></span>
     </div>
-    <div id="previewBox" hidden></div>
 
     <script>
       const BOOTSTRAP = /*__BOOTSTRAP__*/ null;
@@ -262,27 +303,49 @@
       }
 
       async function post(path) {
-        const res = await fetch(path, {
+        return fetch(path, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ token, type, data: collect() }),
         });
-        return res;
       }
 
-      $("previewBtn").addEventListener("click", async () => {
+      // --- tabs --------------------------------------------------------------
+      const tabBar = $("tabBar");
+      function showTab(name) {
+        for (const b of tabBar.querySelectorAll("button"))
+          b.classList.toggle("active", b.dataset.tab === name);
+        for (const p of document.querySelectorAll(".panel"))
+          p.classList.toggle("active", p.dataset.panel === name);
+        if (name === "preview") runPreview();
+      }
+      tabBar.addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-tab]");
+        if (btn) showTab(btn.dataset.tab);
+      });
+
+      // --- preview -----------------------------------------------------------
+      async function runPreview() {
+        const box = $("previewBox");
         setStatus("Rendering preview…", true);
+        box.textContent = "Rendering…";
         try {
           const res = await post("/rotation/preview");
           const body = await res.text();
-          if (!res.ok) return setStatus("Preview failed: " + body, false);
-          const box = $("previewBox");
-          box.hidden = false;
+          if (!res.ok) {
+            box.textContent = "Preview failed:\n" + body;
+            return setStatus("Preview failed — see the Preview tab.", false);
+          }
           box.innerHTML = body;
           setStatus("Preview updated.", true);
-        } catch (e) { setStatus("Preview error: " + e, false); }
-      });
+        } catch (e) {
+          box.textContent = "Preview error: " + e;
+          setStatus("Preview error.", false);
+        }
+      }
+      $("refreshPreview").addEventListener("click", runPreview);
 
+      // --- save --------------------------------------------------------------
       $("saveBtn").addEventListener("click", async () => {
         setStatus("Saving…", true);
         try {
