@@ -37,6 +37,14 @@ class CachedFetchBot(h.GatewayBot):
         # listeners in dd.anchor.__main__; beacon tracks its count separately
         # through dependency injection (see guild_count_status).
         self.guild_count: int = 0
+        # Bot owner ids, cached for the process lifetime to avoid a REST
+        # ``fetch_application`` round-trip on every owner check — those sit on
+        # latency-sensitive paths (/help and its autocomplete, the owner_only gate,
+        # menu buttons) where the round-trip can blow Discord's 3s ack window. Warmed
+        # once on StartedEvent so no interaction pays the cold-cache cost; refresh
+        # explicitly with ``fetch_owner_ids(force_refresh=True)``.
+        self._owner_ids: list[h.Snowflake] | None = None
+        _ = self.listen(h.StartedEvent)(self._warm_owner_ids_on_start)
 
     async def fetch_channel(self, channel_id: int):
         """This method fetches a channel from the cache or from discord if not cached"""
@@ -104,14 +112,27 @@ class CachedFetchBot(h.GatewayBot):
         """This method fetches a user from the cache or from discord if not cached"""
         return self.cache.get_user(user_id) or await self.rest.fetch_user(user_id)
 
-    async def fetch_owner_ids(self) -> list[h.Snowflake]:
-        """Fetch the ids of the bot owner(s) from discord
+    async def fetch_owner_ids(
+        self, *, force_refresh: bool = False
+    ) -> list[h.Snowflake]:
+        """Return the bot owner id(s), cached for the process lifetime.
 
-        Replaces lightbulb v2's ``BotApp.fetch_owner_ids``."""
-        application = await self.rest.fetch_application()
-        if application.team:
-            return list(application.team.members.keys())
-        return [application.owner.id]
+        Replaces lightbulb v2's ``BotApp.fetch_owner_ids``. The first call (or any
+        call with ``force_refresh=True``) does a REST ``fetch_application``;
+        subsequent calls serve the cached list so owner checks on hot paths don't
+        block on REST.
+        """
+        if self._owner_ids is None or force_refresh:
+            application = await self.rest.fetch_application()
+            if application.team:
+                self._owner_ids = list(application.team.members.keys())
+            else:
+                self._owner_ids = [application.owner.id]
+        return self._owner_ids
+
+    async def _warm_owner_ids_on_start(self, _event: h.StartedEvent) -> None:
+        """Populate the owner-id cache once at startup, off the interaction path."""
+        await self.fetch_owner_ids()
 
     async def fetch_owners(self) -> list[h.User]:
         """Fetch all owners of the bot from the cache or from discord if not

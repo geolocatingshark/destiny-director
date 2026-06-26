@@ -21,6 +21,7 @@ renders the result as a paginated Components V2 message via
 :mod:`dd.common.components`.
 """
 
+import logging
 import typing as t
 from dataclasses import dataclass
 
@@ -437,6 +438,24 @@ def _with_self_detail(
     return {d.command.casefold(): d for d in (HELP_SELF_DETAIL, *details)}
 
 
+async def _invoker_is_admin(bot: CachedFetchBot, user_id: h.Snowflake) -> bool:
+    """Whether ``user_id`` is a bot owner, degrading to ``False`` on REST failure.
+
+    The owner-id list is cached (see :meth:`CachedFetchBot.fetch_owner_ids`), so this
+    is normally instant. If the underlying ``fetch_application`` REST call genuinely
+    fails (e.g. a Discord outage), fail open to the non-admin view rather than let
+    ``/help`` error out — the worst case is admins transiently not seeing admin-only
+    commands, never a command leak.
+    """
+    try:
+        return user_id in await bot.fetch_owner_ids()
+    except Exception:
+        logging.exception(
+            "Failed to fetch owner ids for /help admin check; defaulting to non-admin"
+        )
+        return False
+
+
 def make_help_command(
     details: t.Sequence[CommandDetail] = (),
 ) -> type[lb.SlashCommand]:
@@ -452,7 +471,7 @@ def make_help_command(
 
     async def autocomplete(ctx: lb.AutocompleteContext[str]) -> None:
         bot = t.cast(CachedFetchBot, ctx.client.app)
-        is_admin = ctx.interaction.user.id in await bot.fetch_owner_ids()
+        is_admin = await _invoker_is_admin(bot, ctx.interaction.user.id)
         visible = _visible_details(ctx.client, by_key, is_admin=is_admin)
         await ctx.respond(_detail_choices(visible, str(ctx.focused.value or "")))
 
@@ -470,7 +489,7 @@ def make_help_command(
         async def invoke(
             self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
         ) -> None:
-            is_admin = ctx.user.id in await bot.fetch_owner_ids()
+            is_admin = await _invoker_is_admin(bot, ctx.user.id)
             query = str(self.command).strip()
             if not query:
                 await render_help(ctx, is_admin=is_admin)
