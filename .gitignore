@@ -138,6 +138,11 @@ dmypy.json
 world_sql_content*
 manifest.zip
 
+# Local DB dumps (`make dump-prod-db` / `dump-dev-db`) — but keep Atlas migrations,
+# so a new migrations/*.sql isn't silently ignored.
+*.sql
+!migrations/*.sql
+
 # My ToDo list
 ToDo
 
