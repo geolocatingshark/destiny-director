@@ -39,6 +39,7 @@ A classic-embed fallback mode is also supported: pass ``h.Embed`` pages and the
 paginator sends/edits them as embeds driven by the exact same menu buttons.
 """
 
+import contextlib
 import typing as t
 
 import hikari as h
@@ -361,9 +362,13 @@ class Paginator:
         self._ctx = ctx
         self._message = await ctx.interaction.fetch_initial_response()
 
-        await self._menu.attach(ctx.client, timeout=self._timeout)
         # ``attach`` blocks until the menu stops or times out. A press never stops
-        # the menu here, so reaching this point means it timed out: disable controls.
+        # the menu here, so the only way out is the timeout, which lightbulb signals
+        # by *raising* ``asyncio.TimeoutError`` (aliased to the builtin ``TimeoutError``
+        # on 3.11+) rather than returning. Swallow it — a timed-out paginator is
+        # normal, not a command failure — and then disable the controls.
+        with contextlib.suppress(TimeoutError):
+            await self._menu.attach(ctx.client, timeout=self._timeout)
         await self._on_timeout()
 
     async def _edit(self, mctx: lbc.MenuContext, *, all_disabled: bool = False) -> None:
