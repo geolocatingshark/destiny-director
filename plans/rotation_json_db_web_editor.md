@@ -1,10 +1,30 @@
 # Lost-sector rotation: DB-JSON + token-auth web form on anchor (Case 2, pure-Python)
 
-> **Status: PREFERRED / APPROVED direction for rotation-based posts** (approved
-> 2026-06-26). This is the chosen approach for `lost_sector` and the template for
-> future fixed-cycle post types (Dares of Eternity, Ascendant Challenge, …). The
-> "automate-gspread" design in `plans/automated_robust_sheets_rotation.md` is the
-> deferred fallback. See memory `rotation-data-store-direction`.
+> **Status: IMPLEMENTED & DEPLOYED TO DEV** (2026-06-26, commit `99c1d25` on dev/
+> `shark/dev`). The DB store, schema, `from_json`/`to_json`, persistent web app + OAuth
+> refactor, `/rotation edit` editor, and `/rotation import-from-sheet` are all built and
+> tested (425 tests green). gspread is **kept as a runtime fallback** (`load_rotation`
+> prefers the DB) — step 7 (`uv remove gspread` + `SHEETS_*` deletion) is **deferred**
+> until DB parity is confirmed on dev. **Not on prod** (`main`/`shark/main` unchanged).
+>
+> **Two deviations from the plan below:**
+> 1. **Editor UI is a bespoke dependency-free vanilla-JS form**, NOT json-editor: its
+>    built `dist` is unreachable through the sandbox's host allowlist (not committed to
+>    the repo, no GitHub release assets, npm CDNs not allowlisted). Same UX (checkbox
+>    champion/shield pickers, `<datalist>` schedule dropdowns, preview-on-demand, save);
+>    server validation via `fastjsonschema` is unchanged. Revisit json-editor only if a
+>    CDN is allowlisted or the dist is vendored manually.
+> 2. The OAuth refactor kept `refresh_api_tokens(runner=…)` / `get_webserver_runner()`
+>    as vestigial (ignored) params so the ~7 autopost call sites stayed byte-identical
+>    (lower risk); only `_wait_for_token_from_login` lost its server lifecycle.
+>
+> **Remaining to cut over (on dev):** run `/rotation import-from-sheet lost_sector` on
+> dev anchor → check the parity note + `/rotation edit` preview → then retire gspread.
+> Needs `PUBLIC_BASE_URL`/`RAILWAY_PUBLIC_DOMAIN` set on dev anchor for the editor link.
+>
+> Original direction approved 2026-06-26; the "automate-gspread" design in
+> `plans/automated_robust_sheets_rotation.md` is the deferred fallback. See memory
+> `rotation-data-store-direction`.
 
 ## Context
 
