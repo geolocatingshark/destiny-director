@@ -12,6 +12,8 @@ manifest helpers, constants) so importers keep using
 import aiohttp
 import lightbulb as lb
 
+from dd.anchor import web
+
 from . import client
 from .constants import (
     ARMOR_TYPE_NAMES,
@@ -43,6 +45,7 @@ from .oauth import (
     get_webserver_runner,
     oauth_url,
     refresh_api_tokens,
+    register_oauth_routes,
     webserver_runner_preparation,
 )
 
@@ -74,10 +77,16 @@ __all__ = [
     "get_webserver_runner",
     "oauth_url",
     "refresh_api_tokens",
+    "register_oauth_routes",
     "webserver_runner_preparation",
     "loader",
     "bungie",
 ]
+
+# Serve the Bungie OAuth callback from the anchor's persistent web app (replaces the
+# transient per-/bungie-login server). Registered at extension-import time, before the
+# gateway reaches StartedEvent where the web app is built and started.
+web.register_routes(register_oauth_routes)
 
 
 loader = lb.Loader()

@@ -221,6 +221,63 @@ class SectorData(dict[str, "Sector"]):
         )
 
 
+# Champion/shield presence <-> count mapping for the JSON store. -1 is the existing
+# "at least one present" sentinel (see DifficultySpecificSectorData), 0 is absent; the
+# rendered output only cares about presence, so the exact count is not round-tripped.
+_PRESENT = -1
+_ABSENT = 0
+
+
+def _difficulty_from_json(
+    difficulty: dict[str, t.Any], modifiers: str
+) -> DifficultySpecificSectorData:
+    champions = set(difficulty.get("champions", []))
+    shields = set(difficulty.get("shields", []))
+    return DifficultySpecificSectorData(
+        barrier_champions=_PRESENT if "Barrier" in champions else _ABSENT,
+        overload_champions=_PRESENT if "Overload" in champions else _ABSENT,
+        unstoppable_champions=_PRESENT if "Unstoppable" in champions else _ABSENT,
+        arc_shields=_PRESENT if "Arc" in shields else _ABSENT,
+        void_shields=_PRESENT if "Void" in shields else _ABSENT,
+        solar_shields=_PRESENT if "Solar" in shields else _ABSENT,
+        stasis_shields=_PRESENT if "Stasis" in shields else _ABSENT,
+        strand_shields=_PRESENT if "Strand" in shields else _ABSENT,
+        modifiers=modifiers or "",
+    )
+
+
+def _difficulty_to_json(data: DifficultySpecificSectorData) -> dict[str, t.Any]:
+    return {"champions": data.champions_list, "shields": data.shields_list}
+
+
+def _sector_from_json(doc: dict[str, t.Any]) -> Sector:
+    return Sector(
+        name=doc["name"],
+        shortlink_gfx=doc.get("shortlink_gfx", ""),
+        threat=doc.get("threat", ""),
+        overcharged_weapon=doc.get("overcharged_weapon", ""),
+        expert_data=_difficulty_from_json(
+            doc["expert"], doc.get("expert_modifiers", "")
+        ),
+        master_data=_difficulty_from_json(
+            doc["master"], doc.get("master_modifiers", "")
+        ),
+    )
+
+
+def _sector_to_json(sector: Sector) -> dict[str, t.Any]:
+    return {
+        "name": sector.name,
+        "shortlink_gfx": sector.shortlink_gfx,
+        "expert": _difficulty_to_json(sector.expert_data),
+        "master": _difficulty_to_json(sector.master_data),
+        "threat": sector.threat,
+        "overcharged_weapon": sector.overcharged_weapon,
+        "expert_modifiers": sector.expert_data.modifiers,
+        "master_modifiers": sector.master_data.modifiers,
+    }
+
+
 class SpreadsheetBackedData:
     @classmethod
     def from_gspread_url(
@@ -259,6 +316,73 @@ class Rotation(SpreadsheetBackedData):
     sector_rot: defaultdict[str, EntityRotation] = attr.ib()
     surge_rot: EntityRotation = attr.ib()
     sector_data: SectorData = attr.ib()
+
+    @classmethod
+    def from_json(cls, doc: dict[str, t.Any], buffer: int = 10) -> Rotation:
+        """Build a :class:`Rotation` from a stored JSON document (DB-backed store).
+
+        Pure (no network). Mirrors :meth:`from_gspread`'s output so the two stores are
+        interchangeable: ``reference_date`` is the calendar start date (midnight UTC +
+        the same reset offset ``from_gspread`` applies), ``schedule`` becomes the
+        per-zone :class:`EntityRotation`, each ``surge_cycle`` day's elements are joined
+        back into the ``" & "`` surge string, and the ``sectors`` array becomes the
+        name-keyed :class:`SectorData` (champion/shield *presence* → the count fields,
+        present→-1 else 0). Tolerant: a scheduled name absent from ``sectors`` simply
+        won't be in ``sector_data`` — the same ``KeyError``/"TBC" path ``from_gspread``
+        produces — and is handled by the announcer.
+        """
+        reset_time = dt.timedelta(hours=16, minutes=(60 - buffer))
+        reference_date = dt.date.fromisoformat(doc["reference_date"])
+        start_date = (
+            dt.datetime(
+                reference_date.year,
+                reference_date.month,
+                reference_date.day,
+                tzinfo=dt.UTC,
+            )
+            + reset_time
+        )
+
+        sector_rot: defaultdict[str, EntityRotation] = defaultdict(
+            lambda: EntityRotation([])
+        )
+        for zone, names in doc["schedule"].items():
+            sector_rot[zone] = EntityRotation(list(names))
+
+        surge_rot = EntityRotation([" & ".join(day) for day in doc["surge_cycle"]])
+
+        sector_data = SectorData.__new__(SectorData)
+        dict.__init__(sector_data)
+        for sector_doc in doc["sectors"]:
+            sector = _sector_from_json(sector_doc)
+            sector_data[sector.name] = sector
+
+        return cls(start_date, sector_rot, surge_rot, sector_data)
+
+    def to_json(self, *, version: int = 1) -> dict[str, t.Any]:
+        """Serialise this rotation to the JSON document shape (for the one-shot import).
+
+        Inverse of :meth:`from_json` at the *rendered* level: champion/shield counts
+        collapse to presence lists and the surge string splits back into per-day element
+        lists (so a re-import reproduces identical rendered output, even though raw
+        counts like ``2`` import back as the ``-1`` "present" sentinel).
+        """
+        return {
+            "version": version,
+            # start_date is midnight-UTC-of-reference-date + (<24h) reset offset, so its
+            # UTC date is exactly the reference date regardless of the buffer used.
+            "reference_date": self.start_date.astimezone(dt.UTC).date().isoformat(),
+            "schedule": {
+                zone: list(rotation) for zone, rotation in self.sector_rot.items()
+            },
+            "surge_cycle": [
+                [s.strip() for s in re_split_list.split(surge) if s.strip()]
+                for surge in self.surge_rot
+            ],
+            "sectors": [
+                _sector_to_json(sector) for sector in self.sector_data.values()
+            ],
+        }
 
     @classmethod
     def from_gspread(

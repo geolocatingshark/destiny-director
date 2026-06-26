@@ -9,7 +9,7 @@ import aiohttp
 import aiohttp.web
 from yarl import URL
 
-from dd.common import cfg, schemas
+from dd.common import schemas
 
 from .constants import API_OAUTH_GET_TOKEN, API_ROOT, BUNGIE_NET
 
@@ -122,85 +122,98 @@ async def check_bungie_api_online(raise_exception: bool = False) -> bool:
             return False
 
 
-def webserver_runner_preparation() -> aiohttp.web.AppRunner:
-    app = aiohttp.web.Application()
-    routes = aiohttp.web.RouteTableDef()
+async def _handle_oauth_callback(
+    request: aiohttp.web.Request,
+) -> aiohttp.web.Response:
+    """Handle the Bungie OAuth redirect: exchange the code and store the tokens."""
+    # Extract the code from the callback URL
+    try:
+        code = request.query.get("code", "")
+        state_code = request.query.get("state", "")
 
-    @routes.get("/oauth/callback")
-    async def handle_oauth_callback(request):
-        # Extract the code from the callback URL
-        try:
-            code = request.query.get("code", "")
-            state_code = request.query.get("state", "")
+        OAuthStateManager.consume_oauth_state_code(state_code)
 
-            OAuthStateManager.consume_oauth_state_code(state_code)
+    except KeyError:
+        return aiohttp.web.Response(text="Invalid callback URL")
 
-        except KeyError:
-            return aiohttp.web.Response(text="Invalid callback URL")
+    except ValueError:
+        return aiohttp.web.Response(text="URL has expired or is incorrect")
 
-        except ValueError:
-            return aiohttp.web.Response(text="URL has expired or is incorrect")
+    # Exchange the code for an access token
 
-        # Exchange the code for an access token
-
-        async with (
-            aiohttp.ClientSession() as session,
-            session.post(
-                API_OAUTH_GET_TOKEN,
-                data={
-                    "client_id": schemas.BungieCredentials.client_id,
-                    "client_secret": schemas.BungieCredentials.client_secret,
-                    "grant_type": "authorization_code",
-                    "code": code,
-                },
-            ) as response,
-        ):
-            response_json = await response.json()
-
-        try:
-            OAuthStateManager.set_access_token(
-                response_json["access_token"], response_json["expires_in"]
-            )
-            await schemas.BungieCredentials.set_refresh_token(
-                refresh_token=response_json["refresh_token"],
-                refresh_token_expires=response_json["refresh_expires_in"],
-            )
-        except KeyError:
-            logger.error("Error during bungie api authentication: %s", response_json)
-            return aiohttp.web.Response(text="Error during bungie api authentication")
-
-        return aiohttp.web.Response(text="You can close this tab/window now.")
-
-    app.add_routes(routes)
-    runner = aiohttp.web.AppRunner(app)
-    return runner
-
-
-async def _wait_for_token_from_login(
-    runner: aiohttp.web.AppRunner,
-) -> str:
-    logger.info("Waiting for access token...")
-
-    await runner.setup()
-    site = aiohttp.web.TCPSite(runner, "0.0.0.0", cfg.port)
-    await site.start()
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(
+            API_OAUTH_GET_TOKEN,
+            data={
+                "client_id": schemas.BungieCredentials.client_id,
+                "client_secret": schemas.BungieCredentials.client_secret,
+                "grant_type": "authorization_code",
+                "code": code,
+            },
+        ) as response,
+    ):
+        response_json = await response.json()
 
     try:
-        async with asyncio.timeout(LOGIN_WAIT_TIMEOUT_SECONDS):
-            while not (_access_token := OAuthStateManager.get_access_token()):
-                await asyncio.sleep(1)
-        return _access_token
-    finally:
-        await runner.shutdown()
-        await runner.cleanup()
+        OAuthStateManager.set_access_token(
+            response_json["access_token"], response_json["expires_in"]
+        )
+        await schemas.BungieCredentials.set_refresh_token(
+            refresh_token=response_json["refresh_token"],
+            refresh_token_expires=response_json["refresh_expires_in"],
+        )
+    except KeyError:
+        logger.error("Error during bungie api authentication: %s", response_json)
+        return aiohttp.web.Response(text="Error during bungie api authentication")
+
+    return aiohttp.web.Response(text="You can close this tab/window now.")
+
+
+def register_oauth_routes(app: aiohttp.web.Application) -> None:
+    """Add the ``GET /oauth/callback`` route to a (shared) aiohttp app.
+
+    The anchor's persistent web app (``dd.anchor.web``) calls this so the OAuth callback
+    is always reachable, replacing the old transient per-login server.
+    """
+    app.router.add_get("/oauth/callback", _handle_oauth_callback)
+
+
+def webserver_runner_preparation() -> aiohttp.web.AppRunner:
+    """Build a standalone runner serving the OAuth callback.
+
+    Retained for the ``bungie_api`` standalone smoke test (``__main__``); the live bots
+    serve the callback from the shared persistent app instead, so this runner is not
+    started in normal operation.
+    """
+    app = aiohttp.web.Application()
+    register_oauth_routes(app)
+    return aiohttp.web.AppRunner(app)
+
+
+async def _wait_for_token_from_login() -> str:
+    """Block until ``/oauth/callback`` stores an access token, or time out.
+
+    The callback is served by the always-on persistent web app, so this no longer
+    manages a server — it just polls for the token the callback sets.
+    """
+    logger.info("Waiting for access token...")
+    async with asyncio.timeout(LOGIN_WAIT_TIMEOUT_SECONDS):
+        while not (_access_token := OAuthStateManager.get_access_token()):
+            await asyncio.sleep(1)
+    return _access_token
 
 
 async def refresh_api_tokens(
-    runner: aiohttp.web.AppRunner, with_login: bool = False
+    runner: aiohttp.web.AppRunner | None = None, with_login: bool = False
 ) -> str:
+    # ``runner`` is vestigial: the OAuth callback now lives on the persistent web app,
+    # so login no longer needs a server handed in. The parameter is kept so the many
+    # existing ``refresh_api_tokens(get_webserver_runner())`` autopost call sites keep
+    # working unchanged.
     if with_login:
         OAuthStateManager.clear_access_token()
-        _access_token = await _wait_for_token_from_login(runner)
+        _access_token = await _wait_for_token_from_login()
         return _access_token
 
     bungie_credentials = await schemas.BungieCredentials.get_credentials()

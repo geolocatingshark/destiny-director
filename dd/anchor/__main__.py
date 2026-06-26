@@ -35,6 +35,7 @@ from ..common.discord_logging import (
 )
 from ..common.extension_loader import load_extensions_strict
 from ..common.lifecycle import consume_exit_code
+from . import web
 
 bot = CachedFetchBot(
     token=cfg.discord_token_anchor,
@@ -85,9 +86,21 @@ async def on_start_install_logging(_event: h.StartedEvent):
     await install_discord_logging(bot, bot_name="anchor")
 
 
+@bot.listen(h.StartedEvent)
+async def on_start_web_app(_event: h.StartedEvent):
+    # One persistent HTTP server for the OAuth callback + rotation editor. Extensions
+    # (loaded on StartingEvent) have already contributed their routes by now.
+    await web.start()
+
+
 @bot.listen(h.StoppingEvent)
 async def on_stopping_close_logging(_event: h.StoppingEvent):
     await aclose_discord_logging()
+
+
+@bot.listen(h.StoppingEvent)
+async def on_stopping_web_app(_event: h.StoppingEvent):
+    await web.stop()
 
 
 @bot.listen(h.GuildJoinEvent)

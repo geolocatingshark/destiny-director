@@ -1,0 +1,297 @@
+<!doctype html>
+<!--
+  Rotation editor — a self-contained, dependency-free form for editing a rotation's
+  JSON document. Served by dd.anchor.extensions.rotation_editor; the GET handler
+  substitutes the __BOOTSTRAP__ placeholder with {type, token, data, vocab}. The page
+  edits the document client-side and POSTs it to /rotation/preview and /rotation/edit.
+  The server re-validates against the JSON schema, so this form is a convenience, not a
+  trust boundary.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Rotation Editor</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 0; padding: 1.2rem; max-width: 880px; margin-inline: auto;
+        background: #1b1d22; color: #e6e6e6; line-height: 1.4;
+      }
+      h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
+      h2 { font-size: 1.05rem; margin: 1.4rem 0 .5rem; border-bottom: 1px solid #333; padding-bottom: .25rem; }
+      h3 { font-size: .95rem; margin: .2rem 0; }
+      .muted { color: #9aa0a6; font-size: .85rem; }
+      fieldset { border: 1px solid #333; border-radius: 8px; margin: .6rem 0; padding: .7rem .9rem; }
+      legend { padding: 0 .4rem; font-weight: 600; }
+      label { display: inline-block; }
+      input[type="text"], input[type="url"], input[type="date"], select {
+        background: #24262c; color: #e6e6e6; border: 1px solid #3a3d44;
+        border-radius: 6px; padding: .35rem .5rem; font: inherit; width: 100%;
+      }
+      .row { display: flex; gap: .5rem; align-items: center; margin: .25rem 0; }
+      .row > * { flex: 0 0 auto; }
+      .row .grow { flex: 1 1 auto; }
+      .checks { display: flex; flex-wrap: wrap; gap: .2rem .9rem; margin: .15rem 0 .5rem; }
+      .checks label { font-weight: normal; white-space: nowrap; }
+      .field { margin: .5rem 0; }
+      .field > label { font-weight: 600; display: block; margin-bottom: .2rem; }
+      button {
+        background: #2f81f7; color: #fff; border: 0; border-radius: 6px;
+        padding: .45rem .8rem; font: inherit; cursor: pointer;
+      }
+      button.secondary { background: #3a3d44; }
+      button.tiny { padding: .15rem .5rem; font-size: .8rem; }
+      button.danger { background: #6e2b2b; }
+      .toolbar { display: flex; gap: .6rem; align-items: center; margin-top: 1.4rem;
+        position: sticky; bottom: 0; background: #1b1d22; padding: .8rem 0; border-top: 1px solid #333; }
+      .grow { flex: 1 1 auto; }
+      details > summary { cursor: pointer; color: #9aa0a6; margin: .3rem 0; }
+      .card { border: 1px solid #3a3d44; border-radius: 8px; padding: .6rem .8rem; margin: .5rem 0; }
+      .card .card-head { display: flex; gap: .5rem; align-items: center; }
+      #status { font-size: .9rem; }
+      #status.ok { color: #6cc070; }
+      #status.err { color: #e5736f; white-space: pre-wrap; }
+      #previewBox { border: 1px solid #333; border-radius: 8px; padding: .8rem; margin-top: 1rem; background: #15171b; }
+      .zone { margin: .4rem 0; }
+      .diff-cols { display: flex; gap: 1rem; flex-wrap: wrap; }
+      .diff-cols > div { flex: 1 1 240px; }
+    </style>
+  </head>
+  <body>
+    <h1>Rotation Editor — <span id="typeName"></span></h1>
+    <p class="muted" id="authNote"></p>
+
+    <div class="field">
+      <label for="referenceDate">Rotation start date</label>
+      <input type="date" id="referenceDate" />
+    </div>
+
+    <h2>Sectors</h2>
+    <p class="muted">Define each sector once; reference it by name in the schedule below.</p>
+    <div id="sectors"></div>
+    <button class="secondary tiny" id="addSector" type="button">+ Add sector</button>
+
+    <h2>Daily schedule (per destination)</h2>
+    <p class="muted">Each destination cycles through these sectors, one per day, looping.</p>
+    <div id="schedule"></div>
+
+    <h2>Surge cycle (per day)</h2>
+    <p class="muted">One row per day; loops independently of the schedule.</p>
+    <div id="surge"></div>
+    <button class="secondary tiny" id="addSurge" type="button">+ Add day</button>
+
+    <datalist id="sectorNames"></datalist>
+
+    <div class="toolbar">
+      <button id="previewBtn" class="secondary" type="button">👁 Preview</button>
+      <button id="saveBtn" type="button">💾 Save</button>
+      <span class="grow"></span>
+      <span id="status"></span>
+    </div>
+    <div id="previewBox" hidden></div>
+
+    <script>
+      const BOOTSTRAP = /*__BOOTSTRAP__*/ null;
+      const { type, token, data, vocab } = BOOTSTRAP;
+      const $ = (id) => document.getElementById(id);
+      const el = (tag, props = {}, kids = []) => {
+        const n = Object.assign(document.createElement(tag), props);
+        for (const k of [].concat(kids)) n.append(k);
+        return n;
+      };
+
+      document.getElementById("typeName").textContent = type;
+      document.getElementById("authNote").textContent =
+        "Authorized via Discord. This link is single-use and expires shortly — save before it does.";
+
+      $("referenceDate").value = data.reference_date || "";
+
+      // --- checkbox group helper ---------------------------------------------
+      function checkGroup(options, selected) {
+        const wrap = el("div", { className: "checks" });
+        const boxes = [];
+        for (const opt of options) {
+          const cb = el("input", { type: "checkbox", value: opt });
+          cb.checked = (selected || []).includes(opt);
+          boxes.push(cb);
+          wrap.append(el("label", {}, [cb, " " + opt]));
+        }
+        wrap._value = () => boxes.filter((b) => b.checked).map((b) => b.value);
+        return wrap;
+      }
+
+      // --- sectors -----------------------------------------------------------
+      const sectorsBox = $("sectors");
+      const sectorRows = [];
+
+      function difficultyFields(title, diff) {
+        const champs = checkGroup(vocab.champions, diff.champions);
+        const shields = checkGroup(vocab.shields, diff.shields);
+        const box = el("fieldset", {}, [
+          el("legend", { textContent: title }),
+          el("div", { className: "field" }, [el("label", { textContent: "Champions" }), champs]),
+          el("div", { className: "field" }, [el("label", { textContent: "Shields" }), shields]),
+        ]);
+        box._value = () => ({ champions: champs._value(), shields: shields._value() });
+        return box;
+      }
+
+      function addSector(s = {}) {
+        const name = el("input", { type: "text", value: s.name || "", placeholder: "Sector name" });
+        name.addEventListener("input", refreshSectorNames);
+        const gfx = el("input", { type: "url", value: s.shortlink_gfx || "", placeholder: "https://…" });
+        const expert = difficultyFields("Expert", s.expert || {});
+        const master = difficultyFields("Master", s.master || {});
+        const threat = el("select");
+        for (const tEl of vocab.threats)
+          threat.append(el("option", { value: tEl, textContent: tEl || "(none)", selected: (s.threat || "") === tEl }));
+        const oc = el("input", { type: "text", value: s.overcharged_weapon || "", placeholder: "e.g. Auto Rifle" });
+        const em = el("input", { type: "text", value: s.expert_modifiers || "" });
+        const mm = el("input", { type: "text", value: s.master_modifiers || "" });
+        const remove = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
+
+        const card = el("div", { className: "card" }, [
+          el("div", { className: "card-head" }, [el("span", { className: "grow" }), remove]),
+          el("div", { className: "field" }, [el("label", { textContent: "Name" }), name]),
+          el("div", { className: "field" }, [el("label", { textContent: "Graphic link" }), gfx]),
+          el("div", { className: "diff-cols" }, [el("div", {}, [expert]), el("div", {}, [master])]),
+          el("details", {}, [
+            el("summary", { textContent: "Advanced (threat / overcharge / modifiers)" }),
+            el("div", { className: "field" }, [el("label", { textContent: "Threat" }), threat]),
+            el("div", { className: "field" }, [el("label", { textContent: "Overcharged weapon" }), oc]),
+            el("div", { className: "field" }, [el("label", { textContent: "Expert modifiers" }), em]),
+            el("div", { className: "field" }, [el("label", { textContent: "Master modifiers" }), mm]),
+          ]),
+        ]);
+        const entry = {
+          card,
+          value: () => ({
+            name: name.value.trim(),
+            shortlink_gfx: gfx.value.trim(),
+            expert: expert._value(),
+            master: master._value(),
+            threat: threat.value,
+            overcharged_weapon: oc.value.trim(),
+            expert_modifiers: em.value,
+            master_modifiers: mm.value,
+          }),
+        };
+        remove.addEventListener("click", () => {
+          card.remove();
+          sectorRows.splice(sectorRows.indexOf(entry), 1);
+          refreshSectorNames();
+        });
+        sectorRows.push(entry);
+        sectorsBox.append(card);
+      }
+
+      function refreshSectorNames() {
+        const dl = $("sectorNames");
+        dl.replaceChildren(
+          ...sectorRows.map((r) => el("option", { value: r.value().name })).filter((o) => o.value),
+        );
+      }
+
+      (data.sectors || []).forEach(addSector);
+      if (!sectorRows.length) addSector();
+      refreshSectorNames();
+      $("addSector").addEventListener("click", () => { addSector(); refreshSectorNames(); });
+
+      // --- schedule (per zone, ordered list of sector names) -----------------
+      const scheduleBox = $("schedule");
+      const zoneRows = {};
+      function addScheduleEntry(list, value) {
+        const input = el("input", { type: "text", value: value || "", className: "grow" });
+        input.setAttribute("list", "sectorNames");
+        const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
+        const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
+        const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
+        const row = el("div", { className: "row" }, [input, up, down, del]);
+        row._value = () => input.value.trim();
+        del.addEventListener("click", () => row.remove());
+        up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
+        down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
+        list.append(row);
+      }
+      for (const zone of vocab.zones) {
+        const list = el("div");
+        const add = el("button", { className: "tiny secondary", type: "button", textContent: "+ Day" });
+        add.addEventListener("click", () => addScheduleEntry(list));
+        const fs = el("fieldset", { className: "zone" }, [el("legend", { textContent: zone }), list, add]);
+        scheduleBox.append(fs);
+        zoneRows[zone] = list;
+        ((data.schedule || {})[zone] || []).forEach((n) => addScheduleEntry(list, n));
+      }
+
+      // --- surge cycle -------------------------------------------------------
+      const surgeBox = $("surge");
+      function addSurgeDay(selected) {
+        const group = checkGroup(vocab.surges, selected || []);
+        const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
+        const row = el("div", { className: "row" }, [el("span", { textContent: "Day", className: "muted" }), group, del]);
+        row._value = () => group._value();
+        del.addEventListener("click", () => row.remove());
+        surgeBox.append(row);
+      }
+      (data.surge_cycle || []).forEach(addSurgeDay);
+      if (!surgeBox.children.length) addSurgeDay();
+      $("addSurge").addEventListener("click", () => addSurgeDay());
+
+      // --- collect + submit --------------------------------------------------
+      function collect() {
+        const schedule = {};
+        for (const zone of vocab.zones)
+          schedule[zone] = [...zoneRows[zone].children].map((r) => r._value()).filter(Boolean);
+        return {
+          version: data.version || 1,
+          reference_date: $("referenceDate").value,
+          schedule,
+          surge_cycle: [...surgeBox.children].map((r) => r._value()),
+          sectors: sectorRows.map((r) => r.value()),
+        };
+      }
+
+      function setStatus(msg, ok) {
+        const s = $("status");
+        s.textContent = msg;
+        s.className = ok ? "ok" : "err";
+      }
+
+      async function post(path) {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ token, type, data: collect() }),
+        });
+        return res;
+      }
+
+      $("previewBtn").addEventListener("click", async () => {
+        setStatus("Rendering preview…", true);
+        try {
+          const res = await post("/rotation/preview");
+          const body = await res.text();
+          if (!res.ok) return setStatus("Preview failed: " + body, false);
+          const box = $("previewBox");
+          box.hidden = false;
+          box.innerHTML = body;
+          setStatus("Preview updated.", true);
+        } catch (e) { setStatus("Preview error: " + e, false); }
+      });
+
+      $("saveBtn").addEventListener("click", async () => {
+        setStatus("Saving…", true);
+        try {
+          const res = await post("/rotation/edit");
+          const body = await res.text();
+          if (!res.ok) return setStatus("Save failed: " + body, false);
+          setStatus("Saved ✓ — you can close this tab. (The link is now spent.)", true);
+        } catch (e) { setStatus("Save error: " + e, false); }
+      });
+    </script>
+  </body>
+</html>

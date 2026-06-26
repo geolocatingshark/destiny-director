@@ -269,6 +269,26 @@ bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET", "")
 
 
 port = _getenv("PORT", 8080)
+
+
+def _public_base_url() -> str:
+    """Public origin (scheme + host) the anchor web app is reachable at.
+
+    Prefers an explicit ``PUBLIC_BASE_URL`` (e.g. behind a custom domain); otherwise
+    derives ``https://<RAILWAY_PUBLIC_DOMAIN>`` from Railway's injected domain. Empty
+    when neither is set (e.g. local dev without a tunnel) — the rotation editor command
+    surfaces that as a clear error rather than minting an unreachable link.
+    """
+    explicit = __getenv("PUBLIC_BASE_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    railway_domain = __getenv("RAILWAY_PUBLIC_DOMAIN")
+    if railway_domain:
+        return "https://" + railway_domain.rstrip("/")
+    return ""
+
+
+public_base_url = _public_base_url()
 #### Environment variables end ####
 
 ###################################

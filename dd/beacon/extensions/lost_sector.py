@@ -13,7 +13,6 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-import asyncio
 import datetime as dt
 import typing as t
 from typing import override
@@ -25,9 +24,8 @@ from dd.hmessage import HMessage
 
 from ...common import cfg
 from ...common.bot import ServerEmojiEnabledBot
-from ...common.lost_sector import format_post
+from ...common.lost_sector import format_post, load_rotation
 from ...common.utils import accumulate
-from ...sector_accounting import sector_accounting
 from .. import utils
 from ..nav import (
     NO_DATA_HERE_EMBED,
@@ -68,14 +66,7 @@ class SectorMessages(NavPages):
     async def lookahead(self, after: dt.datetime) -> dict[dt.datetime, HMessage]:
         start_date = after
         bot = t.cast(ServerEmojiEnabledBot, self.bot)
-        # from_gspread_url does blocking gspread network I/O; offload it so the
-        # event loop keeps servicing other coroutines during the lookahead.
-        sector_on = await asyncio.to_thread(
-            sector_accounting.Rotation.from_gspread_url,
-            cfg.sheets_ls_url,
-            cfg.gsheets_credentials,
-            buffer=1,
-        )
+        sector_on = await load_rotation(buffer=1)
 
         lookahead_dict = {}
 

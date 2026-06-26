@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime as dt
+import logging
 import typing as t
 
 import aiohttp
@@ -20,6 +21,60 @@ from .utils import (
 )
 
 _elements = ["solar", "void", "arc", "stasis", "strand"]
+
+# Last-known-good rotation, keyed by post type. Populated on every successful load and
+# served only if both the DB store and the gspread fallback are unreachable, so a
+# transient outage never breaks an autopost.
+_rotation_cache: dict[str, sector_accounting.Rotation] = {}
+
+_LOST_SECTOR = "lost_sector"
+
+
+async def load_rotation(buffer: int = 5) -> sector_accounting.Rotation:
+    """Load the ``lost_sector`` rotation, preferring the DB JSON store.
+
+    Resolution order: the ``RotationData['lost_sector']`` document (built via
+    :meth:`Rotation.from_json`) → the live gspread Sheet (kept as a fallback during the
+    cutover; blocking, so offloaded to a thread) → the last-known-good cache. The DB is
+    consulted every call (it is cheap and lets editor saves take effect immediately);
+    the cache exists only for the total-outage case. Raises only if every source fails
+    and nothing was ever cached.
+    """
+    try:
+        doc = await schemas.RotationData.get_data(_LOST_SECTOR)
+    except Exception:
+        logging.exception("Failed to read lost_sector rotation from the DB")
+        doc = None
+
+    if doc is not None:
+        try:
+            rotation = sector_accounting.Rotation.from_json(doc, buffer=buffer)
+            _rotation_cache[_LOST_SECTOR] = rotation
+            return rotation
+        except Exception:
+            logging.exception(
+                "Stored lost_sector rotation JSON is malformed; falling back to gspread"
+            )
+
+    try:
+        # from_gspread_url does blocking gspread network I/O; offload it so the event
+        # loop keeps servicing other coroutines during the autopost.
+        rotation = await asyncio.to_thread(
+            sector_accounting.Rotation.from_gspread_url,
+            cfg.sheets_ls_url,
+            cfg.gsheets_credentials,
+            buffer=buffer,
+        )
+        _rotation_cache[_LOST_SECTOR] = rotation
+        return rotation
+    except Exception:
+        cached = _rotation_cache.get(_LOST_SECTOR)
+        if cached is not None:
+            logging.exception(
+                "Failed to load lost_sector rotation; serving last-known-good cache"
+            )
+            return cached
+        raise
 
 
 def _elements_to_emoji(elements: str):
@@ -87,14 +142,7 @@ async def format_post(
         emoji_dict = t.cast(dict[str, h.Emoji], await fetch_emoji_dict(bot))
 
     if sectors is None:
-        # from_gspread_url does blocking gspread network I/O; offload it so the
-        # event loop keeps servicing other coroutines during the autopost.
-        rotation = await asyncio.to_thread(
-            sector_accounting.Rotation.from_gspread_url,
-            cfg.sheets_ls_url,
-            cfg.gsheets_credentials,
-            buffer=5,
-        )
+        rotation = await load_rotation(buffer=5)
         sectors = rotation(date)
 
     # Follow the hyperlink to have the newest image embedded

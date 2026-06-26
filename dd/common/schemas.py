@@ -38,6 +38,7 @@ from sqlalchemy.sql.expression import and_, delete, desc
 from sqlalchemy.sql.functions import coalesce, func
 from sqlalchemy.sql.schema import CheckConstraint, Column, UniqueConstraint
 from sqlalchemy.sql.sqltypes import (
+    JSON,
     VARCHAR,
     BigInteger,
     Boolean,
@@ -1428,6 +1429,59 @@ class AutoPostSettings(Base):
     @classmethod
     async def set_portal_ops(cls, enabled: bool) -> None:
         return await cls.set_enabled("portal_ops", enabled)
+
+
+class RotationData(Base):
+    """Whole-document JSON store for rotation-based posts (one row per post type).
+
+    The PK ``name`` is the post-type slug (``lost_sector``, future
+    ``dares_of_eternity``…) — the same slug used by :class:`AutoPostSettings` and
+    ``cfg.followables`` — so a post type is addressed identically across its
+    enabled-flag, channel and data. ``data`` is the full JSON document validated by
+    :mod:`dd.common.rotation_schema`; integrity lives at the app layer (schema +
+    attrs construction + the tolerant loader), not in a relational shape, so new post
+    types need a new *row*, never a migration.
+    """
+
+    __tablename__ = "rotation_data"
+    __mapper_args__ = {"eager_defaults": True}
+
+    name = Column("name", VARCHAR(32), primary_key=True)
+    data = Column("data", JSON, nullable=False)
+    updated_at = Column("updated_at", DateTime, default=None)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def get_data(
+        cls, name: str, session: AsyncSession = _UNSET
+    ) -> dict[str, t.Any] | None:
+        """Return the stored JSON document for ``name``, or ``None`` if absent."""
+        return (
+            await session.execute(select(cls.data).where(cls.name == name))
+        ).scalar()
+
+    @classmethod
+    @ensure_session(db_session)
+    async def set_data(
+        cls, name: str, data: dict[str, t.Any], session: AsyncSession = _UNSET
+    ) -> None:
+        """Upsert the whole JSON document for ``name``, stamping ``updated_at``."""
+        now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
+        exists = (
+            await session.execute(select(cls.name).where(cls.name == name))
+        ).scalar()
+        if exists is None:
+            await session.execute(
+                insert(cls).values(
+                    {cls.name: name, cls.data: data, cls.updated_at: now}
+                )
+            )
+        else:
+            await session.execute(
+                update(cls)
+                .values({cls.data: data, cls.updated_at: now})
+                .where(cls.name == name)
+            )
 
 
 class BungieCredentials(Base):
