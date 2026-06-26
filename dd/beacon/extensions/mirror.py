@@ -238,11 +238,16 @@ def render_mirror_progress(
         f"## {title}",
         f"**Source message:** {source_message_field}\n"
         f"**Source channel:** {source_channel_field}",
+        # Wrapped in a code block so Discord renders it monospace: the bar cells line
+        # up and the colour squares stay distinct instead of being squashed together.
+        # (Markdown bold doesn't render inside a code block, so the counts are plain.)
+        "```\n"
         f"{_progress_bar(control)}\n"
-        f"✅ Completed: **{len(control.successful_targets)}**\n"
-        f"🔁 Retrying: **{len(control.targets_being_retried)}**\n"
-        f"❌ Failed: **{len(control.failed_targets)}**\n"
-        f"⏳ Remaining: **{len(control.targets_not_yet_tried)}**",
+        f"🟩 {'Completed':<9} {len(control.successful_targets)}\n"
+        f"🟨 {'Retrying':<9} {len(control.targets_being_retried)}\n"
+        f"🟥 {'Failed':<9} {len(control.failed_targets)}\n"
+        f"⬜ {'Remaining':<9} {len(control.targets_not_yet_tried)}\n"
+        "```",
         f"Time taken: {elapsed}\nTime to try all channels once: {time_to_first_pass}",
     ]
 
