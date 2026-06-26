@@ -19,13 +19,17 @@ No DB / network / Discord — only the manifest-driven pure functions, exercised
 hand-built fixtures that mirror the live manifest shapes (verified against dev data).
 """
 
+from dd.anchor.extensions.bungie_api import (
+    EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX,
+    EVERVERSE_SILVER_ROTATOR_PREFIX,
+)
 from dd.anchor.extensions.bungie_api.models import DestinyItem
 from dd.anchor.extensions.eververse import (
-    _bright_dust_rotator_hashes,
     _eververse_line,
     _eververse_type_group,
     _exotic_ornament_target_name,
     _group_eververse_offerings,
+    _rotator_hashes,
 )
 
 
@@ -43,22 +47,31 @@ def _vendor_manifest() -> dict:
             30: {"hash": 30, "vendorIdentifier": "EVERVERSE_WEEKLY_OFFERINGS"},
             40: {"hash": 40, "vendorIdentifier": ""},
             50: {"hash": 50},  # missing vendorIdentifier entirely
+            60: {
+                "hash": 60,
+                "vendorIdentifier": "EVERVERSE_SILVER_ROTATOR_EXOTIC_GHOSTS",
+            },
         }
     }
 
 
-def test_bright_dust_rotator_hashes_filters_by_prefix():
-    hashes = _bright_dust_rotator_hashes(_vendor_manifest())
+def test_rotator_hashes_filters_by_bright_dust_prefix():
+    hashes = _rotator_hashes(_vendor_manifest(), EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX)
     assert sorted(hashes) == [10, 20]
 
 
-def test_bright_dust_rotator_hashes_empty_when_none_match():
+def test_rotator_hashes_filters_by_silver_prefix():
+    hashes = _rotator_hashes(_vendor_manifest(), EVERVERSE_SILVER_ROTATOR_PREFIX)
+    assert hashes == [60]
+
+
+def test_rotator_hashes_empty_when_none_match():
     manifest = {
         "DestinyVendorDefinition": {
             1: {"hash": 1, "vendorIdentifier": "SOMETHING_ELSE"},
         }
     }
-    assert _bright_dust_rotator_hashes(manifest) == []
+    assert _rotator_hashes(manifest, EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX) == []
 
 
 def _item_manifest_with(entry: dict) -> dict:
@@ -144,6 +157,7 @@ def _item_of(
     hash_: int = 1,
     cost: int = 100,
     rarity: str = "Legendary",
+    currency: str = "Bright Dust",
 ) -> DestinyItem:
     return DestinyItem(
         name=name,
@@ -153,7 +167,7 @@ def _item_of(
         bucket="",
         item_type=2,
         item_type_friendly_name=type_name,
-        costs={"Bright Dust": cost},
+        costs={currency: cost},
     )
 
 
@@ -239,3 +253,14 @@ def test_eververse_line_subtypes_and_classless_armor():
     assert _eververse_line(_item_of("Unknown", "Vehicle", cost=2500), None).endswith(
         "· Sparrow"
     )
+
+
+def test_eververse_line_silver_currency_uses_silver_cost():
+    # The Silver section renders the Silver cost (not Bright Dust) via the currency arg.
+    ship = _item_of(
+        "Unknown", "Ship", name="Threat Display", cost=600, currency="Silver"
+    )
+    line = _eververse_line(ship, None, "Silver")
+    assert line.startswith("• [Threat Display](")
+    assert "— 600" in line
+    assert line.endswith("· Ship")

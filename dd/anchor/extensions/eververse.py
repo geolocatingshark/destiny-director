@@ -31,18 +31,17 @@ _ORNAMENT_TARGET_RE = re.compile(r"change the appearance of (.+?)\.")
 _ORNAMENT_TRAIT_IDS = frozenset({"item.ornament.weapon", "item.ornament.armor"})
 
 
-def _bright_dust_rotator_hashes(manifest_table: dict[str, t.Any]) -> list[int]:
-    """Discover the daily bright-dust rotator vendor hashes from the manifest.
+def _rotator_hashes(manifest_table: dict[str, t.Any], prefix: str) -> list[int]:
+    """Discover daily rotator vendor hashes from the manifest.
 
-    These are the vendors whose ``vendorIdentifier`` starts with
-    ``EVERVERSE_BRIGHT_DUST_ROTATOR`` (e.g. ``..._EXOTIC_GHOSTS``).
+    These are the vendors whose ``vendorIdentifier`` starts with ``prefix`` — e.g.
+    ``EVERVERSE_BRIGHT_DUST_ROTATOR`` or ``EVERVERSE_SILVER_ROTATOR``
+    (``..._EXOTIC_GHOSTS`` and friends).
     """
     return [
         vendor_def["hash"]
         for vendor_def in manifest_table["DestinyVendorDefinition"].values()
-        if vendor_def.get("vendorIdentifier", "").startswith(
-            api.EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX
-        )
+        if vendor_def.get("vendorIdentifier", "").startswith(prefix)
     ]
 
 
@@ -117,16 +116,18 @@ _SHIP_SPARROW_LABEL = {"Ship": "Ship", "Vehicle": "Sparrow", "Sparrow": "Sparrow
 
 
 def _eververse_line(
-    item: api.DestinyItem, manifest_table: dict[str, t.Any] | None
+    item: api.DestinyItem,
+    manifest_table: dict[str, t.Any] | None,
+    currency: str = "Bright Dust",
 ) -> str:
     """One rendered offering line: ``• [name](url) — cost (… target) · subtype``.
 
     Every line starts with the item name for a uniform look; costs are bare numbers
-    (the header notes they're all Bright Dust). Armor ornaments put their class emoji
+    (the section header notes the currency). Armor ornaments put their class emoji
     inside the parens before the exotic they reskin — ``(:titan: Hallowfire Heart)`` —
     or the class emoji alone when no target resolves; weapon ornaments show just the
     exotic; ships/sparrows get a Ship/Sparrow subtype label."""
-    line = f"• [{item.name}]({item.lightgg_url}) — {item.costs['Bright Dust']}"
+    line = f"• [{item.name}]({item.lightgg_url}) — {item.costs.get(currency, 0)}"
     target = (
         _exotic_ornament_target_name(item, manifest_table)
         if item.is_exotic and manifest_table is not None
@@ -143,10 +144,14 @@ def _eververse_line(
     return line
 
 
-async def fetch_daily_bright_dust_offerings(
+async def _fetch_daily_rotator_offerings(
     webserver_runner: aiohttp.web.AppRunner,
+    *,
+    rotator_prefix: str,
+    currency: str,
 ) -> tuple[list[api.DestinyItem], dict[str, t.Any]]:
-    """Fetch the deduped bright-dust items across all active rotator vendors.
+    """Fetch the deduped items across all active rotator vendors matching
+    ``rotator_prefix`` whose cost includes ``currency``.
 
     Returns the items (deduped by item hash) plus the manifest table, which the
     renderer needs for the exotic-ornament base-item lookup. Inactive rotators
@@ -176,8 +181,9 @@ async def fetch_daily_bright_dust_offerings(
     manifest_table = await api._build_manifest_dict(
         await api._get_latest_manifest(schemas.BungieCredentials.api_key)
     )
-    rotator_hashes = _bright_dust_rotator_hashes(manifest_table)
+    rotator_hashes = _rotator_hashes(manifest_table, rotator_prefix)
 
+    cost_match = currency.lower()
     items: dict[int, api.DestinyItem] = {}  # dedupe by item hash across classes
     for character_id in character_ids:
         for vendor_hash in rotator_hashes:
@@ -197,10 +203,38 @@ async def fetch_daily_bright_dust_offerings(
                 response=response, manifest_table=manifest_table
             )
             for sale_item in vendor.sale_items:
-                if "bright dust" in str(sale_item.costs).lower():
+                if cost_match in str(sale_item.costs).lower():
                     items.setdefault(sale_item.hash, sale_item)
 
     return list(items.values()), manifest_table
+
+
+async def fetch_daily_bright_dust_offerings(
+    webserver_runner: aiohttp.web.AppRunner,
+) -> tuple[list[api.DestinyItem], dict[str, t.Any]]:
+    """Fetch the deduped daily bright-dust rotator items + the manifest table."""
+    return await _fetch_daily_rotator_offerings(
+        webserver_runner,
+        rotator_prefix=api.EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX,
+        currency="Bright Dust",
+    )
+
+
+async def fetch_daily_silver_offerings(
+    webserver_runner: aiohttp.web.AppRunner,
+) -> tuple[list[api.DestinyItem], dict[str, t.Any]]:
+    """Fetch the deduped featured daily Silver rotator items + the manifest table.
+
+    Items the bot account already owns are reported at 0 Silver by the vendor; drop
+    them so the post never shows a misleading "— 0".
+    """
+    items, manifest_table = await _fetch_daily_rotator_offerings(
+        webserver_runner,
+        rotator_prefix=api.EVERVERSE_SILVER_ROTATOR_PREFIX,
+        currency="Silver",
+    )
+    items = [item for item in items if item.costs.get("Silver", 0) > 0]
+    return items, manifest_table
 
 
 async def eververse_message_constructor(bot: CachedFetchBot) -> HMessage:
@@ -253,19 +287,37 @@ async def eververse_message_constructor(bot: CachedFetchBot) -> HMessage:
     daily_items, daily_manifest_table = await fetch_daily_bright_dust_offerings(
         api.get_webserver_runner()
     )
+    silver_items, _ = await fetch_daily_silver_offerings(api.get_webserver_runner())
 
     return await format_eververse_vendor(
         eververse_data,
         bot,
         daily_items=daily_items,
+        silver_items=silver_items,
         manifest_table=daily_manifest_table,
     )
+
+
+def _render_offering_groups(
+    groups: list[tuple[str, str, list[api.DestinyItem]]],
+    manifest_table: dict[str, t.Any] | None,
+    currency: str,
+) -> str:
+    """Render the type-grouped offering lines for one currency pool as markdown."""
+    blocks: list[str] = []
+    for emoji_name, header, items in groups:
+        header_prefix = f":{emoji_name}: " if emoji_name else ""
+        lines = [f"{header_prefix}**{header}**"]
+        lines += [_eververse_line(item, manifest_table, currency) for item in items]
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 async def format_eververse_vendor(
     vendor: api.DestinyVendor,
     bot: CachedFetchBot,
     daily_items: list[api.DestinyItem] | None = None,
+    silver_items: list[api.DestinyItem] | None = None,
     manifest_table: dict[str, t.Any] | None = None,
 ) -> HMessage:
     emoji_dict = await fetch_emoji_dict(bot)
@@ -284,39 +336,51 @@ async def format_eververse_vendor(
             continue
         pool.setdefault(sale_item.hash, sale_item)
 
-    description = (
-        "# :eververse: [This Week 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)\n\n"
+    async def _sub(content: str) -> str:
+        return await substitute_user_side_emoji(emoji_dict, content)
+
+    # Components V2: a container with one text display per block, with separators
+    # giving visual space between each section's heading and its contents.
+    container = h.impl.ContainerComponentBuilder(
+        accent_color=h.Color(cfg.embed_default_color)
     )
-    description += "⇣ _All items below cost_ :bright_dust: ⇣\n\n"
-
-    groups = _group_eververse_offerings(list(pool.values()))
-    if not groups:
-        description += "No Bright Dust offerings are available right now.\n"
-    for emoji_name, header, items in groups:
-        header_prefix = f":{emoji_name}: " if emoji_name else ""
-        description += f"{header_prefix}**{header}**\n"
-        for item in items:
-            description += _eververse_line(item, manifest_table) + "\n"
-        description += "\n"
-
-    description = await substitute_user_side_emoji(emoji_dict, description)
-
-    embed = h.Embed(
-        description=description,
-        color=h.Color(cfg.embed_default_color),
-        url="https://kyberscorner.com",
+    container.add_text_display(
+        await _sub(
+            "# :eververse: [Today 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)"
+        )
     )
 
-    message = HMessage(embeds=[embed])
-    return message
+    bright_dust_body = (
+        _render_offering_groups(
+            _group_eververse_offerings(list(pool.values())),
+            manifest_table,
+            "Bright Dust",
+        )
+        or "No Bright Dust offerings are available right now."
+    )
+    container.add_separator(divider=True)
+    container.add_text_display(await _sub("## :bright_dust: Bright Dust Offerings"))
+    container.add_separator(spacing=h.SpacingType.SMALL, divider=False)
+    container.add_text_display(await _sub(bright_dust_body))
+
+    silver_groups = _group_eververse_offerings(silver_items or [])
+    if silver_groups:
+        container.add_separator(divider=True)
+        container.add_text_display(await _sub("## :silver: Silver Offerings"))
+        container.add_separator(spacing=h.SpacingType.SMALL, divider=False)
+        container.add_text_display(
+            await _sub(_render_offering_groups(silver_groups, manifest_table, "Silver"))
+        )
+
+    return HMessage(components=[container])
 
 
 @loader.listener(h.StartedEvent)
 async def on_start_schedule_autoposts(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
 ):
-    # Run every Tuesday at 17:00 UTC
-    @aiocron.crontab("0 17 * * TUE", start=True)
+    # Run daily at 17:00 UTC (the post carries the daily bright-dust + silver rotators)
+    @aiocron.crontab("0 17 * * *", start=True)
     # Use below crontab for testing to post every minute
     # @aiocron.crontab("* * * * *", start=True)
     async def autopost_eververse():
@@ -326,6 +390,7 @@ async def on_start_schedule_autoposts(
             check_enabled=True,
             enabled_check_coro=schemas.AutoPostSettings.get_eververse_enabled,
             construct_message_coro=eververse_message_constructor,
+            cv2=True,
         )
 
 
@@ -340,6 +405,7 @@ _eververse_autopost_group = make_autopost_control_commands(
     channel_id=cfg.followables["eververse"],
     message_constructor_coro=eververse_message_constructor,
     message_announcer_coro=xur.api_to_discord_announcer,
+    cv2=True,
 )
 
 loader.command(_eververse_autopost_group)

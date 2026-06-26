@@ -85,7 +85,7 @@ Every guild-scoped command/group found in the audit, and whether `cfg.test_env` 
 | beacon/statistics | `stats` group (populations, server_list, autoposts) | `[cfg.control_discord_server_id]` | **No** — control guild only, test_env not woven in |
 | beacon/user_commands | command group (preview/add/delete/edit/rename) | `[cfg.control_discord_server_id]` (dynamic user commands register to `cfg.test_env`) | Partial — group is control-only; dynamically-created user commands correctly use `cfg.test_env` (pre-fixed) |
 | beacon/testing (NEW) | `testing` group + `mirror` subgroup | `[*cfg.test_env, cfg.control_discord_server_id]` | Yes |
-| anchor/controller | all_stop, restart, info | `[cfg.control_discord_server_id]` | **No** — control guild only |
+| common/controller (shared → /anchor, /beacon) | restart, stop, info | `[*cfg.test_env, cfg.control_discord_server_id]` | Yes — shared factory on both bots; each subcommand self-gates with `owner_only` |
 | anchor/posts | post create/edit/copy | `[kyber, control]` | **No** — kyber + control |
 | anchor/lost_sector | `ls_update`; autopost control group | control guild (group `[control]`, dev_ prefix in test_env) | **No** on ls_update (control only); autopost group control-only |
 | anchor/xur, eververse, gunsmith | autopost control groups | `[cfg.control_discord_server_id]` (re-applied per caller via loader.command) | **No** — control guild only |
@@ -132,7 +132,7 @@ No cron mismatches and no left-enabled `* * * * *` test crontab in any anchor au
 - beacon/debug (DROPPED) — 2 findings
 - beacon/mirror_temp (DROPPED) — no divergence
 - anchor/bungie_api (pair) — 6 findings
-- anchor/controller (pair) — no divergence
+- anchor/controller → common/controller (post-audit: shared on anchor + beacon, renamed /anchor + /beacon, all_stop→stop, self-gated per subcommand)
 - anchor/eververse (pair) — no divergence
 - anchor/gunsmith (pair) — no divergence
 - anchor/help (pair) — 3 findings

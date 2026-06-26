@@ -25,11 +25,13 @@ from dd.common.utils import format_duration
     [
         (0, "0 seconds"),
         (5, "5 seconds"),
-        (5.25, "5.25 seconds"),
-        (59.99, "59.99 seconds"),
+        (5.4, "5 seconds"),  # rounds down to the nearest second
+        (5.6, "6 seconds"),  # rounds up to the nearest second
+        (59, "59 seconds"),
+        (59.6, "1 minutes 0 seconds"),  # rounds up to 60 -> crosses into minutes
         (60, "1 minutes 0 seconds"),
         (61, "1 minutes 1 seconds"),
-        (125.5, "2 minutes 5.5 seconds"),
+        (125.4, "2 minutes 5 seconds"),
         (3600, "60 minutes 0 seconds"),
     ],
 )

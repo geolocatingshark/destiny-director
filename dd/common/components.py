@@ -146,6 +146,57 @@ def build_container(
     return container
 
 
+def rebuild_components(
+    components: t.Sequence[h.PartialComponent],
+) -> list[h.api.ComponentBuilder]:
+    """Rebuild sendable CV2 component *builders* from fetched component *models*.
+
+    hikari's ``create_message``/``edit`` accept only builders, but a fetched message
+    exposes component *models* which are not builders and carry no build path (unlike
+    embeds, which round-trip directly). The mirror uses this to re-send a Components
+    V2 source message to a destination. Only the CV2 content types we actually emit
+    are supported — containers, text displays and separators; an unsupported type
+    raises so a new component kind surfaces loudly instead of mirroring blank.
+    """
+    return [_rebuild_component(component) for component in components]
+
+
+def _rebuild_component(component: h.PartialComponent) -> h.api.ComponentBuilder:
+    if isinstance(component, h.ContainerComponent):
+        container = h.impl.ContainerComponentBuilder(
+            accent_color=component.accent_color
+            if component.accent_color is not None
+            else h.UNDEFINED,
+            spoiler=component.is_spoiler,
+        )
+        # Add children via the typed methods (the generic ``add_component`` only
+        # accepts the narrow container-child union). Containers can't nest in CV2.
+        for child in component.components:
+            if isinstance(child, h.TextDisplayComponent):
+                container.add_text_display(child.content)
+            elif isinstance(child, h.SeparatorComponent):
+                container.add_separator(
+                    spacing=child.spacing if child.spacing is not None else h.UNDEFINED,
+                    divider=child.divider if child.divider is not None else h.UNDEFINED,
+                )
+            else:
+                raise NotImplementedError(_unrebuildable(child))
+        return container
+    if isinstance(component, h.TextDisplayComponent):
+        return h.impl.TextDisplayComponentBuilder(content=component.content)
+    if isinstance(component, h.SeparatorComponent):
+        return h.impl.SeparatorComponentBuilder(
+            spacing=component.spacing if component.spacing is not None else h.UNDEFINED,
+            divider=component.divider if component.divider is not None else h.UNDEFINED,
+        )
+    raise NotImplementedError(_unrebuildable(component))
+
+
+def _unrebuildable(component: h.PartialComponent) -> str:
+    kind = getattr(component, "type", component)
+    return f"Cannot rebuild CV2 component of type {kind!r}"
+
+
 # Char/line limits ported from the lightbulb v2 ``lines_to_embeds`` paginator
 # (``git show 3a92d4f:dd/beacon/modules/help.py``).
 MAX_PAGE_CHARS = 1800

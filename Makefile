@@ -44,6 +44,15 @@ atlas-migration-apply:
 	@echo "atlas migrate apply -u <MYSQL_URL>"
 	atlas migrate apply -u ${MYSQL_URL}
 
+# Back up a DB to a timestamped ./kyber-<env>-<UTC>.sql via mysqldump, pulling the MySQL
+# service's connection vars from the given Railway environment. Runs locally, so it needs
+# mysqldump installed and the MySQL service reachable (public TCP proxy).
+dump-prod-db:
+	railway run -e production -s MySQL bash -c 'mysqldump -h "$$MYSQLHOST" -P "$$MYSQLPORT" -u "$$MYSQLUSER" -p"$$MYSQLPASSWORD" --skip-ssl-verify-server-cert --single-transaction --quick --no-tablespaces "$$MYSQLDATABASE" > "kyber-prod-$$(date -u +%Y%m%dT%H%M%SZ).sql"'
+
+dump-dev-db:
+	railway run -e dev -s MySQL bash -c 'mysqldump -h "$$MYSQLHOST" -P "$$MYSQLPORT" -u "$$MYSQLUSER" -p"$$MYSQLPASSWORD" --skip-ssl-verify-server-cert --single-transaction --quick --no-tablespaces "$$MYSQLDATABASE" > "kyber-dev-$$(date -u +%Y%m%dT%H%M%SZ).sql"'
+
 lint:
 	uv run ruff check dd
 

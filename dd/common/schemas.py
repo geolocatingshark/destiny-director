@@ -562,10 +562,16 @@ class MirroredChannel(Base):
         )
         await session.execute(
             update(cls)
+            # Match the failing rows by the SAME predicate the SELECT used. Rebuilding
+            # ``src_id IN (...) AND dest_id IN (...)`` from the pairs matches the
+            # Cartesian product of the two id sets, so it would also disable innocent
+            # ``(src, dest)`` rows (error_rate 0) that merely share a src or dest with a
+            # genuinely-failing pair.
             .where(
                 and_(
-                    cls.src_id.in_([mirror[0] for mirror in mirrors_to_disable]),
-                    cls.dest_id.in_([mirror[1] for mirror in mirrors_to_disable]),
+                    cls.enabled,
+                    cls.legacy,
+                    cls.legacy_error_rate >= threshold,
                 )
             )
             .values(
@@ -894,6 +900,24 @@ class CommandUsage(Base):
             q = q.where(cls.date >= since)
         q = q.group_by(cls.command_name).order_by(desc("total"))
         return [(name, int(total)) for name, total in (await session.execute(q)).all()]
+
+    @classmethod
+    @ensure_session(db_session)
+    async def fetch_daily(
+        cls, *, since: dt.date, session: AsyncSession = _UNSET
+    ) -> list[tuple[str, dt.date, int]]:
+        """Per-command daily counts on/after ``since`` as ``(name, date, count)`` rows.
+
+        Ordered by name then date. The presentation layer derives both windowed totals
+        (for trend deltas) and per-day series (for sparklines) from these rows, so the
+        windowing math stays in pure, testable Python rather than SQL.
+        """
+        q = (
+            select(cls.command_name, cls.date, cls.count)
+            .where(cls.date >= since)
+            .order_by(cls.command_name, cls.date)
+        )
+        return [(n, d, int(c)) for n, d, c in (await session.execute(q)).all()]
 
 
 class UserCommand(Base):

@@ -17,7 +17,7 @@ import datetime as dt
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import update
+from sqlalchemy import select, tuple_, update
 
 from dd.common import schemas
 from dd.common.schemas import (
@@ -321,3 +321,46 @@ async def test_get_legacy_mirrors_disabled_for_failure(MirroredChannel):
     assert (disabled_src, disabled_dest) in result_tuples
     # The still-enabled mirror must be excluded.
     assert (enabled_src, enabled_dest) not in result_tuples
+
+
+@pytest.mark.asyncio
+async def test_disable_failing_mirrors_no_cartesian_overmatch(MirroredChannel):
+    # Regression: disable_legacy_failing_mirrors built its UPDATE WHERE as
+    # ``src_id IN (...) AND dest_id IN (...)`` rebuilt from the failing pairs, which
+    # matches the Cartesian product of the two id sets — so it also disabled innocent
+    # off-diagonal (src, dest) rows (error_rate 0) that merely shared a src or dest with
+    # a genuinely-failing pair. It must disable only the failing pairs themselves.
+    s1, s2 = 100, 101
+    d_a, d_b = 200, 201
+    guild_id = 1
+
+    # Diagonal = the two genuinely-failing mirrors; off-diagonal = healthy, but each
+    # shares a src or dest with a failing one (so the old cross-product caught them).
+    await MirroredChannel.add_mirror(s1, d_a, guild_id, legacy=True)
+    await MirroredChannel.add_mirror(s2, d_b, guild_id, legacy=True)
+    await MirroredChannel.add_mirror(s1, d_b, guild_id, legacy=True)
+    await MirroredChannel.add_mirror(s2, d_a, guild_id, legacy=True)
+
+    # Mark only the diagonal pairs as failing (error_rate >= threshold).
+    async with schemas.db_session() as session, session.begin():
+        await session.execute(
+            update(MirroredChannel)
+            .where(
+                tuple_(MirroredChannel.src_id, MirroredChannel.dest_id).in_(
+                    [(s1, d_a), (s2, d_b)]
+                )
+            )
+            .values(legacy_error_rate=3)
+        )
+
+    disabled = await MirroredChannel.disable_legacy_failing_mirrors(threshold=3)
+    assert {tuple(row) for row in disabled} == {(s1, d_a), (s2, d_b)}
+
+    # The healthy off-diagonal mirrors must remain enabled (the bug disabled them too).
+    async with schemas.db_session() as session, session.begin():
+        rows = await session.execute(
+            select(MirroredChannel.src_id, MirroredChannel.dest_id).where(
+                MirroredChannel.enabled
+            )
+        )
+    assert {tuple(row) for row in rows.fetchall()} == {(s1, d_b), (s2, d_a)}

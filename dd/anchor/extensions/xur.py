@@ -30,6 +30,7 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
+from ...common.components import build_container
 from ...common.utils import accumulate, fetch_emoji_dict
 from ...sector_accounting import xur as xur_support_data
 from .. import utils
@@ -480,15 +481,23 @@ async def api_to_discord_announcer(
     check_enabled: bool = False,
     enabled_check_coro: t.Callable[[], t.Awaitable[bool | None]] | None = None,
     publish_message: bool = True,
+    cv2: bool = False,
 ):
-    hmessage = HMessage(
-        embeds=[
-            h.Embed(
-                description="Waiting for data from the API...",
-                color=cfg.embed_default_color,
-            )
-        ]
-    )
+    # Match the placeholder's type to the final post (CV2 vs embed) so the edit loop
+    # below never has to toggle IS_COMPONENTS_V2 (which Discord forbids on edit).
+    if cv2:
+        hmessage = HMessage(
+            components=[build_container(["Waiting for data from the API…"])]
+        )
+    else:
+        hmessage = HMessage(
+            embeds=[
+                h.Embed(
+                    description="Waiting for data from the API...",
+                    color=cfg.embed_default_color,
+                )
+            ]
+        )
     msg = await utils.send_message(
         bot,
         hmessage,

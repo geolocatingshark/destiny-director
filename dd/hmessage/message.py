@@ -79,6 +79,12 @@ class HMessage:
         default=DEFAULT_COLOR, converter=h.Color, eq=False
     )
     attachments: list[h.Attachment] = attr.ib(default=attr.Factory(list))
+    # Components V2 builders. When non-empty the message is sent as a CV2 message
+    # (``IS_COMPONENTS_V2`` flag, no content/embeds — they are mutually exclusive in
+    # Discord). Used by the eververse autopost.
+    components: list[h.api.ComponentBuilder] = attr.ib(
+        default=attr.Factory(list), eq=False
+    )
     id: int | None = attr.ib(default=0, converter=int, eq=False)
 
     @content.validator
@@ -125,6 +131,12 @@ class HMessage:
     def to_message_kwargs(self) -> dict[str, t.Any]:
         """Convert the HMessage instance into a dict of kwargs to be passed to
         `hikari.Messageable.send`."""
+        if self.components:
+            # A Components V2 message uses components exclusively — no content/embeds.
+            return {
+                "components": self.components,
+                "flags": h.MessageFlag.IS_COMPONENTS_V2,
+            }
         return {
             "content": self.content,
             "embeds": self.embeds,
