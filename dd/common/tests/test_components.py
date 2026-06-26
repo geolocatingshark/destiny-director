@@ -40,8 +40,9 @@ def _container_page(text: str) -> components.Cv2PageFactory:
 
 
 class _FakeInteraction:
-    def __init__(self) -> None:
+    def __init__(self, *, edit_raises: BaseException | None = None) -> None:
         self._initial = object()
+        self._edit_raises = edit_raises
         self.edit_message_calls: list[tuple[t.Any, t.Any]] = []
 
     async def fetch_initial_response(self) -> object:
@@ -49,13 +50,15 @@ class _FakeInteraction:
 
     async def edit_message(self, message: t.Any, *, components: t.Any) -> None:
         self.edit_message_calls.append((message, components))
+        if self._edit_raises is not None:
+            raise self._edit_raises
 
 
 class _FakeCtx:
     """Minimal ``lb.Context`` stand-in covering only what ``Paginator.send`` uses."""
 
-    def __init__(self) -> None:
-        self.interaction = _FakeInteraction()
+    def __init__(self, *, edit_raises: BaseException | None = None) -> None:
+        self.interaction = _FakeInteraction(edit_raises=edit_raises)
         self.client = object()
         self.responses: list[dict[str, t.Any]] = []
 
@@ -114,3 +117,49 @@ async def test_send_single_page_attaches_nothing(
 
     assert len(ctx.responses) == 1
     assert ctx.interaction.edit_message_calls == []
+
+
+async def test_on_timeout_swallows_expired_interaction_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An expired interaction token during the disable-edit must not surface.
+
+    Regression: ``navigator_timeout`` equalled the 15-minute interaction-token lifetime,
+    so the on-timeout edit raced token expiry and 401'd ("Invalid Webhook Token"),
+    propagating out of ``send`` as a phantom ``/help`` failure. ``_on_timeout`` is
+    best-effort and must swallow that ``UnauthorizedError``.
+    """
+    paginator = _two_page_paginator()
+
+    async def _attach_times_out(self: t.Any, client: t.Any, *, timeout: t.Any) -> None:
+        raise TimeoutError
+
+    monkeypatch.setattr(lbc.Menu, "attach", _attach_times_out)
+
+    expired = h.UnauthorizedError(
+        url="https://discord.com/api/v10/webhooks/x/y/messages/z",
+        headers={},
+        raw_body="",
+        message="Invalid Webhook Token",
+        code=50027,
+    )
+    ctx = _FakeCtx(edit_raises=expired)
+    # Must not raise — the disable-edit was attempted but the token had expired.
+    await paginator.send(t.cast(t.Any, ctx))
+
+    assert len(ctx.interaction.edit_message_calls) == 1
+
+
+async def test_timeout_is_capped_below_interaction_token_lifetime() -> None:
+    """A timeout at/above the token lifetime is clamped so the edit can still land."""
+    paginator = components.Paginator(
+        [_container_page("a"), _container_page("b")], timeout=900
+    )
+    assert paginator._timeout == components._MAX_TIMEOUT
+    assert paginator._timeout < components._INTERACTION_TOKEN_TTL
+
+    # A short, safe timeout is left untouched.
+    short = components.Paginator(
+        [_container_page("a"), _container_page("b")], timeout=30
+    )
+    assert short._timeout == 30

@@ -236,6 +236,15 @@ def chunk_lines_to_sections(lines: t.Sequence[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+# The paginator's controls live on the initial *interaction response*, and the
+# on-timeout "disable" edit reuses that interaction's token — which Discord only
+# honours for 15 minutes. The menu must therefore time out far enough before then for
+# the disable edit to land; otherwise it 401s ("Invalid Webhook Token"). Cap the
+# timeout at the token lifetime minus a margin for the edit's round-trip.
+_INTERACTION_TOKEN_TTL = 15 * 60
+_MAX_TIMEOUT = _INTERACTION_TOKEN_TTL - 60
+
+
 class Paginator:
     """A miru-free paginator built on ``lightbulb.components.Menu``.
 
@@ -262,7 +271,9 @@ class Paginator:
             raise ValueError("Paginator requires at least one page")
         self._pages: list[Page] = list(pages)
         self._cv2 = not isinstance(self._pages[0], h.Embed)
-        self._timeout = timeout if timeout is not None else int(cfg.navigator_timeout)
+        requested = timeout if timeout is not None else int(cfg.navigator_timeout)
+        # Never let the menu outlive the interaction token (see ``_MAX_TIMEOUT``).
+        self._timeout = min(requested, _MAX_TIMEOUT)
         self._index = 0
         # Captured in ``send`` so the controls can be disabled on timeout.
         self._ctx: lb.Context | None = None
@@ -400,17 +411,24 @@ class Paginator:
         await self._edit(mctx)
 
     async def _on_timeout(self) -> None:
-        """Disable the controls on the displayed message after a menu timeout.
+        """Best-effort: disable the controls on the displayed message after a timeout.
 
         ``edit_message`` does not take a flags argument; editing the components of a
         message that was created with ``IS_COMPONENTS_V2`` preserves that flag.
+
+        The edit reuses the interaction token, so if it has already expired
+        (``UnauthorizedError`` — the menu outlived the 15-minute token window despite
+        the ``_MAX_TIMEOUT`` cap) or the message was since deleted (``NotFoundError``)
+        the cleanup is simply skipped: a stale paginator is cosmetic, never a command
+        failure.
         """
         if self._ctx is None or self._message is None:
             return
-        if self._cv2:
-            await self._ctx.interaction.edit_message(
-                self._message,
-                components=self._render_components(all_disabled=True),
-            )
-        else:
-            await self._ctx.interaction.edit_message(self._message, components=[])
+        with contextlib.suppress(h.UnauthorizedError, h.NotFoundError):
+            if self._cv2:
+                await self._ctx.interaction.edit_message(
+                    self._message,
+                    components=self._render_components(all_disabled=True),
+                )
+            else:
+                await self._ctx.interaction.edit_message(self._message, components=[])
