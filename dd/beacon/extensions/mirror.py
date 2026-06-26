@@ -157,6 +157,49 @@ def _status_footer(control: KernelWorkControl, *, final: bool) -> str:
     return base + (" with errors" if control.failed_targets else "")
 
 
+def _progress_bar(control: KernelWorkControl, width: int = 12) -> str:
+    """A single stacked bar of the run's state (done / retrying / failed / left).
+
+    Segment widths are proportional to ``total_targets``; blanks absorb both rounding
+    and in-flight targets so the bar never overflows. The trailing percentage is the
+    *resolved* fraction (succeeded + permanently failed) — i.e. targets in a terminal
+    state; retrying/remaining are still pending.
+    """
+    total = control.total_targets or 1
+    done = len(control.successful_targets)
+    retry = len(control.targets_being_retried)
+    fail = len(control.failed_targets)
+
+    seg_done = round(done / total * width)
+    seg_retry = min(round(retry / total * width), width - seg_done)
+    seg_fail = min(round(fail / total * width), width - seg_done - seg_retry)
+    seg_blank = width - seg_done - seg_retry - seg_fail
+
+    bar = "🟩" * seg_done + "🟨" * seg_retry + "🟥" * seg_fail + "⬜" * seg_blank
+    pct = round((done + fail) / total * 100)
+    return f"{bar}  {pct}%"
+
+
+def _throughput_line(control: KernelWorkControl, elapsed_secs: float) -> str | None:
+    """Rate + ETA derived from resolved targets over elapsed time.
+
+    Returns ``None`` until at least one target has resolved (the rate is meaningless
+    before then) so early renders stay uncluttered. Once every target is resolved the
+    ETA is dropped and only the throughput remains.
+    """
+    resolved = len(control.successful_targets) + len(control.failed_targets)
+    if elapsed_secs <= 0 or resolved == 0:
+        return None
+    rate = resolved / elapsed_secs
+    remaining = control.total_targets - resolved
+    if remaining <= 0:
+        return f"Throughput: {rate:.1f} channels/sec"
+    return (
+        f"Throughput: {rate:.1f} channels/sec · "
+        f"ETA ~{format_duration(remaining / rate)}"
+    )
+
+
 def render_mirror_progress(
     control: KernelWorkControl,
     *,
@@ -176,7 +219,8 @@ def render_mirror_progress(
     in progress; its ``custom_id`` is namespaced by ``source_message_id`` so two
     concurrent progress messages never cross-fire.
     """
-    elapsed = format_duration(perf_counter() - start_time)
+    elapsed_secs = perf_counter() - start_time
+    elapsed = format_duration(elapsed_secs)
     time_to_first_pass = elapsed if control.is_every_target_tried else "TBC"
 
     source_message_field = (
@@ -194,12 +238,17 @@ def render_mirror_progress(
         f"## {title}",
         f"**Source message:** {source_message_field}\n"
         f"**Source channel:** {source_channel_field}",
+        f"{_progress_bar(control)}\n"
         f"✅ Completed: **{len(control.successful_targets)}**\n"
         f"🔁 Retrying: **{len(control.targets_being_retried)}**\n"
         f"❌ Failed: **{len(control.failed_targets)}**\n"
         f"⏳ Remaining: **{len(control.targets_not_yet_tried)}**",
         f"Time taken: {elapsed}\nTime to try all channels once: {time_to_first_pass}",
     ]
+
+    throughput = _throughput_line(control, elapsed_secs)
+    if throughput:
+        sections[-1] += "\n" + throughput
 
     breakdown = control.failure_breakdown
     if breakdown:
@@ -817,8 +866,17 @@ async def message_create_repeater_impl(
 
         flag_mirror_failure_ratio(control)
 
+        elapsed_secs = perf_counter() - mirror_start_time
         logging.info(
-            "Completed all mirrors in " + str(perf_counter() - mirror_start_time)
+            "Mirror %s for source %s done in %s — %d ok, %d failed / %d targets "
+            "(%.1f ch/s)",
+            control.mirror_operation_type.name.lower(),
+            control.source_channel_id,
+            format_duration(elapsed_secs),
+            len(control.successful_targets),
+            len(control.failed_targets),
+            control.total_targets,
+            control.total_targets / elapsed_secs if elapsed_secs else 0.0,
         )
 
         # Log successes, failures and message pairs to the db
