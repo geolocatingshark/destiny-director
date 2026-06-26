@@ -47,14 +47,14 @@ def format_duration(seconds: float) -> str:
     """Render an elapsed duration as ``"<x> seconds"`` or ``"<m> minutes <s> seconds"``.
 
     Replaces the duplicated inline formatting in the mirror progress functions.
-    Under a minute reads as plain seconds (2 dp); from a minute up it reads as whole
-    minutes plus remaining seconds.
+    Seconds are rounded to the nearest whole second; under a minute reads as plain
+    seconds, from a minute up it reads as whole minutes plus remaining seconds.
     """
-    seconds = round(seconds, 2)
+    seconds = round(seconds)
     if seconds < 60:
         return f"{seconds} seconds"
-    minutes = int(seconds // 60)
-    return f"{minutes} minutes {round(seconds % 60, 2)} seconds"
+    minutes = seconds // 60
+    return f"{minutes} minutes {seconds % 60} seconds"
 
 
 class ErrorClass(Enum):
