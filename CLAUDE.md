@@ -29,7 +29,11 @@ Atlas for migrations, deployed on Railway.
 - Run a bot locally: `uv run python -OOm dd.beacon` (or `dd.anchor`). Requires a
   populated `.env` (see `.env-example`; all vars are required).
 - Deploy via `make deploy-beacon-dev` / `deploy-anchor-prod` etc. (Railway) or via Railway's plugin
-- NEVER DEPLOY TO PROD BY ANY MEANS
+- Never deploy to prod on your own initiative. The ONLY condition under which you may
+  deploy to prod is when you have **explicitly asked the user whether to deploy and they
+  confirmed** in that exchange. Note: pushing to `shark/main` triggers a Railway
+  auto-deploy to prod, so that push counts as a prod deploy and requires the same
+  explicit confirmation.
 
 ## Testing
 
