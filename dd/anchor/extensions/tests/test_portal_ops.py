@@ -21,8 +21,12 @@ from dd.anchor.extensions.portal_ops import (
     MODE_CRUCIBLE,
     MODE_GAMBIT,
     MODE_IRON_BANNER,
+    MODE_RACING,
     MODE_TRIALS,
     PortalOp,
+    _collect_activities_by_hash,
+    _guaranteed_reward_hash,
+    _is_guaranteed_reward_style,
     _reward_emoji,
     base_activity_name,
     bucket_for,
@@ -76,6 +80,12 @@ def test_bucket_for_pvp_modes_take_precedence():
     assert bucket_for("Trials of Osiris", MODE_TRIALS, 3) == "Trials"
     assert bucket_for("Iron Banner", MODE_IRON_BANNER, 6) == "Iron Banner"
     assert bucket_for("The Crucible", MODE_CRUCIBLE, 3) == "Crucible"
+
+
+def test_bucket_for_sparrow_racing_goes_to_crucible():
+    # Sparrow Racing League (mode 94) is grouped under the Crucible tab; its activity
+    # type name would otherwise fall through to Fireteam Ops by party size.
+    assert bucket_for("Sparrow Racing League", MODE_RACING, 6) == "Crucible"
 
 
 def test_bucket_for_pve_ops_tabs_by_activity_type():
@@ -156,6 +166,81 @@ def test_ops_by_tab_orders_tabs_and_sorts_within():
         "Quickplay",
         "The Conflux",
     ]
+
+
+# ── guaranteed-reward extraction ───────────────────────────────────────────────
+
+
+def _activity(*reward_items, **extra):
+    """A focused-activity dict with one visibleReward block. ``reward_items`` are
+    ``(uiStyle, itemHash)`` pairs."""
+    return {
+        "visibleRewards": [
+            {
+                "rewardItems": [
+                    {"uiStyle": style, "itemQuantity": {"itemHash": hash_}}
+                    for style, hash_ in reward_items
+                ]
+            }
+        ],
+        **extra,
+    }
+
+
+def test_is_guaranteed_reward_style_matches_guaranteed_family():
+    # Daily, weekly and seasonal grind ops all carry a ``…_guaranteed`` suffix; the
+    # generic bonus engram and empty/missing styles do not.
+    assert _is_guaranteed_reward_style("daily_grind_guaranteed")
+    assert _is_guaranteed_reward_style("weekly_grind_guaranteed")
+    assert not _is_guaranteed_reward_style("extra_engram")
+    assert not _is_guaranteed_reward_style("")
+    assert not _is_guaranteed_reward_style(None)
+
+
+def test_guaranteed_reward_hash_picks_guaranteed_over_bonus_engram():
+    activity = _activity(("extra_engram", 50), ("daily_grind_guaranteed", 77))
+    assert _guaranteed_reward_hash([activity]) == 77
+
+
+def test_guaranteed_reward_hash_resolves_across_character_copies():
+    # The first character's copy (already claimed today) lacks the guaranteed marker;
+    # a later copy still exposes it. The reward must be found across copies, else the
+    # op is silently dropped from the post.
+    without = _activity(("extra_engram", 50))
+    with_reward = _activity(("weekly_grind_guaranteed", 77))
+    assert _guaranteed_reward_hash([without, with_reward]) == 77
+
+
+def test_guaranteed_reward_hash_none_when_no_guaranteed_drop():
+    assert _guaranteed_reward_hash([_activity(("extra_engram", 50))]) is None
+    assert _guaranteed_reward_hash([]) is None
+
+
+# ── _collect_activities_by_hash ────────────────────────────────────────────────
+
+
+def test_collect_activities_by_hash_groups_every_copy():
+    # No isFocusedActivity filter: featured ops are selected downstream by their
+    # guaranteed-reward marker, so collection keeps every available activity (and every
+    # character's copy, so the reward can be resolved across copies).
+    character_activities = {
+        "char1": {
+            "availableActivities": [
+                {"activityHash": 1, "isFocusedActivity": True},
+                {"activityHash": 2, "isFocusedActivity": False},
+            ]
+        },
+        "char2": {
+            "availableActivities": [
+                {"activityHash": 1, "isFocusedActivity": True},
+            ]
+        },
+    }
+    activities = _collect_activities_by_hash(character_activities)
+    # Both hashes kept (focused flag is ignored); hash 1 retains both copies.
+    assert set(activities) == {1, 2}
+    assert len(activities[1]) == 2
+    assert len(activities[2]) == 1
 
 
 # ── _reward_emoji ──────────────────────────────────────────────────────────────

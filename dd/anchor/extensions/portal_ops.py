@@ -17,9 +17,12 @@
 
 Fetches the Destiny 2 **Portal** featured ("Ops") rotation + each op's guaranteed
 reward from ``GetProfile`` component 204 (CharacterActivities), dedups + buckets the
-focused activities into Portal tabs, and renders + posts a daily summary. The beacon
-bot mirrors the post and provides the user-facing ``/portal`` navigator (see
-``dd/beacon/extensions/portal_ops.py``).
+featured activities into Portal tabs, and renders + posts a daily summary. A featured
+op is identified by its guaranteed-drop reward marker (``…_guaranteed`` uiStyle), not
+Bungie's ``isFocusedActivity`` flag — the flag misses featured ops that carry the drop
+without being flagged focused (e.g. the weekly Defiant Battleground, Sparrow Racing
+League). The beacon bot mirrors the post and provides the user-facing ``/portal``
+navigator (see ``dd/beacon/extensions/portal_ops.py``).
 
 Pinnacle Ops (the weekly featured raid/dungeon/GM) is intentionally omitted for now:
 it is NOT in component 204 — Bungie does not expose the weekly featured raid/dungeon
@@ -65,21 +68,27 @@ loader = lb.Loader()
 API_PROFILE_204 = API_ROOT + "/Destiny2/{membership_type}/Profile/{membership_id}/"
 API_ENTITY = API_ROOT + "/Destiny2/Manifest/{entity}/{hash}/"
 
-# The reward uiStyle that marks the featured guaranteed weapon/armor drop. The other
-# style seen, ``extra_engram`` ("Ops Bonus Drop"), is generic and intentionally
-# dropped (see plan Decision 4).
-GUARANTEED_REWARD_UI_STYLE = "daily_grind_guaranteed"
+# The featured guaranteed weapon/armor drop is marked by a reward uiStyle ending in
+# ``_guaranteed`` — ``daily_grind_guaranteed`` for daily Ops, plus weekly/seasonal
+# variants for longer-rotation ops such as Battlegrounds. The generic ``extra_engram``
+# bonus drop ("Ops Bonus Drop") lacks that suffix and is intentionally dropped (see
+# plan Decision 4).
+GUARANTEED_REWARD_UI_STYLE_SUFFIX = "_guaranteed"
 
 # ``directActivityModeType`` values for the PvP tabs (DestinyActivityModeType enum).
 MODE_CRUCIBLE = 5
 MODE_IRON_BANNER = 19
 MODE_GAMBIT = 63
 MODE_TRIALS = 84
+# Sparrow Racing League's own mode. Bungie also tags it AllPvP (5) in
+# ``activityModeTypes``, so it's grouped under the Crucible tab.
+MODE_RACING = 94
 _PVP_TAB_BY_MODE = {
     MODE_GAMBIT: "Gambit",
     MODE_TRIALS: "Trials",
     MODE_IRON_BANNER: "Iron Banner",
     MODE_CRUCIBLE: "Crucible",
+    MODE_RACING: "Crucible",
 }
 
 # PvE Ops tabs are identified by the activity *type* name (activityTypeHash). Verified
@@ -272,26 +281,44 @@ def _entity_name(defn: dict[str, t.Any] | None) -> str:
     return (defn or {}).get("displayProperties", {}).get("name", "") or "Unknown"
 
 
-def _guaranteed_reward_hash(activity: dict[str, t.Any]) -> int | None:
-    """The featured guaranteed reward item hash for a focused activity, or ``None``."""
-    for visible_reward in activity.get("visibleRewards", []):
-        for reward_item in visible_reward.get("rewardItems", []):
-            if reward_item.get("uiStyle") == GUARANTEED_REWARD_UI_STYLE:
-                return reward_item["itemQuantity"]["itemHash"]
+def _is_guaranteed_reward_style(ui_style: str | None) -> bool:
+    """Whether a reward ``uiStyle`` marks a featured guaranteed drop (vs the generic
+    ``extra_engram`` bonus). Matches the ``…_guaranteed`` family across the daily,
+    weekly and seasonal op rotations."""
+    return bool(ui_style) and ui_style.endswith(GUARANTEED_REWARD_UI_STYLE_SUFFIX)
+
+
+def _guaranteed_reward_hash(activities: t.Iterable[dict[str, t.Any]]) -> int | None:
+    """First featured guaranteed reward hash across an activity's per-character copies,
+    or ``None`` (i.e. the activity is not a featured op).
+
+    ``visibleRewards`` is populated per character — a character that already claimed
+    today's drop can surface the activity without the guaranteed-reward marker — so the
+    reward is resolved across every copy rather than from a single one."""
+    for activity in activities:
+        for visible_reward in activity.get("visibleRewards", []):
+            for reward_item in visible_reward.get("rewardItems", []):
+                if _is_guaranteed_reward_style(reward_item.get("uiStyle")):
+                    return reward_item["itemQuantity"]["itemHash"]
     return None
 
 
-def _collect_focused_activities(
+def _collect_activities_by_hash(
     character_activities: dict[str, t.Any],
-) -> dict[int, dict[str, t.Any]]:
-    """Collect ``isFocusedActivity`` entries across all characters, keyed by
-    activity hash (first occurrence wins)."""
-    focused: dict[int, dict[str, t.Any]] = {}
+) -> dict[int, list[dict[str, t.Any]]]:
+    """Group every available activity by hash, keeping all per-character copies.
+
+    The featured-op filter is the guaranteed-reward marker (see
+    ``_guaranteed_reward_hash``), applied downstream — *not* Bungie's
+    ``isFocusedActivity`` flag, which misses featured ops that carry the guaranteed drop
+    without being flagged focused (e.g. the weekly Defiant Battleground and Sparrow
+    Racing League). Keeping every character's copy lets the reward be resolved across
+    copies, since ``visibleRewards`` is populated per character."""
+    activities: dict[int, list[dict[str, t.Any]]] = {}
     for character_data in character_activities.values():
         for activity in character_data.get("availableActivities", []):
-            if activity.get("isFocusedActivity"):
-                focused.setdefault(activity["activityHash"], activity)
-    return focused
+            activities.setdefault(activity["activityHash"], []).append(activity)
+    return activities
 
 
 async def fetch_portal_ops() -> list[PortalOp]:
@@ -321,16 +348,17 @@ async def fetch_portal_ops() -> list[PortalOp]:
             profile = (await resp.json())["Response"]
 
         character_activities = profile.get("characterActivities", {}).get("data", {})
-        focused = _collect_focused_activities(character_activities)
+        activities = _collect_activities_by_hash(character_activities)
 
         cache: dict[tuple[str, int], dict[str, t.Any] | None] = {}
         ops: list[PortalOp] = []
-        for activity_hash, activity in focused.items():
-            reward_hash = _guaranteed_reward_hash(activity)
+        for activity_hash, activity_copies in activities.items():
+            reward_hash = _guaranteed_reward_hash(activity_copies)
             if reward_hash is None:
-                # No featured drop → not a posted op.
+                # No featured guaranteed drop → not a Portal op.
                 continue
 
+            activity = activity_copies[0]
             activity_def = await _resolve_entity(
                 session, "DestinyActivityDefinition", activity_hash, cache
             )
