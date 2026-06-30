@@ -48,7 +48,7 @@ loader.command(eververse_group)
 
 follow_control_command_maker(
     EVERVERSE_WEEKLY,
-    "eververse_weekly",
-    "Eververse weekly",
-    "Eververse weekly auto posts",
+    "eververse",
+    "Eververse",
+    "Eververse auto posts",
 )
