@@ -13,8 +13,12 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+import asyncio
+import contextlib
+import json
 import logging
 import typing as t
+import uuid
 
 import hikari as h
 import lightbulb as lb
@@ -22,6 +26,11 @@ from lightbulb import components as lbc
 
 from ...common import cfg, utils
 from ...common.bot import CachedFetchBot
+from ..builders_link import (
+    builders_url,
+    extract_components_from_input,
+    fetch_raw_message_components,
+)
 from ..embeds import build_embed_with_user
 from ..post_json import parse_post_json
 
@@ -264,6 +273,149 @@ class PostJson(
             )
 
 
+def _is_cv2(msg: h.Message) -> bool:
+    """Whether a message was sent as a Components V2 message."""
+    return h.MessageFlag.IS_COMPONENTS_V2 in (msg.flags or h.MessageFlag.NONE)
+
+
+async def _reject_unless_own_cv2(
+    ctx: lb.Context, message: h.Message, bot: CachedFetchBot
+) -> bool:
+    """Respond + return ``True`` if ``message`` isn't an editable bot CV2 message."""
+    bot_user = bot.get_me()
+    if not (bot_user and message.author.id == bot_user.id):
+        await ctx.respond("Can only edit messages posted by this bot", ephemeral=True)
+        return True
+    if not _is_cv2(message):
+        await ctx.respond(
+            "This only works on Components V2 posts. Use **edit** for embed posts.",
+            ephemeral=True,
+        )
+        return True
+    return False
+
+
+class EditInBuilder(
+    lb.MessageCommand,
+    name="Edit in builder",
+    description="Get a discord.builders link + JSON to edit this Components V2 post",
+):
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+        message = self.target
+        if await _reject_unless_own_cv2(ctx, message, bot):
+            return
+
+        try:
+            components = await fetch_raw_message_components(
+                message.channel_id, message.id
+            )
+        except Exception as e:
+            logging.exception(e)
+            await ctx.respond(
+                embed=_error_embed(
+                    "Couldn't read this post",
+                    "I failed to fetch this message's components from Discord.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if not components:
+            await ctx.respond(
+                "This message has no Components V2 content to edit", ephemeral=True
+            )
+            return
+
+        url = builders_url(components)
+        attachment = h.Bytes(
+            json.dumps({"components": components}, indent=2).encode("utf-8"),
+            "post.json",
+        )
+
+        lines = ["**Edit this Components V2 post**", ""]
+        if len(url) < 1900:  # leave headroom under Discord's 2000-char content limit
+            lines.append(f"1. Open the builder (pre-loaded): {url}")
+        else:
+            lines.append(
+                "1. This post is too large to fit in a link — load the attached "
+                "`post.json` into your builder instead."
+            )
+        lines.append("2. Make your changes there, then copy the page URL.")
+        lines.append(
+            "3. Run **Update from builder** on this same post and paste that URL "
+            "(or the JSON)."
+        )
+
+        await ctx.respond("\n".join(lines), attachment=attachment, ephemeral=True)
+
+
+class _UpdateFromBuilderModal(lbc.Modal):
+    """Modal collecting a discord.builders URL / JSON and applying it to ``message``."""
+
+    def __init__(self, message: h.Message) -> None:
+        self._message = message
+        self.payload = self.add_paragraph_text_input(
+            "discord.builders URL or component JSON",
+            placeholder="Paste the discord.builders link (or raw component JSON)…",
+            max_length=4000,
+            required=True,
+        )
+
+    async def on_submit(self, ctx: lbc.ModalContext) -> None:
+        raw = ctx.value_for(self.payload) or ""
+        try:
+            components = extract_components_from_input(raw)
+        except ValueError as e:
+            await ctx.respond(
+                embed=_error_embed("Couldn't read that", str(e)), ephemeral=True
+            )
+            return
+
+        try:
+            await self._message.edit(
+                components=components, flags=h.MessageFlag.IS_COMPONENTS_V2
+            )
+        except h.BadRequestError as e:
+            await ctx.respond(
+                embed=_error_embed(
+                    "Discord rejected the update",
+                    "Make sure it's a valid Components V2 structure, within the "
+                    f"4000-character text limit.\n```\n{e}\n```",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        link = self._message.make_link(ctx.guild_id)
+        await ctx.respond(
+            embed=h.Embed(description=f"✅ Updated: {link}", color=_SUCCESS_COLOR),
+            ephemeral=True,
+        )
+
+
+class UpdateFromBuilder(
+    lb.MessageCommand,
+    name="Update from builder",
+    description="Update this Components V2 post from a discord.builders link or JSON",
+):
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+        message = self.target
+        if await _reject_unless_own_cv2(ctx, message, bot):
+            return
+
+        modal = _UpdateFromBuilderModal(message)
+        custom_id = str(uuid.uuid4())
+        await ctx.respond_with_modal(
+            "Update post from builder", custom_id, components=modal
+        )
+        # ``attach`` blocks until the modal is submitted; the edit + feedback happen in
+        # ``on_submit``. A timeout just means the user dismissed it — nothing to do.
+        with contextlib.suppress(asyncio.TimeoutError):
+            await modal.attach(ctx.client, custom_id, timeout=600)
+
+
 # Post commands are usable in the Kyber server in addition to control + test_env (the
 # slash /post group too, per request). The client-level owner hook still gates them to
 # bot owners.
@@ -276,3 +428,5 @@ loader.command(post_group, guilds=_post_guilds)
 loader.command(EditPost, guilds=_post_guilds)
 loader.command(CopyPost, guilds=_post_guilds)
 loader.command(PostJson, guilds=_post_guilds)
+loader.command(EditInBuilder, guilds=_post_guilds)
+loader.command(UpdateFromBuilder, guilds=_post_guilds)
