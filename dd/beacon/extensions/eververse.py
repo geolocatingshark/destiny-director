@@ -25,29 +25,26 @@ loader = lb.Loader()
 
 REFERENCE_DATE = dt.datetime(2023, 7, 18, 17, tzinfo=dt.UTC)
 
-EVERVERSE_WEEKLY = cfg.followables["eververse"]
+EVERVERSE = cfg.followables["eververse"]
 
 _pages = setup_nav_pages(
     loader,
-    followable_channel=EVERVERSE_WEEKLY,
+    followable_channel=EVERVERSE,
     history_len=4,
     period=dt.timedelta(days=7),
     reference_date=REFERENCE_DATE,
 )
 
-eververse_group = lb.Group("eververse", "Find out about the eververse items")
-eververse_group.register(
+loader.command(
     make_navigator_command(
         _pages,
-        name="weekly",
-        description="Find out about this weeks eververse items",
+        name="eververse",
+        description="Find out about the eververse items",
     )
 )
 
-loader.command(eververse_group)
-
 follow_control_command_maker(
-    EVERVERSE_WEEKLY,
+    EVERVERSE,
     "eververse",
     "Eververse",
     "Eververse auto posts",
