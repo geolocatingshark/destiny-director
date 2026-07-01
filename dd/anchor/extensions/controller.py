@@ -27,6 +27,6 @@ from ...common.utils import guild_scope
 
 loader = lb.Loader()
 loader.command(
-    make_controller_group("anchor"),
+    make_controller_group("anchor", show_followables=True),
     guilds=guild_scope(*cfg.test_env, cfg.control_discord_server_id),
 )

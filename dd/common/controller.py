@@ -34,6 +34,7 @@ hikari's fire-and-forget task wrapper.
 under any restart-on-failure policy.
 """
 
+import asyncio
 import contextlib
 import typing as t
 
@@ -44,6 +45,7 @@ from lightbulb import components as lbc
 from . import cfg, lifecycle
 from .auth import owner_only
 from .bot import CachedFetchBot
+from .schemas import MirroredChannel
 
 _WARN_COLOR = h.Color(0xFEE75C)  # yellow
 _DANGER_COLOR = h.Color(0xED4245)  # red
@@ -138,7 +140,10 @@ async def _run_lifecycle(
 
 
 def make_controller_group(
-    bot_name: str, *, mirror_check: t.Callable[[], int] | None = None
+    bot_name: str,
+    *,
+    mirror_check: t.Callable[[], int] | None = None,
+    show_followables: bool = False,
 ) -> lb.Group:
     """Build a fresh bot-administration group named after ``bot_name``.
 
@@ -147,7 +152,11 @@ def make_controller_group(
             (yields ``/anchor restart`` etc.).
         mirror_check: Optional callable returning the number of in-progress mirror
             operations. When it returns > 0, stop/restart warn and require a DANGER
-            override. Beacon supplies this; anchor (no mirrors) leaves it ``None``.
+            override. Beacon supplies this; anchor (no mirrors) leaves it ``None``. It
+            also gates ``info``'s mirror-status block (present iff this is set).
+        show_followables: When ``True``, ``info`` lists every followable name → its
+            announce channel (as a ``<#id>`` mention). Anchor (the poster) sets this;
+            beacon shows per-followable mirror-dest counts instead.
     """
     group = lb.Group(bot_name, "Bot administration")
 
@@ -196,12 +205,34 @@ def make_controller_group(
     ):
         @lb.invoke
         async def invoke(self, ctx: lb.Context):
-            await ctx.respond(
-                f"**Configuration Info — {bot_name}**\n"
-                f"- Control Discord Server ID: {cfg.control_discord_server_id}\n"
-                f"- Test Environment: {cfg.test_env}\n"
-                f"- Lost Sector Channel: <#{cfg.followables['lost_sector']}>\n"
-                f"- Xur Channel: <#{cfg.followables['xur']}>\n"
-            )
+            lines = [
+                f"**Configuration Info — {bot_name}**",
+                f"- Control Discord Server ID: {cfg.control_discord_server_id}",
+                f"- Test Environment: {cfg.test_env}",
+            ]
+
+            if show_followables:
+                lines.append("\n**Followables**")
+                if cfg.followables:
+                    for name, channel_id in cfg.followables.items():
+                        link = f"<#{channel_id}>" if channel_id else "*(not set)*"
+                        lines.append(f"- `{name}` → {link}")
+                else:
+                    lines.append("*(none configured)*")
+
+            if mirror_check is not None:
+                lines.append("\n**Mirror status**")
+                lines.append(f"- Operations in progress: {mirror_check()}")
+                followed = [(n, c) for n, c in cfg.followables.items() if c]
+                counts = await asyncio.gather(
+                    *(
+                        MirroredChannel.count_dests(c, legacy_only=None)
+                        for _, c in followed
+                    )
+                )
+                for (name, _), n in zip(followed, counts, strict=True):
+                    lines.append(f"- `{name}` → {n} mirror dest(s)")
+
+            await ctx.respond("\n".join(lines))
 
     return group
