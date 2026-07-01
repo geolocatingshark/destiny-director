@@ -215,6 +215,65 @@ async def _post_to_selected_channel(
     )
 
 
+@post_group.register
+class PostComponentsFromLink(
+    lb.SlashCommand,
+    name="components",
+    description="Post a Components V2 message from a discord.builders link or JSON",
+):
+    link = lb.string(
+        "link",
+        "A discord.builders link (or a bare hash / raw component JSON)",
+        max_length=6000,
+    )
+    channel = lb.channel(
+        "channel",
+        "Where to post it (defaults to this channel)",
+        default=None,
+        channel_types=[h.ChannelType.GUILD_TEXT, h.ChannelType.GUILD_NEWS],
+    )
+
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+        try:
+            components = extract_components_from_input(str(self.link))
+        except ValueError as e:
+            await ctx.respond(
+                embed=_error_embed("Couldn't read that link", str(e)), ephemeral=True
+            )
+            return
+
+        target_id = self.channel.id if self.channel else ctx.channel_id
+        channel = t.cast(h.TextableChannel, await bot.fetch_channel(target_id))
+        try:
+            posted = await channel.send(components=components)
+        except h.ForbiddenError:
+            await ctx.respond(
+                embed=_error_embed(
+                    "Missing permissions",
+                    f"I don't have permission to post in <#{target_id}>.",
+                ),
+                ephemeral=True,
+            )
+            return
+        except h.BadRequestError as e:
+            await ctx.respond(
+                embed=_error_embed(
+                    "Discord rejected the message",
+                    "Make sure it's a valid Components V2 structure, within the "
+                    f"4000-character text limit.\n```\n{e}\n```",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        link = posted.make_link(ctx.guild_id)
+        await ctx.respond(
+            embed=h.Embed(description=f"✅ Posted: {link}", color=_SUCCESS_COLOR),
+            ephemeral=True,
+        )
+
+
 class PostComponents(
     lb.MessageCommand,
     name="Post components",

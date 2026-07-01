@@ -24,14 +24,18 @@ from ..common.help import CommandDetail
 
 POST_JSON_DETAIL = CommandDetail(
     command="Post components",
-    title="Post components (right-click message command)",
+    title="Post components (/post components or right-click)",
     summary=(
-        "Posts a Components V2 message to an announcement channel from JSON you "
-        "designed in an external builder. Owner/team only."
+        "Posts a Components V2 message you designed in an external builder — from a "
+        "discord.builders link via `/post components`, or from JSON on a message you "
+        "right-click. Owner/team only."
     ),
     steps=(
-        "Build your message in a Components V2 builder site (e.g. message.style or "
-        "discord.builders) and copy its exported JSON.",
+        "Fastest: build it on discord.builders, copy the page URL, then run "
+        "`/post components link:<url>` (defaults to the current channel; pass "
+        "`channel:` to target another).",
+        "Or, to post JSON: build your message in a Components V2 builder and copy its "
+        "exported JSON.",
         "Send that JSON to a channel the bot can see — paste it as a normal message, "
         "or attach it as a `.json`/`.txt` file (Discord auto-files very long pastes).",
         'Right-click (long-press on mobile) that message ▸ Apps ▸ "Post components".',
@@ -41,6 +45,9 @@ POST_JSON_DETAIL = CommandDetail(
         "original JSON message.",
     ),
     notes=(
+        "`/post components` accepts a discord.builders link, a bare hash, or raw JSON; "
+        "very large links can exceed the 6000-char slash limit — use the right-click "
+        "flow (or a `.json` attachment) for those.",
         "JSON may be a full message object, a bare components array, or a single "
         "component object.",
         '"No JSON found" → the targeted message had no readable text/attachment.',
