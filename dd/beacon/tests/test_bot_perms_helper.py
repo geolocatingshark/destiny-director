@@ -140,3 +140,11 @@ async def test_non_permissible_channel_returns_none() -> None:
     # never reached, so it's left unpatched here).
     ctx = _make_ctx(cached_member=object(), channels=[MagicMock(spec=h.PartialChannel)])
     assert await utils.compute_bot_perms(ctx) is None
+
+
+async def test_forbidden_channel_fetch_returns_none() -> None:
+    # No View Channel → the REST channel fetch 403s; this must resolve to None rather
+    # than propagate (which used to crash the command before any diagnostic rendered).
+    forbidden = h.ForbiddenError(url="u", headers={}, raw_body=b"")
+    ctx = _make_ctx(cached_member=object(), channels=[forbidden])
+    assert await utils.compute_bot_perms(ctx) is None

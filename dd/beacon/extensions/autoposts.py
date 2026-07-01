@@ -116,11 +116,16 @@ def for_channel(channel: h.PartialChannel) -> list[AutopostPerm]:
 
 @dataclass(frozen=True, slots=True)
 class PermStatus:
-    """Per-permission result for the diagnostics embed."""
+    """Per-permission result for the diagnostics embed.
+
+    ``determinable`` is False when the bot couldn't work the permission out at all (e.g.
+    it can't even see the channel) — rendered as ❓ rather than ✅/❌.
+    """
 
     perm: AutopostPerm
     granted: bool
     block_source: str | None  # from explain_missing_permission; may be None
+    determinable: bool = True
 
 
 def build_perm_statuses(
@@ -128,13 +133,16 @@ def build_perm_statuses(
     perm_channel: h.PermissibleGuildChannel | None,
     member: h.Member | None,
     target_channel: h.PartialChannel | None,
+    view_channel_missing: bool = False,
 ) -> list[PermStatus]:
     """Turn resolved bot perms into a per-permission checklist.
 
     ``target_channel`` selects the perms table (thread → adds Send-in-Threads);
     ``perm_channel`` (thread → parent) + ``member`` drive the best-effort block-source
-    for each missing **required** perm. When ``perms`` is ``None`` we can't tell what's
-    granted, so everything reads as missing and no block source is attributed."""
+    for each missing **required** perm. When ``perms`` is ``None`` the perms couldn't be
+    computed, so each entry is **undeterminable** (❓) — except that when
+    ``view_channel_missing`` is set (the bot can't even see the channel), View Channel
+    is a definite ❌ while the *other* perms stay undeterminable."""
     table = (
         for_channel(target_channel)
         if target_channel is not None
@@ -142,19 +150,29 @@ def build_perm_statuses(
     )
     statuses: list[PermStatus] = []
     for entry in table:
-        granted = perms is not None and (entry.permission & perms == entry.permission)
+        if perms is not None:
+            determinable = True
+            granted = entry.permission & perms == entry.permission
+        elif view_channel_missing and entry.permission == h.Permissions.VIEW_CHANNEL:
+            determinable = True  # a 403 on fetch proves View Channel is missing
+            granted = False
+        else:
+            determinable = False  # can't tell without seeing the channel
+            granted = False
+
         block_source: str | None = None
         if (
-            perms is not None
+            determinable
             and not granted
             and entry.required
+            and perms is not None
             and perm_channel is not None
             and member is not None
         ):
             block_source = utils.explain_missing_permission(
                 member, perm_channel, entry.permission
             )
-        statuses.append(PermStatus(entry, granted, block_source))
+        statuses.append(PermStatus(entry, granted, block_source, determinable))
     return statuses
 
 
@@ -169,10 +187,15 @@ def permission_error_embed(
     its own perms, so a note is appended."""
     lines: list[str] = []
     for status in statuses:
-        mark = "✅" if status.granted else "❌"
+        if not status.determinable:
+            mark = "❓"
+        elif status.granted:
+            mark = "✅"
+        else:
+            mark = "❌"
         suffix = "" if status.perm.required else " (recommended)"
         lines.append(f"{mark} {status.perm.label}{suffix}")
-        if not status.granted and status.perm.required:
+        if status.determinable and not status.granted and status.perm.required:
             lines.append(f"    └ {status.block_source or status.perm.why}")
 
     description = (
@@ -223,19 +246,35 @@ def classify_mirror_error(exc: BaseException) -> MirrorOutcome:
     return _OUTCOME_BY_CODE.get(getattr(exc, "code", None), MirrorOutcome.OTHER)
 
 
-async def respond_missing_perms(ctx: lb.Context, bot: CachedFetchBot) -> None:
-    """Reply with the permission-diagnostics embed: a ✅/❌ checklist of the perms the
-    bot needs here, what's blocking each missing required one, and the bot owner(s) as
-    points of contact. Shared by all three 'bot lacks perms' paths (Preflight 1's fetch
-    403, the proactive gate, and the reactive MISSING_PERMS catch)."""
-    member, perm_channel, perms = await utils.resolve_bot_perms(ctx)
-    target_channel: h.PartialChannel | None = None
+async def _fetch_target_and_view_state(
+    bot: CachedFetchBot, channel_id: int
+) -> tuple[h.PartialChannel | None, bool]:
+    """Fetch the target channel and report whether *View Channel* is the blocker.
+
+    A 403 means the bot can't see the channel (no View Channel) → ``(None, True)``; any
+    other fetch failure is undeterminable → ``(None, False)``. Goes to REST so a 403 is
+    surfaced reliably rather than masked by a stale cache entry."""
     try:
-        target_channel = await bot.fetch_channel(ctx.channel_id)
+        return await bot.rest.fetch_channel(channel_id), False
+    except h.ForbiddenError:
+        return None, True
     except h.HikariError:
-        # e.g. the Preflight-1 403 path — no View Channel, so we can't read the target.
-        target_channel = None
-    statuses = build_perm_statuses(perms, perm_channel, member, target_channel)
+        return None, False
+
+
+async def respond_missing_perms(ctx: lb.Context, bot: CachedFetchBot) -> None:
+    """Reply with the permission-diagnostics embed: a ✅/❌/❓ checklist of the perms
+    the bot needs here, what's blocking each missing required one, and the bot
+    owner(s) as points of contact. Shared by all three 'bot lacks perms' paths
+    (Preflight 1's fetch 403, the proactive gate, and the reactive MISSING_PERMS
+    catch)."""
+    member, perm_channel, perms = await utils.resolve_bot_perms(ctx)
+    target_channel, view_channel_missing = await _fetch_target_and_view_state(
+        bot, ctx.channel_id
+    )
+    statuses = build_perm_statuses(
+        perms, perm_channel, member, target_channel, view_channel_missing
+    )
     await ctx.respond(
         permission_error_embed(
             await bot.fetch_owners(), statuses, perms_known=perms is not None
@@ -489,13 +528,21 @@ def follow_control_command_maker(
                         # target once and reuse them. Enable-only: never gate `disable`,
                         # so a broken autopost is always removable.
                         member, perm_channel, perms = await utils.resolve_bot_perms(ctx)
-                        target_channel = await bot.fetch_channel(ctx.channel_id)
+                        (
+                            target_channel,
+                            view_channel_missing,
+                        ) = await _fetch_target_and_view_state(bot, ctx.channel_id)
                         statuses = build_perm_statuses(
-                            perms, perm_channel, member, target_channel
+                            perms,
+                            perm_channel,
+                            member,
+                            target_channel,
+                            view_channel_missing,
                         )
                         perms_known = perms is not None
                         missing_required = any(
-                            not s.granted and s.perm.required for s in statuses
+                            s.determinable and not s.granted and s.perm.required
+                            for s in statuses
                         )
                         if not perms_known or missing_required:
                             # MirrorOutcome.BOT_MISSING_SEND — do NOT add the mirror.
@@ -506,6 +553,10 @@ def follow_control_command_maker(
                             )
                             return
 
+                        # Reached only when perms are known (channel is viewable), so
+                        # target_channel is set; guard narrows the type for the call.
+                        if target_channel is None:
+                            return
                         await _enable_autopost(
                             bot,
                             followable_channel,

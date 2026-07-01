@@ -29,6 +29,7 @@ from dd.beacon import utils
 from dd.beacon.extensions.autoposts import (
     AutopostPerm,
     PermStatus,
+    build_perm_statuses,
     for_channel,
     permission_error_embed,
 )
@@ -212,3 +213,32 @@ def test_permission_error_embed_unknown_perms_adds_note_and_static_why() -> None
     assert "couldn't read my own permissions" in desc
     # With no specific block source, the required perm falls back to its static why.
     assert "    └ why-s" in desc
+
+
+# --- build_perm_statuses tri-state (undeterminable) ------------------------------
+
+
+def test_no_view_channel_marks_view_missing_others_unknown() -> None:
+    # Bot can't see the channel: View Channel is a definite ❌, the rest are ❓.
+    statuses = build_perm_statuses(None, None, None, None, view_channel_missing=True)
+    by_label = {s.perm.label: s for s in statuses}
+    view = by_label["View Channel"]
+    assert view.determinable is True and view.granted is False
+    others = [s for s in statuses if s.perm.label != "View Channel"]
+    assert others and all(not s.determinable for s in others)
+
+
+def test_perms_none_without_view_flag_all_undeterminable() -> None:
+    statuses = build_perm_statuses(None, None, None, None)
+    assert statuses and all(not s.determinable for s in statuses)
+
+
+def test_permission_error_embed_no_view_shows_x_and_questions() -> None:
+    statuses = build_perm_statuses(None, None, None, None, view_channel_missing=True)
+    embed = permission_error_embed([_owner("dd")], statuses, perms_known=False)
+    desc = embed.description or ""
+    assert "❌ View Channel" in desc
+    assert "❓ Send Messages" in desc
+    assert "❓ Embed Links (recommended)" in desc
+    # The ❌ View Channel (required) gets its static why line; ❓ perms never do.
+    assert "    └ I can't see the channel without it" in desc

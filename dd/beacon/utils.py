@@ -144,7 +144,8 @@ async def _resolve_bot_member_channel(
     be cached yet); a thread resolves to its parent, matching
     ``check_invoker_has_perms``. Returns ``(None, None)`` when there's no guild or the
     bot user is unknown, and ``(member, None)`` when the channel isn't a permissible
-    guild channel (perms can't be computed for it)."""
+    guild channel or can't be fetched — e.g. the bot lacks View Channel (perms can't
+    be computed for it)."""
     app = t.cast(h.GatewayBot, ctx.client.app)
     if not ctx.guild_id:
         return None, None
@@ -157,9 +158,14 @@ async def _resolve_bot_member_channel(
         ctx.guild_id, me.id
     )
 
-    channel = await app.rest.fetch_channel(ctx.channel_id)
-    if isinstance(channel, h.GuildThreadChannel):
-        channel = await app.rest.fetch_channel(channel.parent_id)
+    # A 403/404 here (the bot can't see the channel, or it's gone) must not crash the
+    # command — the caller renders the diagnostics embed instead.
+    try:
+        channel = await app.rest.fetch_channel(ctx.channel_id)
+        if isinstance(channel, h.GuildThreadChannel):
+            channel = await app.rest.fetch_channel(channel.parent_id)
+    except (h.ForbiddenError, h.NotFoundError):
+        return member, None
     if not isinstance(channel, h.PermissibleGuildChannel):
         return member, None
 
