@@ -22,6 +22,22 @@
 > dev anchor → check the parity note + `/rotation edit` preview → then retire gspread.
 > Needs `PUBLIC_BASE_URL`/`RAILWAY_PUBLIC_DOMAIN` set on dev anchor for the editor link.
 >
+> **✓ INVESTIGATED (2026-07-01) — surges after import are NOT a code bug.** A dev
+> `/rotation import-from-sheet lost_sector` showed surges "mixed up" vs. the Sheet, but
+> the import/DB round-trip is **lossless** (verified read-only against the live Sheet:
+> `_start_date_from_gspread` and `Rotation.from_json` reconstruct a byte-identical
+> `start_date`, and rendered surges match the gspread reader on **0/60 days**). The
+> cause is the **Sheet's surge column itself**: it holds an 18-entry list
+> (`Strand,Arc`×7, `Strand,Void`×6, `Strand,Arc`×5) that is not the clean 7-multiple
+> (~14-day) cycle it should be, so the faithful import looks scrambled. Surge is **never
+> rendered in the post** (only the `/rotation edit` preview + parity check), which is why
+> the Sheet's surge column was left to drift unnoticed. **Resolution:** surges were
+> corrected directly in the dev DB via the web editor — no import/DB code change needed.
+> Post-cutover the DB (editor-maintained) is the source of truth, so the stale Sheet
+> surge is moot. Optional hardening: have the one-shot import skip/flag the surge column
+> (or validate it against `SURGE_ELEMENTS` + an expected period) so a bad Sheet can't
+> silently seed bad surges.
+>
 > Original direction approved 2026-06-26; the "automate-gspread" design in
 > `plans/automated_robust_sheets_rotation.md` is the deferred fallback. See memory
 > `rotation-data-store-direction`.

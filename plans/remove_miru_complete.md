@@ -3,6 +3,12 @@
 > **Status: DRAFT — NEEDS RE-REVIEW. Do NOT execute without user review.**
 > Authored during planning on the `feature-lightbulb-v3` branch. Re-read against the
 > current tree before implementing (file/line numbers may have drifted).
+>
+> **Update (2026-07-01):** being approached incrementally rather than as the single
+> sweep below — another agent is adding edit abilities to Components V2 posts (see
+> `plans/components_v2_embed_editor.md`), which de-mirus the `dd/anchor/embeds.py`
+> editor as a side effect. The nav rewrite + `uv remove hikari-miru` are still
+> outstanding, so the `<4` pin is not gone yet.
 
 ## Context
 

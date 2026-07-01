@@ -5,6 +5,14 @@
 > current tree before implementing; file/line numbers will have drifted. The headline
 > decision (see "Guiding principle" and "Note on complexity") is to prefer the
 > *simplest* mechanism that is good enough, not the most precise one.
+>
+> **Update (2026-07-01): the live Cartesian `WHERE` bug is FIXED.** Verified in
+> `MirroredChannel.disable_legacy_failing_mirrors` (`dd/common/schemas.py`): the UPDATE
+> now uses the **same predicate as the SELECT** (`enabled AND legacy AND
+> legacy_error_rate >= threshold`) instead of rebuilt `src_id IN (...) AND dest_id IN
+> (...)` id lists, with an inline comment explaining why. So "Recommendation #1" and the
+> first item under "Related, separable cleanups" are DONE — only the broader
+> *cadence-independent disable* redesign (the meat of this plan) remains open.
 
 ## Context
 
@@ -211,9 +219,9 @@ actual, measurable problem.
 (Auto-disable is **on in prod and wanted**, so "turn it off" is not an option; the goal
 is accuracy. Perm-checking is cheap — see Feasibility.)
 
-1. **Urgent, independent of the redesign:** fix the live Cartesian `WHERE` bug above so
-   the *current* prod auto-disable can no longer disable error_rate-0 rows. Ship it on
-   its own — a correctness bug, not a tuning choice.
+1. ✅ **DONE (2026-07-01) — was urgent, now fixed:** the live Cartesian `WHERE` bug is
+   resolved so the *current* prod auto-disable can no longer disable error_rate-0 rows.
+   (Shipped on its own as a correctness fix; see the top-of-file Update note.)
 2. **Make the decision accurate, don't widen the count.** On a `PERMANENT` send failure,
    re-check the bot's perms in the dest (free, local) and count toward disable only when
    perms are genuinely missing or the channel/guild is gone. Decouples the decision from
@@ -232,15 +240,14 @@ be a regression test.
 
 Independent of the forgiveness design; can land separately and earlier:
 
-- **Cartesian `WHERE` bug** in `disable_legacy_failing_mirrors` (`schemas.py` ~L563):
-  it disables on `src_id IN (...) AND dest_id IN (...)` rebuilt from the matched pairs,
-  which over-matches when the sweep returns multiple distinct sources (can disable an
-  innocent `(srcA, destB)` whose error_rate is 0). **⚠️ NOT dormant — LIVE in prod**
-  (`DISABLE_BAD_CHANNELS=true`): any sweep returning ≥2 mirrors with differing src *and*
-  dest disables the full cross-product, including error_rate-0 rows. Fix ASAP and
-  independently of the forgiveness redesign — match the actual pairs with a row-value
-  `tuple_(cls.src_id, cls.dest_id).in_([...])`, or UPDATE with the *same predicate* the
-  SELECT used (`enabled AND legacy AND error_rate >= threshold`), not rebuilt id lists.
+- **Cartesian `WHERE` bug** in `disable_legacy_failing_mirrors` (`schemas.py`) —
+  **✅ FIXED (2026-07-01); was LIVE in prod.** It used to disable on `src_id IN (...) AND
+  dest_id IN (...)` rebuilt from the matched pairs, which over-matched when the sweep
+  returned multiple distinct sources (could disable an innocent `(srcA, destB)` whose
+  error_rate is 0) — live under `DISABLE_BAD_CHANNELS=true`. The fix shipped: the UPDATE
+  now uses the *same predicate* the SELECT used (`enabled AND legacy AND
+  legacy_error_rate >= threshold`), not rebuilt id lists (verified, with an explanatory
+  inline comment in `dd/common/schemas.py`).
 - **Duplicated retry-with-backoff preamble** in `handle_waiting_for_crosspost`
   (~L533), `message_update_repeater_impl` (~L815), `message_delete_repeater_impl`
   (~L933). Extract one helper. Two latent bugs to fix while doing so: (a)
