@@ -15,9 +15,17 @@
 
 """Tests for the autopost mirror-error classifier (synthetic hikari errors, no I/O)."""
 
+import typing as t
+from types import SimpleNamespace
+
 import hikari as h
 
-from dd.beacon.extensions.autoposts import MirrorOutcome, classify_mirror_error
+from dd.beacon.extensions.autoposts import (
+    _OUTCOME_BY_CODE,
+    MirrorOutcome,
+    _supports_webhook_follow,
+    classify_mirror_error,
+)
 
 
 def _hikari_error(
@@ -60,3 +68,29 @@ def test_unmapped_code_and_non_hikari_classify_as_other():
     )
     # A non-hikari error has no .code → OTHER.
     assert classify_mirror_error(ValueError("boom")) is MirrorOutcome.OTHER
+
+
+def test_bot_missing_send_is_named_but_not_a_discord_code():
+    # The proactive gate's identity: an enum member that is deliberately *not* mapped
+    # from any Discord error code (it's decided before any API call).
+    assert isinstance(MirrorOutcome.BOT_MISSING_SEND, MirrorOutcome)
+    assert MirrorOutcome.BOT_MISSING_SEND not in _OUTCOME_BY_CODE.values()
+
+
+def _stub_channel(channel_type: h.ChannelType) -> h.PartialChannel:
+    return t.cast(h.PartialChannel, SimpleNamespace(type=channel_type))
+
+
+def test_supports_webhook_follow_only_for_text_channels():
+    assert _supports_webhook_follow(_stub_channel(h.ChannelType.GUILD_TEXT)) is True
+    for other in (
+        h.ChannelType.GUILD_PUBLIC_THREAD,
+        h.ChannelType.GUILD_PRIVATE_THREAD,
+        h.ChannelType.GUILD_NEWS_THREAD,
+        h.ChannelType.GUILD_FORUM,
+        h.ChannelType.GUILD_MEDIA,
+        h.ChannelType.GUILD_VOICE,
+        h.ChannelType.GUILD_STAGE,
+        h.ChannelType.GUILD_NEWS,
+    ):
+        assert _supports_webhook_follow(_stub_channel(other)) is False

@@ -18,6 +18,7 @@ import typing as t
 
 import hikari as h
 import lightbulb as lb
+from toolbox.errors import CacheFailureError
 from toolbox.members import calculate_permissions
 
 from dd.hmessage import HMessage
@@ -62,6 +63,133 @@ async def check_invoker_has_perms(
         return any(
             [permission == (permission & invoker_perms) for permission in permissions_]
         )
+
+
+def explain_missing_permission(
+    member: h.Member,
+    channel: h.PermissibleGuildChannel,
+    permission: h.Permissions,
+) -> str | None:
+    """Best-effort attribution of *why* the bot is missing ``permission`` here.
+
+    Replicates ``toolbox.members.calculate_permissions``' apply-order and, for a
+    permission that ends up **missing**, returns the *most-specific* cause (a channel
+    override on the bot, on a role, or on @everyone, vs. never granted at the server
+    level). Returns ``None`` when the permission is actually present, when the member
+    is the guild owner / an administrator, or when the guild can't be resolved — the
+    caller then falls back to a plain ✅/❌ without a source line. Pure over
+    ``member`` + ``channel`` + their cached overwrites ⇒ unit-testable with stubs."""
+    guild = member.get_guild()
+    if guild is None:
+        return None
+    if guild.owner_id == member.id:
+        return None
+
+    guild_roles = guild.get_roles()
+    member_roles = [r for r in guild_roles.values() if r.id in member.role_ids]
+
+    perms = guild_roles[guild.id].permissions  # @everyone base
+    for role in member_roles:
+        perms |= role.permissions
+    if perms & h.Permissions.ADMINISTRATOR:
+        return None
+
+    overwrites = channel.permission_overwrites
+    everyone_ow = overwrites.get(channel.guild_id)
+    if everyone_ow:
+        perms &= ~everyone_ow.deny
+        perms |= everyone_ow.allow
+
+    role_allow = h.Permissions.NONE
+    role_deny = h.Permissions.NONE
+    denying_roles: list[h.Role] = []
+    for role in member_roles:
+        overwrite = overwrites.get(role.id)
+        if overwrite:
+            role_allow |= overwrite.allow
+            role_deny |= overwrite.deny
+            if permission & overwrite.deny:
+                denying_roles.append(role)
+    perms &= ~role_deny
+    perms |= role_allow
+
+    member_ow = overwrites.get(member.id)
+    if member_ow:
+        perms &= ~member_ow.deny
+        perms |= member_ow.allow
+
+    if permission & perms == permission:
+        return None  # actually present — nothing to attribute
+
+    # Attribute to the most-specific override that denies the bit.
+    if member_ow and (permission & member_ow.deny):
+        return "a channel permission override on me denies it"
+    if denying_roles and not (permission & role_allow):
+        names = ", ".join(f"@{role.name}" for role in denying_roles)
+        return f"a channel override on the {names} role denies it"
+    if everyone_ow and (permission & everyone_ow.deny):
+        return "the channel's @everyone override denies it"
+    return (
+        "none of my roles grant it here — grant my role this permission or add a "
+        "channel override"
+    )
+
+
+async def _resolve_bot_member_channel(
+    ctx: lb.Context,
+) -> tuple[h.Member | None, h.PermissibleGuildChannel | None]:
+    """Resolve the bot's own member and the permission-bearing target channel.
+
+    Cache-first with a REST fallback for the member (a freshly-joined guild may not
+    be cached yet); a thread resolves to its parent, matching
+    ``check_invoker_has_perms``. Returns ``(None, None)`` when there's no guild or the
+    bot user is unknown, and ``(member, None)`` when the channel isn't a permissible
+    guild channel (perms can't be computed for it)."""
+    app = t.cast(h.GatewayBot, ctx.client.app)
+    if not ctx.guild_id:
+        return None, None
+
+    me = app.get_me()
+    if me is None:
+        return None, None
+
+    member = app.cache.get_member(ctx.guild_id, me.id) or await app.rest.fetch_member(
+        ctx.guild_id, me.id
+    )
+
+    channel = await app.rest.fetch_channel(ctx.channel_id)
+    if isinstance(channel, h.GuildThreadChannel):
+        channel = await app.rest.fetch_channel(channel.parent_id)
+    if not isinstance(channel, h.PermissibleGuildChannel):
+        return member, None
+
+    return member, channel
+
+
+async def resolve_bot_perms(
+    ctx: lb.Context,
+) -> tuple[h.Member | None, h.PermissibleGuildChannel | None, h.Permissions | None]:
+    """Resolve the bot member + target channel once and compute the bot's perms.
+
+    Returns the ``(member, channel, perms)`` bundle so callers (the enable gate and
+    the diagnostics builder) can reuse a single resolution for both
+    ``calculate_permissions`` and ``explain_missing_permission``. ``perms`` is
+    ``None`` when undeterminable (no guild, unknown bot user, non-permissible channel,
+    or a ``CacheFailureError`` from toolbox)."""
+    member, channel = await _resolve_bot_member_channel(ctx)
+    if member is None or channel is None:
+        return member, channel, None
+    try:
+        return member, channel, calculate_permissions(member, channel)
+    except CacheFailureError:
+        return member, channel, None
+
+
+async def compute_bot_perms(ctx: lb.Context) -> h.Permissions | None:
+    """The bot's effective permissions in ``ctx``'s channel, or ``None`` when it can't
+    be determined. Mirrors ``check_invoker_has_perms`` but for the bot's own member."""
+    _, _, perms = await resolve_bot_perms(ctx)
+    return perms
 
 
 def filter_discord_autoembeds(msg: h.Message | HMessage) -> list[h.Embed]:

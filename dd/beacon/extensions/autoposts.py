@@ -15,6 +15,7 @@
 
 
 import enum
+from dataclasses import dataclass
 
 import hikari as h
 import lightbulb as lb
@@ -56,18 +57,137 @@ def set_owners_footer(embed: h.Embed, bot_owners: list[h.User]) -> h.Embed:
     )
 
 
-def bot_missing_permissions_embed(bot_owners: list[h.User]):
+@dataclass(frozen=True, slots=True)
+class AutopostPerm:
+    """One permission the bot wants in an autopost target, and why."""
+
+    permission: h.Permissions
+    label: str
+    required: bool  # required → gates enable; advisory → shown but never blocks
+    why: str  # static fallback reason when the specific block-source is unknown
+
+
+# Single source of truth for the perms an autopost target needs. View Channel + Send
+# Messages are hard requirements (both delivery paths post as the bot); Embed Links and
+# Manage Webhooks are advisory (the bot degrades gracefully without them).
+_AUTOPOST_PERMS: list[AutopostPerm] = [
+    AutopostPerm(
+        h.Permissions.VIEW_CHANNEL,
+        "View Channel",
+        True,
+        "I can't see the channel without it",
+    ),
+    AutopostPerm(
+        h.Permissions.SEND_MESSAGES,
+        "Send Messages",
+        True,
+        "I can't post autoposts without it",
+    ),
+    AutopostPerm(
+        h.Permissions.EMBED_LINKS,
+        "Embed Links",
+        False,
+        "embeds won't render without it",
+    ),
+    AutopostPerm(
+        h.Permissions.MANAGE_WEBHOOKS,
+        "Manage Webhooks",
+        False,
+        "enables the webhook-follow delivery path",
+    ),
+]
+
+
+def for_channel(channel: h.PartialChannel) -> list[AutopostPerm]:
+    """The perms table for a specific target — threads also need Send Messages in
+    Threads (a hard requirement, since posting into a thread needs it)."""
+    perms = list(_AUTOPOST_PERMS)
+    if isinstance(channel, h.GuildThreadChannel):
+        perms.append(
+            AutopostPerm(
+                h.Permissions.SEND_MESSAGES_IN_THREADS,
+                "Send Messages in Threads",
+                True,
+                "posting into a thread needs it",
+            )
+        )
+    return perms
+
+
+@dataclass(frozen=True, slots=True)
+class PermStatus:
+    """Per-permission result for the diagnostics embed."""
+
+    perm: AutopostPerm
+    granted: bool
+    block_source: str | None  # from explain_missing_permission; may be None
+
+
+def build_perm_statuses(
+    perms: h.Permissions | None,
+    perm_channel: h.PermissibleGuildChannel | None,
+    member: h.Member | None,
+    target_channel: h.PartialChannel | None,
+) -> list[PermStatus]:
+    """Turn resolved bot perms into a per-permission checklist.
+
+    ``target_channel`` selects the perms table (thread → adds Send-in-Threads);
+    ``perm_channel`` (thread → parent) + ``member`` drive the best-effort block-source
+    for each missing **required** perm. When ``perms`` is ``None`` we can't tell what's
+    granted, so everything reads as missing and no block source is attributed."""
+    table = (
+        for_channel(target_channel)
+        if target_channel is not None
+        else list(_AUTOPOST_PERMS)
+    )
+    statuses: list[PermStatus] = []
+    for entry in table:
+        granted = perms is not None and (entry.permission & perms == entry.permission)
+        block_source: str | None = None
+        if (
+            perms is not None
+            and not granted
+            and entry.required
+            and perm_channel is not None
+            and member is not None
+        ):
+            block_source = utils.explain_missing_permission(
+                member, perm_channel, entry.permission
+            )
+        statuses.append(PermStatus(entry, granted, block_source))
+    return statuses
+
+
+def permission_error_embed(
+    bot_owners: list[h.User],
+    statuses: list[PermStatus],
+    perms_known: bool,
+) -> h.Embed:
+    """The permission-diagnostics embed: a ✅/❌ checklist of the perms the bot needs
+    here, a ``└`` block-source line under each missing required perm, and the bot
+    owner(s) as points of contact. When ``perms_known`` is False the bot couldn't read
+    its own perms, so a note is appended."""
+    lines: list[str] = []
+    for status in statuses:
+        mark = "✅" if status.granted else "❌"
+        suffix = "" if status.perm.required else " (recommended)"
+        lines.append(f"{mark} {status.perm.label}{suffix}")
+        if not status.granted and status.perm.required:
+            lines.append(f"    └ {status.block_source or status.perm.why}")
+
+    description = (
+        "I need these permissions in this channel to autopost here:\n\n"
+        + "\n".join(lines)
+    )
+    if not perms_known:
+        description += (
+            "\n\nI couldn't read my own permissions here — am I fully in this server?"
+        )
+
     return set_owners_footer(
         h.Embed(
-            title="Missing Permissions",
-            description="The bot is missing permissions in this channel.\n"
-            + "Please make sure it has the following permissions:"
-            + "```\n"
-            + "- View Channel\n"
-            + "- Manage Webhooks\n"
-            + "- Send Messages\n"
-            + "```\n"
-            + "If you are still having issues, please contact me on discord!\n",
+            title="Permission Error",
+            description=description,
             color=cfg.embed_error_color,
         ),
         bot_owners,
@@ -80,6 +200,8 @@ class MirrorOutcome(enum.Enum):
     MISSING_PERMS = enum.auto()  # bot lacks channel perms → tell the user
     NEEDS_LEGACY = enum.auto()  # announce channel → use a legacy mirror instead
     CHANNEL_GONE = enum.auto()  # no such channel/webhook (e.g. forum) → ignore
+    # proactive gate: bot can't post here → refuse enable (never a Discord code)
+    BOT_MISSING_SEND = enum.auto()
     OTHER = enum.auto()  # unclassified → re-raise
 
 
@@ -102,10 +224,23 @@ def classify_mirror_error(exc: BaseException) -> MirrorOutcome:
 
 
 async def respond_missing_perms(ctx: lb.Context, bot: CachedFetchBot) -> None:
-    """Reply with the standard 'bot is missing permissions in this channel'
-    embed, listing the bot owner(s) as points of contact."""
-    bot_owners = await bot.fetch_owners()
-    await ctx.respond(bot_missing_permissions_embed(bot_owners))
+    """Reply with the permission-diagnostics embed: a ✅/❌ checklist of the perms the
+    bot needs here, what's blocking each missing required one, and the bot owner(s) as
+    points of contact. Shared by all three 'bot lacks perms' paths (Preflight 1's fetch
+    403, the proactive gate, and the reactive MISSING_PERMS catch)."""
+    member, perm_channel, perms = await utils.resolve_bot_perms(ctx)
+    target_channel: h.PartialChannel | None = None
+    try:
+        target_channel = await bot.fetch_channel(ctx.channel_id)
+    except h.HikariError:
+        # e.g. the Preflight-1 403 path — no View Channel, so we can't read the target.
+        target_channel = None
+    statuses = build_perm_statuses(perms, perm_channel, member, target_channel)
+    await ctx.respond(
+        permission_error_embed(
+            await bot.fetch_owners(), statuses, perms_known=perms is not None
+        )
+    )
 
 
 async def enable_non_legacy_mirror(
@@ -133,7 +268,6 @@ async def enable_legacy_mirror(
     channel = await bot.fetch_channel(ctx.channel_id)
     if not isinstance(channel, h.TextableChannel):
         raise TypeError(f"Channel {ctx.channel_id} is not a textable channel")
-    await (await channel.send("Test message :)")).delete()
 
     if ctx.guild_id is None:
         raise RuntimeError("This command can only be used in a server.")
@@ -237,22 +371,39 @@ async def _drop_existing_follow(
             raise
 
 
+# Discord's channel-follow creates a follower webhook in the target, which only
+# standard text channels support; threads, forums, media, voice/stage and
+# announce-as-target reject it (50024 → NEEDS_LEGACY). Decide proactively by type.
+_WEBHOOK_FOLLOW_TARGET_TYPES = frozenset({h.ChannelType.GUILD_TEXT})
+
+
+def _supports_webhook_follow(channel: h.PartialChannel) -> bool:
+    """Whether Discord's webhook-follow works for this target's channel type."""
+    return channel.type in _WEBHOOK_FOLLOW_TARGET_TYPES
+
+
 async def _enable_autopost(
     bot: CachedFetchBot,
     followable_channel: int,
     ctx: lb.Context,
     ping_role: h.Role | None,
     session: AsyncSession,
+    target_channel: h.PartialChannel,
 ) -> None:
     """Enable an autopost mirror for ``ctx``'s channel.
 
     New-style (follow-webhook) mirrors can't ping roles, so when a ping role is
     requested we go straight to a legacy mirror and drop any prior follow webhook.
-    Otherwise we try a new-style mirror first and fall back to legacy only when the
-    channel can't be followed (announce channel → NEEDS_LEGACY)."""
+    Non-text targets can't be followed either, so they go straight to legacy (no follow
+    webhook to drop — they never had one). Otherwise we try a new-style mirror first and
+    keep the reactive NEEDS_LEGACY fallback as a safety net."""
     if ping_role:
         await enable_legacy_mirror(bot, followable_channel, ctx, ping_role, session)
         await _drop_existing_follow(bot, followable_channel, ctx.channel_id)
+        return
+
+    if not _supports_webhook_follow(target_channel):
+        await enable_legacy_mirror(bot, followable_channel, ctx, ping_role, session)
         return
 
     try:
@@ -333,8 +484,35 @@ def follow_control_command_maker(
                     # CHANNEL_GONE (forum webhooks) are resolved inside the helpers;
                     # only MISSING_PERMS and unclassified errors surface here.
                     if enabling:
+                        # Preflight 3 — the bot must actually be able to post here
+                        # (both delivery paths post as the bot). Resolve its perms +
+                        # target once and reuse them. Enable-only: never gate `disable`,
+                        # so a broken autopost is always removable.
+                        member, perm_channel, perms = await utils.resolve_bot_perms(ctx)
+                        target_channel = await bot.fetch_channel(ctx.channel_id)
+                        statuses = build_perm_statuses(
+                            perms, perm_channel, member, target_channel
+                        )
+                        perms_known = perms is not None
+                        missing_required = any(
+                            not s.granted and s.perm.required for s in statuses
+                        )
+                        if not perms_known or missing_required:
+                            # MirrorOutcome.BOT_MISSING_SEND — do NOT add the mirror.
+                            await ctx.respond(
+                                permission_error_embed(
+                                    await bot.fetch_owners(), statuses, perms_known
+                                )
+                            )
+                            return
+
                         await _enable_autopost(
-                            bot, followable_channel, ctx, ping_role, session
+                            bot,
+                            followable_channel,
+                            ctx,
+                            ping_role,
+                            session,
+                            target_channel,
                         )
                     else:
                         await disable_mirror(ctx, followable_channel, bot, session)
