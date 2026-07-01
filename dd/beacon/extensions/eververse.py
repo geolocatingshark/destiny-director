@@ -31,7 +31,7 @@ _pages = setup_nav_pages(
     loader,
     followable_channel=EVERVERSE,
     history_len=4,
-    period=dt.timedelta(days=7),
+    period=dt.timedelta(days=1),
     reference_date=REFERENCE_DATE,
 )
 
