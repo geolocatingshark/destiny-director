@@ -21,13 +21,13 @@ from dd.common.help import render_detail_sections
 
 def test_post_json_is_registered_detail() -> None:
     assert POST_JSON_DETAIL in HELP_DETAILS
-    # The key must match PostJson's registered context-menu name exactly.
-    assert POST_JSON_DETAIL.command == "Post as JSON"
+    # The key must match PostComponents's registered context-menu name exactly.
+    assert POST_JSON_DETAIL.command == "Post components"
 
 
 def test_post_json_walkthrough_renders() -> None:
     joined = "\n".join(render_detail_sections(POST_JSON_DETAIL))
-    assert "Post as JSON" in joined
+    assert "Post components" in joined
     assert "1." in joined  # numbered steps present
     assert "Apps" in joined  # the right-click invocation hint
 

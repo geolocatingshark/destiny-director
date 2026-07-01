@@ -23,8 +23,8 @@ the bot team only.
 from ..common.help import CommandDetail
 
 POST_JSON_DETAIL = CommandDetail(
-    command="Post as JSON",
-    title="Post as JSON (right-click message command)",
+    command="Post components",
+    title="Post components (right-click message command)",
     summary=(
         "Posts a Components V2 message to an announcement channel from JSON you "
         "designed in an external builder. Owner/team only."
@@ -34,7 +34,7 @@ POST_JSON_DETAIL = CommandDetail(
         "discord.builders) and copy its exported JSON.",
         "Send that JSON to a channel the bot can see — paste it as a normal message, "
         "or attach it as a `.json`/`.txt` file (Discord auto-files very long pastes).",
-        'Right-click (long-press on mobile) that message ▸ Apps ▸ "Post as JSON".',
+        'Right-click (long-press on mobile) that message ▸ Apps ▸ "Post components".',
         "In the ephemeral prompt, pick the destination announcement channel (only "
         "announcement channels are listed).",
         "The bot posts the message verbatim, replies with a link, and deletes your "
@@ -54,13 +54,13 @@ POST_JSON_DETAIL = CommandDetail(
 
 CREATE_POST_DETAIL = CommandDetail(
     command="post",
-    title="Create a post (/post create)",
+    title="Create an embed (/post embed)",
     summary=(
         "Build an embed from scratch with the interactive builder and post it to the "
         "current channel. Owner/team only."
     ),
     steps=(
-        "Run `/post create` in the channel you want to post to.",
+        "Run `/post embed` in the channel you want to post to.",
         "Fill in the embed via the ephemeral builder buttons (title, text, colour, "
         "author, image, thumbnail, footer).",
         'Press "Post" to send the embed to the current channel.',
@@ -72,14 +72,15 @@ CREATE_POST_DETAIL = CommandDetail(
 )
 
 EDIT_POST_DETAIL = CommandDetail(
-    command="edit",
-    title="Edit (right-click message command)",
+    command="Edit embed",
+    title="Edit embed (right-click message command)",
     summary=(
         "Edit an embed the bot already posted, using the interactive embed builder. "
         "Owner/team only."
     ),
     steps=(
-        'Right-click (long-press on mobile) a message this bot posted ▸ Apps ▸ "edit".',
+        "Right-click (long-press on mobile) a message this bot posted ▸ Apps ▸ "
+        '"Edit embed".',
         "Change the title, text, colour, author, image, thumbnail or footer in the "
         "ephemeral builder.",
         'Press "Edit" to apply your changes to the original message in place.',
@@ -91,14 +92,14 @@ EDIT_POST_DETAIL = CommandDetail(
 )
 
 COPY_POST_DETAIL = CommandDetail(
-    command="copy",
-    title="Copy (right-click message command)",
+    command="Copy embed",
+    title="Copy embed (right-click message command)",
     summary=(
         "Clone any single-embed message, tweak it in the builder, then post it fresh "
         "in the current channel. Owner/team only."
     ),
     steps=(
-        'Right-click any message that has one embed ▸ Apps ▸ "copy".',
+        'Right-click any message that has one embed ▸ Apps ▸ "Copy embed".',
         "Adjust the copied embed in the ephemeral builder.",
         'Press "Send" to post the result as a new message in the channel you ran the '
         "command in.",
@@ -125,10 +126,52 @@ LS_UPDATE_DETAIL = CommandDetail(
     ),
 )
 
+EDIT_COMPONENTS_DETAIL = CommandDetail(
+    command="Edit components",
+    title="Edit components (right-click message command)",
+    summary=(
+        "Edit a Components V2 post this bot made by round-tripping it through the "
+        "discord.builders editor. Owner/team only."
+    ),
+    steps=(
+        "Right-click (long-press on mobile) a Components V2 message this bot posted ▸ "
+        'Apps ▸ "Edit components".',
+        "Open the masked editor link in the reply — discord.builders loads pre-filled "
+        "with the post.",
+        "Make your changes there, then copy the page URL from your browser.",
+        'Run "Update components" on the same message and paste that URL to apply it.',
+    ),
+    notes=(
+        'Only works on Components V2 messages this bot posted (use "Edit embed" for '
+        "embed posts).",
+        "A `post.json` attachment is included as a fallback when the link is too long.",
+    ),
+)
+
+UPDATE_COMPONENTS_DETAIL = CommandDetail(
+    command="Update components",
+    title="Update components (right-click message command)",
+    summary=(
+        "Apply an edited discord.builders design (or raw component JSON) back onto an "
+        "existing Components V2 post. Owner/team only."
+    ),
+    steps=(
+        'Right-click the Components V2 message to update ▸ Apps ▸ "Update components".',
+        "Paste the discord.builders page URL (or raw component JSON) into the modal.",
+        "The bot edits the message in place with your changes.",
+    ),
+    notes=(
+        'Pair this with "Edit components", which gives you the pre-filled editor link.',
+        "Invalid input or an oversized result is reported without changing the post.",
+    ),
+)
+
 HELP_DETAILS: tuple[CommandDetail, ...] = (
     POST_JSON_DETAIL,
     CREATE_POST_DETAIL,
     EDIT_POST_DETAIL,
     COPY_POST_DETAIL,
+    EDIT_COMPONENTS_DETAIL,
+    UPDATE_COMPONENTS_DETAIL,
     LS_UPDATE_DETAIL,
 )

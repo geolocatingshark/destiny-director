@@ -40,7 +40,7 @@ post_group = lb.Group("post", "Post management commands")
 
 
 @post_group.register
-class CreatePost(lb.SlashCommand, name="create", description="Create a new post"):
+class CreateEmbed(lb.SlashCommand, name="embed", description="Create a new embed post"):
     @lb.invoke
     async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
         embed = await build_embed_with_user(ctx, done_button_text="Post")
@@ -79,7 +79,7 @@ class CreatePost(lb.SlashCommand, name="create", description="Create a new post"
             logging.exception(e)
 
 
-class EditPost(lb.MessageCommand, name="edit", description="Edit a post"):
+class EditEmbed(lb.MessageCommand, name="Edit embed", description="Edit an embed post"):
     @lb.invoke
     async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
         message = self.target
@@ -104,8 +104,10 @@ class EditPost(lb.MessageCommand, name="edit", description="Edit a post"):
         await message.edit(embed=embed)
 
 
-class CopyPost(
-    lb.MessageCommand, name="copy", description="Copy, edit and then send a post"
+class CopyEmbed(
+    lb.MessageCommand,
+    name="Copy embed",
+    description="Copy, edit and then send an embed post",
 ):
     @lb.invoke
     async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
@@ -213,9 +215,9 @@ async def _post_to_selected_channel(
     )
 
 
-class PostJson(
+class PostComponents(
     lb.MessageCommand,
-    name="Post as JSON",
+    name="Post components",
     description="Post a Components V2 message built from this message's JSON",
 ):
     @lb.invoke
@@ -288,16 +290,17 @@ async def _reject_unless_own_cv2(
         return True
     if not _is_cv2(message):
         await ctx.respond(
-            "This only works on Components V2 posts. Use **edit** for embed posts.",
+            "This only works on Components V2 posts. Use **Edit embed** for embed "
+            "posts.",
             ephemeral=True,
         )
         return True
     return False
 
 
-class EditInBuilder(
+class EditComponents(
     lb.MessageCommand,
-    name="Edit in builder",
+    name="Edit components",
     description="Get a discord.builders link + JSON to edit this Components V2 post",
 ):
     @lb.invoke
@@ -333,24 +336,34 @@ class EditInBuilder(
             "post.json",
         )
 
-        lines = ["**Edit this Components V2 post**", ""]
-        if len(url) < 1900:  # leave headroom under Discord's 2000-char content limit
-            lines.append(f"1. Open the builder (pre-loaded): {url}")
+        # Masked links render only inside an embed (not in plain message content), so
+        # the editor link is surfaced via an embed description.
+        if len(url) < 3500:  # embed descriptions allow up to 4096 chars
+            step_1 = f"1. [Open the editor]({url}) (pre-loaded with this post)."
         else:
-            lines.append(
+            step_1 = (
                 "1. This post is too large to fit in a link — load the attached "
-                "`post.json` into your builder instead."
+                "`post.json` into the editor instead."
             )
-        lines.append("2. Make your changes there, then copy the page URL.")
-        lines.append(
-            "3. Run **Update from builder** on this same post and paste that URL "
+        description = (
+            f"{step_1}\n"
+            "2. Make your changes there, then copy the page URL.\n"
+            "3. Run **Update components** on this same post and paste that URL "
             "(or the JSON)."
         )
 
-        await ctx.respond("\n".join(lines), attachment=attachment, ephemeral=True)
+        await ctx.respond(
+            embed=h.Embed(
+                title="Edit this Components V2 post",
+                description=description,
+                color=_PROMPT_COLOR,
+            ),
+            attachment=attachment,
+            ephemeral=True,
+        )
 
 
-class _UpdateFromBuilderModal(lbc.Modal):
+class _UpdateComponentsModal(lbc.Modal):
     """Modal collecting a discord.builders URL / JSON and applying it to ``message``."""
 
     def __init__(self, message: h.Message) -> None:
@@ -394,9 +407,9 @@ class _UpdateFromBuilderModal(lbc.Modal):
         )
 
 
-class UpdateFromBuilder(
+class UpdateComponents(
     lb.MessageCommand,
-    name="Update from builder",
+    name="Update components",
     description="Update this Components V2 post from a discord.builders link or JSON",
 ):
     @lb.invoke
@@ -405,11 +418,9 @@ class UpdateFromBuilder(
         if await _reject_unless_own_cv2(ctx, message, bot):
             return
 
-        modal = _UpdateFromBuilderModal(message)
+        modal = _UpdateComponentsModal(message)
         custom_id = str(uuid.uuid4())
-        await ctx.respond_with_modal(
-            "Update post from builder", custom_id, components=modal
-        )
+        await ctx.respond_with_modal("Update components", custom_id, components=modal)
         # ``attach`` blocks until the modal is submitted; the edit + feedback happen in
         # ``on_submit``. A timeout just means the user dismissed it — nothing to do.
         with contextlib.suppress(asyncio.TimeoutError):
@@ -425,8 +436,8 @@ _post_guilds = utils.guild_scope(
     cfg.kyber_discord_server_id,
 )
 loader.command(post_group, guilds=_post_guilds)
-loader.command(EditPost, guilds=_post_guilds)
-loader.command(CopyPost, guilds=_post_guilds)
-loader.command(PostJson, guilds=_post_guilds)
-loader.command(EditInBuilder, guilds=_post_guilds)
-loader.command(UpdateFromBuilder, guilds=_post_guilds)
+loader.command(EditEmbed, guilds=_post_guilds)
+loader.command(CopyEmbed, guilds=_post_guilds)
+loader.command(PostComponents, guilds=_post_guilds)
+loader.command(EditComponents, guilds=_post_guilds)
+loader.command(UpdateComponents, guilds=_post_guilds)

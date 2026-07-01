@@ -16,7 +16,7 @@
 """Build a Components V2 message from JSON exported by an external builder website.
 
 Admins build a message visually on a Components V2 builder (e.g. message.style or
-discord.builders), copy the exported JSON, and send it to the bot (the "Post as JSON"
+discord.builders), copy the exported JSON, and send it to the bot (the "Post components"
 message command reads it from a pasted message or its attachment). The components are
 sent verbatim as a bot message via a thin builder shim, so no per-component mapper has
 to be maintained — hikari auto-sets the Components V2 message flag based on the
