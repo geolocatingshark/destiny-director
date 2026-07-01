@@ -49,7 +49,6 @@ def _doc(first_sector: str = "Alpha") -> dict[str, t.Any]:
         "version": 1,
         "reference_date": "2023-07-20",
         "schedule": {z: [first_sector] for z in ZONES},
-        "surge_cycle": [["Solar"]],
         "sectors": [
             {
                 "name": first_sector,

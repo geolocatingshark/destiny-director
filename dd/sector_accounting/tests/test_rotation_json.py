@@ -44,7 +44,6 @@ def _doc(**overrides: t.Any) -> dict[str, t.Any]:
         "version": 1,
         "reference_date": "2023-07-20",
         "schedule": {z: ["Alpha", "Bravo"] for z in ZONES},
-        "surge_cycle": [["Solar"], ["Arc", "Void"]],
         "sectors": [
             {
                 "name": "Alpha",
@@ -54,10 +53,6 @@ def _doc(**overrides: t.Any) -> dict[str, t.Any]:
                     "champions": ["Barrier", "Overload"],
                     "shields": ["Arc", "Void"],
                 },
-                "threat": "Arc",
-                "overcharged_weapon": "Auto Rifle",
-                "expert_modifiers": "em",
-                "master_modifiers": "mm",
             },
             {
                 "name": "Bravo",
@@ -77,26 +72,21 @@ def test_from_json_start_date_applies_reset_offset():
     assert rot.start_date == dt.datetime(2023, 7, 20, 16, 55, tzinfo=dt.UTC)
 
 
-def test_from_json_day_zero_sectors_and_surge():
+def test_from_json_day_zero_sectors():
     rot = Rotation.from_json(_doc())
     sectors = rot(DAY0)
     assert len(sectors) == len(ZONES)
     first = sectors[0]
     assert first.name == "Alpha"
     assert first.shortlink_gfx == "https://x/a"
-    assert first.surge == "Solar"
     assert first.expert_data.champions_list == ["Barrier"]
     assert first.master_data.shields_list == ["Arc", "Void"]
-    assert first.threat == "Arc"
-    assert first.expert_data.modifiers == "em"
-    assert first.master_data.modifiers == "mm"
 
 
 def test_from_json_cycles_to_next_day():
     rot = Rotation.from_json(_doc())
     bravo = rot(DAY0 + dt.timedelta(days=1))[0]
     assert bravo.name == "Bravo"
-    assert bravo.surges == ["Arc", "Void"]
     # Absent presence -> empty; present -> listed.
     assert bravo.expert_data.champions_list == []
     assert bravo.master_data.champions_list == ["Unstoppable"]
@@ -115,15 +105,10 @@ def _render(rot: Rotation, date: dt.datetime) -> list[t.Any]:
         (
             s.name,
             s.shortlink_gfx,
-            s.surges,
-            s.threat,
-            s.overcharged_weapon,
             s.expert_data.champions_list,
             s.expert_data.shields_list,
             s.master_data.champions_list,
             s.master_data.shields_list,
-            s.expert_data.modifiers,
-            s.master_data.modifiers,
         )
         for s in rot(date)
     ]
@@ -142,8 +127,9 @@ def test_to_json_shape():
     assert out["version"] == 1
     assert out["reference_date"] == "2023-07-20"
     assert set(out["schedule"]) == set(ZONES)
-    assert out["surge_cycle"] == [["Solar"], ["Arc", "Void"]]
+    assert "surge_cycle" not in out
     assert out["sectors"][0]["expert"] == {"champions": ["Barrier"], "shields": ["Arc"]}
+    assert "threat" not in out["sectors"][0]
     assert out["sectors"][1]["master"] == {
         "champions": ["Unstoppable"],
         "shields": ["Strand"],
