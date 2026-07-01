@@ -223,7 +223,9 @@ class PostComponentsFromLink(
 ):
     link = lb.string(
         "link",
-        "A discord.builders link (or a bare hash / raw component JSON)",
+        "A discord.builders link, bare hash, or raw JSON (leave blank for the "
+        "editor link)",
+        default="",
         max_length=6000,
     )
     channel = lb.channel(
@@ -235,6 +237,25 @@ class PostComponentsFromLink(
 
     @lb.invoke
     async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+        # No link → hand back the editor link and how to use it.
+        if not str(self.link).strip():
+            await ctx.respond(
+                embed=h.Embed(
+                    title="Post a Components V2 message",
+                    description=(
+                        "1. Design your message on "
+                        "[discord.builders](https://discord.builders).\n"
+                        "2. Copy the page URL from your browser's address bar.\n"
+                        "3. Re-run `/post components` with that URL in the `link` "
+                        "option (add `channel:` to post elsewhere; defaults to this "
+                        "channel)."
+                    ),
+                    color=_PROMPT_COLOR,
+                ),
+                ephemeral=True,
+            )
+            return
+
         try:
             components = extract_components_from_input(str(self.link))
         except ValueError as e:

@@ -31,9 +31,10 @@ POST_JSON_DETAIL = CommandDetail(
         "right-click. Owner/team only."
     ),
     steps=(
-        "Fastest: build it on [discord.builders](https://discord.builders), copy "
-        "the page URL, then run `/post components link:<url>` (defaults to the "
-        "current channel; pass `channel:` to target another).",
+        "Fastest: run `/post components` with no link — it replies with the "
+        "[discord.builders](https://discord.builders) editor link. Build your post "
+        "there, copy the page URL, then run `/post components link:<url>` (defaults "
+        "to the current channel; pass `channel:` to target another).",
         "Or, to post JSON: build your message in a Components V2 builder and copy its "
         "exported JSON.",
         "Send that JSON to a channel the bot can see — paste it as a normal message, "
