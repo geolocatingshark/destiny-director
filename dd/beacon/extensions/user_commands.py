@@ -21,6 +21,7 @@
 # ``resync_user_commands`` then builds lightbulb v3 command/group objects from those
 # rows and (re)registers them globally on the live client.
 
+import asyncio
 import collections
 import json
 import logging
@@ -165,13 +166,13 @@ def _user_command_response_func_builder(
         async def handler(self: t.Any, ctx: lb.Context) -> None:
             text = cmd.response_data.strip()
             # Follow redirects once if any, then substitute these urls back into
-            # the text and respond with it. A regex-callback (rather than
-            # str.format) keeps any literal braces in the user's text inert.
+            # the text and respond with it. Resolve concurrently (gather keeps
+            # input order, so the regex-callback substitution still lines up). A
+            # regex-callback (rather than str.format) keeps any literal braces in
+            # the user's text inert.
+            links = cfg.url_regex.findall(text)
             followed = iter(
-                [
-                    await follow_link_single_step(link)
-                    for link in cfg.url_regex.findall(text)
-                ]
+                await asyncio.gather(*(follow_link_single_step(link) for link in links))
             )
             substituted = cfg.url_regex.sub(lambda _m: next(followed), text)
             row = h.impl.MessageActionRowBuilder().add_link_button(

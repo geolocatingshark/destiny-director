@@ -262,35 +262,43 @@ async def update_status(bot: h.GatewayBot, guild_count: int, test_env: bool):
 
 # Cap link-following HTTP requests so a hung redirect host can't block a
 # coroutine indefinitely (aiohttp's implicit default is a 5-minute total).
-_LINK_FOLLOW_TIMEOUT = aiohttp.ClientTimeout(total=30)
+_LINK_FOLLOW_TIMEOUT = aiohttp.ClientTimeout(total=10)
+# Retry only *transient* failures (5xx / network / timeout); a 4xx or a
+# redirect-less 2xx/3xx is permanent, so we return the original url at once
+# rather than sleeping through a retry storm.
+_LINK_FOLLOW_RETRIES = 2
+_LINK_FOLLOW_RETRY_DELAY = 1
 
 
 async def follow_link_single_step(
     url: str, logger: logging.Logger | None = None
 ) -> str:
+    """Resolve a single redirect hop, falling back to ``url`` itself.
+
+    Returns the ``Location`` header of a one-step redirect, or ``url`` unchanged
+    when there is no redirect to follow. Never raises: transient failures (5xx,
+    connection/timeout errors) are retried a bounded number of times and then
+    give up to ``url`` so a dead or hung link can't block the caller."""
     if logger is None:
         logger = logging.getLogger("main/" + __name__)
     async with aiohttp.ClientSession(timeout=_LINK_FOLLOW_TIMEOUT) as session:
-        retries = 10
-        retry_delay = 10
-        for i in range(retries):
-            async with session.get(url, allow_redirects=False) as resp:
-                try:
-                    return resp.headers["Location"]
-                except KeyError:
-                    # If we can't find the location key, warn and return the
-                    # provided url itself
-                    if resp.status >= 400:
-                        logger.error(
-                            "Could not find redirect for url "
-                            + f"{url}, (status {resp.status})"
-                        )
-                        if i < retries - 1:
-                            logger.error("Retrying...")
-                        await aio.sleep(retry_delay)
-                        continue
-                    else:
+        for attempt in range(_LINK_FOLLOW_RETRIES + 1):
+            try:
+                async with session.get(url, allow_redirects=False) as resp:
+                    location = resp.headers.get("Location")
+                    if location:
+                        return location
+                    if resp.status < 500:
+                        # 2xx/3xx-without-Location/4xx: nothing to follow, and a
+                        # 4xx won't heal on retry — return the url as-is.
                         return url
+                    logger.error(
+                        f"Server error following url {url} (status {resp.status})"
+                    )
+            except (aiohttp.ClientError, TimeoutError) as e:
+                logger.error(f"Network error following url {url}: {e!r}")
+            if attempt < _LINK_FOLLOW_RETRIES:
+                await aio.sleep(_LINK_FOLLOW_RETRY_DELAY)
         return url
 
 
