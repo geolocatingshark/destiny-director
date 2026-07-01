@@ -84,7 +84,7 @@ if not IGNORE:
         @lb.invoke
         async def invoke(self, ctx: lb.Context):
             navigator = NavigatorView(pages=pages)
-            await navigator.send(ctx.interaction)
+            await navigator.send(ctx)
 
     loader.command(SlashCommand)
 

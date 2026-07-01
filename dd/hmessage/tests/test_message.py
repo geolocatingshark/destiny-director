@@ -147,3 +147,65 @@ def test_hmessage_embed_differs_on_title():
 def test_hmessage_embed_not_equal_to_non_embed():
     a = HMessageEmbed.from_embed(_embed_with_image())
     assert a != "not an embed"
+
+
+# --- Components V2 capture / merge -----------------------------------------------
+
+
+class _FakeMessage:
+    """Minimal PartialMessage stand-in for HMessage.from_message."""
+
+    def __init__(self, *, flags, components, embeds=None, content="", id=7):
+        self.flags = flags
+        self.components = components
+        self.embeds = embeds if embeds is not None else []
+        self.attachments = []
+        self.content = content
+        self.id = id
+
+
+def test_from_message_captures_cv2_components(monkeypatch):
+    rebuilt = [object()]
+    seen = {}
+
+    def _fake_rebuild(components):
+        seen["arg"] = components
+        return rebuilt
+
+    monkeypatch.setattr("dd.common.components.rebuild_components", _fake_rebuild)
+
+    models = ["container-model"]
+    msg = _FakeMessage(flags=h.MessageFlag.IS_COMPONENTS_V2, components=models)
+    hmsg = HMessage.from_message(msg)
+
+    assert hmsg.components == rebuilt
+    assert seen["arg"] == models
+    assert hmsg.embeds == []
+
+
+def test_from_message_embed_message_has_no_components():
+    msg = _FakeMessage(
+        flags=h.MessageFlag.NONE, components=[], embeds=[_embed_with_image()]
+    )
+    hmsg = HMessage.from_message(msg)
+
+    assert hmsg.components == []
+    assert len(hmsg.embeds) == 1
+
+
+def test_from_message_unrebuildable_cv2_degrades_to_no_components(monkeypatch):
+    def _boom(components):
+        raise NotImplementedError("media gallery")
+
+    monkeypatch.setattr("dd.common.components.rebuild_components", _boom)
+
+    msg = _FakeMessage(flags=h.MessageFlag.IS_COMPONENTS_V2, components=["x"])
+    hmsg = HMessage.from_message(msg)
+
+    assert hmsg.components == []
+
+
+def test_add_concatenates_cv2_components():
+    a = HMessage(components=["a"])
+    b = HMessage(components=["b"])
+    assert (a + b).components == ["a", "b"]

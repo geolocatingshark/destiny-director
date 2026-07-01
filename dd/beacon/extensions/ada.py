@@ -50,7 +50,7 @@ class AdaCommand(
 
         if not SINGLE_PAGE_MODE:
             navigator = NavigatorView(pages=pages, timeout=60)
-            await navigator.send(ctx.interaction)
+            await navigator.send(ctx)
             return
 
         await ctx.defer()

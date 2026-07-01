@@ -14,6 +14,7 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 # Define our custom navigator classes
+import contextlib
 import datetime as dt
 import logging
 import typing as t
@@ -23,12 +24,12 @@ from typing import override
 
 import hikari as h
 import lightbulb as lb
-import miru as m
 import regex as re
-from miru.ext import nav
+from lightbulb import components as lbc
 
 from dd.hmessage import HMessage
 
+from ..common import components as dd_components
 from ..common.bot import CachedFetchBot
 from ..common.cfg import (
     default_url,
@@ -184,159 +185,236 @@ class DateRangeDict(dict[dt.datetime, HMessage]):
         return ((now - ref) // period) * period + ref
 
 
-class NavigatorView(nav.NavigatorView):
+# Custom ids for the navigator's prev/next buttons. The lbc.Menu routes presses by
+# custom_id regardless of where the button is rendered (a top-level action row for embed
+# pages, or a row appended to the CV2 components), so the same ids work for both modes.
+_NAV_PREV_CUSTOM_ID = "dd_nav:prev"
+_NAV_NEXT_CUSTOM_ID = "dd_nav:next"
+_NAV_INDICATOR_CUSTOM_ID = "dd_nav:indicator"
+
+# Cap the menu timeout below the interaction-token TTL (see components._MAX_TIMEOUT):
+# the on-timeout "disable" edit reuses the interaction token, valid for ~15 minutes.
+_MAX_NAV_TIMEOUT = 15 * 60 - 60
+
+
+def build_nav_row(
+    *,
+    current_page: int,
+    history_len: int,
+    lookahead_len: int,
+    date_label: str,
+    all_disabled: bool = False,
+) -> list[h.api.InteractiveButtonBuilder]:
+    """Build the prev / date-indicator / next buttons for a navigator action row.
+
+    The prev/next custom ids match those :class:`NavigatorView` registers on its menu;
+    the indicator is a disabled button whose label is the current page's date.
+    """
+    prev_disabled = all_disabled or current_page <= 1 - history_len
+    next_disabled = all_disabled or current_page >= lookahead_len
+    return [
+        h.impl.InteractiveButtonBuilder(
+            style=h.ButtonStyle.PRIMARY,
+            custom_id=_NAV_PREV_CUSTOM_ID,
+            emoji=PREV_PAGE_EMOJI,
+            is_disabled=prev_disabled,
+        ),
+        h.impl.InteractiveButtonBuilder(
+            style=h.ButtonStyle.SECONDARY,
+            custom_id=_NAV_INDICATOR_CUSTOM_ID,
+            label=date_label,
+            is_disabled=True,
+        ),
+        h.impl.InteractiveButtonBuilder(
+            style=h.ButtonStyle.PRIMARY,
+            custom_id=_NAV_NEXT_CUSTOM_ID,
+            emoji=NEXT_PAGE_EMOJI,
+            is_disabled=next_disabled,
+        ),
+    ]
+
+
+class NavigatorView:
+    """A miru-free, date-indexed navigator over a :class:`NavPages`.
+
+    Renders one :class:`HMessage` page at a time with prev / date-indicator / next
+    buttons. Handles BOTH embed pages and Components V2 pages (e.g. the eververse
+    autopost): a CV2 page's components are sent with the ``IS_COMPONENTS_V2`` flag and
+    the nav row is appended as a top-level action row. Because a navigator edits one
+    message across pages and Discord forbids toggling ``IS_COMPONENTS_V2`` on edit, a
+    given navigator is single-mode — its NavPages' ``no_data_message`` matches (CV2 vs
+    embed) so every page is the same type.
+
+    Built on ``lightbulb.components.Menu`` (mirrors
+    ``dd.common.components.Paginator``): the menu is a pure custom_id router, so the
+    prev/next buttons route regardless of where they are rendered.
+    """
+
     def __init__(
         self,
         *,
         pages: "NavPages",
         timeout: float | int | dt.timedelta | None = navigator_timeout,
-        autodefer: bool = True,
         allow_start_on_blank_page: bool = False,
         display_date_offset: dt.timedelta = dt.timedelta(days=0),
     ) -> None:
-        ### hikari-miru NavigatorView init ###
-        # The only differences between this and the original is that
-        # the pages object is not checked to be non-empty and
-        # the default buttons are always added to the view
         self._pages: NavPages = pages
-        self._current_page: int = 0
-        self._ephemeral: bool = False
-        # The last interaction received, used for inter-based handling
-        self._inter: h.MessageResponseMixin[t.Any] | None = None
-        super(nav.NavigatorView, self).__init__(timeout=timeout, autodefer=autodefer)
-        self.display_date_offset = display_date_offset
+        self._display_date_offset = display_date_offset
 
-        default_buttons = self.get_default_buttons()
-        for default_button in default_buttons:
-            self.add_item(default_button)
-
-        ### hikari-miru NavigatorView init end ###
-
-        if allow_start_on_blank_page:
-            self.current_page = 0
+        if timeout is None:
+            requested = int(navigator_timeout)
+        elif isinstance(timeout, dt.timedelta):
+            requested = int(timeout.total_seconds())
         else:
-            # Set current page to the first non blank page
-            for page_no in range(0, -self.pages.history_len, -1):
-                if page_no in self.pages:
-                    self.current_page = page_no
+            requested = int(timeout)
+        self._timeout = min(requested, _MAX_NAV_TIMEOUT)
+
+        # Start on the most recent non-blank page (scan from 0 into history) unless the
+        # caller allows starting on a blank page.
+        if allow_start_on_blank_page:
+            self._current_page = 0
+        else:
+            for page_no in range(0, -pages.history_len, -1):
+                if page_no in pages:
+                    self._current_page = page_no
                     break
             else:
-                self.current_page = 0
+                self._current_page = 0
+        self._current_page = self._clamp(self._current_page)
 
-    @override
-    async def send(
-        self,
-        to: h.SnowflakeishOr[h.TextableChannel]
-        | h.MessageResponseMixin[t.Any]
-        | m.Context[t.Any],
-        *,
-        start_at: int | None = None,
-        ephemeral: bool = False,
-        responded: bool = False,
-    ):
-        # Override the default page number of 0 with the current page as set by init
-        return await super().send(
-            to,
-            start_at=start_at if start_at is not None else self.current_page,
-            ephemeral=ephemeral,
-            responded=responded,
+        # Captured in ``send`` so the controls can be disabled on timeout.
+        self._ctx: lb.Context | None = None
+        self._message: h.Message | None = None
+
+        self._menu = lbc.Menu()
+        self._menu.add_interactive_button(
+            h.ButtonStyle.PRIMARY,
+            self._on_prev,
+            custom_id=_NAV_PREV_CUSTOM_ID,
+            emoji=PREV_PAGE_EMOJI,
+        )
+        self._menu.add_interactive_button(
+            h.ButtonStyle.PRIMARY,
+            self._on_next,
+            custom_id=_NAV_NEXT_CUSTOM_ID,
+            emoji=NEXT_PAGE_EMOJI,
         )
 
-    @override
-    def _get_page_payload(
-        self, page: str | h.Embed | t.Sequence[h.Embed] | nav.Page | HMessage
-    ) -> t.MutableMapping[str, t.Any]:
-        """Get the page content that is to be sent."""
+    # -- page bookkeeping --------------------------------------------------
 
-        if not isinstance(page, HMessage):
-            raise TypeError(
-                f"Expected type 'HMessage' to send as page, "
-                f"not '{page.__class__.__name__}'."
-            )
-
-        return_dict = page.to_message_kwargs()
-        return_dict["components"] = self
-
-        if self.ephemeral:
-            return_dict["flags"] = h.MessageFlag.EPHEMERAL
-
-        return return_dict
-
-    @override
-    async def send_page(
-        self, context: m.Context[t.Any], page_index: int | None = None
-    ) -> None:
-        """Send a page, editing the original message.
-
-        Parameters
-        ----------
-        context : Context
-            The context object that should be used to send this page
-        page_index : Optional[int], optional
-            The index of the page to send, if not specifed, sends the current
-            page, by default None
-        """
-        if page_index is not None:
-            self.current_page = page_index
-
-        page = self.pages[self.current_page]
-
-        for button in self.children:
-            if isinstance(button, nav.NavItem):
-                await button.before_page_change()
-
-        payload = self._get_page_payload(page)
-
-        self._inter = context.interaction  # Update latest inter
-
-        if not (payload.get("attachment") or payload.get("attachments")):
-            # Ensure that payload does not have attachments as a key
-            # even if it is a Falsey value
-            payload.pop("attachments", None)
-            # Set payload attachment to None if no attachments are returned
-            # from _get_page_payload to make sure discord clears all atachments
-            # in view.
-            # Note: attachments=[] does not clear attachments.
-            payload = {"attachment": None, **payload}
-
-        await context.edit_response(**payload)  # ty: ignore[invalid-argument-type]
-
-    @override
-    def get_default_buttons(self) -> list[nav.NavButton]:
-        if (self.pages.history_len + self.pages.lookahead_len) == 1:
-            return []
-        else:
-            return [
-                PrevButton(),
-                IndicatorButton(display_date_offset=self.display_date_offset),
-                NextButton(),
-            ]
+    def _clamp(self, value: int) -> int:
+        return max(
+            -(self._pages.history_len - 1), min(value, self._pages.lookahead_len)
+        )
 
     @property
-    @override
-    def pages(self) -> "NavPages":
-        """
-        The pages that the navigator is navigating.
-        """
-        return self._pages
-
-    @property
-    @override
     def current_page(self) -> int:
-        """
-        The current page of the navigator, zero-indexed integer.
-        """
         return self._current_page
 
     @current_page.setter
     def current_page(self, value: int) -> None:
-        if not isinstance(value, int):
-            raise TypeError("Expected type int for property current_page.")
+        self._current_page = self._clamp(value)
 
-        # Ensure this value is always correct
-        self._current_page = max(
-            -(self.pages.history_len - 1), min(value, self.pages.lookahead_len)
+    @property
+    def needs_pagination(self) -> bool:
+        return (self._pages.history_len + self._pages.lookahead_len) > 1
+
+    def _date_label(self) -> str:
+        date = self._pages.index_to_date(self._current_page) + self._display_date_offset
+        return f"{date.strftime('%B %-d')}{get_ordinal_suffix(date.day)}"
+
+    def _nav_action_row(
+        self, *, all_disabled: bool = False
+    ) -> h.impl.MessageActionRowBuilder:
+        row = h.impl.MessageActionRowBuilder()
+        for button in build_nav_row(
+            current_page=self._current_page,
+            history_len=self._pages.history_len,
+            lookahead_len=self._pages.lookahead_len,
+            date_label=self._date_label(),
+            all_disabled=all_disabled,
+        ):
+            row.add_component(button)
+        return row
+
+    # -- rendering ---------------------------------------------------------
+
+    def _components(
+        self, *, all_disabled: bool = False
+    ) -> list[h.api.ComponentBuilder]:
+        """The component list for the current page (nav row appended when paginated)."""
+        page = self._pages[self._current_page]
+        row = (
+            self._nav_action_row(all_disabled=all_disabled)
+            if self.needs_pagination
+            else None
         )
+        if page.components:
+            # CV2 page: append the nav row as a top-level action row. Never mutate the
+            # page's cached container builders (reused across renders); copy the list.
+            comps: list[h.api.ComponentBuilder] = list(page.components)
+            if row is not None:
+                comps.append(row)
+            return comps
+        return [row] if row is not None else []
+
+    def _render(self, *, all_disabled: bool = False) -> dict[str, t.Any]:
+        page = self._pages[self._current_page]
+        if page.components:
+            return {
+                "components": self._components(all_disabled=all_disabled),
+                "flags": h.MessageFlag.IS_COMPONENTS_V2,
+            }
+        payload: dict[str, t.Any] = {
+            "content": page.content,
+            "embeds": page.embeds,
+            "attachments": page.attachments,
+        }
+        comps = self._components(all_disabled=all_disabled)
+        if comps:
+            payload["components"] = comps
+        # Clear stale attachments on edit: attachments=[] doesn't clear but
+        # attachment=None does (preserves the previous navigator behaviour).
+        if not payload.get("attachments"):
+            payload.pop("attachments", None)
+            payload = {"attachment": None, **payload}
+        return payload
+
+    # -- sending / editing -------------------------------------------------
+
+    async def send(self, ctx: lb.Context) -> None:
+        """Send the current page from a ``lb.Context`` and attach the paginator."""
+        await ctx.respond(**self._render())
+        if not self.needs_pagination:
+            return
+        self._ctx = ctx
+        self._message = await ctx.interaction.fetch_initial_response()
+        # ``attach`` blocks until the menu times out (a press never stops it); lightbulb
+        # signals the timeout by raising. Swallow it, then disable the controls.
+        with contextlib.suppress(TimeoutError):
+            await self._menu.attach(ctx.client, timeout=self._timeout)
+        await self._on_timeout()
+
+    async def _edit(self, mctx: lbc.MenuContext) -> None:
+        await mctx.respond(edit=True, **self._render())
+
+    async def _on_prev(self, mctx: lbc.MenuContext) -> None:
+        self.current_page -= 1
+        await self._edit(mctx)
+
+    async def _on_next(self, mctx: lbc.MenuContext) -> None:
+        self.current_page += 1
+        await self._edit(mctx)
+
+    async def _on_timeout(self) -> None:
+        if self._ctx is None or self._message is None:
+            return
+        # ``edit_message`` takes no flags; editing a CV2 message's components preserves
+        # its flag. Skip cleanly if the token expired / the message is gone.
+        with contextlib.suppress(h.UnauthorizedError, h.NotFoundError):
+            await self._ctx.interaction.edit_message(
+                self._message, components=self._components(all_disabled=True)
+            )
 
 
 class NavPages(DateRangeDict):
@@ -393,6 +471,7 @@ class NavPages(DateRangeDict):
         lookahead_update_interval: int = 1800,
         suppress_content_autoembeds: bool = True,
         no_data_message: HMessage | None = None,
+        cv2: bool = False,
     ):
         super().__init__(period)
         self.history_len = history_len
@@ -403,8 +482,16 @@ class NavPages(DateRangeDict):
 
         self._reference_date = reference_date
         self._suppress_content_autoembeds = suppress_content_autoembeds
+        # When True this followable's posts are Components V2, so every page (including
+        # the no-data page) must be CV2 — a navigator edits one message and Discord
+        # forbids toggling IS_COMPONENTS_V2 on edit.
+        self.cv2 = cv2
         if no_data_message is None:
-            no_data_message = HMessage(embeds=[NO_DATA_HERE_EMBED])
+            no_data_message = (
+                HMessage(components=[dd_components.build_container(["No data here!"])])
+                if cv2
+                else HMessage(embeds=[NO_DATA_HERE_EMBED])
+            )
         self.no_data_message = no_data_message
 
     @override
@@ -427,6 +514,10 @@ class NavPages(DateRangeDict):
         if not messages:
             return self.no_data_message
         msg: HMessage = accumulate([HMessage.from_message(msg) for msg in messages])
+
+        # Components V2 message: no embed/content post-processing applies.
+        if msg.components:
+            return msg
 
         if self._suppress_content_autoembeds:
             # Stop discord from making new auto embeds
@@ -642,95 +733,6 @@ class NavPages(DateRangeDict):
         return {}
 
 
-class IndicatorButton(nav.IndicatorButton):
-    """
-    A built-in NavButton to indicate the current page.
-    """
-
-    def __init__(
-        self,
-        *,
-        custom_id: str | None = None,
-        emoji: h.Emoji | str | None = None,
-        row: int | None = None,
-        display_date_offset: dt.timedelta = dt.timedelta(days=0),
-    ):
-        super().__init__(
-            style=h.ButtonStyle.SECONDARY, custom_id=custom_id, emoji=emoji, row=row
-        )
-        self.display_date_offset = display_date_offset
-
-    @override
-    async def callback(self, context: m.ViewContext) -> None:
-        pass
-
-    @override
-    async def before_page_change(self) -> None:
-        view = t.cast(NavigatorView, self.view)
-        date = view.pages.index_to_date(view.current_page)
-        date += self.display_date_offset
-        suffix = get_ordinal_suffix(date.day)
-        self.label = f"{date.strftime('%B %-d')}{suffix}"
-
-
-class NextButton(nav.NavButton):
-    """
-    A built-in NavButton to jump to the next page.
-    """
-
-    def __init__(
-        self,
-        *,
-        style: h.ButtonStyle = h.ButtonStyle.PRIMARY,
-        label: str | None = None,
-        custom_id: str | None = None,
-        emoji: h.Emoji | str | None = NEXT_PAGE_EMOJI,
-        row: int | None = None,
-    ):
-        super().__init__(
-            style=style, label=label, custom_id=custom_id, emoji=emoji, row=row
-        )
-
-    @override
-    async def callback(self, context: m.ViewContext) -> None:
-        self.view.current_page += 1
-        await self.view.send_page(context)
-
-    @override
-    async def before_page_change(self) -> None:
-        view = t.cast(NavigatorView, self.view)
-        self.disabled = view.current_page >= view.pages.lookahead_len
-
-
-class PrevButton(nav.NavButton):
-    """
-    A built-in NavButton to jump to previous page.
-    """
-
-    def __init__(
-        self,
-        *,
-        style: h.ButtonStyle = h.ButtonStyle.PRIMARY,
-        label: str | None = None,
-        custom_id: str | None = None,
-        emoji: h.Emoji | str | None = PREV_PAGE_EMOJI,
-        row: int | None = None,
-    ):
-        super().__init__(
-            style=style, label=label, custom_id=custom_id, emoji=emoji, row=row
-        )
-
-    @override
-    async def callback(self, context: m.ViewContext) -> None:
-        self.view.current_page -= 1
-        await self.view.send_page(context)
-
-    @override
-    async def before_page_change(self) -> None:
-        view = t.cast(NavigatorView, self.view)
-        self.disabled = view.current_page <= 1 - view.pages.history_len
-
-
 # Regex matching the "**From**"/"**Till**" lines that the anchor bot adds to
 # reset/gunsmith posts; these are stripped from the mirrored embed.
 rgx_find_from_till_text = re.compile(r"\n\*\*(From|Till)\*\*[^\n]*")
@@ -750,10 +752,14 @@ class ResetPages(NavPages):
             return self.no_data_message
         for message in messages:
             message.embeds = utils.filter_discord_autoembeds(message)
-        msg_proto = (
-            accumulate([HMessage.from_message(message) for message in messages])
-            .merge_content_into_embed()
-            .merge_attachements_into_embed(default_url=default_url)
+        msg_proto = accumulate([HMessage.from_message(message) for message in messages])
+
+        # Components V2 message: the embed merges below don't apply.
+        if msg_proto.components:
+            return msg_proto
+
+        msg_proto = msg_proto.merge_content_into_embed().merge_attachements_into_embed(
+            default_url=default_url
         )
 
         # Remove duplicate From/Till text from anchor embed
@@ -806,7 +812,6 @@ def make_navigator_command(
     *,
     name: str,
     description: str,
-    autodefer: bool = True,
     allow_start_on_blank_page: bool = False,
     display_date_offset: dt.timedelta = dt.timedelta(days=0),
 ) -> type[lb.SlashCommand]:
@@ -823,10 +828,9 @@ def make_navigator_command(
                 raise RuntimeError(f"Navigator pages for '{name}' not yet initialised")
             navigator = NavigatorView(
                 pages=holder.pages,
-                autodefer=autodefer,
                 allow_start_on_blank_page=allow_start_on_blank_page,
                 display_date_offset=display_date_offset,
             )
-            await navigator.send(ctx.interaction)
+            await navigator.send(ctx)
 
     return _NavCommand

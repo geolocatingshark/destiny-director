@@ -1,14 +1,27 @@
 # Plan: Completely remove `miru` from destiny-director
 
-> **Status: DRAFT — NEEDS RE-REVIEW. Do NOT execute without user review.**
-> Authored during planning on the `feature-lightbulb-v3` branch. Re-read against the
-> current tree before implementing (file/line numbers may have drifted).
+> **Status: PARTIALLY DONE (2026-07-01). Remaining: `embeds.py` + `miru.install` + `uv remove`.**
+> The **`dd/beacon/nav.py`** rewrite happened as a side effect of the embed/CV2
+> dual-support work (branch `feat/nav-cv2-dual-support`): nav.py is now miru-free, rebuilt
+> on `lbc.Menu` mirroring `dd/common/components.py:Paginator`. So the nav-rewrite section
+> below (§1) is **historical/done**. What remains to drop miru entirely:
 >
-> **Update (2026-07-01):** being approached incrementally rather than as the single
-> sweep below — another agent is adding edit abilities to Components V2 posts (see
-> `plans/components_v2_embed_editor.md`), which de-mirus the `dd/anchor/embeds.py`
-> editor as a side effect. The nav rewrite + `uv remove hikari-miru` are still
-> outstanding, so the `<4` pin is not gone yet.
+> 1. **`dd/anchor/embeds.py`** — the interactive embed builder (`EmbedBuilderView` +
+>    `@m.button` + `m.Modal`) is the **last** miru user. Rewrite on `lbc.Menu` +
+>    `lbc.Modal`; a working `lbc.Modal` template now lives in the same repo:
+>    `dd/anchor/extensions/posts.py:_UpdateComponentsModal` (`add_paragraph_text_input`
+>    → `respond_with_modal` → `modal.attach`). Preserve the public
+>    `build_embed_with_user(ctx, done_button_text, existing_embed)` signature — 3 callers
+>    (`/post embed`, "Edit embed", "Copy embed") in posts.py. See §2 below for the design.
+>    **Correction:** the CV2 `/post components` flow is *separate* and does NOT replace the
+>    embed builder (posts.py points users to "Edit embed" for embed posts); my earlier
+>    "de-mirus as a side effect" note was wrong.
+> 2. **`miru.install`** — delete `import miru` + `miru.install(bot)` from
+>    `dd/beacon/__main__.py` and `dd/anchor/__main__.py` (both already `client.start()`).
+> 3. **`uv remove hikari-miru`** + `uv sync` — do this LAST, once nothing imports miru;
+>    leaf dep, drops the `<4` pin. Then update memory `dependency-updates-deferred`.
+>
+> Re-verify symbols against the current tree before executing.
 
 ## Context
 

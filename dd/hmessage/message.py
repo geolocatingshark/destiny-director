@@ -106,7 +106,37 @@ class HMessage:
 
     @classmethod
     def from_message(cls, message: h.PartialMessage) -> HMessage:
-        """Create a HMessage instance from a message."""
+        """Create a HMessage instance from a message.
+
+        A Components V2 source message (``IS_COMPONENTS_V2``) carries no content or
+        embeds; its components are rebuilt into sendable builders so callers (e.g. the
+        navigator) can re-render it. An unsupported CV2 component type is captured as no
+        components — the caller degrades to "no data" rather than crashing.
+        """
+        components: list[h.api.ComponentBuilder] = []
+        flags = message.flags if isinstance(message.flags, h.MessageFlag) else None
+        raw_components = (
+            message.components
+            if not isinstance(message.components, h.UndefinedType)
+            else []
+        )
+        if (
+            flags is not None
+            and h.MessageFlag.IS_COMPONENTS_V2 in flags
+            and raw_components
+        ):
+            # Local import: avoids any hmessage<->common module-load cycle.
+            from ..common.components import rebuild_components
+
+            try:
+                components = rebuild_components(raw_components)
+            except NotImplementedError:
+                logging.warning(
+                    "HMessage.from_message: message %s has an unrebuildable CV2 "
+                    "component; captured with no components.",
+                    message.id,
+                )
+
         return cls(
             content=message.content or "",
             embeds=[
@@ -125,6 +155,7 @@ class HMessage:
                     else []
                 )
             ],
+            components=components,
             id=message.id,
         )
 
@@ -156,6 +187,9 @@ class HMessage:
             content=(self.content + ("\n" if use_endline else "") + other.content),
             embeds=self.embeds + other.embeds,
             attachments=self.attachments + other.attachments,
+            # Preserve CV2 components across a merge so accumulate() over a period's
+            # messages keeps them. to_message_kwargs prefers components when present.
+            components=self.components + other.components,
         )
 
     def merge_content_into_embed(
