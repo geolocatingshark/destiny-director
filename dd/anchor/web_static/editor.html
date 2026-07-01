@@ -7,7 +7,7 @@
   The server re-validates against the JSON schema, so this form is a convenience, not a
   trust boundary.
 
-  Layout is tabbed (Sectors / Planet cycles / Surges / Preview) so it stays usable on a
+  Layout is tabbed (Sectors / Planet cycles / Preview) so it stays usable on a
   phone — only one section is visible at a time; the tab bar and Save button stay
   pinned. All panels live in the DOM at once (hidden via CSS), so collect() always sees
   every field regardless of the active tab.
@@ -90,7 +90,6 @@
     <nav class="tabs" id="tabBar" aria-label="Editor sections">
       <button type="button" data-tab="sectors" class="active">Sectors</button>
       <button type="button" data-tab="schedule">Planet cycles</button>
-      <button type="button" data-tab="surges">Surges</button>
       <button type="button" data-tab="preview">Preview</button>
     </nav>
 
@@ -110,13 +109,6 @@
         <h2>Daily schedule (per destination)</h2>
         <p class="muted">Each destination cycles through these sectors, one per day, looping.</p>
         <div id="schedule"></div>
-      </section>
-
-      <section class="panel" data-panel="surges">
-        <h2>Surge cycle (per day)</h2>
-        <p class="muted">One row per day; loops independently of the schedule.</p>
-        <div id="surge"></div>
-        <button class="secondary tiny" id="addSurge" type="button">+ Add day</button>
       </section>
 
       <section class="panel" data-panel="preview">
@@ -187,12 +179,6 @@
         const gfx = el("input", { type: "url", value: s.shortlink_gfx || "", placeholder: "https://…" });
         const expert = difficultyFields("Expert", s.expert || {});
         const master = difficultyFields("Master", s.master || {});
-        const threat = el("select");
-        for (const tEl of vocab.threats)
-          threat.append(el("option", { value: tEl, textContent: tEl || "(none)", selected: (s.threat || "") === tEl }));
-        const oc = el("input", { type: "text", value: s.overcharged_weapon || "", placeholder: "e.g. Auto Rifle" });
-        const em = el("input", { type: "text", value: s.expert_modifiers || "" });
-        const mm = el("input", { type: "text", value: s.master_modifiers || "" });
         const remove = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
 
         const card = el("div", { className: "card" }, [
@@ -200,13 +186,6 @@
           el("div", { className: "field" }, [el("label", { textContent: "Name" }), name]),
           el("div", { className: "field" }, [el("label", { textContent: "Graphic link" }), gfx]),
           el("div", { className: "diff-cols" }, [el("div", {}, [expert]), el("div", {}, [master])]),
-          el("details", {}, [
-            el("summary", { textContent: "Advanced (threat / overcharge / modifiers)" }),
-            el("div", { className: "field" }, [el("label", { textContent: "Threat" }), threat]),
-            el("div", { className: "field" }, [el("label", { textContent: "Overcharged weapon" }), oc]),
-            el("div", { className: "field" }, [el("label", { textContent: "Expert modifiers" }), em]),
-            el("div", { className: "field" }, [el("label", { textContent: "Master modifiers" }), mm]),
-          ]),
         ]);
         const entry = {
           card,
@@ -215,10 +194,6 @@
             shortlink_gfx: gfx.value.trim(),
             expert: expert._value(),
             master: master._value(),
-            threat: threat.value,
-            overcharged_weapon: oc.value.trim(),
-            expert_modifiers: em.value,
-            master_modifiers: mm.value,
           }),
         };
         remove.addEventListener("click", () => {
@@ -268,20 +243,6 @@
         ((data.schedule || {})[zone] || []).forEach((n) => addScheduleEntry(list, n));
       }
 
-      // --- surge cycle -------------------------------------------------------
-      const surgeBox = $("surge");
-      function addSurgeDay(selected) {
-        const group = checkGroup(vocab.surges, selected || []);
-        const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
-        const row = el("div", { className: "row" }, [el("span", { textContent: "Day", className: "muted" }), group, del]);
-        row._value = () => group._value();
-        del.addEventListener("click", () => row.remove());
-        surgeBox.append(row);
-      }
-      (data.surge_cycle || []).forEach(addSurgeDay);
-      if (!surgeBox.children.length) addSurgeDay();
-      $("addSurge").addEventListener("click", () => addSurgeDay());
-
       // --- collect + submit --------------------------------------------------
       function collect() {
         const schedule = {};
@@ -291,7 +252,6 @@
           version: data.version || 1,
           reference_date: $("referenceDate").value,
           schedule,
-          surge_cycle: [...surgeBox.children].map((r) => r._value()),
           sectors: sectorRows.map((r) => r.value()),
         };
       }

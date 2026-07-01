@@ -254,14 +254,8 @@ def _sector_from_json(doc: dict[str, t.Any]) -> Sector:
     return Sector(
         name=doc["name"],
         shortlink_gfx=doc.get("shortlink_gfx", ""),
-        threat=doc.get("threat", ""),
-        overcharged_weapon=doc.get("overcharged_weapon", ""),
-        expert_data=_difficulty_from_json(
-            doc["expert"], doc.get("expert_modifiers", "")
-        ),
-        master_data=_difficulty_from_json(
-            doc["master"], doc.get("master_modifiers", "")
-        ),
+        expert_data=_difficulty_from_json(doc["expert"], ""),
+        master_data=_difficulty_from_json(doc["master"], ""),
     )
 
 
@@ -271,10 +265,6 @@ def _sector_to_json(sector: Sector) -> dict[str, t.Any]:
         "shortlink_gfx": sector.shortlink_gfx,
         "expert": _difficulty_to_json(sector.expert_data),
         "master": _difficulty_to_json(sector.master_data),
-        "threat": sector.threat,
-        "overcharged_weapon": sector.overcharged_weapon,
-        "expert_modifiers": sector.expert_data.modifiers,
-        "master_modifiers": sector.master_data.modifiers,
     }
 
 
@@ -324,8 +314,7 @@ class Rotation(SpreadsheetBackedData):
         Pure (no network). Mirrors :meth:`from_gspread`'s output so the two stores are
         interchangeable: ``reference_date`` is the calendar start date (midnight UTC +
         the same reset offset ``from_gspread`` applies), ``schedule`` becomes the
-        per-zone :class:`EntityRotation`, each ``surge_cycle`` day's elements are joined
-        back into the ``" & "`` surge string, and the ``sectors`` array becomes the
+        per-zone :class:`EntityRotation`, and the ``sectors`` array becomes the
         name-keyed :class:`SectorData` (champion/shield *presence* → the count fields,
         present→-1 else 0). Tolerant: a scheduled name absent from ``sectors`` simply
         won't be in ``sector_data`` — the same ``KeyError``/"TBC" path ``from_gspread``
@@ -349,7 +338,9 @@ class Rotation(SpreadsheetBackedData):
         for zone, names in doc["schedule"].items():
             sector_rot[zone] = EntityRotation(list(names))
 
-        surge_rot = EntityRotation([" & ".join(day) for day in doc["surge_cycle"]])
+        # Surge is no longer stored or rendered; keep a single empty entry so
+        # ``__call__``'s ``surge_rot[day % len]`` stays safe (surge == "").
+        surge_rot = EntityRotation([""])
 
         sector_data = SectorData.__new__(SectorData)
         dict.__init__(sector_data)
@@ -363,9 +354,9 @@ class Rotation(SpreadsheetBackedData):
         """Serialise this rotation to the JSON document shape (for the one-shot import).
 
         Inverse of :meth:`from_json` at the *rendered* level: champion/shield counts
-        collapse to presence lists and the surge string splits back into per-day element
-        lists (so a re-import reproduces identical rendered output, even though raw
-        counts like ``2`` import back as the ``-1`` "present" sentinel).
+        collapse to presence lists (so a re-import reproduces identical rendered output,
+        even though raw counts like ``2`` import back as the ``-1`` "present" sentinel).
+        Unrendered fields (surge, threat, overcharged weapon, modifiers) are dropped.
         """
         return {
             "version": version,
@@ -375,10 +366,6 @@ class Rotation(SpreadsheetBackedData):
             "schedule": {
                 zone: list(rotation) for zone, rotation in self.sector_rot.items()
             },
-            "surge_cycle": [
-                [s.strip() for s in re_split_list.split(surge) if s.strip()]
-                for surge in self.surge_rot
-            ],
             "sectors": [
                 _sector_to_json(sector) for sector in self.sector_data.values()
             ],

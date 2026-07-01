@@ -29,7 +29,6 @@ def _doc(**overrides: t.Any) -> dict[str, t.Any]:
         "version": 1,
         "reference_date": "2023-07-20",
         "schedule": {z: ["Alpha"] for z in rs.LOST_SECTOR_ZONES},
-        "surge_cycle": [["Solar"], ["Arc", "Void"]],
         "sectors": [
             {
                 "name": "Alpha",
@@ -57,7 +56,6 @@ def test_ui_only_format_keywords_do_not_break_compilation():
     [
         _doc(reference_date="not-a-date"),
         _doc(sectors=[{"name": "X"}]),  # sector missing required fields
-        _doc(surge_cycle=[["Nonsense"]]),  # element not in the enum
         _doc(schedule={"Cosmodrome": ["A"]}),  # missing the other eight zones
         _doc(extra_top_level_key=123),  # additionalProperties: false
     ],

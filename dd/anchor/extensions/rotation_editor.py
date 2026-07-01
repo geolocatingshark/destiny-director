@@ -105,7 +105,6 @@ def _default_doc(post_type: str) -> dict[str, t.Any]:
             "version": 1,
             "reference_date": "",
             "schedule": {zone: [] for zone in rotation_schema.LOST_SECTOR_ZONES},
-            "surge_cycle": [],
             "sectors": [],
         }
     return {}
@@ -115,8 +114,6 @@ def _vocab() -> dict[str, t.Any]:
     return {
         "champions": rotation_schema.CHAMPION_TYPES,
         "shields": rotation_schema.SHIELD_ELEMENTS,
-        "surges": rotation_schema.SURGE_ELEMENTS,
-        "threats": rotation_schema.THREAT_ELEMENTS,
         "zones": rotation_schema.LOST_SECTOR_ZONES,
     }
 
@@ -159,10 +156,9 @@ def _render_preview_html(rotation: sector_accounting.Rotation) -> str:
             )
             name = html.escape(sector.name)
             link = html.escape(sector.shortlink_gfx, quote=True)
-            surge = html.escape(sector.surge)
             items.append(
                 f"<li><a href='{link}' target='_blank' rel='noopener'>{name}</a>"
-                f" — surge: {surge}; champions: {champions}; shields: {shields}</li>"
+                f" — champions: {champions}; shields: {shields}</li>"
             )
         blocks.append("<ul>" + "".join(items) + "</ul>")
     return "".join(blocks)
@@ -376,7 +372,6 @@ def _rendered_parity(
             (
                 s.name,
                 s.shortlink_gfx,
-                s.surges,
                 s.expert_data.champions_list,
                 s.expert_data.shields_list,
                 s.master_data.champions_list,

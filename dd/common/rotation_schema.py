@@ -35,9 +35,6 @@ import fastjsonschema
 
 CHAMPION_TYPES = ["Barrier", "Overload", "Unstoppable"]
 SHIELD_ELEMENTS = ["Arc", "Void", "Solar", "Stasis", "Strand"]
-SURGE_ELEMENTS = ["Solar", "Arc", "Void", "Stasis", "Strand"]
-# Leading "" lets a sector leave the (advanced) threat unset.
-THREAT_ELEMENTS = ["", "Arc", "Solar", "Void", "Stasis", "Strand"]
 # The nine destinations, each an independent daily cycle.
 LOST_SECTOR_ZONES = [
     "Cosmodrome",
@@ -57,7 +54,7 @@ def _build_lost_sector_schema() -> dict[str, t.Any]:
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
         "title": "Lost sector rotation",
-        "required": ["reference_date", "schedule", "surge_cycle", "sectors"],
+        "required": ["reference_date", "schedule", "sectors"],
         "additionalProperties": False,
         "properties": {
             "version": {"type": "integer", "options": {"hidden": True}},
@@ -74,16 +71,6 @@ def _build_lost_sector_schema() -> dict[str, t.Any]:
                 "properties": {
                     zone: {"$ref": "#/definitions/zoneCycle"}
                     for zone in LOST_SECTOR_ZONES
-                },
-            },
-            "surge_cycle": {
-                "type": "array",
-                "title": "Surge cycle (per day)",
-                "items": {
-                    "type": "array",
-                    "format": "checkbox",
-                    "uniqueItems": True,
-                    "items": {"type": "string", "enum": list(SURGE_ELEMENTS)},
                 },
             },
             "sectors": {
@@ -109,24 +96,6 @@ def _build_lost_sector_schema() -> dict[str, t.Any]:
                         "master": {
                             "$ref": "#/definitions/difficulty",
                             "title": "Master",
-                        },
-                        "threat": {
-                            "type": "string",
-                            "title": "Threat (advanced)",
-                            "enum": list(THREAT_ELEMENTS),
-                            "options": {"collapsed": True},
-                        },
-                        "overcharged_weapon": {
-                            "type": "string",
-                            "title": "Overcharged weapon (advanced)",
-                        },
-                        "expert_modifiers": {
-                            "type": "string",
-                            "title": "Expert modifiers (advanced)",
-                        },
-                        "master_modifiers": {
-                            "type": "string",
-                            "title": "Master modifiers (advanced)",
                         },
                     },
                 },
