@@ -734,14 +734,14 @@ class NavPages(DateRangeDict):
 
 
 # Regex matching the "**From**"/"**Till**" lines that the anchor bot adds to
-# reset/gunsmith posts; these are stripped from the mirrored embed.
+# weekly-reset-style posts; these are stripped from the mirrored embed.
 rgx_find_from_till_text = re.compile(r"\n\*\*(From|Till)\*\*[^\n]*")
 
 
 class ResetPages(NavPages):
     """NavPages for posts that share the weekly-reset anchor formatting.
 
-    Both the weekly-reset and gunsmith posts use identical preprocessing, so
+    Several posts (weekly-reset, portal-ops) use identical preprocessing, so
     they share this subclass: merge the message content and attachments into the
     embed and strip the redundant From/Till lines.
     """
