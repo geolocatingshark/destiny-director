@@ -114,19 +114,25 @@ def _cookies(token: str) -> dict[str, str]:
 # --- session manager -------------------------------------------------------------
 
 
-async def test_session_resolves_until_burned():
+async def test_session_mint_resolves():
     token = editor.RotationSessionManager.mint()
     assert editor.RotationSessionManager.resolve(token)
-    editor.RotationSessionManager.burn(token)
-    assert not editor.RotationSessionManager.resolve(token)
+
+
+async def test_session_rejects_garbage_and_tampering():
+    assert not editor.RotationSessionManager.resolve("")
     assert not editor.RotationSessionManager.resolve("never-minted")
+    # A tampered (extended) expiry no longer matches the signature.
+    token = editor.RotationSessionManager.mint()
+    expiry_str, _, sig = token.partition(".")
+    forged = f"{int(expiry_str) + 100_000}.{sig}"
+    assert not editor.RotationSessionManager.resolve(forged)
 
 
 async def test_session_expiry():
-    expired = editor.RotationSessionManager.mint()
-    editor.RotationSessionManager._sessions[expired] = dt.datetime.now() - dt.timedelta(
-        seconds=1
-    )
+    # A correctly-signed token whose embedded expiry is in the past is rejected.
+    past = int((dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).timestamp())
+    expired = editor.RotationSessionManager._sign(past)
     assert not editor.RotationSessionManager.resolve(expired)
 
 
@@ -139,7 +145,13 @@ async def test_home_entry_token_sets_cookie_and_redirects():
     assert resp.status == 302
     assert resp.headers.get("Location") == "/rotation"
     # The entry token is stored back as the session cookie.
-    assert resp.cookies[editor._SESSION_COOKIE].value == token
+    morsel = resp.cookies[editor._SESSION_COOKIE]
+    assert morsel.value == token
+    # SameSite=Lax (NOT Strict) so the cookie survives the cross-site arrival from
+    # Discord + the same-origin redirect; scoped + HttpOnly.
+    assert morsel["samesite"] == "Lax"
+    assert morsel["path"] == "/rotation"
+    assert morsel["httponly"]
 
 
 async def test_home_entry_rejects_bad_token():
