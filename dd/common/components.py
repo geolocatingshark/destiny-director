@@ -154,12 +154,24 @@ def rebuild_components(
 
     hikari's ``create_message``/``edit`` accept only builders, but a fetched message
     exposes component *models* which are not builders and carry no build path (unlike
-    embeds, which round-trip directly). The mirror uses this to re-send a Components
-    V2 source message to a destination. Only the CV2 content types we actually emit
-    are supported — containers, text displays and separators; an unsupported type
-    raises so a new component kind surfaces loudly instead of mirroring blank.
+    embeds, which round-trip directly). The mirror uses this to re-send a Components V2
+    source message to a destination, and the navigator to re-render CV2 autoposts. The
+    CV2 *display* content types are supported — containers, text displays, separators,
+    media galleries, thumbnails, files and sections — plus action-row buttons; a
+    genuinely unsupported member (select menu, premium button, …) raises so a new kind
+    surfaces loudly instead of mirroring blank.
+
+    Round-trip notes: media is re-sent by URL only (``proxy_url`` is read-only and not
+    reproduced — Discord re-proxies); a custom emoji on a button may not render if the
+    bot doesn't share its guild; a mirrored *interactive* button is non-functional on
+    the copy (kept for visual fidelity).
     """
     return [_rebuild_component(component) for component in components]
+
+
+# A rebuilt button (interactive or link) — used for action rows and section accessories.
+_ButtonBuilder = h.impl.InteractiveButtonBuilder | h.impl.LinkButtonBuilder
+_SectionAccessory = h.impl.ThumbnailComponentBuilder | _ButtonBuilder
 
 
 def _rebuild_component(component: h.PartialComponent) -> h.api.ComponentBuilder:
@@ -170,27 +182,154 @@ def _rebuild_component(component: h.PartialComponent) -> h.api.ComponentBuilder:
             else h.UNDEFINED,
             spoiler=component.is_spoiler,
         )
-        # Add children via the typed methods (the generic ``add_component`` only
-        # accepts the narrow container-child union). Containers can't nest in CV2.
         for child in component.components:
-            if isinstance(child, h.TextDisplayComponent):
-                container.add_text_display(child.content)
-            elif isinstance(child, h.SeparatorComponent):
-                container.add_separator(
-                    spacing=child.spacing if child.spacing is not None else h.UNDEFINED,
-                    divider=child.divider if child.divider is not None else h.UNDEFINED,
-                )
-            else:
-                raise NotImplementedError(_unrebuildable(child))
+            _add_container_child(container, child)
         return container
     if isinstance(component, h.TextDisplayComponent):
         return h.impl.TextDisplayComponentBuilder(content=component.content)
     if isinstance(component, h.SeparatorComponent):
-        return h.impl.SeparatorComponentBuilder(
-            spacing=component.spacing if component.spacing is not None else h.UNDEFINED,
-            divider=component.divider if component.divider is not None else h.UNDEFINED,
-        )
+        return _rebuild_separator(component)
+    if isinstance(component, h.MediaGalleryComponent):
+        return _rebuild_media_gallery(component)
+    if isinstance(component, h.FileComponent):
+        return _rebuild_file(component)
+    if isinstance(component, h.SectionComponent):
+        return _rebuild_section(component)
+    if isinstance(component, h.ActionRowComponent):
+        return _rebuild_action_row(component)
     raise NotImplementedError(_unrebuildable(component))
+
+
+def _add_container_child(
+    container: h.impl.ContainerComponentBuilder, child: h.PartialComponent
+) -> None:
+    """Rebuild one container child onto ``container``.
+
+    Simple kinds use their typed ``add_*`` method (raw args); builder-typed kinds
+    (media gallery, action row, section) are built and passed to ``add_component`` (the
+    container-child union it accepts) as a concrete builder.
+    """
+    if isinstance(child, h.TextDisplayComponent):
+        container.add_text_display(child.content)
+    elif isinstance(child, h.SeparatorComponent):
+        container.add_separator(
+            spacing=child.spacing if child.spacing is not None else h.UNDEFINED,
+            divider=child.divider if child.divider is not None else h.UNDEFINED,
+        )
+    elif isinstance(child, h.FileComponent):
+        container.add_file(child.file.url, spoiler=child.is_spoiler)
+    elif isinstance(child, h.MediaGalleryComponent):
+        container.add_component(_rebuild_media_gallery(child))
+    elif isinstance(child, h.ActionRowComponent):
+        container.add_component(_rebuild_action_row(child))
+    elif isinstance(child, h.SectionComponent):
+        container.add_component(_rebuild_section(child))
+    else:
+        raise NotImplementedError(_unrebuildable(child))
+
+
+def _rebuild_separator(
+    component: h.SeparatorComponent,
+) -> h.impl.SeparatorComponentBuilder:
+    return h.impl.SeparatorComponentBuilder(
+        spacing=component.spacing if component.spacing is not None else h.UNDEFINED,
+        divider=component.divider if component.divider is not None else h.UNDEFINED,
+    )
+
+
+def _rebuild_media_gallery(
+    component: h.MediaGalleryComponent,
+) -> h.impl.MediaGalleryComponentBuilder:
+    # Media is re-sent by URL only; ``proxy_url`` is read-only and not reproduced.
+    gallery = h.impl.MediaGalleryComponentBuilder()
+    for item in component.items:
+        gallery.add_media_gallery_item(
+            item.media.url,
+            description=item.description
+            if item.description is not None
+            else h.UNDEFINED,
+            spoiler=item.is_spoiler,
+        )
+    return gallery
+
+
+def _rebuild_thumbnail(
+    component: h.ThumbnailComponent,
+) -> h.impl.ThumbnailComponentBuilder:
+    return h.impl.ThumbnailComponentBuilder(
+        media=component.media.url,
+        description=component.description
+        if component.description is not None
+        else h.UNDEFINED,
+        spoiler=component.is_spoiler,
+    )
+
+
+def _rebuild_file(component: h.FileComponent) -> h.impl.FileComponentBuilder:
+    return h.impl.FileComponentBuilder(
+        file=component.file.url, spoiler=component.is_spoiler
+    )
+
+
+def _rebuild_button(button: h.ButtonComponent) -> _ButtonBuilder:
+    label = button.label if button.label is not None else h.UNDEFINED
+    emoji = button.emoji if button.emoji is not None else h.UNDEFINED
+    if button.url is not None:
+        return h.impl.LinkButtonBuilder(
+            url=button.url, label=label, emoji=emoji, is_disabled=button.is_disabled
+        )
+    if button.custom_id is None:
+        # Premium (SKU) or otherwise unrebuildable button.
+        raise NotImplementedError(_unrebuildable(button))
+    return h.impl.InteractiveButtonBuilder(
+        style=button.style,
+        custom_id=button.custom_id,
+        label=label,
+        emoji=emoji,
+        is_disabled=button.is_disabled,
+    )
+
+
+def _action_row_buttons(
+    component: h.ActionRowComponent,
+) -> list[_ButtonBuilder]:
+    buttons: list[_ButtonBuilder] = []
+    for child in component.components:
+        if isinstance(child, h.ButtonComponent):
+            buttons.append(_rebuild_button(child))
+        else:
+            # e.g. a select menu — dead in a mirrored message; surface loudly.
+            raise NotImplementedError(_unrebuildable(child))
+    return buttons
+
+
+def _rebuild_action_row(
+    component: h.ActionRowComponent,
+) -> h.impl.MessageActionRowBuilder:
+    row = h.impl.MessageActionRowBuilder()
+    for button in _action_row_buttons(component):
+        row.add_component(button)
+    return row
+
+
+def _rebuild_section_accessory(accessory: h.PartialComponent) -> _SectionAccessory:
+    if isinstance(accessory, h.ThumbnailComponent):
+        return _rebuild_thumbnail(accessory)
+    if isinstance(accessory, h.ButtonComponent):
+        return _rebuild_button(accessory)
+    raise NotImplementedError(_unrebuildable(accessory))
+
+
+def _rebuild_section(component: h.SectionComponent) -> h.impl.SectionComponentBuilder:
+    section = h.impl.SectionComponentBuilder(
+        accessory=_rebuild_section_accessory(component.accessory)
+    )
+    for child in component.components:
+        if isinstance(child, h.TextDisplayComponent):
+            section.add_text_display(child.content)
+        else:
+            raise NotImplementedError(_unrebuildable(child))
+    return section
 
 
 def _unrebuildable(component: h.PartialComponent) -> str:

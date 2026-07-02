@@ -33,6 +33,9 @@ _pages = setup_nav_pages(
     history_len=4,
     period=dt.timedelta(days=1),
     reference_date=REFERENCE_DATE,
+    # The eververse autopost is a Components V2 message, so its navigator renders CV2
+    # pages (and a CV2 no-data page — every page must share the IS_COMPONENTS_V2 flag).
+    cv2=True,
 )
 
 loader.command(

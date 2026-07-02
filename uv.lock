@@ -499,7 +499,6 @@ dependencies = [
     { name = "gspread" },
     { name = "hikari" },
     { name = "hikari-lightbulb" },
-    { name = "hikari-miru" },
     { name = "hikari-toolbox" },
     { name = "python-dotenv" },
     { name = "regex" },
@@ -539,7 +538,6 @@ requires-dist = [
     { name = "gspread", specifier = ">=5.9" },
     { name = "hikari", specifier = "==2.5.0" },
     { name = "hikari-lightbulb", specifier = ">=3.0.0" },
-    { name = "hikari-miru", specifier = ">=3.4.0,<4" },
     { name = "hikari-toolbox", specifier = ">=0.1.5" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "regex", specifier = ">=2023.6.3" },
@@ -708,19 +706,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/db/0b/02ea547ed350cb8ae733afe5d77325b03cd488664daeb70b3e02e151b037/hikari_lightbulb-3.2.3.tar.gz", hash = "sha256:9db7747a93c0a1af7702a4acf078cc89afdee3a6914521609b4d7693b5244b91", size = 136755, upload-time = "2025-12-27T21:41:35.052Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/73/29/bd8b0b7b8475b02265a2862b43d2183f56e7cff36033852f86bd135bace7/hikari_lightbulb-3.2.3-py3-none-any.whl", hash = "sha256:b957e1cf804dbe3acd7b6127646e9ec2e5fe39d3d631dc4402f8dd2078057626", size = 105008, upload-time = "2025-12-27T21:41:33.451Z" },
-]
-
-[[package]]
-name = "hikari-miru"
-version = "3.4.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "hikari" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/7d/15/9a4a6452342a69c37105bb3c786b41b2c7aea5764c9bbbd791a350ab7bf3/hikari-miru-3.4.0.tar.gz", hash = "sha256:c5ce35e0a2e720689b417ccac4080252f3d7b3c8e53c9b641e8a7bd9fdbbd95d", size = 45304, upload-time = "2023-12-25T00:40:19.348Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/f9/9867cff1fc0eb1566b6cd370d0d13f8989780c8e19e5c5b124b3aa2f461a/hikari_miru-3.4.0-py3-none-any.whl", hash = "sha256:4bc9fa1833c1a6a69baccd64603af44f015c26294d2bd16aa16db0a6b61c167b", size = 84898, upload-time = "2023-12-25T00:40:17.431Z" },
 ]
 
 [[package]]
