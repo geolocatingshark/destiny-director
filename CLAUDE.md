@@ -7,7 +7,7 @@ Two Discord bots (`hikari-lightbulb` v3) sharing one codebase under `dd/`:
 - `dd.common` — shared DB schemas / helpers
 - `dd.hmessage`, `dd.sector_accounting` — shared domain code
 
-Python 3.12, fully async (hikari / aiohttp / aiosqlite / asyncmy), SQLAlchemy 2.0,
+Python 3.13, fully async (hikari / aiohttp / aiosqlite / asyncmy), SQLAlchemy 2.0,
 Atlas for migrations, deployed on Railway.
 
 ## Package management — use uv
@@ -79,7 +79,7 @@ WSL). VSCode is no longer used — ignore `.vscode/settings.json` and
   (`atlas.hcl`, `migrations/`): `make atlas-migration-plan` to diff,
   `make atlas-migration-apply` to apply. `make create-schemas` / `destroy-schemas`
   manage tables directly.
-- `.python-version` pins 3.12.
+- `.python-version` pins 3.13.
 
 ## Conventions
 

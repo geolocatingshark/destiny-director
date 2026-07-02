@@ -4,7 +4,7 @@ Setting up the dev environment:
 
 1. Install [uv](https://docs.astral.sh/uv/) (the only supported package manager).
 2. Run `uv sync` in the root of the git clone to create the virtualenv and install
-   dependencies (Python 3.12, pinned in `.python-version`).
+   dependencies (Python 3.13, pinned in `.python-version`).
 3. [Optional] Set up `.env` with the environment variables referenced in
    `dd/common/cfg.py` & `.env-example`.
 4. [Optional] Run `uv run pre-commit install` to enable the lint/format/type-check

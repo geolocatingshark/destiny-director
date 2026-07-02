@@ -1,5 +1,5 @@
 # Stage 1: Base (System dependencies)
-FROM python:3.12-alpine AS base
+FROM python:3.13-alpine AS base
 RUN apk update && apk add --no-cache git gcc tzdata musl-dev
 ENV TZ=Etc/UTC
 
