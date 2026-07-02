@@ -13,12 +13,22 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+"""Interactive embed builder, built on lightbulb v3 components (miru-free).
+
+``build_embed_with_user`` shows an ephemeral message with a row of edit buttons; each
+opens a modal for its field(s), mutates the in-progress embed and edits the message in
+place. Done returns the finished embed. Used by the ``/post`` embed commands.
+"""
+
+import asyncio
+import contextlib
 import logging
 import typing as t
+import uuid
 
 import hikari as h
 import lightbulb as lb
-import miru as m
+from lightbulb import components as lbc
 
 from ..common import cfg
 from ..common.utils import (
@@ -27,262 +37,158 @@ from ..common.utils import (
     re_user_side_emoji,
 )
 
+# (label, current value, required, multi-line) for one modal text input.
+_FieldSpec = tuple[str, str, bool, bool]
+_Mutate = t.Callable[[h.Embed, list[str]], t.Awaitable[h.Embed | None]]
+
+
+async def _kyber_emoji_dict(bot: h.GatewayBot) -> dict[str, h.Emoji]:
+    """Fetch the Kyber server's emoji keyed by name."""
+    guild = bot.cache.get_guild(
+        cfg.kyber_discord_server_id
+    ) or await bot.rest.fetch_guild(cfg.kyber_discord_server_id)
+    return {emoji.name: emoji for emoji in await guild.fetch_emojis()}
+
 
 async def substitute_user_side_emoji(
     bot_or_emoji_dict: h.GatewayBot | dict[str, h.Emoji], text: str
 ) -> str:
-    """Substitutes user-side emoji with their respective mentions"""
+    """Substitutes user-side emoji with their respective mentions.
 
-    emoji_dict: dict[str, h.Emoji]
-    if isinstance(bot_or_emoji_dict, h.GatewayBot):
-        guild = bot_or_emoji_dict.cache.get_guild(
-            cfg.kyber_discord_server_id
-        ) or await bot_or_emoji_dict.rest.fetch_guild(cfg.kyber_discord_server_id)
-
-        emoji_dict = {emoji.name: emoji for emoji in await guild.fetch_emojis()}
-    else:
-        emoji_dict = bot_or_emoji_dict
-
-    # Substitutes user-side emoji with their respective mentions
+    Accepts a resolved emoji dict (no I/O) or a bot (fetches the Kyber emoji first).
+    """
+    emoji_dict = (
+        await _kyber_emoji_dict(bot_or_emoji_dict)
+        if isinstance(bot_or_emoji_dict, h.GatewayBot)
+        else bot_or_emoji_dict
+    )
     return re_user_side_emoji.sub(construct_emoji_substituter(emoji_dict), text)
 
 
-class InteractiveBuilderView(m.View):
-    @staticmethod
-    async def ask_user_for_properties(
-        ctx: m.ViewContext,
-        property_names: str | list[str],
-        old_values: str | list[str],
-        required: bool | list[bool] = True,
-        multi_line: bool = False,
-    ) -> str | list[str] | None:
-        """Asks the user for a property of the embed using a modal
+class _BuilderState:
+    """Shared, mutable state for one embed-builder session."""
 
-        Returns the new value of the property if the user responds"""
+    def __init__(self, embed: h.Embed) -> None:
+        self.embed = embed
+        self.result: h.Embed | None = None  # set when the user presses Done
 
-        names: list[str] = (
-            property_names if isinstance(property_names, list) else [property_names]
-        )
-        values_in: list[str] = (
-            old_values if isinstance(old_values, list) else [old_values]
-        )
-        required_list: list[bool] = (
-            required if isinstance(required, list) else [required] * len(names)
-        )
 
-        if not len(names) == len(values_in):
-            raise ValueError("property_names and old_values must be the same length")
+# --- per-field modal field specs + mutators (pure; unit-tested) -------------------
 
-        modal = m.Modal(title=f"Edit {', '.join(names)}")
-        custom_ids = [
-            f"embed_{property_name.lower().replace(' ', '_')}"
-            for property_name in names
-        ]
 
-        style = h.TextInputStyle.PARAGRAPH if multi_line else h.TextInputStyle.SHORT
+def _author_fields(embed: h.Embed) -> list[_FieldSpec]:
+    author = embed.author
+    name = (author.name or "") if author else ""
+    icon = (author.icon.url if author and author.icon else "") or ""
+    url = (author.url or "") if author else ""
+    return [
+        ("Author", name, False, False),
+        ("Icon URL", icon, False, False),
+        ("Author URL", url, False, False),
+    ]
 
-        for custom_id, old_value, property_name, required_ in zip(
-            custom_ids, values_in, names, required_list, strict=True
-        ):
-            modal.add_item(
-                m.TextInput(
-                    label=property_name,
-                    value=old_value,
-                    style=style,
-                    required=required_,
-                    custom_id=custom_id,
-                )
+
+def _footer_fields(embed: h.Embed) -> list[_FieldSpec]:
+    footer = embed.footer
+    text = (footer.text or "") if footer else ""
+    icon = (footer.icon.url if footer and footer.icon else "") or ""
+    return [("Footer", text, False, False), ("Icon URL", icon, False, False)]
+
+
+async def _mutate_title(embed: h.Embed, values: list[str]) -> h.Embed | None:
+    embed.title = values[0] or None
+    return embed
+
+
+async def _mutate_color(embed: h.Embed, values: list[str]) -> h.Embed | None:
+    if not values[0]:
+        return None
+    try:
+        embed.color = h.Color.of(values[0])
+    except ValueError as e:
+        logging.error("Embed builder: invalid color %r", values[0])
+        logging.exception(e)
+        return None
+    return embed
+
+
+async def _mutate_author(embed: h.Embed, values: list[str]) -> h.Embed | None:
+    embed.set_author(
+        name=values[0] or None, icon=values[1] or None, url=values[2] or None
+    )
+    return embed
+
+
+async def _mutate_footer(embed: h.Embed, values: list[str]) -> h.Embed | None:
+    embed.set_footer(values[0] or None, icon=values[1] or None)
+    return embed
+
+
+async def _mutate_image(embed: h.Embed, values: list[str]) -> h.Embed | None:
+    # Empty → clear; otherwise follow one redirect so the newest image is embedded.
+    embed.set_image(await follow_link_single_step(values[0]) if values[0] else None)
+    return embed
+
+
+async def _mutate_thumbnail(embed: h.Embed, values: list[str]) -> h.Embed | None:
+    embed.set_thumbnail(await follow_link_single_step(values[0]) if values[0] else None)
+    return embed
+
+
+# --- modal ------------------------------------------------------------------------
+
+
+class _PropertiesModal(lbc.Modal):
+    """A modal with 1..N text inputs that applies ``mutate`` to ``embed`` on submit."""
+
+    def __init__(
+        self, *, field_specs: list[_FieldSpec], embed: h.Embed, mutate: _Mutate
+    ) -> None:
+        self._embed = embed
+        self._mutate = mutate
+        self._fields: list[lbc.TextInput] = []
+        for label, value, required, multi_line in field_specs:
+            add = (
+                self.add_paragraph_text_input
+                if multi_line
+                else self.add_short_text_input
+            )
+            self._fields.append(
+                add(label, value=value or h.UNDEFINED, required=required)
             )
 
-        await ctx.respond_with_modal(modal)
-        await modal.wait()
-
-        if not modal.last_context:
-            return None
-
-        await modal.last_context.defer()
-
-        values = [
-            str(modal.last_context.get_value_by_id(custom_id) or "")
-            for custom_id in custom_ids
-        ]
-
-        return values[0] if len(values) == 1 else values
-
-
-class EmbedBuilderView(InteractiveBuilderView):
-    """A view for building embeds as per user input"""
-
-    def __init__(self, done_button_text: str = "Done"):
-        super().__init__(timeout=840)
-        self.embed: h.Embed | None = None
-        t.cast(m.Button, t.cast(object, self.done)).label = done_button_text
-
-    # @m.button(style=h.ButtonStyle.PRIMARY, label="Add Field")
-    # async def add_field(self, button: m.Button, ctx: m.ViewContext):
-    #     """Adds a field to the embed"""
-    #     pass
-
-    # @m.button(style=h.ButtonStyle.DANGER, label="Remove Field")
-    # async def remove_field(self, button: m.Button, ctx: m.ViewContext):
-    #     """Removes a field from the embed"""
-    #     pass
-
-    @m.button(style=h.ButtonStyle.SECONDARY, label="Edit Title")
-    async def edit_title(self, button: m.Button, ctx: m.ViewContext):
-        """Edits the embed's title"""
-        embed = ctx.message.embeds[0]
-        embed.title = t.cast(
-            "str | None",
-            await self.ask_user_for_properties(
-                ctx, "Title", embed.title or "", required=False
-            ),
+    async def on_submit(self, ctx: lbc.ModalContext) -> h.Embed | None:
+        values = [ctx.value_for(field) or "" for field in self._fields]
+        # Defer first so a slow mutation (image/thumbnail redirect follow) can't blow
+        # the ~3s modal ack window; then edit the builder message in place.
+        await ctx.interaction.create_initial_response(
+            h.ResponseType.DEFERRED_MESSAGE_UPDATE
         )
-        await ctx.edit_response(embed=embed)
+        new = await self._mutate(self._embed, values)
+        if new is not None:
+            await ctx.interaction.edit_initial_response(embed=new)
+        return new
 
-    @m.button(style=h.ButtonStyle.SECONDARY, label="Edit Text")
-    async def edit_description(self, button: m.Button, ctx: m.ViewContext):
-        """Edits the embed's description"""
-        embed: h.Embed = ctx.message.embeds[0]
-        description = t.cast(
-            "str | None",
-            await self.ask_user_for_properties(
-                ctx, "Body", embed.description or "", multi_line=True, required=False
-            ),
-        )
-        bot = t.cast(h.GatewayBot, ctx.bot)
 
-        embed.description = await substitute_user_side_emoji(bot, description or "")
-        await ctx.edit_response(embed=embed)
+async def _open_edit_modal(
+    mctx: lbc.MenuContext,
+    state: _BuilderState,
+    title: str,
+    field_specs: list[_FieldSpec],
+    mutate: _Mutate,
+) -> None:
+    modal = _PropertiesModal(field_specs=field_specs, embed=state.embed, mutate=mutate)
+    custom_id = f"embed_edit:{uuid.uuid4()}"
+    # ``respond_with_modal`` must be the first response on the button's context.
+    await mctx.respond_with_modal(title, custom_id, components=modal)
+    with contextlib.suppress(asyncio.TimeoutError):
+        # Dismissing the modal times out here → leave the field untouched.
+        new = await modal.attach(mctx.client, custom_id, timeout=300)
+        if new is not None:
+            state.embed = new
 
-    @m.button(style=h.ButtonStyle.SECONDARY, label="Edit Color")
-    async def edit_color(self, button: m.Button, ctx: m.ViewContext):
-        """Edits the embed's color"""
-        embed = ctx.message.embeds[0]
-        color = t.cast(
-            "str | None",
-            await self.ask_user_for_properties(
-                ctx,
-                "Color",
-                str(embed.color or cfg.embed_default_color),
-                required=False,
-            ),
-        )
-        if not color:
-            return
-        try:
-            embed.color = h.Color.of(color)
-        except ValueError as e:
-            logging.error(f"Invalid color: {color}")
-            logging.exception(e)
-        else:
-            await ctx.edit_response(embed=embed)
 
-    @m.button(style=h.ButtonStyle.SECONDARY, label="Edit Author")
-    async def edit_author(self, button: m.Button, ctx: m.ViewContext):
-        """Edits the embed's author text"""
-        embed: h.Embed = ctx.message.embeds[0]
-
-        name = (embed.author.name or "") if embed.author else ""
-        icon = (
-            (embed.author.icon.url if embed.author.icon else "") if embed.author else ""
-        )
-        url = (embed.author.url or "") if embed.author else ""
-
-        result = await self.ask_user_for_properties(
-            ctx,
-            ["Author", "Icon URL", "Author URL"],
-            [name, icon, url],
-            required=False,
-        )
-        # None → the modal was dismissed; leave the author untouched.
-        if result is None:
-            return
-        name, icon, url = t.cast("list[str]", result)
-
-        embed.set_author(name=name or None, icon=icon or None, url=url or None)
-        await ctx.edit_response(embed=embed)
-
-    @m.button(style=h.ButtonStyle.SECONDARY, label="Edit Image")
-    async def edit_image(self, button: m.Button, ctx: m.ViewContext):
-        """Edits the embed's image"""
-
-        embed = ctx.message.embeds[0]
-        image_url = t.cast(
-            "str | None",
-            await self.ask_user_for_properties(
-                ctx,
-                "Image URL",
-                embed.image.url if embed.image else "",
-                required=False,
-            ),
-        )
-        # None → the modal was cancelled (leave the image as-is); an empty string →
-        # the user cleared the field, so remove the image.
-        if image_url is None:
-            return
-
-        embed.set_image(await follow_link_single_step(image_url) if image_url else None)
-
-        await ctx.edit_response(embed=embed)
-
-    @m.button(style=h.ButtonStyle.SECONDARY, label="Edit Thumbnail")
-    async def edit_thumbnail(self, button: m.Button, ctx: m.ViewContext):
-        """Edits the embed's thumbnail"""
-
-        embed = ctx.message.embeds[0]
-        thumbnail_url = t.cast(
-            "str | None",
-            await self.ask_user_for_properties(
-                ctx,
-                "Thumbnail URL",
-                embed.thumbnail.url if embed.thumbnail else "",
-                required=False,
-            ),
-        )
-        # None → the modal was cancelled (leave the thumbnail as-is); an empty string →
-        # the user cleared the field, so remove the thumbnail.
-        if thumbnail_url is None:
-            return
-
-        embed.set_thumbnail(
-            await follow_link_single_step(thumbnail_url) if thumbnail_url else None
-        )
-
-        await ctx.edit_response(embed=embed)
-
-    @m.button(style=h.ButtonStyle.SECONDARY, label="Edit Footer")
-    async def edit_footer(self, button: m.Button, ctx: m.ViewContext):
-        """Edits the embed's footer text"""
-        embed: h.Embed = ctx.message.embeds[0]
-
-        text = (embed.footer.text or "") if embed.footer else ""
-        icon = (
-            (embed.footer.icon.url if embed.footer.icon else "") if embed.footer else ""
-        )
-
-        result = await self.ask_user_for_properties(
-            ctx,
-            ["Footer", "Icon URL"],
-            [text, icon],
-            required=False,
-        )
-        # None → the modal was dismissed; leave the footer untouched.
-        if result is None:
-            return
-        text, icon = t.cast("list[str]", result)
-
-        embed.set_footer(text, icon=icon or None)
-        await ctx.edit_response(embed=embed)
-
-    @m.button(style=h.ButtonStyle.SUCCESS, label="Done")
-    async def done(self, button: m.Button, ctx: m.ViewContext):
-        """Finishes building the embed"""
-        for item in self.children:
-            item.disabled = True  # Disable all items attached to the view
-        await ctx.edit_response(components=self)
-        self.embed = ctx.message.embeds[0]
-        self.stop()
+# --- public entry point -----------------------------------------------------------
 
 
 async def build_embed_with_user(
@@ -290,23 +196,94 @@ async def build_embed_with_user(
     done_button_text: str = "Done",
     existing_embed: h.Embed | None = None,
 ) -> h.Embed | None:
-    """Builds an embed as specified by the user
-
-    Responds with a message with buttons allowing the user to specify
-    embed properties. Returns the embed once the user is done."""
+    """Build an embed interactively; returns the embed on Done, else ``None``."""
     embed = existing_embed or h.Embed(
         title="Embed Builder",
         description="Use the buttons below to build your embed!\n",
         color=cfg.embed_default_color,
     )
+    state = _BuilderState(embed)
 
-    view = EmbedBuilderView(done_button_text=done_button_text)
-    # In lightbulb v3 ``ctx.respond`` returns a sentinel (-1) for the initial response
-    # rather than a message id, so bind the miru view to the fetched initial response
-    # message instead. Binding to the sentinel keys the view to a bogus message id and
-    # every button click goes unrouted ("interaction failed").
-    await ctx.respond(embed=embed, components=view, flags=h.MessageFlag.EPHEMERAL)
-    message = await ctx.interaction.fetch_initial_response()
-    await view.start(message=message)
-    await view.wait()
-    return view.embed
+    # Pre-resolve the emoji dict once so the description mutator does no network I/O on
+    # the modal ack path. A failure here just disables emoji substitution.
+    bot = t.cast(h.GatewayBot, ctx.client.app)
+    try:
+        emoji_dict = await _kyber_emoji_dict(bot)
+    except Exception as e:
+        logging.warning("Embed builder: could not pre-resolve emoji dict: %r", e)
+        emoji_dict = {}
+
+    async def _mutate_description(embed_: h.Embed, values: list[str]) -> h.Embed | None:
+        embed_.description = await substitute_user_side_emoji(emoji_dict, values[0])
+        return embed_
+
+    menu = lbc.Menu()
+
+    def _register(
+        custom_id: str,
+        label: str,
+        fields_fn: t.Callable[[h.Embed], list[_FieldSpec]],
+        mutate: _Mutate,
+    ) -> None:
+        async def _on_press(mctx: lbc.MenuContext) -> None:
+            await _open_edit_modal(mctx, state, label, fields_fn(state.embed), mutate)
+
+        menu.add_interactive_button(
+            h.ButtonStyle.SECONDARY, _on_press, custom_id=custom_id, label=label
+        )
+
+    _register(
+        "embed:title",
+        "Edit Title",
+        lambda e: [("Title", e.title or "", False, False)],
+        _mutate_title,
+    )
+    _register(
+        "embed:text",
+        "Edit Text",
+        lambda e: [("Body", e.description or "", False, True)],
+        _mutate_description,
+    )
+    _register(
+        "embed:color",
+        "Edit Color",
+        lambda e: [("Color", str(e.color or cfg.embed_default_color), False, False)],
+        _mutate_color,
+    )
+    _register("embed:author", "Edit Author", _author_fields, _mutate_author)
+    _register(
+        "embed:image",
+        "Edit Image",
+        lambda e: [("Image URL", e.image.url if e.image else "", False, False)],
+        _mutate_image,
+    )
+    _register(
+        "embed:thumbnail",
+        "Edit Thumbnail",
+        lambda e: [
+            ("Thumbnail URL", e.thumbnail.url if e.thumbnail else "", False, False)
+        ],
+        _mutate_thumbnail,
+    )
+    _register("embed:footer", "Edit Footer", _footer_fields, _mutate_footer)
+
+    async def _on_done(mctx: lbc.MenuContext) -> None:
+        state.result = state.embed
+        await mctx.respond(edit=True, components=menu.disable_all_components())
+        mctx.stop_interacting()
+
+    menu.add_interactive_button(
+        h.ButtonStyle.SUCCESS, _on_done, custom_id="embed:done", label=done_button_text
+    )
+
+    await ctx.respond(embed=embed, components=menu, flags=h.MessageFlag.EPHEMERAL)
+    # ``attach`` blocks until Done (which stops it) or the timeout (which raises).
+    with contextlib.suppress(TimeoutError):
+        await menu.attach(ctx.client, timeout=840)
+    if state.result is None:
+        # Timed out without Done — disable the controls (best-effort).
+        with contextlib.suppress(h.NotFoundError, h.UnauthorizedError):
+            await ctx.interaction.edit_initial_response(
+                components=menu.disable_all_components()
+            )
+    return state.result

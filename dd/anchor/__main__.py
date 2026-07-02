@@ -15,13 +15,12 @@
 
 """Entry point for the anchor (secondary) Discord bot.
 
-Run with ``python -OOm dd.anchor``. Wires up the hikari client, miru and
+Run with ``python -OOm dd.anchor``. Wires up the hikari client and
 lightbulb, loads the ``dd.anchor.extensions`` and starts the gateway.
 """
 
 import hikari as h
 import lightbulb as lb
-import miru as m
 
 import dd.anchor.extensions
 
@@ -115,7 +114,6 @@ async def on_guild_rm(_event: h.GuildLeaveEvent):
     await utils.update_status(bot, bot.guild_count, bool(cfg.test_env))
 
 
-m.install(bot)
 bot.run()
 # Exit on the main thread with the code requested by a lifecycle command (0 if none).
 # This is reliable where a SystemExit raised inside an interaction-callback task is not.

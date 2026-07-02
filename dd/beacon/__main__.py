@@ -15,13 +15,12 @@
 
 """Entry point for the beacon (main) Discord bot.
 
-Run with ``python -OOm dd.beacon``. Wires up the hikari client, miru and
+Run with ``python -OOm dd.beacon``. Wires up the hikari client and
 lightbulb, loads the ``dd.beacon.extensions`` and starts the gateway.
 """
 
 import hikari as h
 import lightbulb as lb
-import miru
 
 import dd.beacon.extensions
 import dd.beacon.extensions.user_commands
@@ -86,7 +85,6 @@ async def on_stopping_event(_event: h.StoppingEvent):
     await schemas.db_engine.dispose()
 
 
-miru.install(bot)
 bot.run()
 # Exit on the main thread with the code requested by a lifecycle command (0 if none).
 # This is reliable where a SystemExit raised inside an interaction-callback task is not.
