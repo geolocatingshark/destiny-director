@@ -32,6 +32,14 @@ def _test_db(tmp_path_factory: pytest.TempPathFactory):
     external service), or the real MySQL engine when ``TEST_USE_MYSQL`` is set.
     """
     if os.getenv("TEST_USE_MYSQL"):
+        if not schemas._db_is_local() and not os.getenv("ALLOW_REMOTE_SCHEMA_DESTROY"):
+            pytest.fail(
+                "TEST_USE_MYSQL is set but the configured DB is not local "
+                f"(host={schemas.db_engine.url.host!r}); refusing to run against it — "
+                "it would be wiped. Point it at a local/throwaway MySQL (or set "
+                "ALLOW_REMOTE_SCHEMA_DESTROY=1 to override).",
+                pytrace=False,
+            )
         asyncio.run(schemas.wait_for_db())
         engine = None
     else:
@@ -43,7 +51,8 @@ def _test_db(tmp_path_factory: pytest.TempPathFactory):
 
     asyncio.run(schemas.create_all())
     yield
-    asyncio.run(schemas.destroy_all())
+    # No teardown drop: the temp SQLite file is discarded, and we must NEVER auto-drop a
+    # real MySQL — that ordering (reset_db then destroy_all) is what wiped the dev DB.
     if engine is not None:
         asyncio.run(engine.dispose())
         schemas.reset_db()

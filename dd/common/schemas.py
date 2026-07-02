@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio as aio
 import datetime as dt
 import logging
+import os
 import sys
 import typing as t
 from typing import Self
@@ -1548,7 +1549,33 @@ class BungieCredentials(Base):
             )
 
 
+_LOCAL_DB_HOSTS = frozenset({None, "", "localhost", "127.0.0.1", "::1"})
+
+
+def _db_is_local() -> bool:
+    """Whether the *active* engine targets SQLite or a local MySQL host.
+
+    Gates destructive schema ops (and the ``TEST_USE_MYSQL`` test path) so they can
+    never wipe a shared dev/prod database. ``configure_test_db`` swaps ``db_engine``,
+    so this reflects whatever backend is currently in use."""
+    url = db_engine.url
+    return url.get_backend_name() == "sqlite" or url.host in _LOCAL_DB_HOSTS
+
+
+def _assert_schema_destroy_allowed() -> None:
+    """Refuse to drop the schema of a non-local database unless explicitly forced."""
+    if _db_is_local() or os.getenv("ALLOW_REMOTE_SCHEMA_DESTROY"):
+        return
+    raise RuntimeError(
+        f"Refusing to drop the schema of a non-local database "
+        f"(host={db_engine.url.host!r}). This guard stops tests / "
+        "`make destroy-schemas` from wiping the dev/prod DB. Set "
+        "ALLOW_REMOTE_SCHEMA_DESTROY=1 only if you truly mean it."
+    )
+
+
 async def destroy_all() -> None:
+    _assert_schema_destroy_allowed()
     await wait_for_db()
 
     async with db_engine.begin() as conn:
