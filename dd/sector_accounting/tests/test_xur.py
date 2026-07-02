@@ -54,6 +54,72 @@ def test_locations_unknown_key_returns_default():
     assert default.friendly_location_name is None
 
 
+# --- XurLocations.from_json / to_json ------------------------------------------
+
+
+def _doc(**overrides):
+    doc = {
+        "version": 1,
+        "locations": [
+            {
+                "api_location_name": "Nessus, Watcher's Grave",
+                "friendly_location_name": "Watcher's Grave, Nessus",
+                "link": "https://kyber3000.com/x",
+            }
+        ],
+    }
+    doc.update(overrides)
+    return doc
+
+
+def test_from_json_builds_mapping():
+    locs = XurLocations.from_json(_doc())
+    loc = locs["Nessus, Watcher's Grave"]
+    assert loc.friendly_location_name == "Watcher's Grave, Nessus"
+    assert loc.link == "https://kyber3000.com/x"
+
+
+def test_from_json_missing_friendly_and_link_falls_back_to_api_name():
+    locs = XurLocations.from_json(
+        {"version": 1, "locations": [{"api_location_name": "edz"}]}
+    )
+    assert str(locs["edz"]) == "edz"
+
+
+def test_from_json_blank_strings_normalised_to_none():
+    locs = XurLocations.from_json(
+        {
+            "version": 1,
+            "locations": [
+                {"api_location_name": "edz", "friendly_location_name": "", "link": ""}
+            ],
+        }
+    )
+    loc = locs["edz"]
+    assert loc.friendly_location_name is None
+    assert loc.link is None
+
+
+def test_from_json_tolerates_absent_locations_key():
+    assert XurLocations.from_json({"version": 1}) == {}
+
+
+def test_to_json_round_trips_via_from_json():
+    original = XurLocations.from_json(_doc())
+    doc = original.to_json()
+    assert doc["version"] == 1
+    rebuilt = XurLocations.from_json(doc)
+    assert str(rebuilt["Nessus, Watcher's Grave"]) == str(
+        original["Nessus, Watcher's Grave"]
+    )
+
+
+def test_to_json_omits_blank_friendly_and_link():
+    locs = XurLocations()
+    locs["edz"] = XurLocation("edz")
+    assert locs.to_json()["locations"] == [{"api_location_name": "edz"}]
+
+
 # --- XurArmorSet / XurArmorSets ------------------------------------------------
 
 

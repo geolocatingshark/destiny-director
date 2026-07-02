@@ -200,3 +200,67 @@ async def test_malformed_body_is_a_400():
     assert resp.status == 400
     # Token unused; still valid.
     assert editor.RotationEditTokenManager.resolve(token, "lost_sector")
+
+
+# --- xur_location (a second post type through the same handlers) ------------------
+
+
+def _xur_doc(name: str = "Nessus, Watcher's Grave") -> dict[str, t.Any]:
+    return {
+        "version": 1,
+        "locations": [
+            {
+                "api_location_name": name,
+                "friendly_location_name": "Watcher's Grave, Nessus",
+                "link": "https://kyber3000.com/x",
+            }
+        ],
+    }
+
+
+async def test_default_doc_for_xur_location():
+    assert editor._default_doc("xur_location") == {"version": 1, "locations": []}
+
+
+async def test_xur_preview_renders_resolved_locations():
+    token = editor.RotationEditTokenManager.mint("xur_location")
+    resp = await editor._handle_preview(
+        _req(body={"token": token, "type": "xur_location", "data": _xur_doc()})
+    )
+    assert resp.status == 200
+    body = resp.text
+    assert body is not None
+    # Friendly name (apostrophe HTML-escaped) + the link both render.
+    assert "Grave, Nessus" in body
+    assert "https://kyber3000.com/x" in body
+
+
+async def test_xur_save_persists_and_burns_token():
+    token = editor.RotationEditTokenManager.mint("xur_location")
+    resp = await editor._handle_edit_post(
+        _req(body={"token": token, "type": "xur_location", "data": _xur_doc("Tower")})
+    )
+    assert resp.status == 200
+    assert not editor.RotationEditTokenManager.resolve(token, "xur_location")
+    stored = await schemas.RotationData.get_data("xur_location")
+    assert stored is not None
+    assert stored["locations"][0]["api_location_name"] == "Tower"
+
+
+async def test_xur_save_rejects_invalid_document_without_writing():
+    token = editor.RotationEditTokenManager.mint("xur_location")
+    bad = _xur_doc()
+    del bad["locations"]
+    resp = await editor._handle_edit_post(
+        _req(body={"token": token, "type": "xur_location", "data": bad})
+    )
+    assert resp.status == 400
+    # Token not burned on a rejected save, so the user can retry.
+    assert editor.RotationEditTokenManager.resolve(token, "xur_location")
+
+
+async def test_xur_location_parity_matches_after_round_trip():
+    from dd.sector_accounting.xur import XurLocations
+
+    locs = XurLocations.from_json(_xur_doc())
+    assert editor._xur_location_parity(locs, locs.to_json())

@@ -82,6 +82,60 @@ def xur_location_fragment(
     return f"## **__Location__**\n:location: **{str(location)}**\n"
 
 
+# Last-known-good Xûr location map, served only if both the DB store and the gspread
+# fallback are unreachable so a transient outage never breaks the autopost. Mirrors
+# ``dd.common.lost_sector._rotation_cache``.
+_xur_locations_cache: dict[str, xur_support_data.XurLocations] = {}
+
+_XUR_LOCATION = "xur_location"
+
+
+async def load_xur_locations() -> xur_support_data.XurLocations:
+    """Load the Xûr location map, preferring the DB JSON store.
+
+    Resolution order mirrors :func:`dd.common.lost_sector.load_rotation`: the
+    ``RotationData['xur_location']`` document (built via
+    :meth:`XurLocations.from_json`) → the live gspread Sheet (kept as a fallback during
+    the cutover; blocking, so offloaded to a thread) → the last-known-good cache. The DB
+    is consulted every call so editor saves take effect immediately; the cache exists
+    only for the total-outage case.
+    """
+    try:
+        doc = await schemas.RotationData.get_data(_XUR_LOCATION)
+    except Exception:
+        logger.exception("Failed to read xur_location data from the DB")
+        doc = None
+
+    if doc is not None:
+        try:
+            locations = xur_support_data.XurLocations.from_json(doc)
+            _xur_locations_cache[_XUR_LOCATION] = locations
+            return locations
+        except Exception:
+            logger.exception(
+                "Stored xur_location JSON is malformed; falling back to gspread"
+            )
+
+    try:
+        # from_gspread_url does blocking gspread network I/O; offload it so the
+        # event loop keeps servicing other coroutines during the post.
+        locations = await aio.to_thread(
+            xur_support_data.XurLocations.from_gspread_url,
+            cfg.sheets_ls_url,
+            cfg.gsheets_credentials,
+        )
+        _xur_locations_cache[_XUR_LOCATION] = locations
+        return locations
+    except Exception:
+        cached = _xur_locations_cache.get(_XUR_LOCATION)
+        if cached is not None:
+            logger.exception(
+                "Failed to load xur_location data; serving last-known-good cache"
+            )
+            return cached
+        raise
+
+
 def armor_stat_line_format(
     armor: api.DestinyArmor,
     simple_mode: bool = False,
@@ -364,13 +418,8 @@ async def format_xur_vendor(
     vendor: api.DestinyVendor,
     bot: CachedFetchBot,
 ) -> HMessage:
-    # from_gspread_url does blocking gspread network I/O; offload it so the
-    # event loop keeps servicing other coroutines during the post.
-    xur_locations = await aio.to_thread(
-        xur_support_data.XurLocations.from_gspread_url,
-        cfg.sheets_ls_url,
-        cfg.gsheets_credentials,
-    )
+    # DB JSON store first, gspread as fallback (see load_xur_locations).
+    xur_locations = await load_xur_locations()
     # xur_armor_sets = xur_support_data.XurArmorSets.from_gspread_url(
     #     cfg.sheets_ls_url, cfg.gsheets_credentials
     # )

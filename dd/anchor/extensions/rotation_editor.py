@@ -36,7 +36,10 @@ import aiohttp.web
 import lightbulb as lb
 
 from ...common import cfg, rotation_schema, schemas
-from ...sector_accounting import sector_accounting
+from ...sector_accounting import (
+    sector_accounting,
+    xur as xur_support_data,
+)
 from .. import web
 
 logger = logging.getLogger(__name__)
@@ -107,6 +110,8 @@ def _default_doc(post_type: str) -> dict[str, t.Any]:
             "schedule": {zone: [] for zone in rotation_schema.LOST_SECTOR_ZONES},
             "sectors": [],
         }
+    if post_type == "xur_location":
+        return {"version": 1, "locations": []}
     return {}
 
 
@@ -164,6 +169,46 @@ def _render_preview_html(rotation: sector_accounting.Rotation) -> str:
     return "".join(blocks)
 
 
+def _render_xur_location_preview_html(
+    locations: xur_support_data.XurLocations,
+) -> str:
+    """A compact HTML rendering of the resolved Xûr location map."""
+    items: list[str] = []
+    for loc in locations.values():
+        friendly = html.escape(loc.friendly_location_name or loc.api_location_name)
+        api_name = html.escape(loc.api_location_name)
+        if loc.link:
+            link = html.escape(loc.link, quote=True)
+            label = f"<a href='{link}' target='_blank' rel='noopener'>{friendly}</a>"
+        else:
+            label = friendly
+        items.append(f"<li>{label} <small>(API: {api_name})</small></li>")
+    if not items:
+        return "<p><em>No locations defined yet.</em></p>"
+    return "<ul>" + "".join(items) + "</ul>"
+
+
+# --- per-type dispatch ------------------------------------------------------------
+
+
+def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
+    """Construct the domain object for ``post_type`` (a hard gate beyond the schema).
+
+    Raises if the document is structurally unusable — caught by the preview / save
+    handlers and surfaced to the editor. New rotation types register their builder
+    here alongside :data:`rotation_schema.ROTATION_SCHEMAS`.
+    """
+    if post_type == "xur_location":
+        return xur_support_data.XurLocations.from_json(data)
+    return sector_accounting.Rotation.from_json(data)
+
+
+def _render_preview(post_type: str, obj: t.Any) -> str:
+    if post_type == "xur_location":
+        return _render_xur_location_preview_html(obj)
+    return _render_preview_html(obj)
+
+
 # --- route handlers ---------------------------------------------------------------
 
 
@@ -209,8 +254,8 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
         return aiohttp.web.Response(status=400, text=f"Document is invalid:\n{e}")
 
     try:
-        rotation = sector_accounting.Rotation.from_json(data)
-        body = _render_preview_html(rotation)
+        obj = _build_domain_object(post_type, data)
+        body = _render_preview(post_type, obj)
     except Exception as e:
         return aiohttp.web.Response(status=400, text=f"Could not render preview:\n{e}")
     return aiohttp.web.Response(text=body, content_type="text/html")
@@ -230,10 +275,11 @@ async def _handle_edit_post(request: aiohttp.web.Request) -> aiohttp.web.Respons
     except Exception as e:
         return aiohttp.web.Response(status=400, text=f"Document is invalid:\n{e}")
 
-    # Hard gate: the document must build into a Rotation (catches structural issues the
-    # schema alone doesn't, e.g. a bad reference_date that parses but not as a date).
+    # Hard gate: the document must build into its domain object (catches structural
+    # issues the schema alone doesn't, e.g. a bad reference_date that parses but not as
+    # a date).
     try:
-        sector_accounting.Rotation.from_json(data)
+        _build_domain_object(post_type, data)
     except Exception as e:
         return aiohttp.web.Response(status=400, text=f"Document is unusable:\n{e}")
 
@@ -305,13 +351,16 @@ class ImportFromSheet(
 ):
     type = lb.string(
         "type",
-        "Which rotation post to import (only lost_sector is sheet-backed)",
+        "Which rotation post to import (lost_sector or xur_location are sheet-backed)",
         default="lost_sector",
     )
 
     @lb.invoke
     async def invoke(self, ctx: lb.Context) -> None:
         post_type = str(self.type).strip()
+        if post_type == "xur_location":
+            await _import_xur_location_from_sheet(ctx)
+            return
         if post_type != "lost_sector":
             await ctx.respond(
                 f"`{post_type}` is not backed by a Google Sheet; nothing to import.",
@@ -385,6 +434,56 @@ def _rendered_parity(
         if render(sheet_rotation, date) != render(json_rotation, date):
             return False, date.date().isoformat()
     return True, None
+
+
+async def _import_xur_location_from_sheet(ctx: lb.Context) -> None:
+    """One-shot import of the Xûr location worksheet into ``RotationData``."""
+    initial = await ctx.respond(
+        "Importing Xûr locations from the live Sheet…", ephemeral=True
+    )
+
+    try:
+        sheet_locations = await asyncio.to_thread(
+            xur_support_data.XurLocations.from_gspread_url,
+            cfg.sheets_ls_url,
+            cfg.gsheets_credentials,
+        )
+    except Exception:
+        logger.exception("Xûr location sheet import failed")
+        await ctx.edit_response(initial, "Import failed reading the Sheet — see logs.")
+        return
+
+    doc = sheet_locations.to_json()
+    parity_ok = _xur_location_parity(sheet_locations, doc)
+    await schemas.RotationData.set_data("xur_location", doc)
+
+    note = (
+        "resolved-parity check passed ✓"
+        if parity_ok
+        else "⚠️ parity mismatch — review before relying on it"
+    )
+    await ctx.edit_response(
+        initial,
+        f"Imported **xur_location** into the DB store ({len(doc['locations'])} "
+        f"locations); {note}.",
+    )
+
+
+def _xur_location_parity(
+    sheet_locations: xur_support_data.XurLocations, doc: dict[str, t.Any]
+) -> bool:
+    """Round-trip the imported doc and compare the *resolved* rendering per key.
+
+    Compares ``str(location)`` (friendly name + link, exactly what the post renders)
+    rather than raw attrs, so the blank-string → ``None`` normalisation on import
+    doesn't read as a mismatch.
+    """
+    json_locations = xur_support_data.XurLocations.from_json(doc)
+    if set(sheet_locations.keys()) != set(json_locations.keys()):
+        return False
+    return all(
+        str(sheet_locations[key]) == str(json_locations[key]) for key in sheet_locations
+    )
 
 
 loader.command(rotation)

@@ -137,9 +137,53 @@ def _build_lost_sector_schema() -> dict[str, t.Any]:
 
 LOST_SECTOR_SCHEMA: dict[str, t.Any] = _build_lost_sector_schema()
 
+
+def _build_xur_location_schema() -> dict[str, t.Any]:
+    return {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "title": "Xûr location map",
+        "required": ["locations"],
+        "additionalProperties": False,
+        "properties": {
+            "version": {"type": "integer", "options": {"hidden": True}},
+            "locations": {
+                "type": "array",
+                "title": "Locations",
+                "items": {
+                    "type": "object",
+                    "title": "Location",
+                    # Only the API name is required; a missing friendly name / link
+                    # renders as the raw API name (XurLocation.__str__ handles it).
+                    "required": ["api_location_name"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "api_location_name": {
+                            "type": "string",
+                            "title": "API location name",
+                        },
+                        "friendly_location_name": {
+                            "type": "string",
+                            "title": "Friendly location name",
+                        },
+                        "link": {
+                            "type": "string",
+                            "format": "uri",
+                            "title": "Link",
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+XUR_LOCATION_SCHEMA: dict[str, t.Any] = _build_xur_location_schema()
+
 # Registry keyed by post-type slug (matches AutoPostSettings.name / cfg.followables).
 ROTATION_SCHEMAS: dict[str, dict[str, t.Any]] = {
     "lost_sector": LOST_SECTOR_SCHEMA,
+    "xur_location": XUR_LOCATION_SCHEMA,
 }
 
 _compiled_validators: dict[str, t.Callable[[t.Any], t.Any]] = {}

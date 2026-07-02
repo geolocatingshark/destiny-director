@@ -75,3 +75,57 @@ def test_bad_uri_rejected():
 def test_unknown_post_type_raises_keyerror():
     with pytest.raises(KeyError):
         rs.validate("does_not_exist", _doc())
+
+
+# --- xur_location ----------------------------------------------------------------
+
+
+def _xur_doc(**overrides: t.Any) -> dict[str, t.Any]:
+    doc: dict[str, t.Any] = {
+        "version": 1,
+        "locations": [
+            {
+                "api_location_name": "Nessus, Watcher's Grave",
+                "friendly_location_name": "Watcher's Grave, Nessus",
+                "link": "https://kyber3000.com/x",
+            }
+        ],
+    }
+    doc.update(overrides)
+    return doc
+
+
+def test_xur_valid_document_passes():
+    rs.validate("xur_location", _xur_doc())
+
+
+def test_xur_minimal_location_passes():
+    # Only api_location_name is required; friendly name / link are optional.
+    rs.validate(
+        "xur_location", {"version": 1, "locations": [{"api_location_name": "x"}]}
+    )
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        {"version": 1},  # missing required "locations"
+        {"version": 1, "locations": [{}]},  # location missing api_location_name
+        # additionalProperties: false on a location item
+        {"version": 1, "locations": [{"api_location_name": "x", "extra": 1}]},
+    ],
+)
+def test_xur_invalid_documents_rejected(doc: dict[str, t.Any]):
+    with pytest.raises(fastjsonschema.JsonSchemaException):
+        rs.validate("xur_location", doc)
+
+
+def test_xur_bad_uri_rejected():
+    with pytest.raises(fastjsonschema.JsonSchemaException):
+        rs.validate(
+            "xur_location",
+            {
+                "version": 1,
+                "locations": [{"api_location_name": "x", "link": "not a url"}],
+            },
+        )

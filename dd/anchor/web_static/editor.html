@@ -7,10 +7,13 @@
   The server re-validates against the JSON schema, so this form is a convenience, not a
   trust boundary.
 
-  Layout is tabbed (Sectors / Planet cycles / Preview) so it stays usable on a
+  Each post type has its own bespoke form (tagged .ls-only / .xur-only in the markup);
+  on load the other type's nodes are removed and the matching type's block builds its
+  fields and assigns collect(). lost_sector is tabbed (Sectors / Planet cycles /
+  Preview); xur_location is a simpler Locations / Preview. The layout stays usable on a
   phone — only one section is visible at a time; the tab bar and Save button stay
-  pinned. All panels live in the DOM at once (hidden via CSS), so collect() always sees
-  every field regardless of the active tab.
+  pinned. This type's panels all live in the DOM at once (hidden via CSS), so collect()
+  always sees every field regardless of the active tab.
 -->
 <html lang="en">
   <head>
@@ -88,20 +91,21 @@
     </header>
 
     <nav class="tabs" id="tabBar" aria-label="Editor sections">
-      <button type="button" data-tab="sectors" class="active">Sectors</button>
-      <button type="button" data-tab="schedule">Planet cycles</button>
+      <button type="button" data-tab="sectors" class="active ls-only">Sectors</button>
+      <button type="button" data-tab="schedule" class="ls-only">Planet cycles</button>
+      <button type="button" data-tab="locations" class="xur-only">Locations</button>
       <button type="button" data-tab="preview">Preview</button>
     </nav>
 
     <main>
-      <section class="panel active" data-panel="sectors">
+      <section class="panel active ls-only" data-panel="sectors">
         <h2>Sectors</h2>
         <p class="muted">Define each sector once; reference it by name under Planet cycles.</p>
         <div id="sectors"></div>
         <button class="secondary tiny" id="addSector" type="button">+ Add sector</button>
       </section>
 
-      <section class="panel" data-panel="schedule">
+      <section class="panel ls-only" data-panel="schedule">
         <div class="field">
           <label for="referenceDate">Rotation start date</label>
           <input type="date" id="referenceDate" />
@@ -109,6 +113,16 @@
         <h2>Daily schedule (per destination)</h2>
         <p class="muted">Each destination cycles through these sectors, one per day, looping.</p>
         <div id="schedule"></div>
+      </section>
+
+      <section class="panel xur-only" data-panel="locations">
+        <h2>Xûr locations</h2>
+        <p class="muted">
+          Map each Bungie API location name to a friendly name and link. Locations not
+          listed here fall back to the raw API name.
+        </p>
+        <div id="locations"></div>
+        <button class="secondary tiny" id="addLocation" type="button">+ Add location</button>
       </section>
 
       <section class="panel" data-panel="preview">
@@ -119,7 +133,7 @@
       </section>
     </main>
 
-    <datalist id="sectorNames"></datalist>
+    <datalist id="sectorNames" class="ls-only"></datalist>
 
     <div class="toolbar">
       <button id="saveBtn" type="button">💾 Save</button>
@@ -141,121 +155,185 @@
       document.getElementById("authNote").textContent =
         "Authorized via Discord. This link is single-use and expires shortly — save before it does.";
 
-      $("referenceDate").value = data.reference_date || "";
+      // Each post type has its own bespoke form; drop the other type's markup so the
+      // tab bar and collect() only ever see this type's fields.
+      document
+        .querySelectorAll(type === "lost_sector" ? ".xur-only" : ".ls-only")
+        .forEach((n) => n.remove());
 
-      // --- checkbox group helper ---------------------------------------------
-      function checkGroup(options, selected) {
-        const wrap = el("div", { className: "checks" });
-        const boxes = [];
-        for (const opt of options) {
-          const cb = el("input", { type: "checkbox", value: opt });
-          cb.checked = (selected || []).includes(opt);
-          boxes.push(cb);
-          wrap.append(el("label", {}, [cb, " " + opt]));
+      // collect() is assigned by the active type's block below; the shared preview /
+      // save plumbing calls it without caring which post type produced the document.
+      let collect;
+
+      // ===== lost_sector form ================================================
+      if (type === "lost_sector") {
+        $("referenceDate").value = data.reference_date || "";
+
+        // --- checkbox group helper -------------------------------------------
+        function checkGroup(options, selected) {
+          const wrap = el("div", { className: "checks" });
+          const boxes = [];
+          for (const opt of options) {
+            const cb = el("input", { type: "checkbox", value: opt });
+            cb.checked = (selected || []).includes(opt);
+            boxes.push(cb);
+            wrap.append(el("label", {}, [cb, " " + opt]));
+          }
+          wrap._value = () => boxes.filter((b) => b.checked).map((b) => b.value);
+          return wrap;
         }
-        wrap._value = () => boxes.filter((b) => b.checked).map((b) => b.value);
-        return wrap;
-      }
 
-      // --- sectors -----------------------------------------------------------
-      const sectorsBox = $("sectors");
-      const sectorRows = [];
+        // --- sectors ---------------------------------------------------------
+        const sectorsBox = $("sectors");
+        const sectorRows = [];
 
-      function difficultyFields(title, diff) {
-        const champs = checkGroup(vocab.champions, diff.champions);
-        const shields = checkGroup(vocab.shields, diff.shields);
-        const box = el("fieldset", {}, [
-          el("legend", { textContent: title }),
-          el("div", { className: "field" }, [el("label", { textContent: "Champions" }), champs]),
-          el("div", { className: "field" }, [el("label", { textContent: "Shields" }), shields]),
-        ]);
-        box._value = () => ({ champions: champs._value(), shields: shields._value() });
-        return box;
-      }
+        function difficultyFields(title, diff) {
+          const champs = checkGroup(vocab.champions, diff.champions);
+          const shields = checkGroup(vocab.shields, diff.shields);
+          const box = el("fieldset", {}, [
+            el("legend", { textContent: title }),
+            el("div", { className: "field" }, [el("label", { textContent: "Champions" }), champs]),
+            el("div", { className: "field" }, [el("label", { textContent: "Shields" }), shields]),
+          ]);
+          box._value = () => ({ champions: champs._value(), shields: shields._value() });
+          return box;
+        }
 
-      function addSector(s = {}) {
-        const name = el("input", { type: "text", value: s.name || "", placeholder: "Sector name" });
-        name.addEventListener("input", refreshSectorNames);
-        const gfx = el("input", { type: "url", value: s.shortlink_gfx || "", placeholder: "https://…" });
-        const expert = difficultyFields("Expert", s.expert || {});
-        const master = difficultyFields("Master", s.master || {});
-        const remove = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
+        function addSector(s = {}) {
+          const name = el("input", { type: "text", value: s.name || "", placeholder: "Sector name" });
+          name.addEventListener("input", refreshSectorNames);
+          const gfx = el("input", { type: "url", value: s.shortlink_gfx || "", placeholder: "https://…" });
+          const expert = difficultyFields("Expert", s.expert || {});
+          const master = difficultyFields("Master", s.master || {});
+          const remove = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
 
-        const card = el("div", { className: "card" }, [
-          el("div", { className: "card-head" }, [el("span", { className: "grow" }), remove]),
-          el("div", { className: "field" }, [el("label", { textContent: "Name" }), name]),
-          el("div", { className: "field" }, [el("label", { textContent: "Graphic link" }), gfx]),
-          el("div", { className: "diff-cols" }, [el("div", {}, [expert]), el("div", {}, [master])]),
-        ]);
-        const entry = {
-          card,
-          value: () => ({
-            name: name.value.trim(),
-            shortlink_gfx: gfx.value.trim(),
-            expert: expert._value(),
-            master: master._value(),
-          }),
+          const card = el("div", { className: "card" }, [
+            el("div", { className: "card-head" }, [el("span", { className: "grow" }), remove]),
+            el("div", { className: "field" }, [el("label", { textContent: "Name" }), name]),
+            el("div", { className: "field" }, [el("label", { textContent: "Graphic link" }), gfx]),
+            el("div", { className: "diff-cols" }, [el("div", {}, [expert]), el("div", {}, [master])]),
+          ]);
+          const entry = {
+            card,
+            value: () => ({
+              name: name.value.trim(),
+              shortlink_gfx: gfx.value.trim(),
+              expert: expert._value(),
+              master: master._value(),
+            }),
+          };
+          remove.addEventListener("click", () => {
+            card.remove();
+            sectorRows.splice(sectorRows.indexOf(entry), 1);
+            refreshSectorNames();
+          });
+          sectorRows.push(entry);
+          sectorsBox.append(card);
+        }
+
+        function refreshSectorNames() {
+          const dl = $("sectorNames");
+          dl.replaceChildren(
+            ...sectorRows.map((r) => el("option", { value: r.value().name })).filter((o) => o.value),
+          );
+        }
+
+        (data.sectors || []).forEach(addSector);
+        if (!sectorRows.length) addSector();
+        refreshSectorNames();
+        $("addSector").addEventListener("click", () => { addSector(); refreshSectorNames(); });
+
+        // --- schedule (per zone, ordered list of sector names) ---------------
+        const scheduleBox = $("schedule");
+        const zoneRows = {};
+        function addScheduleEntry(list, value) {
+          const input = el("input", { type: "text", value: value || "", className: "grow" });
+          input.setAttribute("list", "sectorNames");
+          const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
+          const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
+          const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
+          const row = el("div", { className: "row" }, [input, up, down, del]);
+          row._value = () => input.value.trim();
+          del.addEventListener("click", () => row.remove());
+          up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
+          down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
+          list.append(row);
+        }
+        for (const zone of vocab.zones) {
+          const list = el("div");
+          const add = el("button", { className: "tiny secondary", type: "button", textContent: "+ Day" });
+          add.addEventListener("click", () => addScheduleEntry(list));
+          const fs = el("fieldset", { className: "zone" }, [el("legend", { textContent: zone }), list, add]);
+          scheduleBox.append(fs);
+          zoneRows[zone] = list;
+          ((data.schedule || {})[zone] || []).forEach((n) => addScheduleEntry(list, n));
+        }
+
+        collect = () => {
+          const schedule = {};
+          for (const zone of vocab.zones)
+            schedule[zone] = [...zoneRows[zone].children].map((r) => r._value()).filter(Boolean);
+          return {
+            version: data.version || 1,
+            reference_date: $("referenceDate").value,
+            schedule,
+            sectors: sectorRows.map((r) => r.value()),
+          };
         };
-        remove.addEventListener("click", () => {
-          card.remove();
-          sectorRows.splice(sectorRows.indexOf(entry), 1);
-          refreshSectorNames();
-        });
-        sectorRows.push(entry);
-        sectorsBox.append(card);
       }
 
-      function refreshSectorNames() {
-        const dl = $("sectorNames");
-        dl.replaceChildren(
-          ...sectorRows.map((r) => el("option", { value: r.value().name })).filter((o) => o.value),
-        );
-      }
+      // ===== xur_location form ===============================================
+      if (type === "xur_location") {
+        const locationsBox = $("locations");
+        const locationRows = [];
 
-      (data.sectors || []).forEach(addSector);
-      if (!sectorRows.length) addSector();
-      refreshSectorNames();
-      $("addSector").addEventListener("click", () => { addSector(); refreshSectorNames(); });
+        function addLocation(loc = {}) {
+          const api = el("input", { type: "text", value: loc.api_location_name || "", placeholder: "API location name (from Bungie)" });
+          const friendly = el("input", { type: "text", value: loc.friendly_location_name || "", placeholder: "Friendly name (shown in the post)" });
+          const link = el("input", { type: "url", value: loc.link || "", placeholder: "https://… (optional)" });
+          const remove = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
 
-      // --- schedule (per zone, ordered list of sector names) -----------------
-      const scheduleBox = $("schedule");
-      const zoneRows = {};
-      function addScheduleEntry(list, value) {
-        const input = el("input", { type: "text", value: value || "", className: "grow" });
-        input.setAttribute("list", "sectorNames");
-        const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
-        const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
-        const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
-        const row = el("div", { className: "row" }, [input, up, down, del]);
-        row._value = () => input.value.trim();
-        del.addEventListener("click", () => row.remove());
-        up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
-        down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
-        list.append(row);
-      }
-      for (const zone of vocab.zones) {
-        const list = el("div");
-        const add = el("button", { className: "tiny secondary", type: "button", textContent: "+ Day" });
-        add.addEventListener("click", () => addScheduleEntry(list));
-        const fs = el("fieldset", { className: "zone" }, [el("legend", { textContent: zone }), list, add]);
-        scheduleBox.append(fs);
-        zoneRows[zone] = list;
-        ((data.schedule || {})[zone] || []).forEach((n) => addScheduleEntry(list, n));
-      }
+          const card = el("div", { className: "card" }, [
+            el("div", { className: "card-head" }, [el("span", { className: "grow" }), remove]),
+            el("div", { className: "field" }, [el("label", { textContent: "API location name" }), api]),
+            el("div", { className: "field" }, [el("label", { textContent: "Friendly name" }), friendly]),
+            el("div", { className: "field" }, [el("label", { textContent: "Link" }), link]),
+          ]);
+          const entry = {
+            card,
+            value: () => ({
+              api_location_name: api.value.trim(),
+              friendly_location_name: friendly.value.trim(),
+              link: link.value.trim(),
+            }),
+          };
+          remove.addEventListener("click", () => {
+            card.remove();
+            locationRows.splice(locationRows.indexOf(entry), 1);
+          });
+          locationRows.push(entry);
+          locationsBox.append(card);
+        }
 
-      // --- collect + submit --------------------------------------------------
-      function collect() {
-        const schedule = {};
-        for (const zone of vocab.zones)
-          schedule[zone] = [...zoneRows[zone].children].map((r) => r._value()).filter(Boolean);
-        return {
+        (data.locations || []).forEach(addLocation);
+        if (!locationRows.length) addLocation();
+        $("addLocation").addEventListener("click", () => addLocation());
+
+        collect = () => ({
           version: data.version || 1,
-          reference_date: $("referenceDate").value,
-          schedule,
-          sectors: sectorRows.map((r) => r.value()),
-        };
+          locations: locationRows
+            .map((r) => r.value())
+            .filter((r) => r.api_location_name)
+            .map((r) => {
+              const out = { api_location_name: r.api_location_name };
+              if (r.friendly_location_name) out.friendly_location_name = r.friendly_location_name;
+              if (r.link) out.link = r.link;
+              return out;
+            }),
+        });
       }
 
+      // --- submit helpers ----------------------------------------------------
       function setStatus(msg, ok) {
         const s = $("status");
         s.textContent = msg;
@@ -315,6 +393,10 @@
           setStatus("Saved ✓ — you can close this tab. (The link is now spent.)", true);
         } catch (e) { setStatus("Save error: " + e, false); }
       });
+
+      // Activate the initial tab. lost_sector keeps its static default (Sectors);
+      // xur_location's default tab lived in the removed markup, so activate it here.
+      if (type === "xur_location") showTab("locations");
     </script>
   </body>
 </html>

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import typing as t
+
 import attr
 import gspread
 
@@ -50,6 +52,44 @@ class XurLocations(SpreadsheetBackedData, dict[str, XurLocation]):
             self[loc.api_location_name] = loc
 
         return self
+
+    @classmethod
+    def from_json(cls, doc: dict[str, t.Any]) -> XurLocations:
+        """Build from a stored JSON document (DB store). Pure; mirrors from_gspread.
+
+        Tolerant: a blank friendly name / link is normalised to ``None`` (so it renders
+        as the raw API name), and ``__getitem__`` still falls back to the raw API name
+        for any location not present in the document.
+        """
+        self: XurLocations = cls.__new__(cls)
+        dict.__init__(self)
+
+        for row in doc.get("locations", []):
+            loc = XurLocation(
+                api_location_name=row["api_location_name"],
+                friendly_location_name=row.get("friendly_location_name") or None,
+                link=row.get("link") or None,
+            )
+            self[loc.api_location_name] = loc
+
+        return self
+
+    def to_json(self, *, version: int = 1) -> dict[str, t.Any]:
+        """Serialise to the JSON document shape (for the one-shot sheet import).
+
+        Inverse of :meth:`from_json`: blank friendly names / links are dropped rather
+        than stored as empty strings (an empty ``link`` would fail the schema's ``uri``
+        format), so a re-import round-trips to the same resolved mapping.
+        """
+        locations: list[dict[str, t.Any]] = []
+        for loc in self.values():
+            row: dict[str, t.Any] = {"api_location_name": loc.api_location_name}
+            if loc.friendly_location_name:
+                row["friendly_location_name"] = loc.friendly_location_name
+            if loc.link:
+                row["link"] = loc.link
+            locations.append(row)
+        return {"version": version, "locations": locations}
 
     def __getitem__(self, key: str) -> XurLocation:
         if key in self:
