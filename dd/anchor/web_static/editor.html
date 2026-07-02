@@ -86,6 +86,8 @@
       .diff-cols > div { flex: 1 1 240px; }
       .backlink { color: #9aa0a6; text-decoration: none; font-size: .85rem; }
       .backlink:hover { text-decoration: underline; }
+      /* A blank/duplicate sector name, or a schedule entry with no matching sector. */
+      input.invalid { border-color: #e5736f; background: #2a1e1e; }
     </style>
   </head>
   <body>
@@ -169,6 +171,10 @@
       // collect() is assigned by the active type's block below; the shared preview /
       // save plumbing calls it without caring which post type produced the document.
       let collect;
+      // consistencyProblems() returns a (possibly empty) list of reasons the document
+      // isn't internally consistent; the Save handler blocks while it's non-empty. The
+      // lost_sector block sets it; other types leave the no-op default.
+      let consistencyProblems = () => [];
 
       // ===== lost_sector form ================================================
       if (type === "lost_sector") {
@@ -206,7 +212,18 @@
 
         function addSector(s = {}) {
           const name = el("input", { type: "text", value: s.name || "", placeholder: "Sector name" });
-          name.addEventListener("input", refreshSectorNames);
+          let prevName = name.value.trim();
+          name.addEventListener("input", () => { refreshSectorNames(); validateConsistency(); });
+          // On commit, propagate a rename to every schedule day that referenced the old
+          // name, so the Sectors and Planet-cycles tabs never drift apart.
+          name.addEventListener("change", () => {
+            const oldName = prevName;
+            const newName = name.value.trim();
+            if (oldName && newName && oldName !== newName) propagateRename(oldName, newName);
+            prevName = newName;
+            refreshSectorNames();
+            validateConsistency();
+          });
           const gfx = el("input", { type: "url", value: s.shortlink_gfx || "", placeholder: "https://…" });
           const expert = difficultyFields("Expert", s.expert || {});
           const master = difficultyFields("Master", s.master || {});
@@ -220,6 +237,7 @@
           ]);
           const entry = {
             card,
+            nameInput: name,
             value: () => ({
               name: name.value.trim(),
               shortlink_gfx: gfx.value.trim(),
@@ -228,9 +246,18 @@
             }),
           };
           remove.addEventListener("click", () => {
+            const goneName = name.value.trim();
             card.remove();
             sectorRows.splice(sectorRows.indexOf(entry), 1);
+            // Auto-remove this sector's schedule days — unless another sector still
+            // holds the same name (the duplicate case).
+            if (goneName && !sectorRows.some((r) => r.value().name === goneName)) {
+              for (const zone of vocab.zones)
+                for (const row of [...zoneRows[zone].children])
+                  if (row._value() === goneName) row.remove();
+            }
             refreshSectorNames();
+            validateConsistency();
           });
           sectorRows.push(entry);
           sectorsBox.append(card);
@@ -243,10 +270,49 @@
           );
         }
 
+        // --- consistency between the Sectors and Planet-cycles tabs ----------
+        function nameCounts() {
+          const counts = {};
+          for (const r of sectorRows) {
+            const n = r.value().name;
+            counts[n] = (counts[n] || 0) + 1;
+          }
+          return counts;
+        }
+
+        function propagateRename(oldName, newName) {
+          for (const zone of vocab.zones)
+            for (const row of zoneRows[zone].children)
+              if (row._value() === oldName) row._input.value = newName;
+        }
+
+        // Highlight blank/duplicate sector names and schedule days that match no
+        // sector; return the problems (empty means the document is internally consistent).
+        function validateConsistency() {
+          const counts = nameCounts();
+          const names = new Set(sectorRows.map((r) => r.value().name).filter(Boolean));
+          const problems = new Set();
+          for (const r of sectorRows) {
+            const n = r.nameInput.value.trim();
+            const bad = !n || counts[n] > 1;
+            r.nameInput.classList.toggle("invalid", bad);
+            if (!n) problems.add("a sector has a blank name");
+            else if (counts[n] > 1) problems.add(`duplicate sector name "${n}"`);
+          }
+          for (const zone of vocab.zones)
+            for (const row of zoneRows[zone].children) {
+              const v = row._value();
+              const bad = !!v && !names.has(v);
+              row._input.classList.toggle("invalid", bad);
+              if (bad) problems.add(`"${v}" in ${zone} isn't a sector`);
+            }
+          return [...problems];
+        }
+
         (data.sectors || []).forEach(addSector);
         if (!sectorRows.length) addSector();
         refreshSectorNames();
-        $("addSector").addEventListener("click", () => { addSector(); refreshSectorNames(); });
+        $("addSector").addEventListener("click", () => { addSector(); refreshSectorNames(); validateConsistency(); });
 
         // --- schedule (per zone, ordered list of sector names) ---------------
         const scheduleBox = $("schedule");
@@ -254,12 +320,14 @@
         function addScheduleEntry(list, value) {
           const input = el("input", { type: "text", value: value || "", className: "grow" });
           input.setAttribute("list", "sectorNames");
+          input.addEventListener("input", validateConsistency);
           const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
           const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
           const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
           const row = el("div", { className: "row" }, [input, up, down, del]);
           row._value = () => input.value.trim();
-          del.addEventListener("click", () => row.remove());
+          row._input = input;
+          del.addEventListener("click", () => { row.remove(); validateConsistency(); });
           up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
           down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
           list.append(row);
@@ -267,12 +335,16 @@
         for (const zone of vocab.zones) {
           const list = el("div");
           const add = el("button", { className: "tiny secondary", type: "button", textContent: "+ Day" });
-          add.addEventListener("click", () => addScheduleEntry(list));
+          add.addEventListener("click", () => { addScheduleEntry(list); validateConsistency(); });
           const fs = el("fieldset", { className: "zone" }, [el("legend", { textContent: zone }), list, add]);
           scheduleBox.append(fs);
           zoneRows[zone] = list;
           ((data.schedule || {})[zone] || []).forEach((n) => addScheduleEntry(list, n));
         }
+
+        // Wire the shared Save gate + paint the initial highlight now the schedule exists.
+        consistencyProblems = validateConsistency;
+        validateConsistency();
 
         collect = () => {
           const schedule = {};
@@ -392,12 +464,16 @@
 
       // --- save --------------------------------------------------------------
       $("saveBtn").addEventListener("click", async () => {
+        const problems = consistencyProblems();
+        if (problems.length) {
+          return setStatus("Fix before saving: " + problems.slice(0, 4).join("; "), false);
+        }
         setStatus("Saving…", true);
         try {
           const res = await post("/rotation/edit");
           const body = await res.text();
           if (!res.ok) return setStatus("Save failed: " + body, false);
-          setStatus("Saved ✓ — you can close this tab. (The link is now spent.)", true);
+          setStatus("Saved ✓ — changes are live. Keep editing or close the tab.", true);
         } catch (e) { setStatus("Save error: " + e, false); }
       });
 
