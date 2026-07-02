@@ -7,43 +7,43 @@ requires-python = "~=3.12.0"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
 dependencies = [
-    "aiocron>=1.8",
-    "aiofiles>=24.1",
-    "aiohttp>=3.13",
-    "aiosqlite>=0.20.0",
-    "asyncmy>=0.2.9",
-    "atlas-provider-sqlalchemy>=0.2.2",
-    "attrs>=22.2.0",
-    "dateparser>=1.1",
+    "aiocron>=2.1",
+    "aiofiles>=25.1.0",
+    "aiohttp>=3.14.1",
+    "aiosqlite>=0.22.1",
+    "asyncmy>=0.2.11",
+    "atlas-provider-sqlalchemy>=0.5.0",
+    "attrs>=25.4.0",
+    "dateparser>=1.4.1",
     "fastjsonschema>=2.21.2",
-    "gspread>=5.9",
-    "hikari-lightbulb>=3.0.0",
-    "hikari-toolbox>=0.1.5",
-    "hikari==2.5.0",
-    "python-dotenv>=1.2.1",
-    "regex>=2023.6.3",
-    "roman>=4.1",
-    "setuptools>=72.1.0",
-    "sqlalchemy>=2.0,<3",
-    "tzdata>=2025.3",
-    "yarl>=1.9",
+    "gspread>=6.2.1",
+    "hikari-lightbulb>=3.2.4",
+    "hikari-toolbox>=0.1.7",
+    "hikari>=2.5.0,<3",
+    "python-dotenv>=1.2.2",
+    "regex>=2026.6.28",
+    "roman>=5.2",
+    "setuptools>=82.0.1",
+    "sqlalchemy>=2.0.51,<3",
+    "tzdata>=2026.2",
+    "yarl>=1.24.2",
 ]
 
 
 [dependency-groups]
 dev = [
-    "rope>=1.6",
-    "pytest>=7.2",
-    "pytest-asyncio>=0.20",
-    "ruff>=0.15.18",
-    "ty>=0.0.51",
+    "rope>=1.14.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.15.20",
+    "ty>=0.0.56",
     "pre-commit>=4.6.0",
     "pytest-cov>=7.1.0",
 ]
 
 speedups = [
-    "hikari[speedups]>=2.0.0.dev126",
-    "cryptography>=46.0.3",
+    "hikari[speedups]>=2.5.0,<3",
+    "cryptography>=49.0.0",
 ]
 
 [tool.uv]
