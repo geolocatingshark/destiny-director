@@ -79,6 +79,11 @@ class TWIDPages(NavPages):
         msg.remove_all_embed_thumbnails()
         msg.embeds = list(filter(lambda embed: embed.description, msg.embeds))
 
+        # If filtering left nothing renderable, fall back to the "No data here!" embed
+        # rather than an empty message.
+        if not msg.embeds:
+            return self.no_data_message
+
         return msg
 
 
