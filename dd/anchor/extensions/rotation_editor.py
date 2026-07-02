@@ -20,7 +20,7 @@
 and shows a homepage listing every rotation type (``ROTATION_SCHEMAS``); each links to
 ``/rotation/edit?type=…`` where the owner edits the document with a friendly form,
 previews the rendered post, and saves — the server re-validates against the JSON schema
-on save. The session cookie authorises every page, preview and save for its ~30-minute
+on save. The session cookie authorises every page, preview and save for its ~2-hour
 life and is not burned on save (edit many rotations in one sitting).
 ``/rotation import_from_sheet`` does the one-shot gspread → DB import with a
 rendered-parity check, for the cutover.
@@ -56,7 +56,7 @@ _EDITOR_HTML_PATH = (
 _HOME_HTML_PATH = (
     Path(__file__).resolve().parent.parent / "web_static" / "rotation_home.html"
 )
-_SESSION_TTL = dt.timedelta(minutes=30)
+_SESSION_TTL = dt.timedelta(hours=2)
 _SESSION_COOKIE = "rotation_session"
 _EXPIRED_MSG = "This link has expired. Run /rotation edit for a fresh one."
 # Days of rendered output the preview / parity check spans (covers a daily reset).
@@ -87,7 +87,7 @@ class RotationSessionManager:
     the HMAC and checks the expiry — so a token stays valid across process restarts and
     would work across replicas, unlike the previous in-memory store. Minted by the
     owner-only ``/rotation edit`` command and carried in a cookie; it is multi-use for
-    its whole ~30-minute life (homepage, every editor page, previews, saves) and there
+    its whole ~2-hour life (homepage, every editor page, previews, saves) and there
     is nothing to revoke early — tokens simply expire, which matches the no-burn design.
     """
 
@@ -435,8 +435,8 @@ class Edit(
         token = RotationSessionManager.mint()
         url = f"{cfg.public_base_url}/rotation?token={token}"
         await ctx.respond(
-            "Open the rotation editor here — it lists every rotation and stays signed "
-            f"in for 30 minutes:\n{url}",
+            f"[Open the rotation editor here]({url}) — it lists every rotation and "
+            "stays signed in for 2 hours.",
             ephemeral=True,
         )
 
