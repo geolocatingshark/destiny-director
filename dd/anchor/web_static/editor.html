@@ -1,10 +1,12 @@
 <!doctype html>
 <!--
   Rotation editor — a self-contained, dependency-free form for editing a rotation's
-  JSON document. Served by dd.anchor.extensions.rotation_editor; the GET handler
-  substitutes the __BOOTSTRAP__ placeholder with {type, token, data, vocab}. The page
-  edits the document client-side and POSTs it to /rotation/preview and /rotation/edit.
-  The server re-validates against the JSON schema, so this form is a convenience, not a
+  JSON document. Reached from the /rotation homepage; served by
+  dd.anchor.extensions.rotation_editor, whose GET handler substitutes the __BOOTSTRAP__
+  placeholder with {type, data, vocab}. The page edits the document client-side and
+  POSTs it to /rotation/preview and /rotation/edit — auth is the rotation_session cookie
+  (sent automatically on the same-origin fetch), so no token is embedded here. The
+  server re-validates against the JSON schema, so this form is a convenience, not a
   trust boundary.
 
   Each post type has its own bespoke form (tagged .ls-only / .xur-only in the markup);
@@ -82,10 +84,13 @@
       .zone { margin: .4rem 0; }
       .diff-cols { display: flex; gap: 1rem; flex-wrap: wrap; }
       .diff-cols > div { flex: 1 1 240px; }
+      .backlink { color: #9aa0a6; text-decoration: none; font-size: .85rem; }
+      .backlink:hover { text-decoration: underline; }
     </style>
   </head>
   <body>
     <header>
+      <p><a href="/rotation" class="backlink">← All rotations</a></p>
       <h1>Rotation Editor — <span id="typeName"></span></h1>
       <p class="muted" id="authNote"></p>
     </header>
@@ -143,7 +148,7 @@
 
     <script>
       const BOOTSTRAP = /*__BOOTSTRAP__*/ null;
-      const { type, token, data, vocab } = BOOTSTRAP;
+      const { type, data, vocab } = BOOTSTRAP;
       const $ = (id) => document.getElementById(id);
       const el = (tag, props = {}, kids = []) => {
         const n = Object.assign(document.createElement(tag), props);
@@ -153,7 +158,7 @@
 
       document.getElementById("typeName").textContent = type;
       document.getElementById("authNote").textContent =
-        "Authorized via Discord. This link is single-use and expires shortly — save before it does.";
+        "Signed in via Discord for this editing session (about 30 minutes). Changes save straight to the database.";
 
       // Each post type has its own bespoke form; drop the other type's markup so the
       // tab bar and collect() only ever see this type's fields.
@@ -344,7 +349,9 @@
         return fetch(path, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ token, type, data: collect() }),
+          // Auth is the rotation_session cookie (same-origin fetch sends it).
+          credentials: "same-origin",
+          body: JSON.stringify({ type, data: collect() }),
         });
       }
 

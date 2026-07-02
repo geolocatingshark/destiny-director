@@ -13,14 +13,17 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Token-authenticated web editor for the rotation JSON store (anchor).
+"""Cookie-authenticated web editor for the rotation JSON store (anchor).
 
-``/rotation edit <type>`` mints a short-lived, single-use token and DMs an ephemeral
-link to ``{public_base_url}/rotation/edit?type=…&token=…``. That page (served from the
-anchor's persistent web app) lets an owner edit the rotation document with a friendly
-form, preview the rendered post, and save — the server re-validates against the JSON
-schema on save. ``/rotation import-from-sheet`` does the one-shot gspread → DB import
-with a rendered-parity check, for the cutover.
+``/rotation edit`` mints a short-lived editor *session* and DMs the owner a link to
+``{public_base_url}/rotation?token=…``. Opening it trades the token for a session cookie
+and shows a homepage listing every rotation type (``ROTATION_SCHEMAS``); each links to
+``/rotation/edit?type=…`` where the owner edits the document with a friendly form,
+previews the rendered post, and saves — the server re-validates against the JSON schema
+on save. The session cookie authorises every page, preview and save for its ~30-minute
+life and is not burned on save (edit many rotations in one sitting).
+``/rotation import_from_sheet`` does the one-shot gspread → DB import with a
+rendered-parity check, for the cutover.
 """
 
 import asyncio
@@ -49,53 +52,94 @@ loader = lb.Loader()
 _EDITOR_HTML_PATH = (
     Path(__file__).resolve().parent.parent / "web_static" / "editor.html"
 )
-_TOKEN_TTL = dt.timedelta(minutes=15)
+_HOME_HTML_PATH = (
+    Path(__file__).resolve().parent.parent / "web_static" / "rotation_home.html"
+)
+_SESSION_TTL = dt.timedelta(minutes=30)
+_SESSION_COOKIE = "rotation_session"
+_EXPIRED_MSG = "This link has expired. Run /rotation edit for a fresh one."
 # Days of rendered output the preview / parity check spans (covers a daily reset).
 _PREVIEW_DAYS = 4
 _PARITY_DAYS = 18
 
 
-# --- token manager ----------------------------------------------------------------
+# --- session manager --------------------------------------------------------------
 
 
-class RotationEditTokenManager:
-    """In-memory, single-process token store mirroring ``OAuthStateManager``.
+class RotationSessionManager:
+    """In-memory, single-process editor-session store mirroring ``OAuthStateManager``.
 
-    Tokens map to ``(post_type, expiry)``; they are multi-use during the ~15-minute
-    window (GET the page, preview, save) and burned on a successful save. In-memory is
-    correct here: the web app runs in the same anchor process that mints the tokens.
+    A session token is minted by the owner-only ``/rotation edit`` command and carried
+    as a cookie. It is multi-use for its whole ~30-minute life — authorising the
+    homepage, every per-type editor page, previews and saves — and is *not* burned on
+    save, so the owner can edit many rotations in one sitting. In-memory is correct
+    here: the web app runs in the same anchor process that mints the sessions (lost on
+    restart, which just means re-running ``/rotation edit``).
     """
 
-    _tokens: t.ClassVar[dict[str, tuple[str, dt.datetime]]] = {}
+    _sessions: t.ClassVar[dict[str, dt.datetime]] = {}
 
     @classmethod
     def _sweep(cls) -> None:
         now = dt.datetime.now()
-        for tok in [k for k, (_, exp) in cls._tokens.items() if exp <= now]:
-            cls._tokens.pop(tok, None)
+        for tok in [k for k, exp in cls._sessions.items() if exp <= now]:
+            cls._sessions.pop(tok, None)
 
     @classmethod
-    def mint(cls, post_type: str) -> str:
+    def mint(cls) -> str:
         cls._sweep()
         token = str(uuid4())
-        cls._tokens[token] = (post_type, dt.datetime.now() + _TOKEN_TTL)
+        cls._sessions[token] = dt.datetime.now() + _SESSION_TTL
         return token
 
     @classmethod
-    def resolve(cls, token: str, post_type: str) -> bool:
-        """Whether ``token`` is live and was minted for ``post_type``."""
-        entry = cls._tokens.get(token)
-        if entry is None:
+    def resolve(cls, token: str) -> bool:
+        """Whether ``token`` is a live session."""
+        expiry = cls._sessions.get(token)
+        if expiry is None:
             return False
-        stored_type, expiry = entry
         if expiry <= dt.datetime.now():
-            cls._tokens.pop(token, None)
+            cls._sessions.pop(token, None)
             return False
-        return stored_type == post_type
+        return True
 
     @classmethod
     def burn(cls, token: str) -> None:
-        cls._tokens.pop(token, None)
+        cls._sessions.pop(token, None)
+
+
+# --- cookie / origin helpers ------------------------------------------------------
+
+
+def _session_from_request(request: aiohttp.web.Request) -> str:
+    return request.cookies.get(_SESSION_COOKIE, "")
+
+
+def _set_session_cookie(response: aiohttp.web.StreamResponse, token: str) -> None:
+    response.set_cookie(
+        _SESSION_COOKIE,
+        token,
+        max_age=int(_SESSION_TTL.total_seconds()),
+        httponly=True,
+        # Secure only when we're actually served over https (local http tunnels can't
+        # set a Secure cookie); Railway's public_base_url is https.
+        secure=cfg.public_base_url.startswith("https"),
+        samesite="Strict",
+        path="/rotation",
+    )
+
+
+def _origin_ok(request: aiohttp.web.Request) -> bool:
+    """Reject cross-site POSTs (defence-in-depth atop the SameSite=Strict cookie).
+
+    A browser sends ``Origin`` on state-changing fetches; if present it must match our
+    own origin. Absent (non-browser client, or an origin-less navigation) we defer to
+    SameSite. If no public origin is configured we can't compare, so we allow.
+    """
+    origin = request.headers.get("Origin")
+    if not origin or not cfg.public_base_url:
+        return True
+    return origin.rstrip("/") == cfg.public_base_url.rstrip("/")
 
 
 # --- document helpers -------------------------------------------------------------
@@ -212,25 +256,63 @@ def _render_preview(post_type: str, obj: t.Any) -> str:
 # --- route handlers ---------------------------------------------------------------
 
 
-def _read_json_body(payload: t.Any) -> tuple[str, str, t.Any]:
-    """Pull ``(token, type, data)`` from a parsed JSON POST body."""
-    token = str(payload.get("token", ""))
+def _read_json_body(payload: t.Any) -> tuple[str, t.Any]:
+    """Pull ``(type, data)`` from a parsed JSON POST body (auth is via the cookie)."""
     post_type = str(payload.get("type", ""))
     data = payload.get("data")
-    return token, post_type, data
+    return post_type, data
+
+
+def _render_home_html() -> str:
+    """The rotations homepage: one link per ``ROTATION_SCHEMAS`` type."""
+    items: list[str] = []
+    for slug in sorted(rotation_schema.ROTATION_SCHEMAS):
+        title = html.escape(
+            str(rotation_schema.ROTATION_SCHEMAS[slug].get("title", slug))
+        )
+        slug_attr = html.escape(slug, quote=True)
+        items.append(
+            f'<li><a href="/rotation/edit?type={slug_attr}">{title}</a>'
+            f" <code>{html.escape(slug)}</code></li>"
+        )
+    list_html = '<ul class="rotations">' + "".join(items) + "</ul>"
+    return _HOME_HTML_PATH.read_text(encoding="utf-8").replace(
+        "<!--__ROTATIONS__-->", list_html
+    )
+
+
+async def _handle_home_get(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    # Entry: a fresh ?token=… from the slash command. Trade it for a session cookie and
+    # redirect to the bare homepage so the token doesn't linger in the URL / history.
+    entry_token = request.query.get("token", "")
+    if entry_token:
+        if not RotationSessionManager.resolve(entry_token):
+            return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
+        response = aiohttp.web.HTTPFound("/rotation")
+        _set_session_cookie(response, entry_token)
+        return response
+
+    if not RotationSessionManager.resolve(_session_from_request(request)):
+        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
+
+    return aiohttp.web.Response(text=_render_home_html(), content_type="text/html")
 
 
 async def _handle_edit_get(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    if not RotationSessionManager.resolve(_session_from_request(request)):
+        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
+
     post_type = request.query.get("type", "")
-    token = request.query.get("token", "")
-    if not RotationEditTokenManager.resolve(token, post_type):
-        return aiohttp.web.Response(status=401, text="Invalid or expired edit link.")
+    if post_type not in rotation_schema.ROTATION_SCHEMAS:
+        return aiohttp.web.Response(
+            status=404, text=f"Unknown rotation type {post_type!r}."
+        )
 
     doc = await schemas.RotationData.get_data(post_type)
     if doc is None:
         doc = _default_doc(post_type)
 
-    bootstrap = {"type": post_type, "token": token, "data": doc, "vocab": _vocab()}
+    bootstrap = {"type": post_type, "data": doc, "vocab": _vocab()}
     # Escape "<" so a "</script>" in the data can't break out of the inline <script>.
     bootstrap_js = json.dumps(bootstrap).replace("<", "\\u003c")
     page = _EDITOR_HTML_PATH.read_text(encoding="utf-8").replace(
@@ -240,13 +322,19 @@ async def _handle_edit_get(request: aiohttp.web.Request) -> aiohttp.web.Response
 
 
 async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    if not RotationSessionManager.resolve(_session_from_request(request)):
+        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
+    if not _origin_ok(request):
+        return aiohttp.web.Response(status=403, text="Cross-origin request refused.")
     try:
         payload = await request.json()
     except Exception:
         return aiohttp.web.Response(status=400, text="Malformed request body.")
-    token, post_type, data = _read_json_body(payload)
-    if not RotationEditTokenManager.resolve(token, post_type):
-        return aiohttp.web.Response(status=401, text="Invalid or expired edit link.")
+    post_type, data = _read_json_body(payload)
+    if post_type not in rotation_schema.ROTATION_SCHEMAS:
+        return aiohttp.web.Response(
+            status=400, text=f"Unknown rotation type {post_type!r}."
+        )
 
     try:
         rotation_schema.validate(post_type, data)
@@ -262,13 +350,19 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 async def _handle_edit_post(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    if not RotationSessionManager.resolve(_session_from_request(request)):
+        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
+    if not _origin_ok(request):
+        return aiohttp.web.Response(status=403, text="Cross-origin request refused.")
     try:
         payload = await request.json()
     except Exception:
         return aiohttp.web.Response(status=400, text="Malformed request body.")
-    token, post_type, data = _read_json_body(payload)
-    if not RotationEditTokenManager.resolve(token, post_type):
-        return aiohttp.web.Response(status=401, text="Invalid or expired edit link.")
+    post_type, data = _read_json_body(payload)
+    if post_type not in rotation_schema.ROTATION_SCHEMAS:
+        return aiohttp.web.Response(
+            status=400, text=f"Unknown rotation type {post_type!r}."
+        )
 
     try:
         rotation_schema.validate(post_type, data)
@@ -284,13 +378,14 @@ async def _handle_edit_post(request: aiohttp.web.Request) -> aiohttp.web.Respons
         return aiohttp.web.Response(status=400, text=f"Document is unusable:\n{e}")
 
     await schemas.RotationData.set_data(post_type, data)
-    RotationEditTokenManager.burn(token)
+    # Session is NOT burned: the owner keeps editing other rotations / re-saving.
     logger.info("Rotation data for %s saved via web editor", post_type)
     return aiohttp.web.Response(text="Saved")
 
 
 def register_rotation_routes(app: aiohttp.web.Application) -> None:
     """Add the rotation editor routes to the shared persistent app."""
+    app.router.add_get("/rotation", _handle_home_get)
     app.router.add_get("/rotation/edit", _handle_edit_get)
     app.router.add_post("/rotation/edit", _handle_edit_post)
     app.router.add_post("/rotation/preview", _handle_preview)
@@ -309,24 +404,10 @@ rotation = lb.Group("rotation", "Edit rotation post data (owner only)")
 class Edit(
     lb.SlashCommand,
     name="edit",
-    description="Open the web editor for a rotation post's data",
+    description="Open the web editor for all rotation post data",
 ):
-    type = lb.string(
-        "type",
-        "Which rotation post to edit",
-        default="lost_sector",
-    )
-
     @lb.invoke
     async def invoke(self, ctx: lb.Context) -> None:
-        post_type = str(self.type).strip()
-        if post_type not in rotation_schema.ROTATION_SCHEMAS:
-            known = ", ".join(sorted(rotation_schema.ROTATION_SCHEMAS))
-            await ctx.respond(
-                f"Unknown rotation type `{post_type}`. Known types: {known}.",
-                ephemeral=True,
-            )
-            return
         if not cfg.public_base_url:
             await ctx.respond(
                 "No public base URL is configured (set PUBLIC_BASE_URL or run on "
@@ -335,10 +416,11 @@ class Edit(
             )
             return
 
-        token = RotationEditTokenManager.mint(post_type)
-        url = f"{cfg.public_base_url}/rotation/edit?type={post_type}&token={token}"
+        token = RotationSessionManager.mint()
+        url = f"{cfg.public_base_url}/rotation?token={token}"
         await ctx.respond(
-            f"Edit **{post_type}** here (single-use link, expires in 15 min):\n{url}",
+            "Open the rotation editor here — it lists every rotation and stays signed "
+            f"in for 30 minutes:\n{url}",
             ephemeral=True,
         )
 

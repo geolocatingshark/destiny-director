@@ -1,0 +1,53 @@
+<!doctype html>
+<!--
+  Rotation editor homepage — lists every editable rotation (one link per
+  ROTATION_SCHEMAS type). Served by dd.anchor.extensions.rotation_editor; the GET
+  handler substitutes the <!--__ROTATIONS__--> placeholder with the server-rendered
+  link list. Auth is the `rotation_session` cookie (set when the /rotation?token=…
+  entry link is opened, then redirected here); this page carries no token in its URL.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Rotation Editor</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 0; padding: 0 1.2rem 1.2rem; max-width: 880px; margin-inline: auto;
+        background: #1b1d22; color: #e6e6e6; line-height: 1.4;
+      }
+      header { padding-top: 1.2rem; }
+      h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
+      .muted { color: #9aa0a6; font-size: .85rem; }
+      ul.rotations { list-style: none; padding: 0; margin: 1rem 0; }
+      ul.rotations li {
+        border: 1px solid #3a3d44; border-radius: 8px; padding: .8rem 1rem;
+        margin: .5rem 0; display: flex; gap: .6rem; align-items: baseline;
+      }
+      ul.rotations a {
+        color: #2f81f7; text-decoration: none; font-size: 1.05rem; font-weight: 600;
+      }
+      ul.rotations a:hover { text-decoration: underline; }
+      code {
+        color: #9aa0a6; font-size: .8rem;
+        background: #24262c; border-radius: 4px; padding: .1rem .35rem;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Rotation Editor</h1>
+      <p class="muted">
+        Pick a rotation to edit. You're signed in for 30 minutes — no need to re-run the
+        command between edits.
+      </p>
+    </header>
+    <main>
+      <!--__ROTATIONS__-->
+    </main>
+  </body>
+</html>

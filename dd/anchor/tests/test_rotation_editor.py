@@ -13,9 +13,9 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-# Rotation editor: token manager + the aiohttp route handlers (GET page / preview /
-# save), exercised against the SQLite test DB from conftest with lightweight fake
-# requests (no live server).
+# Rotation editor: session manager + the aiohttp route handlers (homepage / GET page /
+# preview / save), exercised against the SQLite test DB from conftest with lightweight
+# fake requests (no live server). Auth is the rotation_session cookie.
 
 import datetime as dt
 import typing as t
@@ -50,161 +50,6 @@ def _doc(first: str = "Alpha") -> dict[str, t.Any]:
     }
 
 
-class _FakeRequest:
-    """Minimal aiohttp.web.Request stand-in for the handlers."""
-
-    def __init__(
-        self,
-        query: dict[str, str] | None = None,
-        body: t.Any = None,
-        *,
-        raise_json: bool = False,
-    ) -> None:
-        self.query = query or {}
-        self._body = body
-        self._raise_json = raise_json
-
-    async def json(self) -> t.Any:
-        if self._raise_json:
-            raise ValueError("bad json")
-        return self._body
-
-
-def _req(
-    query: dict[str, str] | None = None,
-    body: t.Any = None,
-    *,
-    raise_json: bool = False,
-) -> aiohttp.web.Request:
-    return t.cast(
-        aiohttp.web.Request,
-        _FakeRequest(query=query, body=body, raise_json=raise_json),
-    )
-
-
-# --- token manager ---------------------------------------------------------------
-
-
-async def test_token_resolves_only_for_its_type():
-    token = editor.RotationEditTokenManager.mint("lost_sector")
-    assert editor.RotationEditTokenManager.resolve(token, "lost_sector")
-    assert not editor.RotationEditTokenManager.resolve(token, "other_type")
-    assert not editor.RotationEditTokenManager.resolve("never-minted", "lost_sector")
-
-
-async def test_token_expiry_and_burn():
-    token = editor.RotationEditTokenManager.mint("lost_sector")
-    editor.RotationEditTokenManager.burn(token)
-    assert not editor.RotationEditTokenManager.resolve(token, "lost_sector")
-
-    expired = editor.RotationEditTokenManager.mint("lost_sector")
-    editor.RotationEditTokenManager._tokens[expired] = (
-        "lost_sector",
-        dt.datetime.now() - dt.timedelta(seconds=1),
-    )
-    assert not editor.RotationEditTokenManager.resolve(expired, "lost_sector")
-
-
-# --- GET /rotation/edit ----------------------------------------------------------
-
-
-async def test_edit_get_renders_page_with_injected_bootstrap():
-    token = editor.RotationEditTokenManager.mint("lost_sector")
-    resp = await editor._handle_edit_get(
-        _req(query={"type": "lost_sector", "token": token})
-    )
-    assert resp.status == 200
-    assert resp.content_type == "text/html"
-    body = resp.text
-    assert body is not None
-    # Placeholder substituted, type present.
-    assert "/*__BOOTSTRAP__*/ null" not in body
-    assert "lost_sector" in body
-
-
-async def test_edit_get_rejects_bad_token():
-    resp = await editor._handle_edit_get(
-        _req(query={"type": "lost_sector", "token": "nope"})
-    )
-    assert resp.status == 401
-
-
-# --- POST /rotation/preview ------------------------------------------------------
-
-
-async def test_preview_renders_valid_document():
-    token = editor.RotationEditTokenManager.mint("lost_sector")
-    resp = await editor._handle_preview(
-        _req(body={"token": token, "type": "lost_sector", "data": _doc()})
-    )
-    assert resp.status == 200
-    body = resp.text
-    assert body is not None
-    assert "Alpha" in body
-
-
-async def test_preview_rejects_invalid_document():
-    token = editor.RotationEditTokenManager.mint("lost_sector")
-    bad = _doc()
-    bad["reference_date"] = "not-a-date"
-    resp = await editor._handle_preview(
-        _req(body={"token": token, "type": "lost_sector", "data": bad})
-    )
-    assert resp.status == 400
-
-
-async def test_preview_rejects_bad_token():
-    resp = await editor._handle_preview(
-        _req(body={"token": "nope", "type": "lost_sector", "data": _doc()})
-    )
-    assert resp.status == 401
-
-
-# --- POST /rotation/edit ---------------------------------------------------------
-
-
-async def test_save_persists_and_burns_token():
-    token = editor.RotationEditTokenManager.mint("lost_sector")
-    resp = await editor._handle_edit_post(
-        _req(body={"token": token, "type": "lost_sector", "data": _doc("Saved")})
-    )
-    assert resp.status == 200
-    assert not editor.RotationEditTokenManager.resolve(token, "lost_sector")
-    stored = await schemas.RotationData.get_data("lost_sector")
-    assert stored is not None
-    assert stored["sectors"][0]["name"] == "Saved"
-
-
-async def test_save_rejects_invalid_document_without_writing():
-    token = editor.RotationEditTokenManager.mint("lost_sector")
-    bad = _doc()
-    del bad["sectors"]
-    resp = await editor._handle_edit_post(
-        _req(body={"token": token, "type": "lost_sector", "data": bad})
-    )
-    assert resp.status == 400
-    # Token not burned on a rejected save, so the user can retry.
-    assert editor.RotationEditTokenManager.resolve(token, "lost_sector")
-
-
-async def test_save_rejects_bad_token():
-    resp = await editor._handle_edit_post(
-        _req(body={"token": "nope", "type": "lost_sector", "data": _doc()})
-    )
-    assert resp.status == 401
-
-
-async def test_malformed_body_is_a_400():
-    token = editor.RotationEditTokenManager.mint("lost_sector")
-    resp = await editor._handle_edit_post(_req(body=None, raise_json=True))
-    assert resp.status == 400
-    # Token unused; still valid.
-    assert editor.RotationEditTokenManager.resolve(token, "lost_sector")
-
-
-# --- xur_location (a second post type through the same handlers) ------------------
-
-
 def _xur_doc(name: str = "Nessus, Watcher's Grave") -> dict[str, t.Any]:
     return {
         "version": 1,
@@ -218,45 +63,295 @@ def _xur_doc(name: str = "Nessus, Watcher's Grave") -> dict[str, t.Any]:
     }
 
 
+class _FakeRequest:
+    """Minimal aiohttp.web.Request stand-in for the handlers."""
+
+    def __init__(
+        self,
+        query: dict[str, str] | None = None,
+        body: t.Any = None,
+        *,
+        cookies: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        raise_json: bool = False,
+    ) -> None:
+        self.query = query or {}
+        self.cookies = cookies or {}
+        self.headers = headers or {}
+        self._body = body
+        self._raise_json = raise_json
+
+    async def json(self) -> t.Any:
+        if self._raise_json:
+            raise ValueError("bad json")
+        return self._body
+
+
+def _req(
+    query: dict[str, str] | None = None,
+    body: t.Any = None,
+    *,
+    cookies: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
+    raise_json: bool = False,
+) -> aiohttp.web.Request:
+    return t.cast(
+        aiohttp.web.Request,
+        _FakeRequest(
+            query=query,
+            body=body,
+            cookies=cookies,
+            headers=headers,
+            raise_json=raise_json,
+        ),
+    )
+
+
+def _cookies(token: str) -> dict[str, str]:
+    return {editor._SESSION_COOKIE: token}
+
+
+# --- session manager -------------------------------------------------------------
+
+
+async def test_session_resolves_until_burned():
+    token = editor.RotationSessionManager.mint()
+    assert editor.RotationSessionManager.resolve(token)
+    editor.RotationSessionManager.burn(token)
+    assert not editor.RotationSessionManager.resolve(token)
+    assert not editor.RotationSessionManager.resolve("never-minted")
+
+
+async def test_session_expiry():
+    expired = editor.RotationSessionManager.mint()
+    editor.RotationSessionManager._sessions[expired] = dt.datetime.now() - dt.timedelta(
+        seconds=1
+    )
+    assert not editor.RotationSessionManager.resolve(expired)
+
+
+# --- GET /rotation (homepage) ----------------------------------------------------
+
+
+async def test_home_entry_token_sets_cookie_and_redirects():
+    token = editor.RotationSessionManager.mint()
+    resp = await editor._handle_home_get(_req(query={"token": token}))
+    assert resp.status == 302
+    assert resp.headers.get("Location") == "/rotation"
+    # The entry token is stored back as the session cookie.
+    assert resp.cookies[editor._SESSION_COOKIE].value == token
+
+
+async def test_home_entry_rejects_bad_token():
+    resp = await editor._handle_home_get(_req(query={"token": "nope"}))
+    assert resp.status == 401
+
+
+async def test_home_lists_all_rotation_types_with_cookie():
+    token = editor.RotationSessionManager.mint()
+    resp = await editor._handle_home_get(_req(cookies=_cookies(token)))
+    assert resp.status == 200
+    body = resp.text or ""
+    # Every registered rotation type is linked, and a friendly title renders.
+    for slug in rs.ROTATION_SCHEMAS:
+        assert f"type={slug}" in body
+    assert "Lost sector rotation" in body
+
+
+async def test_home_without_cookie_is_401():
+    resp = await editor._handle_home_get(_req())
+    assert resp.status == 401
+
+
+# --- GET /rotation/edit ----------------------------------------------------------
+
+
+async def test_edit_get_renders_page_with_cookie():
+    token = editor.RotationSessionManager.mint()
+    resp = await editor._handle_edit_get(
+        _req(query={"type": "lost_sector"}, cookies=_cookies(token))
+    )
+    assert resp.status == 200
+    assert resp.content_type == "text/html"
+    body = resp.text
+    assert body is not None
+    assert "/*__BOOTSTRAP__*/ null" not in body
+    assert "lost_sector" in body
+    # Cookie carries auth: the token must not be embedded in the page.
+    assert token not in body
+
+
+async def test_edit_get_without_cookie_is_401():
+    resp = await editor._handle_edit_get(_req(query={"type": "lost_sector"}))
+    assert resp.status == 401
+
+
+async def test_edit_get_unknown_type_is_404():
+    token = editor.RotationSessionManager.mint()
+    resp = await editor._handle_edit_get(
+        _req(query={"type": "nope"}, cookies=_cookies(token))
+    )
+    assert resp.status == 404
+
+
+# --- POST /rotation/preview ------------------------------------------------------
+
+
+async def test_preview_renders_valid_document():
+    token = editor.RotationSessionManager.mint()
+    resp = await editor._handle_preview(
+        _req(body={"type": "lost_sector", "data": _doc()}, cookies=_cookies(token))
+    )
+    assert resp.status == 200
+    assert "Alpha" in (resp.text or "")
+
+
+async def test_preview_rejects_invalid_document():
+    token = editor.RotationSessionManager.mint()
+    bad = _doc()
+    bad["reference_date"] = "not-a-date"
+    resp = await editor._handle_preview(
+        _req(body={"type": "lost_sector", "data": bad}, cookies=_cookies(token))
+    )
+    assert resp.status == 400
+
+
+async def test_preview_without_cookie_is_401():
+    resp = await editor._handle_preview(
+        _req(body={"type": "lost_sector", "data": _doc()})
+    )
+    assert resp.status == 401
+
+
+# --- POST /rotation/edit ---------------------------------------------------------
+
+
+async def test_save_persists_and_keeps_session_live():
+    token = editor.RotationSessionManager.mint()
+    resp = await editor._handle_edit_post(
+        _req(
+            body={"type": "lost_sector", "data": _doc("Saved")},
+            cookies=_cookies(token),
+        )
+    )
+    assert resp.status == 200
+    # Session is NOT burned on save — the owner keeps editing.
+    assert editor.RotationSessionManager.resolve(token)
+    stored = await schemas.RotationData.get_data("lost_sector")
+    assert stored is not None
+    assert stored["sectors"][0]["name"] == "Saved"
+    # A second save in the same session still works.
+    resp2 = await editor._handle_edit_post(
+        _req(
+            body={"type": "lost_sector", "data": _doc("Again")},
+            cookies=_cookies(token),
+        )
+    )
+    assert resp2.status == 200
+    stored2 = await schemas.RotationData.get_data("lost_sector")
+    assert stored2 is not None
+    assert stored2["sectors"][0]["name"] == "Again"
+
+
+async def test_save_rejects_invalid_document_without_writing():
+    token = editor.RotationSessionManager.mint()
+    bad = _doc()
+    del bad["sectors"]
+    resp = await editor._handle_edit_post(
+        _req(body={"type": "lost_sector", "data": bad}, cookies=_cookies(token))
+    )
+    assert resp.status == 400
+    assert editor.RotationSessionManager.resolve(token)
+
+
+async def test_save_without_cookie_is_401():
+    resp = await editor._handle_edit_post(
+        _req(body={"type": "lost_sector", "data": _doc()})
+    )
+    assert resp.status == 401
+
+
+async def test_malformed_body_is_a_400():
+    token = editor.RotationSessionManager.mint()
+    resp = await editor._handle_edit_post(
+        _req(cookies=_cookies(token), body=None, raise_json=True)
+    )
+    assert resp.status == 400
+    assert editor.RotationSessionManager.resolve(token)
+
+
+# --- CSRF / origin ----------------------------------------------------------------
+
+
+async def test_cross_origin_post_refused(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(editor.cfg, "public_base_url", "https://anchor.example")
+    token = editor.RotationSessionManager.mint()
+    resp = await editor._handle_edit_post(
+        _req(
+            body={"type": "lost_sector", "data": _doc()},
+            cookies=_cookies(token),
+            headers={"Origin": "https://evil.example"},
+        )
+    )
+    assert resp.status == 403
+
+
+async def test_same_origin_post_allowed(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(editor.cfg, "public_base_url", "https://anchor.example")
+    token = editor.RotationSessionManager.mint()
+    resp = await editor._handle_edit_post(
+        _req(
+            body={"type": "lost_sector", "data": _doc("OK")},
+            cookies=_cookies(token),
+            headers={"Origin": "https://anchor.example"},
+        )
+    )
+    assert resp.status == 200
+
+
+# --- xur_location (a second post type through the same handlers) ------------------
+
+
 async def test_default_doc_for_xur_location():
     assert editor._default_doc("xur_location") == {"version": 1, "locations": []}
 
 
 async def test_xur_preview_renders_resolved_locations():
-    token = editor.RotationEditTokenManager.mint("xur_location")
+    token = editor.RotationSessionManager.mint()
     resp = await editor._handle_preview(
-        _req(body={"token": token, "type": "xur_location", "data": _xur_doc()})
+        _req(body={"type": "xur_location", "data": _xur_doc()}, cookies=_cookies(token))
     )
     assert resp.status == 200
-    body = resp.text
-    assert body is not None
+    body = resp.text or ""
     # Friendly name (apostrophe HTML-escaped) + the link both render.
     assert "Grave, Nessus" in body
     assert "https://kyber3000.com/x" in body
 
 
-async def test_xur_save_persists_and_burns_token():
-    token = editor.RotationEditTokenManager.mint("xur_location")
+async def test_xur_save_persists_via_session():
+    token = editor.RotationSessionManager.mint()
     resp = await editor._handle_edit_post(
-        _req(body={"token": token, "type": "xur_location", "data": _xur_doc("Tower")})
+        _req(
+            body={"type": "xur_location", "data": _xur_doc("Tower")},
+            cookies=_cookies(token),
+        )
     )
     assert resp.status == 200
-    assert not editor.RotationEditTokenManager.resolve(token, "xur_location")
+    assert editor.RotationSessionManager.resolve(token)
     stored = await schemas.RotationData.get_data("xur_location")
     assert stored is not None
     assert stored["locations"][0]["api_location_name"] == "Tower"
 
 
 async def test_xur_save_rejects_invalid_document_without_writing():
-    token = editor.RotationEditTokenManager.mint("xur_location")
+    token = editor.RotationSessionManager.mint()
     bad = _xur_doc()
     del bad["locations"]
     resp = await editor._handle_edit_post(
-        _req(body={"token": token, "type": "xur_location", "data": bad})
+        _req(body={"type": "xur_location", "data": bad}, cookies=_cookies(token))
     )
     assert resp.status == 400
-    # Token not burned on a rejected save, so the user can retry.
-    assert editor.RotationEditTokenManager.resolve(token, "xur_location")
+    assert editor.RotationSessionManager.resolve(token)
 
 
 async def test_xur_location_parity_matches_after_round_trip():
