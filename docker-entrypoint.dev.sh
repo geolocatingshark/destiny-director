@@ -7,6 +7,10 @@ if [ -d /workspace/.dev-ssh ]; then
   mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
   chmod 600 /workspace/.dev-ssh/id_ed25519_* 2>/dev/null || true
   [ -f /workspace/.dev-ssh/config ] && ln -sf /workspace/.dev-ssh/config "$HOME/.ssh/config"
+  # Push over SSH with the keys above WITHOUT editing the shared .git/config
+  # remote (keeps the host on HTTPS): rewrite GitHub HTTPS->SSH in the
+  # container's own ~/.gitconfig only.
+  git config --global url."git@github.com:".insteadOf "https://github.com/"
 fi
 
 # Deps are baked into /home/dev/venv at build time; add the editable project now
