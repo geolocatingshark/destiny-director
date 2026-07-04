@@ -41,6 +41,8 @@ def test_l1_regex_accepts_valid_names(name: str):
         "with!",
         "p" * 33,  # too long
         "",  # blank not allowed for l1
+        "ping\n",  # trailing newline (illegal char) must not slip through
+        "pi\nng",  # embedded newline
     ],
 )
 def test_l1_regex_rejects_invalid_names(name: str):
@@ -53,9 +55,18 @@ def test_sub_regex_allows_blank_and_valid_names(name: str):
     assert rgx_sub_cmd_name_is_valid.match(name)
 
 
-@pytest.mark.parametrize("name", ["Ping", "with space", "a" * 33])
+@pytest.mark.parametrize(
+    "name",
+    ["Ping", "with space", "a" * 33, "sub\n", "su\nb"],
+)
 def test_sub_regex_rejects_invalid_names(name: str):
     assert not rgx_sub_cmd_name_is_valid.match(name)
+
+
+def test_usercommand_rejects_illegal_char_in_name():
+    # A trailing newline used to pass because $ matches before it; \Z does not.
+    with pytest.raises(FriendlyValueError):
+        UserCommand("ping\n", description="d", response_type=1, response_data="hi")
 
 
 def test_usercommand_accepts_valid_name():

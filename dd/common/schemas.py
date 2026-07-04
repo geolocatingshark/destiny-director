@@ -121,8 +121,11 @@ async def wait_for_db(retry_interval: float = 10.0) -> None:
             await aio.sleep(retry_interval)
 
 
-rgx_cmd_name_is_valid = re.compile("^[a-z][a-z0-9_-]{1,31}$")
-rgx_sub_cmd_name_is_valid = re.compile("^[a-z]{0,1}[a-z0-9_-]{0,31}$")
+# Anchor with \Z (end of string) rather than $, since $ also matches just
+# before a trailing newline and would let an illegal character like "ping\n"
+# slip through as a valid command name.
+rgx_cmd_name_is_valid = re.compile(r"^[a-z][a-z0-9_-]{1,31}\Z")
+rgx_sub_cmd_name_is_valid = re.compile(r"^[a-z]{0,1}[a-z0-9_-]{0,31}\Z")
 # The difference between command and sub command name validator regexes is
 # that the sub command regex needs to allow blank strings to indicate and
 # match blanks for commands that aren't 3 layers deep (where the last and)
