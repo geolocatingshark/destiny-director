@@ -41,6 +41,9 @@ docker build -t anchor .
 docker run --env-file=.env anchor
 ```
 
+Developing on a remote Raspberry Pi 5 in a Docker dev container (terminal-only,
+`docker exec` over the Pi host's SSH): see [`docs/pi_dev_setup.md`](docs/pi_dev_setup.md).
+
 Deploying code to [railway](https://railway.app/):
 
 Make sure you have the [railway cli](https://docs.railway.app/develop/cli) installed and

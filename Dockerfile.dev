@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1
+
+# Atlas migration engine — multi-arch static Go binary.
+FROM arigaio/atlas:latest-community AS atlas
+
+# Debian-slim dev environment. Toolchain is baked; the app source is
+# bind-mounted at /workspace at runtime (see docker-compose.dev.yml), so it is
+# NOT copied into the image. The container runs no network service — access is
+# via `docker exec` from the Pi host.
+FROM python:3.13-slim-bookworm AS dev
+ARG USERNAME=dev
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+# openssh-client is required for git push over git@github.com (Debian's git does
+# not pull an ssh client under --no-install-recommends).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential git make openssh-client curl gnupg ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node 22 LTS + Claude Code + Railway CLI (the npm wrapper fetches the arm64 binary).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @anthropic-ai/claude-code @railway/cli
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=atlas /atlas /usr/local/bin/atlas
+
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} --shell /bin/bash -m ${USERNAME} \
+    && mkdir -p /workspace && chown ${USER_UID}:${USER_GID} /workspace
+
+# Venv lives OUTSIDE /workspace so the bind-mount can't shadow the pre-built venv.
+ENV TZ=Etc/UTC \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0 \
+    UV_PROJECT_ENVIRONMENT=/home/dev/venv
+
+USER ${USERNAME}
+WORKDIR /workspace
+
+# Pre-create the dirs that compose mounts named volumes onto, as the dev user, so
+# the (initially empty) volumes inherit uid-1000 ownership instead of root:root —
+# otherwise uv/claude/railway can't write to them.
+RUN mkdir -p /home/dev/.cache/uv /home/dev/.claude /home/dev/.config/railway
+
+# Pre-build the full dependency set (dev + speedups) into /home/dev/venv. The
+# editable project is added at container start once /workspace is mounted.
+COPY --chown=${USER_UID}:${USER_GID} pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/home/dev/.cache/uv,uid=1000,gid=1000 \
+    uv sync --frozen --no-install-project
+
+COPY --chown=${USER_UID}:${USER_GID} docker-entrypoint.dev.sh /home/dev/entrypoint.sh
+CMD ["bash", "/home/dev/entrypoint.sh"]

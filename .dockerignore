@@ -1,0 +1,26 @@
+# Build-context excludes for `docker build` (both Dockerfile and Dockerfile.dev).
+# NOTE: `.railwayignore` only governs Railway uploads; local/Pi builds need this.
+# Do NOT add a bare `*.sql` line — migrations/*.sql must ship in the prod image.
+
+.git
+.claude/
+.dev-ssh/
+.venv
+
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.ropeproject
+htmlcov
+.coverage
+
+*.env
+manifest.zip
+manifest/
+world_sql_content*
+scratch/
+kyber-*.sql
+
+docs/
+plans/

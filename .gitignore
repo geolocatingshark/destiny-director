@@ -112,6 +112,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Remote Pi dev container — git identity keys + SSH config (never commit)
+/.dev-ssh/
+
 # Spyder project settings
 .spyderproject
 .spyproject

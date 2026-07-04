@@ -1,0 +1,38 @@
+# Remote Pi 5 dev environment. Bring up with:
+#   docker compose -f docker-compose.dev.yml up -d
+# then reach the container over the Pi host's sshd:
+#   ssh -t <pi-user>@<pi-ip> 'docker exec -it dd-dev bash -l'
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: dd-dev
+    container_name: dd-dev
+    init: true
+    env_file: [.env]                          # MYSQL_URL + RAILWAY_API_TOKEN + app vars
+    volumes:
+      - .:/workspace                          # bind-mount the host clone (uid 1000)
+      - dd-uv-cache:/home/dev/.cache/uv        # persist uv cache (fast re-syncs)
+      - dd-claude:/home/dev/.claude            # persist Claude Code login/config
+      - dd-railway:/home/dev/.config/railway   # persist `railway login`
+      - /var/run/docker.sock:/var/run/docker.sock  # optional: `atlas migrate diff`
+    depends_on: [mysql]
+    # No ports: the container exposes no network service; access is docker exec.
+    # Do NOT mount over /home/dev/venv or all of /home/dev — it would erase the
+    # pre-built venv.
+  mysql:
+    image: mysql:8                            # arm64 image exists
+    container_name: dd-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: devroot
+      MYSQL_DATABASE: kyber
+      MYSQL_USER: kyber
+      MYSQL_PASSWORD: kyber
+    volumes:
+      - dd-mysql-data:/var/lib/mysql
+volumes:
+  dd-uv-cache:
+  dd-claude:
+  dd-railway:
+  dd-mysql-data:
