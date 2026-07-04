@@ -62,8 +62,8 @@ Register each **public** key with its GitHub account (Settings → SSH keys):
 docker compose -f docker-compose.dev.yml build
 docker compose -f docker-compose.dev.yml up -d
 
-# 5. Enter the container over the Pi host's sshd.
-ssh -t <pi-user>@<pi-ip> 'docker exec -it dd-dev bash -l'
+# 5. Enter the container over the Pi host's sshd (fish is the interactive shell).
+ssh -t <pi-user>@<pi-ip> 'docker exec -it dd-dev fish'
 ```
 
 Optional laptop `~/.ssh/config` alias so `ssh dd` drops you straight in:
@@ -73,7 +73,7 @@ Host dd
   HostName <pi-ip>
   User <pi-user>
   RequestTTY yes
-  RemoteCommand docker exec -it dd-dev bash -l
+  RemoteCommand docker exec -it dd-dev fish
 ```
 
 **uid note:** the container `dev` user is uid 1000, matching Raspberry Pi OS's default

@@ -1,7 +1,7 @@
 # Remote Pi 5 dev environment. Bring up with:
 #   docker compose -f docker-compose.dev.yml up -d
 # then reach the container over the Pi host's sshd:
-#   ssh -t <pi-user>@<pi-ip> 'docker exec -it dd-dev bash -l'
+#   ssh -t <pi-user>@<pi-ip> 'docker exec -it dd-dev fish'
 services:
   dev:
     build:

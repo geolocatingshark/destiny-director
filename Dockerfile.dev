@@ -12,10 +12,12 @@ ARG USERNAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
 
-# openssh-client is required for git push over git@github.com (Debian's git does
-# not pull an ssh client under --no-install-recommends).
+# fish is the interactive shell (matches the host); bash stays the dev account's
+# login shell for Claude Code + entrypoint/make tooling. openssh-client is
+# required for git push over git@github.com (Debian's git does not pull an ssh
+# client under --no-install-recommends).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential git make openssh-client curl gnupg ca-certificates tzdata \
+        build-essential git make fish openssh-client curl gnupg ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Node 22 LTS + Claude Code.
