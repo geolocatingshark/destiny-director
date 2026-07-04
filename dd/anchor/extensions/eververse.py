@@ -127,7 +127,7 @@ def _eververse_line(
     inside the parens before the exotic they reskin — ``(:titan: Hallowfire Heart)`` —
     or the class emoji alone when no target resolves; weapon ornaments show just the
     exotic; ships/sparrows get a Ship/Sparrow subtype label."""
-    line = f"• [{item.name}]({item.lightgg_url}) — {item.costs.get(currency, 0)}"
+    line = f"• [**{item.name}**]({item.lightgg_url}) — {item.costs.get(currency, 0)}"
     target = (
         _exotic_ornament_target_name(item, manifest_table)
         if item.is_exotic and manifest_table is not None
