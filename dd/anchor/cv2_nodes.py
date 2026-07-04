@@ -361,10 +361,16 @@ def resolve_path(nodes: list[Node], path: list[int]) -> Node:
 
 
 def scope_children(nodes: list[Node], scope_path: list[int]) -> list[Node]:
-    """The children of the container/section at ``scope_path`` (root list if empty)."""
+    """The children of the container/section at ``scope_path`` (root list if empty).
+
+    Returns the node's *actual* child-list reference (so inserts/moves mutate it), even
+    when it is empty — hence the explicit ``is None`` check rather than ``or []``, which
+    would swap an empty-but-real list for a throwaway one.
+    """
     if not scope_path:
         return nodes
-    return children_ref(resolve_path(nodes, scope_path)) or []
+    children = children_ref(resolve_path(nodes, scope_path))
+    return children if children is not None else []
 
 
 def scope_is_section(nodes: list[Node], scope_path: list[int]) -> bool:

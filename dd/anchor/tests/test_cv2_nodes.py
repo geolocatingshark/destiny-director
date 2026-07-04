@@ -175,6 +175,19 @@ def test_insert_delete_move():
     assert cn.move_node(nodes, [0], 1, 1) == 1
 
 
+def test_insert_into_empty_container_mutates_the_real_list():
+    # Regression: an empty container/section must expose its *real* child list so the
+    # first inserted child actually lands (not into a throwaway ``[] or []`` list).
+    nodes = [cn.make_container()]
+    assert cn.scope_children(nodes, [0]) is nodes[0]["components"]
+    cn.insert_node(nodes, [0], 0, cn.make_text("first"))
+    assert [c["content"] for c in nodes[0]["components"]] == ["first"]
+
+    section = [cn.make_section()]
+    cn.insert_node(section, [0], 0, cn.make_text("body"))
+    assert section[0]["components"][0]["content"] == "body"
+
+
 def test_set_accessory():
     nodes = [cn.make_section()]
     cn.set_accessory(nodes, [0], cn.make_thumbnail())
