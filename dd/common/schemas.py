@@ -1419,6 +1419,14 @@ class AutoPostSettings(Base):
         return await cls.set_enabled("xur_default_image", enabled)
 
     @classmethod
+    async def get_ada_enabled(cls) -> bool | None:
+        return await cls.get_enabled("ada")
+
+    @classmethod
+    async def set_ada(cls, enabled: bool) -> None:
+        return await cls.set_enabled("ada", enabled)
+
+    @classmethod
     async def get_portal_ops_enabled(cls) -> bool | None:
         return await cls.get_enabled("portal_ops")
 

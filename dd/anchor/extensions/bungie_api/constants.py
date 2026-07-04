@@ -30,6 +30,10 @@ API_VENDORS_AUTHENTICATED = (
 XUR_VENDOR_HASH = 2190858386
 XUR_STRANGE_GEAR_VENDOR_HASH = 3751514131
 
+# Ada-1 (Gunsmith / armour synthesis). Rotates weekly at the Tuesday reset, selling a
+# handful of shaders and one Legendary armour set from the World Loot Pool.
+ADA_VENDOR_HASH = 350061650
+
 # Eververse "daily bright dust" rotator vendors are identified in the manifest by a
 # ``vendorIdentifier`` starting with this prefix (e.g.
 # ``EVERVERSE_BRIGHT_DUST_ROTATOR_EXOTIC_GHOSTS``). Several of these rotate the daily

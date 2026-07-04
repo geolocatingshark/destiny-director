@@ -16,6 +16,7 @@ from dd.anchor import web
 
 from . import client
 from .constants import (
+    ADA_VENDOR_HASH,
     ARMOR_TYPE_NAMES,
     DESTINY_CLASS_TYPE_IDS,
     DESTINY_CLASSES_ENUM,
@@ -51,6 +52,7 @@ from .oauth import (
 
 __all__ = [
     "client",
+    "ADA_VENDOR_HASH",
     "ARMOR_TYPE_NAMES",
     "DESTINY_CLASSES_ENUM",
     "DESTINY_CLASS_TYPE_IDS",
