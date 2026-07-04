@@ -376,8 +376,14 @@ class ConvertToComponents(
             nonlocal handled
             handled = True
             try:
+                # Clear the embeds (and any content) in the same edit: a Components V2
+                # message can't also carry embeds/content, and an unspecified field
+                # would leave the original embed in place and be rejected.
                 await message.edit(
-                    components=[container], flags=h.MessageFlag.IS_COMPONENTS_V2
+                    content=None,
+                    embeds=[],
+                    components=[container],
+                    flags=h.MessageFlag.IS_COMPONENTS_V2,
                 )
             except h.ForbiddenError:
                 await mctx.respond(
