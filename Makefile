@@ -21,6 +21,20 @@ deploy-anchor-prod:
 remove-last-deploy:
 	railway down
 
+# Remote Pi dev container (docker-compose.dev.yml). dev-up builds the image with
+# the HOST user's uid/gid so the bind-mounted /workspace stays writable, then
+# starts it detached. dev-down stops it; dev-down-volumes also drops the named
+# volumes (uv cache, claude/railway config, mysql data) — use when the baked uid
+# changed and the volumes must be recreated under the new owner.
+dev-up:
+	HOST_UID=$$(id -u) HOST_GID=$$(id -g) docker compose -f docker-compose.dev.yml up -d --build
+
+dev-down:
+	docker compose -f docker-compose.dev.yml down
+
+dev-down-volumes:
+	docker compose -f docker-compose.dev.yml down -v
+
 run-beacon-local: .env
 	uv run python -OOm dd.beacon
 

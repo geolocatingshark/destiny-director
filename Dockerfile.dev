@@ -66,7 +66,7 @@ RUN mkdir -p /home/dev/.cache/uv /home/dev/.claude /home/dev/.config/railway
 # Pre-build the full dependency set (dev + speedups) into /home/dev/venv. The
 # editable project is added at container start once /workspace is mounted.
 COPY --chown=${USER_UID}:${USER_GID} pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/home/dev/.cache/uv,uid=1000,gid=1000 \
+RUN --mount=type=cache,target=/home/dev/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
     uv sync --frozen --no-install-project
 
 COPY --chown=${USER_UID}:${USER_GID} docker-entrypoint.dev.sh /home/dev/entrypoint.sh
