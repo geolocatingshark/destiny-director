@@ -147,6 +147,131 @@ def build_container(
     return container
 
 
+def _embed_has_content(embed: h.Embed) -> bool:
+    """Whether an embed carries anything ``embeds_to_container`` would render."""
+    return bool(
+        (embed.author and embed.author.name)
+        or embed.title
+        or embed.description
+        or embed.fields
+        or embed.image
+        or embed.thumbnail
+        or (embed.footer and embed.footer.text)
+        or embed.timestamp
+    )
+
+
+def _add_embed_to_container(
+    container: h.impl.ContainerComponentBuilder, embed: h.Embed
+) -> None:
+    """Render one embed's parts onto ``container`` (see ``embeds_to_container``)."""
+    # Author -> a subtext line (masked-linked when it has a url; the icon is dropped,
+    # subtext can't carry one).
+    if embed.author and embed.author.name:
+        name = embed.author.name
+        author = f"[{name}]({embed.author.url})" if embed.author.url else name
+        container.add_text_display(f"-# {author}")
+
+    title_md: str | None = None
+    if embed.title:
+        title_md = (
+            f"## [{embed.title}]({embed.url})" if embed.url else f"## {embed.title}"
+        )
+    description = embed.description or None
+    thumb_url = embed.thumbnail.url if embed.thumbnail else None
+
+    # Thumbnail (embed top-right) -> a section whose accessory is the thumbnail,
+    # holding the title/description text. A section needs 1-3 text displays, so this
+    # path is only taken when there is title/description text to anchor it to.
+    if thumb_url and (title_md or description):
+        section = h.impl.SectionComponentBuilder(
+            accessory=h.impl.ThumbnailComponentBuilder(media=thumb_url)
+        )
+        for text in (title_md, description):
+            if text:
+                section.add_text_display(text)
+        container.add_component(section)
+    else:
+        if title_md:
+            container.add_text_display(title_md)
+        if description:
+            container.add_text_display(description)
+        # A thumbnail with no text to anchor a section -> show it standalone so it isn't
+        # silently lost.
+        if thumb_url and not (title_md or description):
+            gallery = h.impl.MediaGalleryComponentBuilder()
+            gallery.add_media_gallery_item(thumb_url)
+            container.add_component(gallery)
+
+    # Fields -> one text display each. Inline layout is not representable in CV2 (no
+    # columns), so inline fields stack vertically like the rest.
+    for field in embed.fields:
+        container.add_separator(divider=False)
+        container.add_text_display(f"**{field.name}**\n{field.value}")
+
+    # Large image -> a full-width media gallery.
+    if embed.image:
+        gallery = h.impl.MediaGalleryComponentBuilder()
+        gallery.add_media_gallery_item(embed.image.url)
+        container.add_component(gallery)
+
+    # Footer text + timestamp -> a trailing subtext line (the footer icon is dropped).
+    footer_parts: list[str] = []
+    if embed.footer and embed.footer.text:
+        footer_parts.append(embed.footer.text)
+    if embed.timestamp:
+        # A dynamic Discord timestamp renders localized, like the embed's own footer ts.
+        footer_parts.append(f"<t:{int(embed.timestamp.timestamp())}:f>")
+    if footer_parts:
+        container.add_text_display("-# " + " • ".join(footer_parts))
+
+
+def embeds_to_container(
+    embeds: h.Embed | t.Sequence[h.Embed],
+    *,
+    accent_color: h.Color | None = None,
+) -> h.impl.ContainerComponentBuilder:
+    """Convert one or more embeds into a single CV2 container (faithful layout).
+
+    Each embed part is mapped to its closest CV2 primitive:
+
+    - accent colour -> the container accent. A container has a single accent, so with
+      multiple embeds the first embed's colour wins (falling back to
+      ``cfg.embed_default_color``).
+    - author -> a ``-#`` subtext line (masked-linked to ``author.url``; icon dropped);
+    - title / description -> ``## title`` (masked-linked to ``embed.url``) + description
+      text displays, wrapped in a section with the thumbnail as its accessory when the
+      embed has one (mirroring the embed's top-right thumbnail);
+    - fields -> one ``**name**\\nvalue`` text display each (inline layout is lost);
+    - image -> a full-width media gallery;
+    - footer / timestamp -> a trailing ``-#`` subtext line (icon dropped).
+
+    Embeds are separated by divider separators. Embeds with no renderable content are
+    skipped; if none render the result is an empty container (no ``.components``), which
+    the caller should treat as "nothing to convert".
+    """
+    if isinstance(embeds, h.Embed):
+        embeds = [embeds]
+
+    if accent_color is None:
+        accent_color = next(
+            (embed.color for embed in embeds if embed.color is not None),
+            cfg.embed_default_color,
+        )
+
+    container = h.impl.ContainerComponentBuilder(accent_color=accent_color)
+    rendered = False
+    for embed in embeds:
+        if not _embed_has_content(embed):
+            continue
+        if rendered:
+            container.add_separator(divider=True)
+        _add_embed_to_container(container, embed)
+        rendered = True
+
+    return container
+
+
 def rebuild_components(
     components: t.Sequence[h.PartialComponent],
 ) -> list[h.api.ComponentBuilder]:
