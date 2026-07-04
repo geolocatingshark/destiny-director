@@ -28,9 +28,12 @@ remove-last-deploy:
 # account (`groupadd: GID '0' already exists`). The clone owner is the right uid
 # whoever launches the build. dev-down stops it; dev-down-volumes also drops the
 # named volumes (uv cache, claude/railway config, mysql data) — use when the baked
-# uid changed and the volumes must be recreated under the new owner.
+# uid changed and the volumes must be recreated under the new owner. DEV_HOSTNAME
+# sets the container's hostname to the docker host's name + `-dd-dev`, so Claude
+# Code shows a stable, meaningful machine title instead of the random container ID
+# (the suffix distinguishes the container from the host itself).
 dev-up:
-	HOST_UID=$$(stat -c '%u' .) HOST_GID=$$(stat -c '%g' .) docker compose -f docker-compose.dev.yml up -d --build
+	HOST_UID=$$(stat -c '%u' .) HOST_GID=$$(stat -c '%g' .) DEV_HOSTNAME=$$(hostname)-dd-dev docker compose -f docker-compose.dev.yml up -d --build
 
 dev-down:
 	docker compose -f docker-compose.dev.yml down

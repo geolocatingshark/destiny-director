@@ -15,6 +15,8 @@ services:
         USER_GID: ${HOST_GID:-1000}
     image: dd-dev
     container_name: dd-dev
+    hostname: ${DEV_HOSTNAME:-dd-dev}   # Claude Code shows this as the machine title;
+                                        # make dev-up sets it to <host-hostname>-dd-dev
     init: true
     env_file: [.env]                          # MYSQL_URL + RAILWAY_API_TOKEN + app vars
     volumes:
