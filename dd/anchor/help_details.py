@@ -22,41 +22,32 @@ the bot team only.
 
 from ..common.help import CommandDetail
 
-POST_JSON_DETAIL = CommandDetail(
-    command="Post components",
-    title="Post components (/post components or right-click)",
+POST_COMPONENTS_DETAIL = CommandDetail(
+    command="components",
+    title="Post a Components V2 message (/post components)",
     summary=(
-        "Posts a Components V2 message you designed in an external builder — from a "
-        "discord.builders link via `/post components`, or from JSON on a message you "
-        "right-click. Owner/team only."
+        "Build a rich Components V2 message in Discord with an interactive button "
+        "builder, then post it. Owner/team only."
     ),
     steps=(
-        "Fastest: run `/post components` with no link — it replies with the "
-        "[discord.builders](https://discord.builders) editor link. Build your post "
-        "there, copy the page URL, then run `/post components link:<url>` (defaults "
-        "to the current channel; pass `channel:` to target another).",
-        "Or, to post JSON: build your message in a Components V2 builder and copy its "
-        "exported JSON.",
-        "Send that JSON to a channel the bot can see — paste it as a normal message, "
-        "or attach it as a `.json`/`.txt` file (Discord auto-files very long pastes).",
-        'Right-click (long-press on mobile) that message ▸ Apps ▸ "Post components".',
-        "In the ephemeral prompt, pick the destination announcement channel (only "
-        "announcement channels are listed).",
-        "The bot posts the message verbatim, replies with a link, and deletes your "
-        "original JSON message.",
+        "Run `/post components` in the channel you want to post to (pass `channel:` to "
+        "target another text/announcement channel instead).",
+        'In the ephemeral builder, press "Add" and pick a block type — container, '
+        "text, section, media gallery, separator or link button — filling its details "
+        "in the modal that opens.",
+        'Select a block to Edit, Delete or Move it; press "Open ▸" to go inside a '
+        'container or section and "◂ Back" to come out again.',
+        'Press "Post" to send the finished message to the chosen channel.',
     ),
     notes=(
-        "`/post components` accepts a discord.builders link, a bare hash, or raw JSON; "
-        "very large links can exceed the 6000-char slash limit — use the right-click "
-        "flow (or a `.json` attachment) for those.",
-        "JSON may be a full message object, a bare components array, or a single "
-        "component object.",
-        '"No JSON found" → the targeted message had no readable text/attachment.',
-        '"Invalid JSON" → the parser rejected it; check it is valid Components V2.',
-        "No post permission in the chosen channel → it reports and posts nothing.",
-        "Posted but no Manage Messages → it links the post and asks you to delete the "
-        "source yourself.",
-        "The channel picker times out after 5 minutes; just re-run.",
+        "The preview updates live as you edit; incomplete blocks (an empty container, "
+        "a section without an accessory) show a placeholder until you fill them.",
+        "Containers are top-level only; sections hold 1–3 text blocks plus one "
+        "accessory (a thumbnail image or a link button).",
+        "Only link buttons are supported — interactive buttons and select menus need "
+        'per-button code, so they are not offered. Use "Edit components" to change a '
+        "post later.",
+        "The builder session lasts ~14 minutes before it times out; just re-run.",
     ),
 )
 
@@ -138,48 +129,49 @@ EDIT_COMPONENTS_DETAIL = CommandDetail(
     command="Edit components",
     title="Edit components (right-click message command)",
     summary=(
-        "Edit a Components V2 post this bot made by round-tripping it through the "
-        "discord.builders editor. Owner/team only."
+        "Edit a Components V2 post this bot made, in Discord, with the interactive "
+        "builder. Owner/team only."
     ),
     steps=(
         "Right-click (long-press on mobile) a Components V2 message this bot posted ▸ "
         'Apps ▸ "Edit components".',
-        "Open the masked editor link in the reply — discord.builders loads pre-filled "
-        "with the post.",
-        "Make your changes there, then copy the page URL from your browser.",
-        'Run "Update components" on the same message and paste that URL to apply it.',
+        "The builder opens pre-loaded with the post's current blocks.",
+        "Add, edit, delete, move or re-nest blocks just like when creating a post.",
+        'Press "Save" to apply your changes to the message in place.',
     ),
     notes=(
         'Only works on Components V2 messages this bot posted (use "Edit embed" for '
         "embed posts).",
-        "A `post.json` attachment is included as a fallback when the link is too long.",
+        "File blocks from the original post are preserved and can be moved or removed, "
+        "but new ones can't be authored (they need a real uploaded attachment).",
     ),
 )
 
-UPDATE_COMPONENTS_DETAIL = CommandDetail(
-    command="Update components",
-    title="Update components (right-click message command)",
+COPY_COMPONENTS_DETAIL = CommandDetail(
+    command="Copy components",
+    title="Copy components (right-click message command)",
     summary=(
-        "Apply an edited discord.builders design (or raw component JSON) back onto an "
-        "existing Components V2 post. Owner/team only."
+        "Clone any Components V2 message, tweak it in the builder, then post it fresh "
+        "in the current channel. Owner/team only."
     ),
     steps=(
-        'Right-click the Components V2 message to update ▸ Apps ▸ "Update components".',
-        "Paste the discord.builders page URL (or raw component JSON) into the modal.",
-        "The bot edits the message in place with your changes.",
+        'Right-click any Components V2 message ▸ Apps ▸ "Copy components".',
+        "Adjust the copied blocks in the ephemeral builder.",
+        'Press "Send" to post the result as a new message in the channel you ran the '
+        "command in.",
     ),
     notes=(
-        'Pair this with "Edit components", which gives you the pre-filled editor link.',
-        "Invalid input or an oversized result is reported without changing the post.",
+        "The source message must be a Components V2 post.",
+        "Unlike Edit, this posts a new message and leaves the original untouched.",
     ),
 )
 
 HELP_DETAILS: tuple[CommandDetail, ...] = (
-    POST_JSON_DETAIL,
+    POST_COMPONENTS_DETAIL,
     CREATE_POST_DETAIL,
     EDIT_POST_DETAIL,
     COPY_POST_DETAIL,
     EDIT_COMPONENTS_DETAIL,
-    UPDATE_COMPONENTS_DETAIL,
+    COPY_COMPONENTS_DETAIL,
     LS_UPDATE_DETAIL,
 )

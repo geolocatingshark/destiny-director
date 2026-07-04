@@ -15,20 +15,29 @@
 
 # Content checks for the anchor bot's detailed /help pages.
 
-from dd.anchor.help_details import HELP_DETAILS, POST_JSON_DETAIL
+from dd.anchor.help_details import (
+    COPY_COMPONENTS_DETAIL,
+    HELP_DETAILS,
+    POST_COMPONENTS_DETAIL,
+)
 from dd.common.help import render_detail_sections
 
 
-def test_post_json_is_registered_detail() -> None:
-    assert POST_JSON_DETAIL in HELP_DETAILS
-    # The key must match PostComponents's registered context-menu name exactly.
-    assert POST_JSON_DETAIL.command == "Post components"
+def test_post_components_is_registered_detail() -> None:
+    assert POST_COMPONENTS_DETAIL in HELP_DETAILS
+    # The key matches the /post components subcommand name.
+    assert POST_COMPONENTS_DETAIL.command == "components"
 
 
-def test_post_json_walkthrough_renders() -> None:
-    joined = "\n".join(render_detail_sections(POST_JSON_DETAIL))
-    assert "Post components" in joined
+def test_post_components_walkthrough_renders() -> None:
+    joined = "\n".join(render_detail_sections(POST_COMPONENTS_DETAIL))
+    assert "/post components" in joined
     assert "1." in joined  # numbered steps present
+
+
+def test_copy_components_walkthrough_renders() -> None:
+    joined = "\n".join(render_detail_sections(COPY_COMPONENTS_DETAIL))
+    assert "Copy components" in joined
     assert "Apps" in joined  # the right-click invocation hint
 
 
