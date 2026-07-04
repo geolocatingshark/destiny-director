@@ -26,6 +26,7 @@ from lightbulb import components as lbc
 
 from ...common import cfg, utils
 from ...common.bot import CachedFetchBot
+from ...common.components import build_container, embeds_to_container
 from ..builders_link import (
     builders_url,
     extract_components_from_input,
@@ -507,6 +508,148 @@ class UpdateComponents(
             await modal.attach(ctx.client, custom_id, timeout=600)
 
 
+class ConvertToComponents(
+    lb.MessageCommand,
+    name="Convert to components",
+    description="Convert this embed post into a Components V2 message in place",
+):
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+        message = self.target
+
+        bot_user = bot.get_me()
+        if not (bot_user and message.author.id == bot_user.id):
+            await ctx.respond(
+                "Can only convert messages posted by this bot", ephemeral=True
+            )
+            return
+
+        if _is_cv2(message):
+            await ctx.respond(
+                embed=_error_embed(
+                    "Already Components V2",
+                    "This post is already a Components V2 message. Use **Edit "
+                    "components** to change it.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if not message.embeds:
+            await ctx.respond(
+                embed=_error_embed(
+                    "Nothing to convert", "This message has no embed to convert."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        container = embeds_to_container(message.embeds)
+        if not container.components:
+            await ctx.respond(
+                embed=_error_embed(
+                    "Nothing to convert",
+                    "This message's embed has no content I can turn into components.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        # Preview + confirm. The preview is itself a CV2 message so its flag matches
+        # the final result; the confirm/cancel controls route through an ``lbc.Menu``
+        # but are rendered as a separate top-level action row so the previewed container
+        # is identical to what gets posted. Every terminal edit stays CV2 because a
+        # message's ``IS_COMPONENTS_V2`` flag can't be removed by a later edit.
+        confirm_id = "dd_convert:confirm"
+        cancel_id = "dd_convert:cancel"
+        handled = False
+
+        async def on_confirm(mctx: lbc.MenuContext) -> None:
+            nonlocal handled
+            handled = True
+            try:
+                await message.edit(
+                    components=[container], flags=h.MessageFlag.IS_COMPONENTS_V2
+                )
+            except h.ForbiddenError:
+                await mctx.respond(
+                    edit=True,
+                    flags=h.MessageFlag.IS_COMPONENTS_V2,
+                    components=[
+                        build_container(
+                            ["⚠️ I don't have permission to edit that message."]
+                        )
+                    ],
+                )
+                mctx.stop_interacting()
+                return
+            except h.BadRequestError as e:
+                rejected = f"⚠️ Discord rejected the converted message.\n```\n{e}\n```"
+                await mctx.respond(
+                    edit=True,
+                    flags=h.MessageFlag.IS_COMPONENTS_V2,
+                    components=[build_container([rejected])],
+                )
+                mctx.stop_interacting()
+                return
+
+            link = message.make_link(ctx.guild_id)
+            await mctx.respond(
+                edit=True,
+                flags=h.MessageFlag.IS_COMPONENTS_V2,
+                components=[build_container([f"✅ Converted: {link}"])],
+            )
+            mctx.stop_interacting()
+
+        async def on_cancel(mctx: lbc.MenuContext) -> None:
+            nonlocal handled
+            handled = True
+            await mctx.respond(
+                edit=True,
+                flags=h.MessageFlag.IS_COMPONENTS_V2,
+                components=[
+                    build_container(["Cancelled — the message was left unchanged."])
+                ],
+            )
+            mctx.stop_interacting()
+
+        menu = lbc.Menu()
+        menu.add_interactive_button(
+            h.ButtonStyle.SUCCESS, on_confirm, custom_id=confirm_id, label="Convert"
+        )
+        menu.add_interactive_button(
+            h.ButtonStyle.SECONDARY, on_cancel, custom_id=cancel_id, label="Cancel"
+        )
+
+        controls = h.impl.MessageActionRowBuilder()
+        controls.add_interactive_button(
+            h.ButtonStyle.SUCCESS, confirm_id, label="Convert"
+        )
+        controls.add_interactive_button(
+            h.ButtonStyle.SECONDARY, cancel_id, label="Cancel"
+        )
+
+        await ctx.respond(
+            flags=h.MessageFlag.IS_COMPONENTS_V2,
+            components=[container, controls],
+            ephemeral=True,
+        )
+
+        with contextlib.suppress(TimeoutError):
+            await menu.attach(ctx.client, timeout=300)
+
+        if not handled:
+            # Timed out with no choice — drop the now-dead controls and say so.
+            with contextlib.suppress(h.HTTPResponseError):
+                await ctx.interaction.edit_initial_response(
+                    components=[
+                        build_container(
+                            ["⏱️ Timed out — nothing changed. Run the command again."]
+                        )
+                    ],
+                )
+
+
 # Post commands are usable in the Kyber server in addition to control + test_env (the
 # slash /post group too, per request). The client-level owner hook still gates them to
 # bot owners.
@@ -518,6 +661,7 @@ _post_guilds = utils.guild_scope(
 loader.command(post_group, guilds=_post_guilds)
 loader.command(EditEmbed, guilds=_post_guilds)
 loader.command(CopyEmbed, guilds=_post_guilds)
+loader.command(ConvertToComponents, guilds=_post_guilds)
 loader.command(PostComponents, guilds=_post_guilds)
 loader.command(EditComponents, guilds=_post_guilds)
 loader.command(UpdateComponents, guilds=_post_guilds)
