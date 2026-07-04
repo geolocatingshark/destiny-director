@@ -18,11 +18,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential git make openssh-client curl gnupg ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# Node 22 LTS + Claude Code + Railway CLI (the npm wrapper fetches the arm64 binary).
+# Node 22 LTS + Claude Code.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code @railway/cli
+    && npm install -g @anthropic-ai/claude-code
+
+# Railway CLI: install the release tarball directly. The @railway/cli npm package's
+# postinstall requests an aarch64-*-linux-gnu asset that Railway does NOT publish
+# (arm64 ships only -musl), so it 404s on the Pi. The musl build is statically
+# linked and runs fine on Debian/glibc. Bump RAILWAY_VERSION to upgrade.
+ARG RAILWAY_VERSION=v5.23.3
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+      arm64) target="aarch64-unknown-linux-musl" ;; \
+      amd64) target="x86_64-unknown-linux-gnu" ;; \
+      *) echo "unsupported arch: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/railwayapp/cli/releases/download/${RAILWAY_VERSION}/railway-${RAILWAY_VERSION}-${target}.tar.gz" \
+      | tar -xz -C /usr/local/bin railway; \
+    railway --version
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY --from=atlas /atlas /usr/local/bin/atlas

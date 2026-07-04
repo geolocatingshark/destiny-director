@@ -110,7 +110,8 @@ relax the sandbox in-container — the container is already an isolation boundar
 
 ## Railway CLI
 
-`@railway/cli` is baked in. With `RAILWAY_API_TOKEN` in `.env` the container is already
+The Railway CLI is baked into the image (installed from the release tarball — the
+`@railway/cli` npm package 404s on arm64). With `RAILWAY_API_TOKEN` in `.env` the container is already
 authenticated; verify with `railway whoami`. (Alternative: `railway login --browserless`,
 persisted via the `dd-railway` volume.) `make deploy-beacon-dev` / `deploy-anchor-dev`
 then run from inside the container.
