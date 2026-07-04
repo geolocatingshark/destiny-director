@@ -19,13 +19,11 @@ WORKDIR /app
 # Dependencies layer — cached on the pyproject/uv.lock hash. --no-dev drops the
 # dev group but keeps speedups (a default group), matching prod today.
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project
 # The project itself, installed non-editable into the venv.
 COPY dd ./dd
 COPY README.md ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+RUN uv sync --frozen --no-dev --no-editable
 
 # --- Final: runtime image, no compilers ------------------------------------
 FROM python:3.13-slim-bookworm AS final
