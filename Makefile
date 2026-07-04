@@ -22,12 +22,15 @@ remove-last-deploy:
 	railway down
 
 # Remote Pi dev container (docker-compose.dev.yml). dev-up builds the image with
-# the HOST user's uid/gid so the bind-mounted /workspace stays writable, then
-# starts it detached. dev-down stops it; dev-down-volumes also drops the named
-# volumes (uv cache, claude/railway config, mysql data) — use when the baked uid
-# changed and the volumes must be recreated under the new owner.
+# the uid/gid that OWN this clone so the bind-mounted /workspace stays writable,
+# then starts it detached. We read the owner with `stat`, NOT `id -u`: when docker
+# is run via sudo/root, `id -u` is 0 and the build then collides with the root
+# account (`groupadd: GID '0' already exists`). The clone owner is the right uid
+# whoever launches the build. dev-down stops it; dev-down-volumes also drops the
+# named volumes (uv cache, claude/railway config, mysql data) — use when the baked
+# uid changed and the volumes must be recreated under the new owner.
 dev-up:
-	HOST_UID=$$(id -u) HOST_GID=$$(id -g) docker compose -f docker-compose.dev.yml up -d --build
+	HOST_UID=$$(stat -c '%u' .) HOST_GID=$$(stat -c '%g' .) docker compose -f docker-compose.dev.yml up -d --build
 
 dev-down:
 	docker compose -f docker-compose.dev.yml down

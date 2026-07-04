@@ -44,9 +44,16 @@ RUN set -eux; \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY --from=atlas /atlas /usr/local/bin/atlas
 
-RUN groupadd --gid ${USER_GID} ${USERNAME} \
-    && useradd --uid ${USER_UID} --gid ${USER_GID} --shell /bin/bash -m ${USERNAME} \
-    && mkdir -p /workspace && chown ${USER_UID}:${USER_GID} /workspace
+# Create the dev user at the host owner's uid/gid (passed as build args — see
+# Makefile `dev-up`). Guard against an already-present gid/uid so the build won't
+# hard-fail if the host owner collides with a base-image account.
+RUN if ! getent group "${USER_GID}" >/dev/null; then \
+        groupadd --gid "${USER_GID}" "${USERNAME}"; \
+    fi \
+    && if ! getent passwd "${USER_UID}" >/dev/null; then \
+        useradd --uid "${USER_UID}" --gid "${USER_GID}" --shell /bin/bash -m "${USERNAME}"; \
+    fi \
+    && mkdir -p /workspace && chown "${USER_UID}:${USER_GID}" /workspace
 
 # Venv lives OUTSIDE /workspace so the bind-mount can't shadow the pre-built venv.
 ENV TZ=Etc/UTC \
