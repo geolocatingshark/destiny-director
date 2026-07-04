@@ -237,7 +237,7 @@ def test_eververse_line_armor_ornament_puts_class_emoji_with_target():
         rarity="Exotic",
     )
     line = _eververse_line(armor, manifest)
-    assert line.startswith("• [Arcturus Engine](")
+    assert line.startswith("• [**Arcturus Engine**](")
     assert "— 1500 (:titan: Hallowfire Heart)" in line
 
 
@@ -261,6 +261,6 @@ def test_eververse_line_silver_currency_uses_silver_cost():
         "Unknown", "Ship", name="Threat Display", cost=600, currency="Silver"
     )
     line = _eververse_line(ship, None, "Silver")
-    assert line.startswith("• [Threat Display](")
+    assert line.startswith("• [**Threat Display**](")
     assert "— 600" in line
     assert line.endswith("· Ship")
