@@ -1608,8 +1608,22 @@ _indexes: _Indexes | None = None
 _indexes_lock = asyncio.Lock()
 
 
-def _classify_activity(defn: dict[str, t.Any]) -> str | None:
-    """Map a DestinyActivityDefinition to our category, or None if it's neither."""
+def _classify_activity(defn: dict[str, t.Any], type_name: str = "") -> str | None:
+    """Classify a DestinyActivityDefinition, or None if it's none of our categories.
+
+    ``type_name`` is the activity's resolved DestinyActivityTypeDefinition name — the
+    authoritative signal. We fall back to the activity mode, then (only when there is no
+    type *and* no mode at all) to fireteam size, so typed activities like strikes and
+    story missions can't flood the raid/dungeon lists.
+    """
+    type_lower = type_name.lower()
+    if type_lower == "raid":
+        return "raid"
+    if type_lower == "dungeon":
+        return "dungeon"
+    if "nightfall" in type_lower:
+        return "nightfall"
+
     modes = set(defn.get("activityModeTypes") or [])
     direct = defn.get("directActivityModeType")
     if direct:
@@ -1620,15 +1634,19 @@ def _classify_activity(defn: dict[str, t.Any]) -> str | None:
         return "dungeon"
     if _MODE_NIGHTFALL in modes:
         return "nightfall"
+
     name = (defn.get("displayProperties") or {}).get("name", "")
     if "pantheon" in name.lower():
         return "pantheon"
-    # No mode info: fall back to fireteam size — raids cap at 6, dungeons at 3.
-    max_party = (defn.get("matchmaking") or {}).get("maxParty")
-    if max_party == 6:
-        return "raid"
-    if max_party == 3:
-        return "dungeon"
+
+    # Last resort — only when the manifest gives neither a type nor a mode: fireteam
+    # size (raids cap at 6, dungeons at 3).
+    if not type_name and not modes:
+        max_party = (defn.get("matchmaking") or {}).get("maxParty")
+        if max_party == 6:
+            return "raid"
+        if max_party == 3:
+            return "dungeon"
     return None
 
 
@@ -1683,10 +1701,20 @@ async def _build_indexes() -> _Indexes:
                     )
                 )
 
+            # Activity type names are the authoritative raid/dungeon/nightfall signal.
+            await cur.execute("SELECT json FROM DestinyActivityTypeDefinition")
+            activity_types: dict[int, str] = {}
+            for (row,) in await cur.fetchall():
+                defn = json.loads(row)
+                activity_types[int(defn["hash"])] = (
+                    defn.get("displayProperties") or {}
+                ).get("name", "")
+
             await cur.execute("SELECT json FROM DestinyActivityDefinition")
             for (row,) in await cur.fetchall():
                 defn = json.loads(row)
-                category = _classify_activity(defn)
+                type_name = activity_types.get(defn.get("activityTypeHash"), "")
+                category = _classify_activity(defn, type_name)
                 if category is None:
                     continue
                 name = _clean_activity_name(

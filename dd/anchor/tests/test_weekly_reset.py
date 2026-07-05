@@ -268,20 +268,28 @@ def test_reward_fields_are_weapons_only() -> None:
 
 
 @pytest.mark.parametrize(
-    ("defn", "expected"),
+    ("defn", "type_name", "expected"),
     [
-        ({"activityModeTypes": [4]}, "raid"),
-        ({"directActivityModeType": 82}, "dungeon"),
-        ({"activityModeTypes": [46, 7]}, "nightfall"),
-        ({"displayProperties": {"name": "Pantheon: Nezarec Sublime"}}, "pantheon"),
-        ({"matchmaking": {"maxParty": 6}}, "raid"),  # fallback: 6-player = raid
-        ({"matchmaking": {"maxParty": 3}}, "dungeon"),  # fallback: 3-player = dungeon
-        ({"matchmaking": {"maxParty": 4}}, None),
-        ({}, None),
+        # authoritative type name wins
+        ({}, "Raid", "raid"),
+        ({}, "Dungeon", "dungeon"),
+        ({}, "Nightfall", "nightfall"),
+        # mode-based when no type
+        ({"activityModeTypes": [4]}, "", "raid"),
+        ({"directActivityModeType": 82}, "", "dungeon"),
+        ({"activityModeTypes": [46, 7]}, "", "nightfall"),
+        ({"displayProperties": {"name": "Pantheon: Nezarec Sublime"}}, "", "pantheon"),
+        # fireteam-size fallback only when there is no type AND no mode
+        ({"matchmaking": {"maxParty": 6}}, "", "raid"),
+        ({"matchmaking": {"maxParty": 3}}, "", "dungeon"),
+        # a typed 3-player strike must NOT be mistaken for a dungeon
+        ({"matchmaking": {"maxParty": 3}}, "Strike", None),
+        ({"matchmaking": {"maxParty": 4}}, "", None),
+        ({}, "", None),
     ],
 )
-def test_classify_activity(defn: dict, expected: str | None) -> None:
-    assert wr._classify_activity(defn) == expected
+def test_classify_activity(defn: dict, type_name: str, expected: str | None) -> None:
+    assert wr._classify_activity(defn, type_name) == expected
 
 
 def test_clean_activity_name_variants() -> None:
