@@ -230,3 +230,68 @@ def test_build_cv2_is_components_v2() -> None:
     kwargs = hmessage.to_message_kwargs()
     assert kwargs["flags"] == h.MessageFlag.IS_COMPONENTS_V2
     assert kwargs["components"] and "content" not in kwargs
+
+
+# --- autocomplete set commands (activities + item rewards) ------------------------
+
+
+@pytest.fixture
+def stub_item_index():
+    saved = wr._item_index
+    wr._item_index = [
+        ("Null Composure", 222, "Fusion Rifle"),
+        ("Cloudstrike", 333, "Sniper Rifle"),
+    ]
+    yield
+    wr._item_index = saved
+
+
+def test_activity_category_covers_every_field() -> None:
+    for _label, key in wr._ACTIVITY_FIELDS:
+        assert key in wr._ACTIVITY_CATEGORY, key
+        assert wr._ACTIVITY_CATEGORY[key], f"empty pool for {key}"
+
+
+def test_apply_activity_field_rotators_and_plain() -> None:
+    ctx = wr.WeeklyResetContext(reset_ts=1)
+    wr.apply_activity_field(ctx, "rotator_raid_1", "Vault of Glass")
+    wr.apply_activity_field(ctx, "rotator_raid_2", "Crota's End")
+    wr.apply_activity_field(ctx, "rotator_dungeon_1", "Duality")
+    wr.apply_activity_field(ctx, "rotator_dungeon_2", "Prophecy")
+    assert ctx.rotator_raids == ("Vault of Glass", "Crota's End")
+    assert ctx.rotator_dungeons == ("Duality", "Prophecy")
+    wr.apply_activity_field(ctx, "gm_strike", "The Sunless Cell")
+    wr.apply_activity_field(ctx, "crucible_6v6", "Control, Eruption")
+    assert ctx.gm_strike == "The Sunless Cell"
+    assert ctx.crucible_6v6 == "Control, Eruption"
+
+
+def test_apply_reward_field_sets_and_clears() -> None:
+    ctx = wr.WeeklyResetContext(reset_ts=1)
+    weapon = wr.WeaponRef("Null Composure", 222, "fusion_rifle")
+    for _label, key in wr._REWARD_FIELDS:
+        wr.apply_reward_field(ctx, key, weapon)
+        assert getattr(ctx, key) is weapon
+    wr.apply_reward_field(ctx, "zavala_weapon", None)
+    assert ctx.zavala_weapon is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_reward_by_hash(stub_item_index) -> None:
+    assert await wr.resolve_reward_value("222") == wr.WeaponRef(
+        "Null Composure", 222, "fusion_rifle"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_reward_by_name(stub_item_index) -> None:
+    weapon = await wr.resolve_reward_value("cloudstrike")
+    assert weapon is not None
+    assert weapon.hash == 333 and weapon.emoji_name == "sniper_rifle"
+
+
+@pytest.mark.asyncio
+async def test_resolve_reward_free_text_and_blank(stub_item_index) -> None:
+    typed = await wr.resolve_reward_value("Some Custom Roll")
+    assert typed == wr.WeaponRef(name="Some Custom Roll") and typed.hash is None
+    assert await wr.resolve_reward_value("   ") is None

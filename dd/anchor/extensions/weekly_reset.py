@@ -1241,6 +1241,11 @@ async def open_editor(ctx: lb.Context, bot: CachedFetchBot) -> None:
         async with _draft_lock:
             if _active_session != session.session_id:
                 return False
+            # Pick up any out-of-band edits (e.g. the /weekly_reset set_* commands)
+            # before applying this one, so concurrent writers don't clobber.
+            latest = await load_draft()
+            if latest is not None:
+                session.ctx = latest
             fn(session.ctx)
             session.meta.status = "draft"
             session.meta.last_edited_by = session.invoker_id
@@ -1511,12 +1516,299 @@ class WeeklyResetShow(
         )
 
 
+# ---------------------------------------------------------------------------
+# Autocomplete-driven set commands
+#
+# Discord autocomplete only exists on slash-command options, and its responses are
+# dispatched *before* the CHECKS pipeline — so they are NOT owner-gated. That is fine
+# here by design: the suggestions leak to anyone, but the invoke (the actual write) is
+# still gated by the client-level ``owner_only`` hook — only writes are restricted.
+# ---------------------------------------------------------------------------
+
+# Activity categories. Suggestions only — the option still accepts a free-typed value,
+# so anything missing from a pool can still be entered.
+RAID_POOL: tuple[str, ...] = (
+    "Salvation's Edge",
+    "The Desert Perpetual",
+    "Crota's End",
+    "King's Fall",
+    "Vow of the Disciple",
+    "Vault of Glass",
+    "Deep Stone Crypt",
+    "Garden of Salvation",
+    "Last Wish",
+    "Root of Nightmares",
+)
+DUNGEON_POOL: tuple[str, ...] = (
+    "Sundered Doctrine",
+    "Vesper's Host",
+    "Warlord's Ruin",
+    "Ghosts of the Deep",
+    "Spire of the Watcher",
+    "Duality",
+    "Grasp of Avarice",
+    "Prophecy",
+    "Pit of Heresy",
+    "Shattered Throne",
+    "Equilibrium",
+)
+CRUCIBLE_MODES: tuple[str, ...] = (
+    "Control",
+    "Clash",
+    "Rift",
+    "Zone Control",
+    "Eruption",
+    "Relic",
+    "Collision",
+    "Hardware",
+    "Heavy Metal",
+    "Rumble",
+    "Survival",
+    "Competitive",
+    "Iron Banner",
+    "Trials of Osiris",
+    "Sparrow Racing",
+    "Momentum Control",
+    "Mayhem",
+    "Team Scorched",
+)
+NIGHTFALL_STRIKES: tuple[str, ...] = (
+    "The Sunless Cell",
+    "Birthplace of the Vile",
+    "The Corrupted",
+    "Warden of Nothing",
+    "The Insight Terminus",
+    "The Hollowed Lair",
+    "Fallen S.A.B.E.R.",
+    "Lake of Shadows",
+    "The Arms Dealer",
+    "Exodus Crash",
+    "The Inverted Spire",
+    "Proving Grounds",
+    "The Scarlet Keep",
+    "The Glassway",
+    "The Disgraced",
+    "Defiant Battleground: EDZ",
+    "The Devils' Lair",
+    "Broodhold",
+)
+
+#: field key -> the category pool its value autocompletes against.
+_ACTIVITY_CATEGORY: dict[str, tuple[str, ...]] = {
+    "gm_strike": NIGHTFALL_STRIKES,
+    "seasonal_raid": RAID_POOL,
+    "rotator_raid_1": RAID_POOL,
+    "rotator_raid_2": RAID_POOL,
+    "seasonal_dungeon": DUNGEON_POOL,
+    "rotator_dungeon_1": DUNGEON_POOL,
+    "rotator_dungeon_2": DUNGEON_POOL,
+    "pantheon_reprise": PANTHEON_BOSSES,
+    "pantheon_encore": PANTHEON_BOSSES,
+    "crucible_1v6": CRUCIBLE_MODES,
+    "crucible_3v3": CRUCIBLE_MODES,
+    "crucible_6v6": CRUCIBLE_MODES,
+}
+_ACTIVITY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("GM Nightfall strike", "gm_strike"),
+    ("Seasonal featured raid", "seasonal_raid"),
+    ("Seasonal featured dungeon", "seasonal_dungeon"),
+    ("Featured raid 1", "rotator_raid_1"),
+    ("Featured raid 2", "rotator_raid_2"),
+    ("Featured dungeon 1", "rotator_dungeon_1"),
+    ("Featured dungeon 2", "rotator_dungeon_2"),
+    ("Pantheon Reprise", "pantheon_reprise"),
+    ("Pantheon Encore", "pantheon_encore"),
+    ("Crucible 1v6", "crucible_1v6"),
+    ("Crucible 3v3", "crucible_3v3"),
+    ("Crucible 6v6", "crucible_6v6"),
+)
+_REWARD_FIELDS: tuple[tuple[str, str], ...] = (
+    ("GM Nightfall reward weapon", "gm_weapon"),
+    ("Vanguard / Quickplay weapon", "quickplay_weapon"),
+    ("Crucible / Control weapon", "control_weapon"),
+    ("Zavala's Weapon", "zavala_weapon"),
+)
+_ACTIVITY_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _ACTIVITY_FIELDS]
+_REWARD_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _REWARD_FIELDS]
+
+# In-memory index of every weapon/armour in the manifest: (name, hash, type-name).
+# Built once (lazily + prewarmed at startup) so per-keystroke autocomplete stays fast.
+_item_index: list[tuple[str, int, str]] | None = None
+_item_index_lock = asyncio.Lock()
+
+
+async def get_item_index() -> list[tuple[str, int, str]]:
+    """Return (and cache) the weapon/armour item index from the manifest."""
+    global _item_index
+    if _item_index is not None:
+        return _item_index
+    async with _item_index_lock:
+        if _item_index is not None:
+            return _item_index
+        index: list[tuple[str, int, str]] = []
+        try:
+            manifest = await api._build_manifest_dict(
+                await api._get_latest_manifest(schemas.BungieCredentials.api_key)
+            )
+            items = manifest.get("DestinyInventoryItemDefinition", {})
+            for hash_, defn in items.items():
+                if defn.get("itemType") not in (2, 3):  # armour (2) or weapon (3)
+                    continue
+                name = (defn.get("displayProperties") or {}).get("name")
+                if not name:
+                    continue
+                index.append((name, int(hash_), defn.get("itemTypeDisplayName", "")))
+        except Exception:
+            logger.warning("weekly_reset: item index build failed", exc_info=True)
+        _item_index = index
+        return index
+
+
+async def _activity_value_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
+    field_opt = ctx.get_option("field")
+    field = str(field_opt.value) if field_opt and field_opt.value else ""
+    pool = _ACTIVITY_CATEGORY.get(field, ())
+    query = str(ctx.focused.value or "").lower()
+    matches = [name for name in pool if query in name.lower()][:25]
+    await ctx.respond(matches or list(pool[:25]))
+
+
+async def _reward_value_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
+    index = _item_index
+    if index is None:
+        # Not warmed yet — kick off the build so the next keystroke has it.
+        asyncio.create_task(get_item_index())
+        await ctx.respond([])
+        return
+    query = str(ctx.focused.value or "").lower()
+    if not query:
+        await ctx.respond([])
+        return
+    choices: dict[str, str] = {}
+    for name, hash_, _type_name in index:
+        if query in name.lower():
+            choices[name[:100]] = str(hash_)
+            if len(choices) >= 25:
+                break
+    await ctx.respond(choices)
+
+
+async def resolve_reward_value(value: str) -> WeaponRef | None:
+    """A hash (picked from autocomplete) -> full WeaponRef; else a plain typed name."""
+    value = value.strip()
+    if not value:
+        return None
+    index = await get_item_index()
+    if value.isdigit():
+        wanted = int(value)
+        for name, hash_, type_name in index:
+            if hash_ == wanted:
+                return WeaponRef(name, hash_, api.likely_emoji_name(type_name))
+    for name, hash_, type_name in index:
+        if name.lower() == value.lower():
+            return WeaponRef(name, hash_, api.likely_emoji_name(type_name))
+    return WeaponRef(name=value)
+
+
+def apply_activity_field(ctx: WeeklyResetContext, field: str, value: str) -> None:
+    if field == "rotator_raid_1":
+        ctx.rotator_raids = (value, ctx.rotator_raids[1])
+    elif field == "rotator_raid_2":
+        ctx.rotator_raids = (ctx.rotator_raids[0], value)
+    elif field == "rotator_dungeon_1":
+        ctx.rotator_dungeons = (value, ctx.rotator_dungeons[1])
+    elif field == "rotator_dungeon_2":
+        ctx.rotator_dungeons = (ctx.rotator_dungeons[0], value)
+    elif field in _ACTIVITY_CATEGORY:
+        setattr(ctx, field, value)
+
+
+def apply_reward_field(
+    ctx: WeeklyResetContext, field: str, weapon: WeaponRef | None
+) -> None:
+    if field in {"gm_weapon", "quickplay_weapon", "control_weapon", "zavala_weapon"}:
+        setattr(ctx, field, weapon)
+
+
+async def mutate_draft(
+    bot: CachedFetchBot,
+    invoker_id: int,
+    fn: t.Callable[[WeeklyResetContext], None],
+) -> None:
+    """Load-modify-save the persisted draft under the lock, then refresh the card."""
+    async with _draft_lock:
+        draft = await load_draft() or WeeklyResetContext(reset_ts=current_reset_ts())
+        fn(draft)
+        meta = await load_meta()
+        meta.status = "draft"
+        meta.last_edited_by = invoker_id
+        meta.last_edited_ts = int(dt.datetime.now(tz=dt.UTC).timestamp())
+        await save_draft(draft)
+        await save_meta(meta)
+    await post_or_update_card(bot, draft, meta)
+
+
+@weekly_reset_group.register
+class WeeklyResetSetActivity(
+    lb.SlashCommand,
+    name="set_activity",
+    description="Set an activity field (autocompletes names for that category)",
+):
+    field = lb.string("field", "Which activity slot", choices=_ACTIVITY_FIELD_CHOICES)
+    value = lb.string(
+        "value",
+        "Start typing — suggestions are for the chosen category",
+        autocomplete=_activity_value_autocomplete,
+    )
+
+    @lb.invoke
+    async def invoke(
+        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
+    ) -> None:
+        field, value = self.field, self.value.strip()
+        await mutate_draft(
+            bot, ctx.user.id, lambda c: apply_activity_field(c, field, value)
+        )
+        await ctx.respond(f"Set **{field}** → {value or '—'}", ephemeral=True)
+
+
+@weekly_reset_group.register
+class WeeklyResetSetReward(
+    lb.SlashCommand,
+    name="set_reward",
+    description="Set a weapon/armour reward (autocompletes Destiny items)",
+):
+    field = lb.string("field", "Which reward slot", choices=_REWARD_FIELD_CHOICES)
+    value = lb.string(
+        "value",
+        "Search weapons/armour, or type a name (blank to clear)",
+        autocomplete=_reward_value_autocomplete,
+    )
+
+    @lb.invoke
+    async def invoke(
+        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
+    ) -> None:
+        field = self.field
+        weapon = await resolve_reward_value(self.value)
+        await mutate_draft(
+            bot, ctx.user.id, lambda c: apply_reward_field(c, field, weapon)
+        )
+        link = f" ({weapon.lightgg_url})" if weapon and weapon.hash else ""
+        await ctx.respond(
+            f"Set **{field}** → {weapon.name if weapon else '—'}{link}", ephemeral=True
+        )
+
+
 @loader.listener(h.StartedEvent)
 async def _schedule_weekly_reset(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
 ) -> None:
     if not cfg.weekly_reset_drafts_channel:
         return
+
+    # Prewarm the weapon/armour autocomplete index so the first keystroke is instant.
+    asyncio.create_task(get_item_index())
 
     # Tuesday 17:00 UTC weekly reset.
     @aiocron.crontab("0 17 * * TUE", start=True)
