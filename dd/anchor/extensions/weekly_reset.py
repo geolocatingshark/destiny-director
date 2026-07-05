@@ -21,7 +21,7 @@ mirrored it. This extension automates that authoring:
 
 1. At Tuesday reset a cron derives everything the Bungie API can give us, merges the
    carried-over curated bits, and posts a **draft** (a live Components V2 preview)
-   to the team drafts channel (:data:`cfg.weekly_reset_drafts_channel`), pinging the
+   to the team drafts channel (:data:`cfg.drafts_channel`), pinging the
    bot owners.
 2. The team opens ``/weekly_reset edit`` — an owner-only, ephemeral interactive editor —
    picks the weapons/rotators/etc. and types the editorial prose.
@@ -133,6 +133,9 @@ DEFAULT_DUNGEON_PAIRS: tuple[tuple[str, str], ...] = (
 DEFAULT_IB_WEEK_RESETS: tuple[int, ...] = ()
 
 DEFAULT_CRUCIBLE_1V6 = "Sparrow Racing, Rumble"
+# Current season's featured raid/dungeon (the "Weekly Reward" lines); update per season.
+DEFAULT_SEASONAL_RAID = "The Desert Perpetual"
+DEFAULT_SEASONAL_DUNGEON = "Equilibrium"
 
 # --- Bounded selector domains --------------------------------------------------------
 # Small, stable fields are picked from Choice dropdowns instead of free-typed
@@ -140,10 +143,13 @@ DEFAULT_CRUCIBLE_1V6 = "Sparrow Racing, Rumble"
 # limit. (Large domains — GM strikes ~46, weapons — stay on manifest autocomplete.)
 
 # Crucible slots: the first mode of each is fixed; only the second (featured) mode is a
-# weekly input, chosen from CRUCIBLE_MODES.
+# weekly input. The full mode set (base modes + Labs variants) exceeds Discord's
+# 25-choice limit, so the second mode uses autocomplete over CRUCIBLE_MODES rather than
+# a Choice selector. Add new Labs modes here as Bungie ships them.
 CRUCIBLE_3V3_FIRST = "Competitive"
 CRUCIBLE_6V6_FIRST = "Control"
 CRUCIBLE_MODES: tuple[str, ...] = (
+    # Base modes
     "Clash",
     "Control",
     "Rift",
@@ -153,6 +159,7 @@ CRUCIBLE_MODES: tuple[str, ...] = (
     "Collision",
     "Momentum Control",
     "Team Scorched",
+    "Scorched",
     "Rumble",
     "Survival",
     "Elimination",
@@ -163,8 +170,22 @@ CRUCIBLE_MODES: tuple[str, ...] = (
     "Showdown",
     "Mayhem",
     "Supremacy",
-    "Scorched",
-)  # 20 modes < 25
+    "Doubles",
+    # Labs / rotator variants
+    "Heavy Metal",
+    "Heavy Metal Supremacy",
+    "Hardware",
+    "Hardware Mix",
+    "Hardware Supremacy",
+    "Checkmate Clash",
+    "Checkmate Control",
+    "Checkmate Countdown",
+    "Checkmate Rumble",
+    "Checkmate Survival",
+    "Checkmate Mix",
+    "Classic Mix",
+    "Rush Remixed",
+)  # > 25 -> autocomplete, not a Choice selector
 # Raid / dungeon domains (from the manifest; a new one ships ~1-2x/year — add it here).
 RAIDS: tuple[str, ...] = (
     "Crota's End",
@@ -251,8 +272,8 @@ class WeeklyResetContext:
     gm_weapon: WeaponRef | None = None
     quickplay_weapon: WeaponRef | None = None
     control_weapon: WeaponRef | None = None
-    seasonal_raid: str = ""
-    seasonal_dungeon: str = ""
+    seasonal_raid: str = DEFAULT_SEASONAL_RAID
+    seasonal_dungeon: str = DEFAULT_SEASONAL_DUNGEON
     # ZAVALA'S WEAPON — set by hand (the vendor API doesn't expose the weekly weapon).
     zavala_weapon: WeaponRef | None = None
     # FEATURED RAIDS & DUNGEONS (weekly rotators)
@@ -322,8 +343,8 @@ class WeeklyResetContext:
             gm_weapon=weapon("gm_weapon"),
             quickplay_weapon=weapon("quickplay_weapon"),
             control_weapon=weapon("control_weapon"),
-            seasonal_raid=d.get("seasonal_raid", ""),
-            seasonal_dungeon=d.get("seasonal_dungeon", ""),
+            seasonal_raid=d.get("seasonal_raid", DEFAULT_SEASONAL_RAID),
+            seasonal_dungeon=d.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON),
             zavala_weapon=weapon("zavala_weapon"),
             rotator_raids=pair("rotator_raids"),
             rotator_dungeons=pair("rotator_dungeons"),
@@ -349,8 +370,8 @@ class WeeklyResetConfig:
     last values the team entered, so next week's draft starts pre-filled, not blank.
     """
 
-    seasonal_raid: str = ""
-    seasonal_dungeon: str = ""
+    seasonal_raid: str = DEFAULT_SEASONAL_RAID
+    seasonal_dungeon: str = DEFAULT_SEASONAL_DUNGEON
     rotator_anchor: int = DEFAULT_ROTATOR_ANCHOR
     raid_pairs: tuple[tuple[str, str], ...] = DEFAULT_RAID_PAIRS
     dungeon_pairs: tuple[tuple[str, str], ...] = DEFAULT_DUNGEON_PAIRS
@@ -395,8 +416,8 @@ class WeeklyResetConfig:
             return tuple((str(p[0]), str(p[1])) for p in raw)
 
         return cls(
-            seasonal_raid=d.get("seasonal_raid", ""),
-            seasonal_dungeon=d.get("seasonal_dungeon", ""),
+            seasonal_raid=d.get("seasonal_raid", DEFAULT_SEASONAL_RAID),
+            seasonal_dungeon=d.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON),
             rotator_anchor=int(d.get("rotator_anchor", DEFAULT_ROTATOR_ANCHOR)),
             raid_pairs=pairs("raid_pairs", DEFAULT_RAID_PAIRS),
             dungeon_pairs=pairs("dungeon_pairs", DEFAULT_DUNGEON_PAIRS),
@@ -714,6 +735,48 @@ async def weekly_reset_message_constructor(bot: CachedFetchBot) -> HMessage:
     return await format_weekly_reset(ctx, bot)
 
 
+def activity_record(ctx: WeeklyResetContext) -> dict[str, t.Any]:
+    """The activity choices for a published week, as a flat machine-parseable dict."""
+
+    def wname(weapon: WeaponRef | None) -> str | None:
+        return weapon.name if weapon else None
+
+    return {
+        "reset_ts": ctx.reset_ts,
+        "gm_strike": ctx.gm_strike or None,
+        "gm_weapon": wname(ctx.gm_weapon),
+        "quickplay_weapon": wname(ctx.quickplay_weapon),
+        "control_weapon": wname(ctx.control_weapon),
+        "zavala_weapon": wname(ctx.zavala_weapon),
+        "seasonal_raid": ctx.seasonal_raid or None,
+        "seasonal_dungeon": ctx.seasonal_dungeon or None,
+        "rotator_raids": [r for r in ctx.rotator_raids if r],
+        "rotator_dungeons": [d for d in ctx.rotator_dungeons if d],
+        "pantheon_reprise": ctx.pantheon_reprise or None,
+        "pantheon_encore": ctx.pantheon_encore or None,
+        "crucible_1v6": ctx.crucible_1v6 or None,
+        "crucible_3v3": ctx.crucible_3v3 or None,
+        "crucible_6v6": ctx.crucible_6v6 or None,
+        "iron_banner": ctx.iron_banner,
+        "trials_active": ctx.trials_active,
+    }
+
+
+async def record_publish(bot: CachedFetchBot, ctx: WeeklyResetContext) -> None:
+    """Log the published activity choices to the records channel for later analysis."""
+    channel_id = cfg.weekly_reset_records_channel
+    if not channel_id:
+        return
+    record = json.dumps(activity_record(ctx))
+    try:
+        await bot.rest.create_message(
+            channel_id,
+            f"Weekly reset <t:{ctx.reset_ts}:D>\n```json\n{record}\n```",
+        )
+    except Exception:
+        logger.warning("weekly_reset: records post failed", exc_info=True)
+
+
 def validate_post(ctx: WeeklyResetContext) -> list[str]:
     """Problems that would make the post empty or break Components V2 limits."""
     problems: list[str] = []
@@ -838,7 +901,7 @@ async def post_or_update_card(
     ping_owners: bool = False,
 ) -> DraftMeta:
     """Edit the existing card in place, or post a fresh one (pinging owners once)."""
-    channel_id = cfg.weekly_reset_drafts_channel
+    channel_id = cfg.drafts_channel
     if not channel_id:
         return meta
     components = await render_card(ctx, meta, bot)
@@ -1261,6 +1324,7 @@ async def open_editor(ctx: lb.Context, bot: CachedFetchBot) -> None:
                 return
             hmessage = await format_weekly_reset(session.ctx, bot)
             channel_id = cfg.followables["weekly_reset"]
+            initial_publish = not session.meta.published_message_id
             if session.meta.published_message_id:
                 # Already published this week: edit the post in place so fixes reach
                 # followers via beacon's edit reconciliation, no duplicate post.
@@ -1279,6 +1343,9 @@ async def open_editor(ctx: lb.Context, bot: CachedFetchBot) -> None:
             session.meta.status = "published"
             await save_meta(session.meta)
             _active_session = None
+        # Log the activity choices once per week (first publish) for later analysis.
+        if initial_publish:
+            await record_publish(bot, session.ctx)
         await post_or_update_card(bot, session.ctx, session.meta)
         await mctx.respond(
             edit=True,
@@ -1476,7 +1543,7 @@ _REWARD_FIELDS: tuple[tuple[str, str], ...] = (
 )
 _REWARD_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _REWARD_FIELDS]
 # Bounded-selector Choice lists (label == value) for the dedicated set_* commands.
-_CRUCIBLE_CHOICES = [lb.Choice(m, m) for m in CRUCIBLE_MODES]
+# (Crucible modes exceed 25, so they use autocomplete instead — _crucible_autocomplete.)
 _RAID_CHOICES = [lb.Choice(r, r) for r in RAIDS]
 _DUNGEON_CHOICES = [lb.Choice(d, d) for d in DUNGEONS]
 _PANTHEON_CHOICES = [lb.Choice(b, b) for b in PANTHEON_BOSSES]
@@ -1732,6 +1799,14 @@ async def _gm_strike_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
     await ctx.respond([name for name in names if query in name.lower()][:25])
 
 
+async def _crucible_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
+    # >25 modes (base + Labs), so autocomplete rather than a Choice selector. Show the
+    # whole list on an empty query (it's short) and filter as the user types.
+    query = str(ctx.focused.value or "").lower()
+    matches = [m for m in CRUCIBLE_MODES if query in m.lower()]
+    await ctx.respond(matches[:25])
+
+
 async def _reward_value_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
     field_opt = ctx.get_option("field")
     field = str(field_opt.value) if field_opt and field_opt.value else ""
@@ -1878,13 +1953,13 @@ class WeeklyResetSetCrucible(
     three_v_three = lb.string(
         "three_v_three",
         "3v3 featured mode (paired with Competitive)",
-        choices=_CRUCIBLE_CHOICES,
+        autocomplete=_crucible_autocomplete,
         default="",
     )
     six_v_six = lb.string(
         "six_v_six",
         "6v6 featured mode (paired with Control)",
-        choices=_CRUCIBLE_CHOICES,
+        autocomplete=_crucible_autocomplete,
         default="",
     )
 
@@ -2025,7 +2100,7 @@ class WeeklyResetSetReward(
 async def _schedule_weekly_reset(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
 ) -> None:
-    if not cfg.weekly_reset_drafts_channel:
+    if not cfg.drafts_channel:
         return
 
     # Prewarm the manifest-backed autocomplete indexes so the first keystroke is fast.
@@ -2040,7 +2115,7 @@ async def _schedule_weekly_reset(
         await run_reset_draft(bot, ping_owners=True)
 
 
-if cfg.weekly_reset_drafts_channel:
+if cfg.drafts_channel:
     loader.command(
         weekly_reset_group,
         guilds=guild_scope(

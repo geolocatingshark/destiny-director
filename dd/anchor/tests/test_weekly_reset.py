@@ -238,13 +238,38 @@ def stub_indexes():
     wr._indexes = saved
 
 
-def test_selector_domains_fit_discord_choice_limit() -> None:
-    # Each bounded selector must stay under Discord's 25-choice limit.
-    for domain in (wr.CRUCIBLE_MODES, wr.RAIDS, wr.DUNGEONS, wr.PANTHEON_BOSSES):
+def test_choice_selector_domains_fit_discord_limit() -> None:
+    # The Choice-selector fields must stay under Discord's 25-choice limit.
+    for domain in (wr.RAIDS, wr.DUNGEONS, wr.PANTHEON_BOSSES):
         assert 0 < len(domain) < 25, len(domain)
-    # no duplicate choices
+    # Crucible exceeds 25 (base + Labs), which is why it uses autocomplete instead.
+    assert len(wr.CRUCIBLE_MODES) > 25
+    assert "Heavy Metal Supremacy" in wr.CRUCIBLE_MODES
+    # no duplicate choices anywhere
     for domain in (wr.CRUCIBLE_MODES, wr.RAIDS, wr.DUNGEONS, wr.PANTHEON_BOSSES):
         assert len(set(domain)) == len(domain)
+
+
+def test_seasonal_defaults() -> None:
+    fresh = wr.WeeklyResetContext(reset_ts=1)
+    assert fresh.seasonal_raid == "The Desert Perpetual"
+    assert fresh.seasonal_dungeon == "Equilibrium"
+    config = wr.WeeklyResetConfig()
+    assert config.seasonal_raid == "The Desert Perpetual"
+    assert config.seasonal_dungeon == "Equilibrium"
+
+
+def test_activity_record_is_flat_and_parseable() -> None:
+    ctx = _full_ctx()
+    rec = wr.activity_record(ctx)
+    assert rec["reset_ts"] == 1783443600
+    assert rec["gm_weapon"] == "Null Composure"  # WeaponRef -> name
+    assert rec["rotator_raids"] == ["Crota's End", "Vault of Glass"]
+    assert rec["seasonal_raid"] == "The Desert Perpetual"
+    # every value must be JSON-serialisable
+    import json
+
+    assert json.loads(json.dumps(rec)) == rec
 
 
 def test_reward_fields_are_weapons_only() -> None:

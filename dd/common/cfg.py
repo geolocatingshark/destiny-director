@@ -195,9 +195,12 @@ control_discord_role_id = _getenv("CONTROL_DISCORD_ROLE_ID", "-1")
 kyber_discord_server_id = _getenv("KYBER_DISCORD_SERVER_ID", default=-1)
 log_channel = _getenv("LOG_CHANNEL_ID", default=0)
 alerts_channel = _getenv("ALERTS_CHANNEL_ID", default=0)
-# Channel the weekly-reset draft is auto-posted to at reset for the team (bot owners)
-# to review/edit before publishing. 0/absent => the weekly-reset autopost stays dormant.
-weekly_reset_drafts_channel = int(_getenv("WEEKLY_RESET_DRAFTS_CHANNEL_ID", "0"))
+# Generic drafts channel: interactive post drafts (currently the weekly reset; more
+# post types may reuse it later) are auto-posted here for the team (bot owners) to
+# review/edit before publishing. 0/absent keeps those autoposts + commands dormant.
+drafts_channel = int(_getenv("DRAFTS_CHANNEL_ID", "0"))
+# Records the published weekly-reset activity choices for later analysis.
+weekly_reset_records_channel = int(_getenv("WEEKLY_RESET_RECORDS_CHANNEL_ID", "0"))
 
 
 # Discord constants
