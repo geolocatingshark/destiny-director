@@ -48,10 +48,8 @@ SAMPLE_DUNGEONS = (
 
 def _full_ctx() -> wr.WeeklyResetContext:
     ctx = wr.WeeklyResetContext(reset_ts=1783443600)
-    ctx.quickplay_weapon = wr.WeaponRef("Service Revolver", 111)
     ctx.gm_strike = "The Sunless Cell"
     ctx.gm_weapon = wr.WeaponRef("Null Composure", 222)
-    ctx.control_weapon = wr.WeaponRef("Unending Tempest", 333)
     ctx.seasonal_raid = "The Desert Perpetual"
     ctx.seasonal_dungeon = "Equilibrium"
     ctx.rotator_raids = ("Crota's End", "Vault of Glass")
@@ -471,26 +469,19 @@ def _portal_op(name, *, item_type=None, type_hash=None, challenges=0, max_party=
     )
 
 
-# The live DEV Portal feed for the week of 2026-06-30 (armour=2, weapon=3).
+# A live-shaped DEV Portal feed. Only the GM Nightfall is derived; the daily Quickplay
+# and Control weapon ops are here to prove they're ignored (they live in Portal Ops).
 _LIVE_PORTAL_OPS = [
-    _portal_op("Quickplay", item_type=2, max_party=3, modes=(3, 18, 7),
-               reward="Luminopotent Cuirass", reward_hash=1),  # Fireteam armour
-    _portal_op("Quickplay", item_type=2, max_party=1, modes=(3, 18, 7),
-               reward="Luminopotent Cloak", reward_hash=2),  # Solo armour
     _portal_op("Quickplay", item_type=3, max_party=6, modes=(3, 18, 7),
-               reward="Tempered Dynamo", reward_hash=3),  # Vanguard weapon ✓
+               reward="Tempered Dynamo", reward_hash=3),  # daily weapon — ignored
     _portal_op("The Sunless Cell", item_type=3, type_hash=wr._STRIKE_ACTIVITY_TYPE_HASH,
                challenges=1, max_party=3, modes=(3, 18, 7),
                reward="Lotus-Eater", reward_hash=4),  # GM Nightfall ✓ (has a challenge)
     _portal_op("The Insight Terminus", item_type=3,
                type_hash=wr._STRIKE_ACTIVITY_TYPE_HASH, challenges=0, max_party=3,
-               modes=(3, 18, 7), reward="Cynosure", reward_hash=5),  # plain strike
-    _portal_op("Sparrow Racing League", item_type=3, max_party=6, modes=(94, 5),
-               reward="Veillantif-D", reward_hash=6),  # 1v6 — excluded from Control
-    _portal_op("Gambit", item_type=3, max_party=4, modes=(63, 64),
-               reward="Python", reward_hash=7),  # not AllPvP — excluded
+               modes=(3, 18, 7), reward="Cynosure", reward_hash=5),  # plain strike — no
     _portal_op("Eruption", item_type=3, max_party=6, modes=(88, 5),
-               reward="The Helmsman", reward_hash=8),  # 6v6 PvP — Control ✓
+               reward="The Helmsman", reward_hash=8),  # daily PvP weapon — ignored
 ]
 
 
@@ -503,14 +494,11 @@ async def test_derive_portal_fields_matches_live_week(monkeypatch) -> None:
 
     monkeypatch.setattr(po, "fetch_portal_ops", fake_fetch)
     result = await wr.derive_portal_fields()
-    # GM strike is the strike-type op with a weekly challenge, not the plain strike.
+    # Only the GM Nightfall is derived — the strike-type op with a weekly challenge, not
+    # the plain strike; the daily Quickplay/Control weapon ops in the feed are ignored.
     assert result.gm_strike == "The Sunless Cell"
     # GM reward weapon is that same op's guaranteed reward.
     assert result.gm_weapon == wr.WeaponRef("Lotus-Eater", 4)
-    # Quickplay picks the weapon, never the armour variants.
-    assert result.quickplay_weapon == wr.WeaponRef("Tempered Dynamo", 3)
-    # Control is the 6v6 PvP weapon, not Sparrow Racing (1v6) or Gambit.
-    assert result.control_weapon == wr.WeaponRef("The Helmsman", 8)
 
 
 @pytest.mark.asyncio
@@ -521,4 +509,4 @@ async def test_derive_portal_fields_survives_fetch_failure(monkeypatch) -> None:
         raise RuntimeError("portal down")
 
     monkeypatch.setattr(po, "fetch_portal_ops", boom)
-    assert await wr.derive_portal_fields() == wr.PortalDerivation("", None, None, None)
+    assert await wr.derive_portal_fields() == wr.PortalDerivation("", None)
