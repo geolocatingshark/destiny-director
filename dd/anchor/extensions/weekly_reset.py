@@ -269,10 +269,13 @@ class WeeklyResetContext:
     """
 
     reset_ts: int
-    # VANGUARD ALERTS. Quickplay/Control featured weapons are intentionally NOT here:
-    # they rotate daily and are already covered by the Portal Ops post.
+    # VANGUARD ALERTS. The GM strike/weapon are Portal-derived; the Quickplay/Control
+    # featured weapons are set by hand — the API exposes only the daily reward or the
+    # full weekly pool, not which pool weapon is this week's featured one.
     gm_strike: str = ""
     gm_weapon: WeaponRef | None = None
+    quickplay_weapon: WeaponRef | None = None
+    control_weapon: WeaponRef | None = None
     seasonal_raid: str = DEFAULT_SEASONAL_RAID
     seasonal_dungeon: str = DEFAULT_SEASONAL_DUNGEON
     # ZAVALA'S WEAPON — set by hand (the vendor API doesn't expose the weekly weapon).
@@ -301,6 +304,12 @@ class WeeklyResetContext:
             "reset_ts": self.reset_ts,
             "gm_strike": self.gm_strike,
             "gm_weapon": self.gm_weapon.to_dict() if self.gm_weapon else None,
+            "quickplay_weapon": (
+                self.quickplay_weapon.to_dict() if self.quickplay_weapon else None
+            ),
+            "control_weapon": (
+                self.control_weapon.to_dict() if self.control_weapon else None
+            ),
             "seasonal_raid": self.seasonal_raid,
             "seasonal_dungeon": self.seasonal_dungeon,
             "zavala_weapon": self.zavala_weapon.to_dict()
@@ -336,6 +345,8 @@ class WeeklyResetContext:
             reset_ts=int(d["reset_ts"]),
             gm_strike=d.get("gm_strike", ""),
             gm_weapon=weapon("gm_weapon"),
+            quickplay_weapon=weapon("quickplay_weapon"),
+            control_weapon=weapon("control_weapon"),
             seasonal_raid=d.get("seasonal_raid", DEFAULT_SEASONAL_RAID),
             seasonal_dungeon=d.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON),
             zavala_weapon=weapon("zavala_weapon"),
@@ -496,9 +507,10 @@ class PortalDerivation(t.NamedTuple):
 
 
 # Portal (component-204) derivation signature. Only the GM Nightfall is derived from the
-# Portal now: it's the one weekly-stable slot (the featured Nightfall is the same all
-# week, so its guaranteed reward is too). The Quickplay/Control weapons rotate daily and
-# are already shown by the Portal Ops post, so the weekly reset no longer carries them.
+# Portal: it's the one weekly-stable weapon the API exposes (the featured Nightfall is
+# the same all week, so its guaranteed reward is too). The Quickplay/Control featured
+# weapons are set by hand — the API only surfaces the daily reward or the full weekly
+# pool, never the single featured weekly weapon (set via `/weekly_reset set_reward`).
 _STRIKE_ACTIVITY_TYPE_HASH = 556925641  # DestinyActivityTypeDefinition "Strike"
 
 
@@ -561,9 +573,9 @@ async def build_draft_context(
     ctx.image_url = config.default_image_url
 
     # Best-effort Portal (component-204) derivation (never fatal — team fills gaps).
-    # Only the weekly GM strike + weapon come from the Portal; both stay correctable
-    # (`/weekly_reset set_reward`). The Zavala reward weapon has no attributable op, so
-    # it stays manual.
+    # Only the weekly GM strike + weapon come from the Portal. The Quickplay/Control and
+    # Zavala weapons are manual (`/weekly_reset set_reward`): the API exposes only the
+    # daily reward or the full weekly pool, not the single featured weekly weapon.
     derived = await derive_portal_fields()
     ctx.gm_strike = derived.gm_strike
     ctx.gm_weapon = derived.gm_weapon
@@ -597,12 +609,18 @@ def build_body(ctx: WeeklyResetContext) -> str:
         if ctx.events_narrative:
             lines += ["", ctx.events_narrative]
 
-    # VANGUARD ALERTS. Quickplay/Control featured weapons are intentionally omitted —
-    # they rotate daily and are already listed in the Portal Ops post.
+    # VANGUARD ALERTS. GM is Portal-derived; Quickplay/Control are the manually-set
+    # weekly featured weapons (the API exposes only the daily reward or the full pool).
     lines += ["", "**VANGUARD ALERTS (Seasonal Tab)**", ""]
+    if ctx.quickplay_weapon:
+        lines.append(
+            f":vanguard_strikes: {SEP} Quickplay - {ctx.quickplay_weapon.markdown()}"
+        )
     gm_weapon = f" - {ctx.gm_weapon.markdown()}" if ctx.gm_weapon else ""
     if ctx.gm_strike or ctx.gm_weapon:
         lines.append(f":gm_nightfall: {SEP} GM Alert: {ctx.gm_strike}{gm_weapon}")
+    if ctx.control_weapon:
+        lines.append(f":crucible: {SEP} Control - {ctx.control_weapon.markdown()}")
     if ctx.seasonal_raid:
         lines.append(f":raid: {SEP} {_weekly_reward(ctx.seasonal_raid)}")
     if ctx.seasonal_dungeon:
@@ -714,6 +732,8 @@ def activity_record(ctx: WeeklyResetContext) -> dict[str, t.Any]:
         "reset_ts": ctx.reset_ts,
         "gm_strike": ctx.gm_strike or None,
         "gm_weapon": wname(ctx.gm_weapon),
+        "quickplay_weapon": wname(ctx.quickplay_weapon),
+        "control_weapon": wname(ctx.control_weapon),
         "zavala_weapon": wname(ctx.zavala_weapon),
         "seasonal_raid": ctx.seasonal_raid or None,
         "seasonal_dungeon": ctx.seasonal_dungeon or None,
@@ -752,7 +772,7 @@ def validate_post(ctx: WeeklyResetContext) -> list[str]:
         problems.append(
             f"Post is too long ({len(body)}/3900 chars) — trim some sections."
         )
-    if not (ctx.gm_strike or ctx.gm_weapon or ctx.zavala_weapon):
+    if not (ctx.quickplay_weapon or ctx.gm_strike or ctx.zavala_weapon):
         problems.append(
             "Post looks empty — fill in at least the Vanguard/Zavala section."
         )
@@ -1498,10 +1518,14 @@ class WeeklyResetShow(
 # armour slot would set 2 here and get only armour.
 _REWARD_ITEM_TYPE: dict[str, int] = {
     "gm_weapon": 3,
+    "quickplay_weapon": 3,
+    "control_weapon": 3,
     "zavala_weapon": 3,
 }
 _REWARD_FIELDS: tuple[tuple[str, str], ...] = (
     ("GM Nightfall reward weapon", "gm_weapon"),
+    ("Vanguard / Quickplay weapon", "quickplay_weapon"),
+    ("Crucible / Control weapon", "control_weapon"),
     ("Zavala's Weapon", "zavala_weapon"),
 )
 _REWARD_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _REWARD_FIELDS]
@@ -1853,7 +1877,7 @@ def apply_dungeons(
 def apply_reward_field(
     ctx: WeeklyResetContext, field: str, weapon: WeaponRef | None
 ) -> None:
-    if field in {"gm_weapon", "zavala_weapon"}:
+    if field in {"gm_weapon", "quickplay_weapon", "control_weapon", "zavala_weapon"}:
         setattr(ctx, field, weapon)
 
 

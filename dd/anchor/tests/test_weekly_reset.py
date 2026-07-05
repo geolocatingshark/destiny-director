@@ -50,6 +50,8 @@ def _full_ctx() -> wr.WeeklyResetContext:
     ctx = wr.WeeklyResetContext(reset_ts=1783443600)
     ctx.gm_strike = "The Sunless Cell"
     ctx.gm_weapon = wr.WeaponRef("Null Composure", 222)
+    ctx.quickplay_weapon = wr.WeaponRef("Service Revolver", 111)
+    ctx.control_weapon = wr.WeaponRef("The Helmsman", 333)
     ctx.seasonal_raid = "The Desert Perpetual"
     ctx.seasonal_dungeon = "Equilibrium"
     ctx.rotator_raids = ("Crota's End", "Vault of Glass")
@@ -139,7 +141,9 @@ def test_build_body_has_all_sections_and_deeplink() -> None:
         # Resets line shows the *next* Tuesday (reset_ts + 1 week), not reset_ts.
         "Resets: <t:1784048400:f>",
         "**VANGUARD ALERTS (Seasonal Tab)**",
+        "Quickplay - [Service Revolver]",  # manually-set weekly weapon
         "GM Alert: The Sunless Cell",
+        "Control - [The Helmsman]",  # manually-set weekly weapon
         "**FEATURED RAIDS & DUNGEONS**",
         "Crota's End + Vault of Glass",
         "Reprise: Argos",
