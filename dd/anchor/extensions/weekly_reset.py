@@ -1844,16 +1844,21 @@ async def get_indexes() -> _Indexes:
 
 
 async def _activity_value_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
-    field_opt = ctx.get_option("field")
-    field = str(field_opt.value) if field_opt and field_opt.value else ""
-    category = _ACTIVITY_CATEGORY.get(field, "")
+    query = str(ctx.focused.value or "").lower()
+    if not query:
+        # Nothing typed yet: show no suggestions rather than an unfiltered list that can
+        # lag the selected field. Category filtering kicks in on the first keystroke.
+        await ctx.respond([])
+        return
     if _indexes is None:
         asyncio.create_task(get_indexes())  # warm for the next keystroke
         await ctx.respond([])
         return
+    field_opt = ctx.get_option("field")
+    field = str(field_opt.value) if field_opt and field_opt.value else ""
+    category = _ACTIVITY_CATEGORY.get(field, "")
     names = _indexes.activities.get(category, [])
-    query = str(ctx.focused.value or "").lower()
-    matches = [name for name in names if query in name.lower()] if query else names
+    matches = [name for name in names if query in name.lower()]
     await ctx.respond(matches[:25])
 
 
