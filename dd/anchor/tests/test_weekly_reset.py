@@ -438,7 +438,9 @@ async def test_resolve_reward_by_name(stub_indexes) -> None:
 @pytest.mark.asyncio
 async def test_resolve_reward_free_text_and_blank(stub_indexes) -> None:
     typed = await wr.resolve_reward_value("Some Custom Roll")
-    assert typed == wr.WeaponRef(name="Some Custom Roll") and typed.hash is None
+    assert typed is not None
+    assert typed == wr.WeaponRef(name="Some Custom Roll")
+    assert typed.hash is None
     assert await wr.resolve_reward_value("   ") is None
 
 
