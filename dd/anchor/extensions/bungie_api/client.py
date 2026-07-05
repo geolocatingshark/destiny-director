@@ -14,6 +14,7 @@ from dd.common import schemas
 
 from .constants import (
     API_GET_MEMBERSHIPS,
+    API_MILESTONES,
     API_PROFILE,
     API_VENDORS_AUTHENTICATED,
     VENDOR_NOT_FOUND_ERROR_CODE,
@@ -34,6 +35,19 @@ async def fetch_memberships(
 ) -> dict[str, t.Any]:
     """GET the current user's memberships; returns the raw ``Response`` payload."""
     async with session.get(API_GET_MEMBERSHIPS, headers=_headers(access_token)) as resp:
+        return (await resp.json())["Response"]
+
+
+async def fetch_public_milestones(
+    session: aiohttp.ClientSession,
+) -> dict[str, t.Any]:
+    """GET public milestones (unauthenticated — ``X-API-Key`` only).
+
+    Returns the raw ``Response`` map keyed by milestone hash; each entry carries
+    ``activities`` (with ``activityHash``) plus ``startDate``/``endDate``.
+    """
+    headers = {"X-API-Key": schemas.BungieCredentials.api_key}
+    async with session.get(API_MILESTONES, headers=headers) as resp:
         return (await resp.json())["Response"]
 
 
