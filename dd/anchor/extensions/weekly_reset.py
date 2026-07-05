@@ -44,6 +44,7 @@ import dataclasses
 import datetime as dt
 import json
 import logging
+import re
 import typing as t
 import uuid
 
@@ -872,19 +873,11 @@ Option = tuple[str, str, bool]
 
 
 def _select_a(ctx: WeeklyResetContext, section: str) -> tuple[str, list[Option]] | None:
-    """Placeholder + options for the section's first select, if it has one."""
-    if section == "zavala":
-        if not ctx.zavala_options:
-            return None
-        current = ctx.zavala_weapon.hash if ctx.zavala_weapon else None
-        opts = [
-            (w.name[:100], str(w.hash), w.hash == current) for w in ctx.zavala_options
-        ]
-        return ("Pick Zavala's featured weapon", opts[:25])
-    if section == "pantheon":
-        pool = PANTHEON_BOSSES
-        opts = [(b[:100], b, b == ctx.pantheon_reprise) for b in pool]
-        return ("Pick the Reprise boss", opts[:25])
+    """Placeholder + options for the section's first select, if it has one.
+
+    Weapons/activities are set via the autocomplete ``/weekly_reset set_*`` commands, so
+    the only in-editor selects left are the Iron Banner / Trials toggles.
+    """
     if section == "events":
         opts = [
             ("Iron Banner: ON", "ib_on", ctx.iron_banner),
@@ -895,10 +888,6 @@ def _select_a(ctx: WeeklyResetContext, section: str) -> tuple[str, list[Option]]
 
 
 def _select_b(ctx: WeeklyResetContext, section: str) -> tuple[str, list[Option]] | None:
-    if section == "pantheon":
-        pool = PANTHEON_BOSSES
-        opts = [(b[:100], b, b == ctx.pantheon_encore) for b in pool]
-        return ("Pick the Encore boss", opts[:25])
     if section == "events":
         opts = [
             ("Trials line: ON", "trials_on", ctx.trials_active),
@@ -909,21 +898,14 @@ def _select_b(ctx: WeeklyResetContext, section: str) -> tuple[str, list[Option]]
 
 
 def _apply_select_a(ctx: WeeklyResetContext, section: str, value: str) -> None:
-    if section == "zavala":
-        pick = next((w for w in ctx.zavala_options if str(w.hash) == value), None)
-        ctx.zavala_weapon = pick
-    elif section == "pantheon":
-        ctx.pantheon_reprise = value
-    elif section == "events":
+    if section == "events":
         ctx.iron_banner = value == "ib_on"
         if ctx.iron_banner:
             ctx.trials_active = False
 
 
 def _apply_select_b(ctx: WeeklyResetContext, section: str, value: str) -> None:
-    if section == "pantheon":
-        ctx.pantheon_encore = value
-    elif section == "events":
+    if section == "events":
         ctx.trials_active = value == "trials_on"
 
 
@@ -1085,8 +1067,11 @@ def _summary(ctx: WeeklyResetContext, section: str) -> str:
             f"{ctx.seasonal_dungeon or '—'}"
         )
     if section == "zavala":
-        picked = _wname(ctx.zavala_weapon) or "— (pick one below)"
-        return f"Zavala's Weapon: {picked}\nAPI options: {len(ctx.zavala_options)}"
+        picked = _wname(ctx.zavala_weapon) or "—"
+        return (
+            f"Zavala's Weapon: {picked}\n"
+            "-# Set with `/weekly_reset set_reward` (weapon autocomplete)."
+        )
     if section == "rotators":
         return (
             f"Raids: {' + '.join(x for x in ctx.rotator_raids if x) or '—'}\n"
@@ -1095,7 +1080,8 @@ def _summary(ctx: WeeklyResetContext, section: str) -> str:
     if section == "pantheon":
         return (
             f"Reprise: {ctx.pantheon_reprise or '—'}\n"
-            f"Encore: {ctx.pantheon_encore or '—'}"
+            f"Encore: {ctx.pantheon_encore or '—'}\n"
+            "-# Set with `/weekly_reset set_activity` (boss autocomplete)."
         )
     if section == "crucible":
         return (
@@ -1122,16 +1108,26 @@ def _render_editor(session: _Session) -> list[h.api.ComponentBuilder]:
     section = session.section
 
     if session.confirm:
+        republish = bool(session.meta.published_message_id)
         container = build_container(
             [
-                "## Publish weekly reset?",
-                "This posts **exactly the card** in the drafts channel and crossposts "
-                "it; beacon mirrors it to every follower.",
+                "## Update the published post?"
+                if republish
+                else "## Publish weekly reset?",
+                (
+                    "This edits the already-published post in place; beacon re-mirrors "
+                    "the change to every follower."
+                    if republish
+                    else "This posts **exactly the card** in the drafts channel and "
+                    "crossposts it; beacon mirrors it to every follower."
+                ),
             ]
         )
         row = h.impl.MessageActionRowBuilder()
         row.add_interactive_button(
-            h.ButtonStyle.SUCCESS, f"{sid}:confirm", label="Confirm publish"
+            h.ButtonStyle.SUCCESS,
+            f"{sid}:confirm",
+            label="Confirm update" if republish else "Confirm publish",
         )
         row.add_interactive_button(h.ButtonStyle.SECONDARY, f"{sid}:back", label="Back")
         return [container, row]
@@ -1341,9 +1337,22 @@ async def open_editor(ctx: lb.Context, bot: CachedFetchBot) -> None:
                 await _rerender(mctx)
                 return
             hmessage = await format_weekly_reset(session.ctx, bot)
-            await utils.send_message(
-                bot, hmessage, cfg.followables["weekly_reset"], crosspost=True
-            )
+            channel_id = cfg.followables["weekly_reset"]
+            if session.meta.published_message_id:
+                # Already published this week: edit the post in place so fixes reach
+                # followers via beacon's edit reconciliation, no duplicate post.
+                await bot.rest.edit_message(
+                    channel_id,
+                    session.meta.published_message_id,
+                    components=hmessage.components,
+                )
+                note = "✏️ Updated the published post — beacon re-mirrors the edit."
+            else:
+                posted = await utils.send_message(
+                    bot, hmessage, channel_id, crosspost=True
+                )
+                session.meta.published_message_id = posted.id
+                note = "✅ Published and crossposted — beacon will mirror it out."
             session.meta.status = "published"
             await save_meta(session.meta)
             _active_session = None
@@ -1351,11 +1360,7 @@ async def open_editor(ctx: lb.Context, bot: CachedFetchBot) -> None:
         await mctx.respond(
             edit=True,
             flags=h.MessageFlag.IS_COMPONENTS_V2,
-            components=[
-                build_container(
-                    ["✅ Published and crossposted — beacon will mirror it out."]
-                )
-            ],
+            components=[build_container([note])],
         )
         mctx.stop_interacting()
 
@@ -1531,7 +1536,7 @@ class WeeklyResetShow(
 # are derived live from DestinyActivityDefinition (see _build_indexes); the option still
 # accepts a free-typed value, so anything the manifest misses can still be typed.
 _ACTIVITY_CATEGORY: dict[str, str] = {
-    "gm_strike": "nightfall",
+    "gm_strike": "strike",
     "seasonal_raid": "raid",
     "rotator_raid_1": "raid",
     "rotator_raid_2": "raid",
@@ -1576,31 +1581,88 @@ _REWARD_FIELDS: tuple[tuple[str, str], ...] = (
 _ACTIVITY_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _ACTIVITY_FIELDS]
 _REWARD_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _REWARD_FIELDS]
 
-# DestinyActivityModeType ids used to classify activities, + the PvP mode category.
+# DestinyActivityModeType ids used to classify activities, + the PvP mode category
+# (DestinyActivityModeCategory: 1=PvE, 2=PvP, 3=Gambit).
 _MODE_RAID = 4
 _MODE_DUNGEON = 82
-_MODE_NIGHTFALL = 46
-_MODE_CATEGORY_PVP = 1
-# Difficulty variants dropped so only base activity names are suggested.
-_DIFFICULTY_TOKENS = (
-    "master",
-    "legend",
-    "grandmaster",
-    "expert",
-    "adept",
-    "normal",
-    "contest",
+_MODE_CATEGORY_PVP = 2
+# Non-mode PvP junk dropped from the Crucible pool (private/legacy/generic entries).
+_CRUCIBLE_JUNK = ("private matches", "trials of the nine", "pvp")
+# Variant/difficulty suffixes (after a ": ") stripped to reach the base activity name.
+_VARIANT_SUFFIXES = frozenset(
+    {
+        "standard",
+        "prestige",
+        "normal",
+        "master",
+        "legend",
+        "adept",
+        "expert",
+        "advanced",
+        "hero",
+        "grandmaster",
+        "beginner",
+        "challenge mode",
+        "eternity",
+        "explorer",
+        "explorer (matchmade)",
+        "ultimatum",
+        "customize",
+        "matchmade",
+        "private",
+        "epic",
+        "contest",
+    }
 )
-_NIGHTFALL_PREFIXES = ("Nightfall Grandmaster: ", "Grandmaster: ", "Nightfall: ")
+# Whole names that are only a difficulty tier — never a real activity.
+_DIFFICULTY_ONLY = frozenset(
+    {
+        "adept",
+        "advanced",
+        "expert",
+        "grandmaster",
+        "hero",
+        "legend",
+        "master",
+        "normal",
+        "beginner",
+    }
+)
+# Prefixes stripped from GM strike names (difficulty/quest wrappers).
+_STRIKE_PREFIXES = (
+    "Nightfall Grandmaster: ",
+    "Grandmaster Nightfall: ",
+    "Grandmaster: ",
+    "Nightfall: ",
+    "Legendary ",
+    "Legend ",
+    "QUEST: ",
+    "Quest: ",
+)
+# Substrings marking non-strike playlist/event junk dropped from the GM strike pool.
+# "battlegrounds"/"strikes" (plural) are playlists; singular "Battleground: X" stays.
+_STRIKE_JUNK = (
+    "guardian games",
+    "contest of elders",
+    "fireteam ops",
+    "crucible",
+    "armsweek",
+    "playlist",
+    "training",
+    "rushdown",
+    "blitz",
+    "battlegrounds",
+    "strikes",
+)
 
 
 @dataclasses.dataclass
 class _Indexes:
     """Manifest-derived autocomplete data, built once and cached."""
 
-    #: (name, hash, itemTypeDisplayName, itemType) for every weapon/armour.
-    items: list[tuple[str, int, str, int]]
-    #: category ("raid"/"dungeon"/"nightfall"/"pantheon"/"crucible") -> sorted names.
+    #: (name, hash, itemTypeDisplayName, itemType, rarity) per weapon/armour, deduped.
+    items: list[tuple[str, int, str, int, str]]
+    #: category ("raid"/"dungeon"/"strike"/"pantheon"/"crucible") -> sorted names.
     activities: dict[str, list[str]]
 
 
@@ -1612,17 +1674,25 @@ def _classify_activity(defn: dict[str, t.Any], type_name: str = "") -> str | Non
     """Classify a DestinyActivityDefinition, or None if it's none of our categories.
 
     ``type_name`` is the activity's resolved DestinyActivityTypeDefinition name — the
-    authoritative signal. We fall back to the activity mode, then (only when there is no
-    type *and* no mode at all) to fireteam size, so typed activities like strikes and
-    story missions can't flood the raid/dungeon lists.
+    authoritative signal. Pantheon is checked first (its encounters carry raid mode and
+    would otherwise leak into raids); the GM strike pool is Strikes + Battlegrounds; the
+    fireteam-size fallback only fires when there is neither a type nor a mode.
     """
+    name = ((defn.get("displayProperties") or {}).get("name") or "").strip()
+    low = name.lower()
+    # Pantheon reprise/encore encounters — the featured boss names live in these.
+    if low.startswith("featured reprise: ") or low.startswith("featured encore: "):
+        return "pantheon"
+    if "pantheon" in low:
+        return None  # wings / customize variants — not a reprise/encore boss
+
     type_lower = type_name.lower()
     if type_lower == "raid":
         return "raid"
     if type_lower == "dungeon":
         return "dungeon"
-    if "nightfall" in type_lower:
-        return "nightfall"
+    if type_lower == "strike" or "battleground" in low:
+        return "strike"
 
     modes = set(defn.get("activityModeTypes") or [])
     direct = defn.get("directActivityModeType")
@@ -1632,15 +1702,7 @@ def _classify_activity(defn: dict[str, t.Any], type_name: str = "") -> str | Non
         return "raid"
     if _MODE_DUNGEON in modes:
         return "dungeon"
-    if _MODE_NIGHTFALL in modes:
-        return "nightfall"
 
-    name = (defn.get("displayProperties") or {}).get("name", "")
-    if "pantheon" in name.lower():
-        return "pantheon"
-
-    # Last resort — only when the manifest gives neither a type nor a mode: fireteam
-    # size (raids cap at 6, dungeons at 3).
     if not type_name and not modes:
         max_party = (defn.get("matchmaking") or {}).get("maxParty")
         if max_party == 6:
@@ -1650,31 +1712,48 @@ def _classify_activity(defn: dict[str, t.Any], type_name: str = "") -> str | Non
     return None
 
 
+def _strip_variant(name: str) -> str:
+    """Reduce a name to its base by dropping variant suffixes + a trailing '(...)'."""
+    while ": " in name:
+        base, _, suffix = name.rpartition(": ")
+        suffix = suffix.strip().lower()
+        if suffix in _VARIANT_SUFFIXES or re.fullmatch(r"level \d+", suffix):
+            name = base.strip()
+        else:
+            break
+    return re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+
+
 def _clean_activity_name(name: str, category: str) -> str:
-    """Normalise to the base activity name; "" to drop a difficulty variant."""
+    """Normalise to the base name; "" to drop a variant/tier/junk entry."""
     name = name.strip()
     if not name:
         return ""
-    if category == "nightfall":
-        for prefix in _NIGHTFALL_PREFIXES:
+    if category == "pantheon":
+        for prefix in ("Featured Reprise: ", "Featured Encore: "):
+            if name.startswith(prefix):
+                return name[len(prefix) :].split(":")[0].strip()
+        return ""
+    if category == "strike":
+        for prefix in _STRIKE_PREFIXES:
             if name.startswith(prefix):
                 name = name[len(prefix) :]
                 break
-        return name.strip()
-    if category == "pantheon":
-        return name.removeprefix("Pantheon: ").strip()
-    lowered = name.lower()
-    if any(token in lowered for token in _DIFFICULTY_TOKENS):
-        return ""  # a difficulty variant; the base name is kept from its own row
-    return name
+    base = _strip_variant(name)
+    if not base or base.lower() in _DIFFICULTY_ONLY:
+        return ""
+    if category == "strike" and any(junk in base.lower() for junk in _STRIKE_JUNK):
+        return ""
+    return base
 
 
 async def _build_indexes() -> _Indexes:
-    items: list[tuple[str, int, str, int]] = []
+    # Deduped by (name, type): one entry per named weapon/armour, newest hash wins.
+    item_by_key: dict[tuple[str, str], tuple[str, int, str, int, str]] = {}
     activities: dict[str, set[str]] = {
         "raid": set(),
         "dungeon": set(),
-        "nightfall": set(),
+        "strike": set(),
         "pantheon": set(),
         "crucible": set(),
     }
@@ -1689,17 +1768,18 @@ async def _build_indexes() -> _Indexes:
                 item_type = defn.get("itemType")
                 if item_type not in (2, 3) or defn.get("redacted"):
                     continue
+                rarity = (defn.get("inventory") or {}).get("tierTypeName", "")
+                if rarity in ("", "Common", "Basic"):  # drop dummies/whites/greens
+                    continue
                 name = (defn.get("displayProperties") or {}).get("name")
                 if not name:
                     continue
-                items.append(
-                    (
-                        name,
-                        int(defn["hash"]),
-                        defn.get("itemTypeDisplayName", ""),
-                        item_type,
-                    )
-                )
+                type_name = defn.get("itemTypeDisplayName", "")
+                hash_ = int(defn["hash"])
+                key = (name.lower(), type_name.lower())
+                existing = item_by_key.get(key)
+                if existing is None or hash_ > existing[1]:  # keep the newest hash
+                    item_by_key[key] = (name, hash_, type_name, item_type, rarity)
 
             # Activity type names are the authoritative raid/dungeon/nightfall signal.
             await cur.execute("SELECT json FROM DestinyActivityTypeDefinition")
@@ -1728,23 +1808,24 @@ async def _build_indexes() -> _Indexes:
                 defn = json.loads(row)
                 if defn.get("activityModeCategory") != _MODE_CATEGORY_PVP:
                     continue
-                name = (defn.get("displayProperties") or {}).get("name")
-                if name:
-                    activities["crucible"].add(name)
+                name = (defn.get("displayProperties") or {}).get("name") or ""
+                if not name or any(junk in name.lower() for junk in _CRUCIBLE_JUNK):
+                    continue
+                activities["crucible"].add(name.removeprefix("Iron Banner ").strip())
     except Exception:
         logger.warning("weekly_reset: manifest index build failed", exc_info=True)
 
     result = _Indexes(
-        items=items,
+        items=sorted(item_by_key.values(), key=lambda e: e[0].lower()),
         activities={key: sorted(names) for key, names in activities.items()},
     )
     logger.info(
-        "weekly_reset indexes: %d items; raids=%d dungeons=%d nightfalls=%d "
+        "weekly_reset indexes: %d items; raids=%d dungeons=%d strikes=%d "
         "pantheon=%d crucible=%d",
         len(result.items),
         len(result.activities["raid"]),
         len(result.activities["dungeon"]),
-        len(result.activities["nightfall"]),
+        len(result.activities["strike"]),
         len(result.activities["pantheon"]),
         len(result.activities["crucible"]),
     )
@@ -1789,10 +1870,11 @@ async def _reward_value_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None
         await ctx.respond([])
         return
     choices: dict[str, str] = {}
-    for name, hash_, type_name, item_type in _indexes.items:
+    for name, hash_, type_name, item_type, rarity in _indexes.items:
         if item_type != allowed or query not in name.lower():
             continue
-        label = f"{name} — {type_name}" if type_name else name
+        suffix = " · ".join(part for part in (type_name, rarity) if part)
+        label = f"{name} — {suffix}" if suffix else name
         choices[label[:100]] = str(hash_)  # value = hash, so the pick is unambiguous
         if len(choices) >= 25:
             break
@@ -1807,10 +1889,10 @@ async def resolve_reward_value(value: str) -> WeaponRef | None:
     indexes = await get_indexes()
     if value.isdigit():
         wanted = int(value)
-        for name, hash_, type_name, _item_type in indexes.items:
+        for name, hash_, type_name, _item_type, _rarity in indexes.items:
             if hash_ == wanted:
                 return WeaponRef(name, hash_, api.likely_emoji_name(type_name))
-    for name, hash_, type_name, _item_type in indexes.items:
+    for name, hash_, type_name, _item_type, _rarity in indexes.items:
         if name.lower() == value.lower():
             return WeaponRef(name, hash_, api.likely_emoji_name(type_name))
     return WeaponRef(name=value)
@@ -1842,6 +1924,14 @@ async def mutate_draft(
     fn: t.Callable[[WeeklyResetContext], None],
 ) -> None:
     """Load-modify-save the persisted draft under the lock, then refresh the card."""
+    # Auto-fill from the API the first time a field is set, so reset time, seasonal
+    # raid/dungeon and the computed rotators are pre-populated instead of blank. Built
+    # outside the lock (it does network I/O), then committed only if still absent.
+    if await load_draft() is None:
+        seeded = await build_draft_context()
+        async with _draft_lock:
+            if await load_draft() is None:
+                await save_draft(seeded)
     async with _draft_lock:
         draft = await load_draft() or WeeklyResetContext(reset_ts=current_reset_ts())
         fn(draft)
@@ -1871,6 +1961,7 @@ class WeeklyResetSetActivity(
     async def invoke(
         self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
     ) -> None:
+        await ctx.defer(ephemeral=True)  # first edit may auto-fill from the API
         field, value = self.field, self.value.strip()
         await mutate_draft(
             bot, ctx.user.id, lambda c: apply_activity_field(c, field, value)
@@ -1895,6 +1986,9 @@ class WeeklyResetSetReward(
     async def invoke(
         self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
     ) -> None:
+        await ctx.defer(
+            ephemeral=True
+        )  # index build / first-edit auto-fill can be slow
         field = self.field
         weapon = await resolve_reward_value(self.value)
         await mutate_draft(

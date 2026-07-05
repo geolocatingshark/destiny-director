@@ -240,15 +240,15 @@ def stub_indexes():
     saved = wr._indexes
     wr._indexes = wr._Indexes(
         items=[
-            ("Null Composure", 222, "Fusion Rifle", 3),
-            ("Cloudstrike", 333, "Sniper Rifle", 3),
-            ("Chill Inhibitor", 444, "Grenade Launcher", 3),
+            ("Null Composure", 222, "Fusion Rifle", 3, "Legendary"),
+            ("Cloudstrike", 333, "Sniper Rifle", 3, "Exotic"),
+            ("Chill Inhibitor", 444, "Grenade Launcher", 3, "Exotic"),
         ],
         activities={
             "raid": ["Crota's End", "Vault of Glass"],
             "dungeon": ["Duality"],
-            "nightfall": ["The Sunless Cell"],
-            "pantheon": [],
+            "strike": ["The Sunless Cell"],
+            "pantheon": ["Argos", "Calus"],
             "crucible": ["Control"],
         },
     )
@@ -257,7 +257,7 @@ def stub_indexes():
 
 
 def test_activity_category_maps_to_known_categories() -> None:
-    valid = {"raid", "dungeon", "nightfall", "pantheon", "crucible"}
+    valid = {"raid", "dungeon", "strike", "pantheon", "crucible"}
     for _label, key in wr._ACTIVITY_FIELDS:
         assert wr._ACTIVITY_CATEGORY.get(key) in valid, key
 
@@ -270,20 +270,42 @@ def test_reward_fields_are_weapons_only() -> None:
 @pytest.mark.parametrize(
     ("defn", "type_name", "expected"),
     [
-        # authoritative type name wins
+        # Pantheon reprise/encore encounters -> pantheon (before the raid-mode check)
+        (
+            {
+                "displayProperties": {"name": "Featured Reprise: Calus: The Pantheon"},
+                "activityModeTypes": [4],
+            },
+            "Raid",
+            "pantheon",
+        ),
+        # other Pantheon-named activities are excluded from every pool
+        (
+            {
+                "displayProperties": {"name": "The Pantheon: Atraks Sovereign"},
+                "activityModeTypes": [4],
+            },
+            "Raid",
+            None,
+        ),
+        # authoritative type name
         ({}, "Raid", "raid"),
         ({}, "Dungeon", "dungeon"),
-        ({}, "Nightfall", "nightfall"),
-        # mode-based when no type
+        ({}, "Strike", "strike"),
+        # battlegrounds feed the GM strike pool by name
+        (
+            {"displayProperties": {"name": "Defiant Battleground: EDZ"}},
+            "Nightfall",
+            "strike",
+        ),
+        # mode fallback when no type
         ({"activityModeTypes": [4]}, "", "raid"),
         ({"directActivityModeType": 82}, "", "dungeon"),
-        ({"activityModeTypes": [46, 7]}, "", "nightfall"),
-        ({"displayProperties": {"name": "Pantheon: Nezarec Sublime"}}, "", "pantheon"),
         # fireteam-size fallback only when there is no type AND no mode
         ({"matchmaking": {"maxParty": 6}}, "", "raid"),
         ({"matchmaking": {"maxParty": 3}}, "", "dungeon"),
-        # a typed 3-player strike must NOT be mistaken for a dungeon
-        ({"matchmaking": {"maxParty": 3}}, "Strike", None),
+        # a typed 3-player strike is a strike, never a dungeon
+        ({"matchmaking": {"maxParty": 3}}, "Strike", "strike"),
         ({"matchmaking": {"maxParty": 4}}, "", None),
         ({}, "", None),
     ],
@@ -292,24 +314,38 @@ def test_classify_activity(defn: dict, type_name: str, expected: str | None) -> 
     assert wr._classify_activity(defn, type_name) == expected
 
 
-def test_clean_activity_name_variants() -> None:
-    # raid/dungeon difficulty variants are dropped (the base is kept from its own row)
-    assert wr._clean_activity_name("Vault of Glass: Master", "raid") == ""
-    assert wr._clean_activity_name("Vault of Glass", "raid") == "Vault of Glass"
-    # nightfall prefixes stripped
+def test_strip_variant() -> None:
+    assert wr._strip_variant("Ghosts of the Deep: Standard") == "Ghosts of the Deep"
+    assert wr._strip_variant("Vault of Glass: Challenge Mode") == "Vault of Glass"
+    assert wr._strip_variant("Last Wish: Level 58") == "Last Wish"
     assert (
-        wr._clean_activity_name("Grandmaster: The Sunless Cell", "nightfall")
-        == "The Sunless Cell"
+        wr._strip_variant("The Desert Perpetual (Epic): Standard")
+        == "The Desert Perpetual"
+    )
+    # a meaningful ": X" (battleground location) is preserved
+    assert wr._strip_variant("Defiant Battleground: EDZ") == "Defiant Battleground: EDZ"
+
+
+def test_clean_activity_name() -> None:
+    assert wr._clean_activity_name("Crota's End: Standard", "raid") == "Crota's End"
+    assert wr._clean_activity_name("Grandmaster", "raid") == ""  # difficulty-only
+    # strike playlist/event junk dropped
+    assert (
+        wr._clean_activity_name("Guardian Games: Competitive Nightfall", "strike") == ""
+    )
+    assert wr._clean_activity_name("The Sunless Cell", "strike") == "The Sunless Cell"
+    # pantheon boss extracted from the Featured Reprise/Encore encounter names
+    assert (
+        wr._clean_activity_name("Featured Reprise: Calus: The Pantheon", "pantheon")
+        == "Calus"
     )
     assert (
-        wr._clean_activity_name("Nightfall: The Corrupted", "nightfall")
-        == "The Corrupted"
+        wr._clean_activity_name(
+            "Featured Encore: Warpriest: Atraks Sovereign", "pantheon"
+        )
+        == "Warpriest"
     )
-    # pantheon prefix stripped
-    assert (
-        wr._clean_activity_name("Pantheon: Rhulk Indomitable", "pantheon")
-        == "Rhulk Indomitable"
-    )
+    assert wr._clean_activity_name("The Pantheon: Atraks Sovereign", "pantheon") == ""
 
 
 def test_apply_activity_field_rotators_and_plain() -> None:
