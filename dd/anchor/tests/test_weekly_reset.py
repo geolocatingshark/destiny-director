@@ -29,6 +29,10 @@ import pytest
 from dd.anchor.extensions import weekly_reset as wr
 
 # The three real "Weekly Reset Overview" posts this feature was reverse-engineered from.
+# These are each post's "Resets:"-line value — the *next* Tuesday (when that week's
+# content expires), NOT the week's start. That is why the rotator tests feed them
+# straight into compute_rotator: production feeds the same boundary via
+# next_reset_ts(current_reset_ts()). See DEFAULT_ROTATOR_ANCHOR in weekly_reset.py.
 SAMPLE_RESETS = (1782234000, 1782838800, 1783443600)
 SAMPLE_RAIDS = (
     ("King's Fall", "Garden of Salvation"),

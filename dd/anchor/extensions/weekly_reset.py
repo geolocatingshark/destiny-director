@@ -110,7 +110,13 @@ PANTHEON_BOSSES = (
 # are a deterministic cycle over curated ordered lists anchored to a verified reset.
 # The anchor + lists below are DEFAULTS; they live in the weekly_reset_config doc and
 # are re-derived in tests from the sampled posts (see tests/test_weekly_reset.py).
-DEFAULT_ROTATOR_ANCHOR = 1782234000  # 2026-06-23 17:00 UTC reset (first sampled week)
+#
+# CONVENTION: the anchor (and the sampled reset timestamps in the tests) are the values
+# shown on a post's "Resets:" line — i.e. the *next* Tuesday, when that week's content
+# expires — NOT the week's start. `build_draft_context` therefore keys the rotator by
+# `next_reset_ts(current_reset_ts())`; keying by `current_reset_ts()` (the week's start)
+# instead is off by one week. See `next_reset_ts` and the `build_draft_context` note.
+DEFAULT_ROTATOR_ANCHOR = 1782234000  # 2026-06-23 17:00 UTC "Resets:" boundary
 DEFAULT_RAID_PAIRS: tuple[tuple[str, str], ...] = (
     ("King's Fall", "Garden of Salvation"),
     ("Root of Nightmares", "Deep Stone Crypt"),
@@ -502,8 +508,12 @@ class PortalDerivation(t.NamedTuple):
 
 # Portal (component-204) derivation signatures. The GM Nightfall, the Vanguard
 # "Quickplay" weapon and the Crucible "Control" weapon all left the public API for the
-# authed Portal this era, so each is picked out of portal_ops' featured-op feed by a
-# structural signature — never a hard-coded activity/weapon name.
+# authed Portal this era, so each is picked out of portal_ops' featured-op feed. GM
+# (Strike-type op + weekly challenge) and Control (6v6 PvP, not Sparrow) are matched
+# purely by structure; the Vanguard Quickplay op is matched by its stable *English*
+# activity name, with the weapon-reward filter separating it from the armour-rewarding
+# solo/fireteam Quickplay variants. English-only is intentional (the bot reads the
+# English manifest), so no localisation of the name is attempted.
 _WEAPON_ITEM_TYPE = 3  # DestinyItemType.Weapon
 _STRIKE_ACTIVITY_TYPE_HASH = 556925641  # DestinyActivityTypeDefinition "Strike"
 _PVP_MODE_ALL = 5  # DestinyActivityModeType.AllPvP
@@ -568,11 +578,11 @@ async def build_draft_context(
     """Assemble a fresh draft: compute + best-effort API + carried-over config."""
     config = config or await load_config()
     reset_ts = current_reset_ts()
-    # Weekly rotations (raids/dungeons, IB schedule) are keyed by the boundary shown on
-    # the "Resets:" line — the *next* Tuesday, when this week's content expires — since
-    # that is how the hand-authored posts our rotators are calibrated from label a week.
-    # Keying by ``reset_ts`` (the current week's *start*) retrieves the *previous*
-    # week's rotation (off-by-one).
+    # Weekly rotations (raids/dungeons, IB schedule) MUST be keyed by the boundary shown
+    # on the "Resets:" line — the *next* Tuesday, when this week's content expires — as
+    # that is the convention the anchor/sample data are calibrated to (see
+    # DEFAULT_ROTATOR_ANCHOR). Keying by ``reset_ts`` (the week's *start*) instead
+    # retrieves the *previous* week's rotation (off-by-one).
     rotation_ts = next_reset_ts(reset_ts)
 
     ctx = WeeklyResetContext(reset_ts=reset_ts)

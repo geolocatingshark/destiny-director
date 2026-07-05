@@ -329,6 +329,37 @@ def _collect_activities_by_hash(
     return activities
 
 
+def _build_portal_op(
+    activity: dict[str, t.Any],
+    activity_def: dict[str, t.Any] | None,
+    type_def: dict[str, t.Any] | None,
+    reward_def: dict[str, t.Any] | None,
+    reward_hash: int,
+) -> PortalOp:
+    """Assemble a ``PortalOp`` from an activity's resolved manifest defs (pure; no I/O).
+
+    Kept out of ``fetch_portal_ops`` so the manifest-key mapping — especially the
+    discriminator fields consumers classify ops by — is unit-testable without HTTP.
+    """
+    matchmaking = (activity_def or {}).get("matchmaking", {})
+    mode_type = (activity_def or {}).get("directActivityModeType")
+    type_name = _entity_name(type_def)
+    return PortalOp(
+        tab=bucket_for(type_name, mode_type, matchmaking.get("maxParty")),
+        activity_name=base_activity_name(_entity_name(activity_def)),
+        activity_type=type_name,
+        reward_name=_entity_name(reward_def),
+        reward_hash=reward_hash,
+        reward_emoji=_reward_emoji(reward_def),
+        tier=activity.get("difficultyTier"),
+        reward_item_type=(reward_def or {}).get("itemType"),
+        activity_type_hash=(activity_def or {}).get("activityTypeHash"),
+        challenge_count=len((activity_def or {}).get("challenges") or []),
+        max_party=matchmaking.get("maxParty"),
+        mode_types=tuple((activity_def or {}).get("activityModeTypes") or ()),
+    )
+
+
 async def fetch_portal_ops() -> list[PortalOp]:
     """Fetch + dedup + bucket the current featured Portal ops with their rewards.
 
@@ -382,26 +413,9 @@ async def fetch_portal_ops() -> list[PortalOp]:
                 session, "DestinyInventoryItemDefinition", reward_hash, cache
             )
 
-            matchmaking = (activity_def or {}).get("matchmaking", {})
-            mode_type = (activity_def or {}).get("directActivityModeType")
-            type_name = _entity_name(type_def)
-
             ops.append(
-                PortalOp(
-                    tab=bucket_for(type_name, mode_type, matchmaking.get("maxParty")),
-                    activity_name=base_activity_name(_entity_name(activity_def)),
-                    activity_type=type_name,
-                    reward_name=_entity_name(reward_def),
-                    reward_hash=reward_hash,
-                    reward_emoji=_reward_emoji(reward_def),
-                    tier=activity.get("difficultyTier"),
-                    reward_item_type=(reward_def or {}).get("itemType"),
-                    activity_type_hash=(activity_def or {}).get("activityTypeHash"),
-                    challenge_count=len((activity_def or {}).get("challenges") or []),
-                    max_party=matchmaking.get("maxParty"),
-                    mode_types=tuple(
-                        (activity_def or {}).get("activityModeTypes") or ()
-                    ),
+                _build_portal_op(
+                    activity, activity_def, type_def, reward_def, reward_hash
                 )
             )
 

@@ -9,9 +9,6 @@ API_ROOT = BUNGIE_NET + "/Platform"
 
 API_GET_MEMBERSHIPS = API_ROOT + "/User/GetMembershipsForCurrentUser/"
 API_MANIFEST = API_ROOT + "/Destiny2/Manifest/"
-# GetPublicMilestones — unauthenticated (X-API-Key only). Carries the weekly Nightfall
-# and seasonal featured raid/dungeon activity hashes + their start/end dates.
-API_MILESTONES = API_ROOT + "/Destiny2/Milestones/"
 API_OAUTH = (
     BUNGIE_NET
     + "/en/OAuth/Authorize?client_id={client_id}&response_type=code&state={state}"
