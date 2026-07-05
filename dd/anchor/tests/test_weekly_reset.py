@@ -55,7 +55,6 @@ def _full_ctx() -> wr.WeeklyResetContext:
     ctx.pantheon_reprise = "Argos"
     ctx.pantheon_encore = "Insurrection Prime"
     ctx.zavala_weapon = wr.WeaponRef("Horror's Least", 444, "pulse_rifle")
-    ctx.zavala_options = [ctx.zavala_weapon, wr.WeaponRef("Something Else", 555)]
     ctx.crucible_3v3 = "Competitive, Clash"
     ctx.crucible_6v6 = "Control, Eruption"
     ctx.notes = ["Duality is available due to a bug."]
@@ -180,23 +179,6 @@ def test_validate_flags_bad_image_url() -> None:
     ctx = _full_ctx()
     ctx.image_url = "not-a-url"
     assert any("Image URL" in p for p in wr.validate_post(ctx))
-
-
-def test_reconcile_clears_stale_pick() -> None:
-    ctx = wr.WeeklyResetContext(reset_ts=1)
-    ctx.zavala_options = [wr.WeaponRef("A", 1), wr.WeaponRef("B", 2)]
-    ctx.zavala_weapon = wr.WeaponRef("Gone", 999)
-    assert wr.reconcile_picks(ctx) == ["Zavala's Weapon"]
-    assert ctx.zavala_weapon is None
-
-
-def test_reconcile_keeps_valid_pick() -> None:
-    ctx = wr.WeeklyResetContext(reset_ts=1)
-    keep = wr.WeaponRef("A", 1)
-    ctx.zavala_options = [keep, wr.WeaponRef("B", 2)]
-    ctx.zavala_weapon = keep
-    assert wr.reconcile_picks(ctx) == []
-    assert ctx.zavala_weapon is keep
 
 
 # --- editor section model + CV2 builder -------------------------------------------

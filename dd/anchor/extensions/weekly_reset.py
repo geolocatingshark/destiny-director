@@ -66,7 +66,6 @@ from ..embeds import substitute_user_side_emoji
 from . import (
     bungie_api as api,
     portal_ops,
-    xur,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,8 +97,6 @@ TRIALS_IB_REMINDER = (
 
 # Scored Nightfall mode id (DestinyActivityModeType), used to spot the weekly Nightfall.
 NIGHTFALL_MODE_TYPE = 46
-#: Commander Zavala vendor hash (the weekly featured Nightfall/Vanguard weapons).
-ZAVALA_VENDOR_HASH = 69482069
 
 # The seven Pantheon bosses (Pantheon 2.0 roster); the weekly Reprise/Encore pair is
 # picked from here by the team — Bungie publishes no forward schedule.
@@ -193,9 +190,8 @@ class WeeklyResetContext:
     control_weapon: WeaponRef | None = None
     seasonal_raid: str = ""
     seasonal_dungeon: str = ""
-    # ZAVALA'S WEAPON — picked by hand from `zavala_options` (API-returned list).
+    # ZAVALA'S WEAPON — set by hand (the vendor API doesn't expose the weekly weapon).
     zavala_weapon: WeaponRef | None = None
-    zavala_options: list[WeaponRef] = dataclasses.field(default_factory=list)
     # FEATURED RAIDS & DUNGEONS (weekly rotators)
     rotator_raids: tuple[str, str] = ("", "")
     rotator_dungeons: tuple[str, str] = ("", "")
@@ -231,7 +227,6 @@ class WeeklyResetContext:
             "zavala_weapon": self.zavala_weapon.to_dict()
             if self.zavala_weapon
             else None,
-            "zavala_options": [w.to_dict() for w in self.zavala_options],
             "rotator_raids": list(self.rotator_raids),
             "rotator_dungeons": list(self.rotator_dungeons),
             "pantheon_reprise": self.pantheon_reprise,
@@ -267,9 +262,6 @@ class WeeklyResetContext:
             seasonal_raid=d.get("seasonal_raid", ""),
             seasonal_dungeon=d.get("seasonal_dungeon", ""),
             zavala_weapon=weapon("zavala_weapon"),
-            zavala_options=[
-                WeaponRef.from_dict(w) for w in d.get("zavala_options") or []
-            ],
             rotator_raids=pair("rotator_raids"),
             rotator_dungeons=pair("rotator_dungeons"),
             pantheon_reprise=d.get("pantheon_reprise", ""),
@@ -488,22 +480,6 @@ async def derive_playlist_weapons() -> tuple[WeaponRef | None, WeaponRef | None]
     return (first_for("Fireteam Ops"), first_for("Crucible"))
 
 
-async def derive_zavala_options() -> list[WeaponRef]:
-    """Legendary weapons Zavala is featuring this week (team picks one)."""
-    try:
-        vendor = await xur.fetch_vendor_data(
-            api.get_webserver_runner(), [ZAVALA_VENDOR_HASH], "Titan"
-        )
-    except Exception:
-        logger.warning("weekly_reset: Zavala vendor fetch failed", exc_info=True)
-        return []
-    return [
-        WeaponRef.from_item(item)
-        for item in vendor.sale_items
-        if item.is_weapon and item.is_legendary
-    ]
-
-
 async def build_draft_context(
     config: WeeklyResetConfig | None = None,
 ) -> WeeklyResetContext:
@@ -531,10 +507,12 @@ async def build_draft_context(
     ctx.image_url = config.default_image_url
 
     # Best-effort Bungie derivations (never fatal — the team fills any gaps).
+    # The Zavala/GM reward weapons are NOT derivable: the vendor's direct sales only
+    # expose focusing categories, not the specific weekly weapon — so they stay manual
+    # (set via `/weekly_reset set_reward`).
     async with aiohttp.ClientSession() as session:
         ctx.gm_strike = await derive_gm_nightfall(session)
     ctx.quickplay_weapon, ctx.control_weapon = await derive_playlist_weapons()
-    ctx.zavala_options = await derive_zavala_options()
 
     return ctx
 
@@ -754,22 +732,6 @@ async def _is_owner(bot: CachedFetchBot, user_id: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Reconciliation (drop hand-picks the API no longer offers, on rebuild)
-# ---------------------------------------------------------------------------
-
-
-def reconcile_picks(ctx: WeeklyResetContext) -> list[str]:
-    """Clear picks the refreshed API no longer offers; return the fields to flag."""
-    flags: list[str] = []
-    if ctx.zavala_weapon and ctx.zavala_options:
-        hashes = {w.hash for w in ctx.zavala_options}
-        if ctx.zavala_weapon.hash not in hashes:
-            ctx.zavala_weapon = None
-            flags.append("Zavala's Weapon")
-    return flags
-
-
-# ---------------------------------------------------------------------------
 # The drafts-channel card = the canonical live preview
 # ---------------------------------------------------------------------------
 
@@ -856,12 +818,10 @@ async def post_or_update_card(
 # Editor: the section model (which selects/modal each section shows)
 # ---------------------------------------------------------------------------
 
+# Only the fields NOT covered by the `/weekly_reset set_activity` / `set_reward`
+# autocomplete commands live in the editor: the Iron Banner/Trials toggles + prose,
+# ad-hoc notes/links, and the header image.
 _SECTIONS: tuple[tuple[str, str], ...] = (
-    ("vanguard", "Vanguard Alerts"),
-    ("zavala", "Zavala's Weapon"),
-    ("rotators", "Featured Raids & Dungeons"),
-    ("pantheon", "Pantheon"),
-    ("crucible", "Crucible Ops"),
     ("events", "Events & Trials"),
     ("notes", "Notes & Links"),
     ("image", "Image"),
@@ -917,41 +877,6 @@ def _modal_spec(
     ctx: WeeklyResetContext, section: str
 ) -> tuple[str, list[Field]] | None:
     """Title + field specs for the section's free-text modal, if it has one."""
-    if section == "vanguard":
-        return (
-            "Vanguard Alerts",
-            [
-                ("GM Nightfall strike", ctx.gm_strike, False),
-                ("Quickplay weapon", _wname(ctx.quickplay_weapon), False),
-                ("Control weapon", _wname(ctx.control_weapon), False),
-                ("Seasonal featured raid", ctx.seasonal_raid, False),
-                ("Seasonal featured dungeon", ctx.seasonal_dungeon, False),
-            ],
-        )
-    if section == "zavala":
-        return (
-            "Zavala's Weapon (manual override)",
-            [("Weapon name", _wname(ctx.zavala_weapon), False)],
-        )
-    if section == "rotators":
-        return (
-            "Featured Raids & Dungeons",
-            [
-                ("Raid 1", ctx.rotator_raids[0], False),
-                ("Raid 2", ctx.rotator_raids[1], False),
-                ("Dungeon 1", ctx.rotator_dungeons[0], False),
-                ("Dungeon 2", ctx.rotator_dungeons[1], False),
-            ],
-        )
-    if section == "crucible":
-        return (
-            "Crucible Ops",
-            [
-                ("1v6", ctx.crucible_1v6, False),
-                ("3v3", ctx.crucible_3v3, False),
-                ("6v6", ctx.crucible_6v6, False),
-            ],
-        )
     if section == "events":
         return (
             "Events narrative",
@@ -978,27 +903,7 @@ def _modal_spec(
 
 
 def _apply_modal(ctx: WeeklyResetContext, section: str, values: list[str]) -> None:
-    if section == "vanguard":
-        gm, quick, control, s_raid, s_dungeon = (values + [""] * 5)[:5]
-        ctx.gm_strike = gm.strip()
-        ctx.quickplay_weapon = _merge_name(ctx.quickplay_weapon, quick)
-        ctx.control_weapon = _merge_name(ctx.control_weapon, control)
-        ctx.seasonal_raid = s_raid.strip()
-        ctx.seasonal_dungeon = s_dungeon.strip()
-    elif section == "zavala":
-        ctx.zavala_weapon = _merge_name(ctx.zavala_weapon, values[0] if values else "")
-    elif section == "rotators":
-        r1, r2, d1, d2 = (values + [""] * 4)[:4]
-        ctx.rotator_raids = (r1.strip(), r2.strip())
-        ctx.rotator_dungeons = (d1.strip(), d2.strip())
-    elif section == "crucible":
-        c1, c3, c6 = (values + [""] * 3)[:3]
-        ctx.crucible_1v6, ctx.crucible_3v3, ctx.crucible_6v6 = (
-            c1.strip(),
-            c3.strip(),
-            c6.strip(),
-        )
-    elif section == "events":
+    if section == "events":
         ctx.events_narrative = (values[0] if values else "").strip()
     elif section == "notes":
         notes_raw = values[0] if values else ""
@@ -1008,20 +913,6 @@ def _apply_modal(ctx: WeeklyResetContext, section: str, values: list[str]) -> No
     elif section == "image":
         url = (values[0] if values else "").strip()
         ctx.image_url = url or None
-
-
-def _wname(weapon: WeaponRef | None) -> str:
-    return weapon.name if weapon else ""
-
-
-def _merge_name(existing: WeaponRef | None, name: str) -> WeaponRef | None:
-    """Keep the API hash/emoji when the typed name is unchanged; else plain text."""
-    name = name.strip()
-    if not name:
-        return None
-    if existing and existing.name == name:
-        return existing
-    return WeaponRef(name=name)
 
 
 def _links_text(ctx: WeeklyResetContext) -> str:
@@ -1052,43 +943,12 @@ class _Session:
     invoker_id: int
     ctx: WeeklyResetContext
     meta: DraftMeta
-    section: str = "vanguard"
+    section: str = "events"
     confirm: bool = False
 
 
 def _summary(ctx: WeeklyResetContext, section: str) -> str:
     """Compact view of the current section's values (the full preview is the card)."""
-    if section == "vanguard":
-        return (
-            f"GM: {ctx.gm_strike or '—'}\n"
-            f"Quickplay: {_wname(ctx.quickplay_weapon) or '—'}\n"
-            f"Control: {_wname(ctx.control_weapon) or '—'}\n"
-            f"Seasonal raid/dungeon: {ctx.seasonal_raid or '—'} / "
-            f"{ctx.seasonal_dungeon or '—'}"
-        )
-    if section == "zavala":
-        picked = _wname(ctx.zavala_weapon) or "—"
-        return (
-            f"Zavala's Weapon: {picked}\n"
-            "-# Set with `/weekly_reset set_reward` (weapon autocomplete)."
-        )
-    if section == "rotators":
-        return (
-            f"Raids: {' + '.join(x for x in ctx.rotator_raids if x) or '—'}\n"
-            f"Dungeons: {' + '.join(x for x in ctx.rotator_dungeons if x) or '—'}"
-        )
-    if section == "pantheon":
-        return (
-            f"Reprise: {ctx.pantheon_reprise or '—'}\n"
-            f"Encore: {ctx.pantheon_encore or '—'}\n"
-            "-# Set with `/weekly_reset set_activity` (boss autocomplete)."
-        )
-    if section == "crucible":
-        return (
-            f"1v6: {ctx.crucible_1v6 or '—'}\n"
-            f"3v3: {ctx.crucible_3v3 or '—'}\n"
-            f"6v6: {ctx.crucible_6v6 or '—'}"
-        )
     if section == "events":
         return (
             f"Iron Banner: {'ON' if ctx.iron_banner else 'OFF'}\n"
@@ -1168,17 +1028,17 @@ def _render_editor(session: _Session) -> list[h.api.ComponentBuilder]:
             menu_b.add_option(label, value, is_default=default)
         components.append(row_b)
 
-    # Action buttons.
+    # Action buttons: edit this section's text, save & close, or go to publish.
     buttons = h.impl.MessageActionRowBuilder()
     if _modal_spec(ctx, section):
         buttons.add_interactive_button(
             h.ButtonStyle.PRIMARY, f"{sid}:text", label="✏️ Edit text"
         )
     buttons.add_interactive_button(
-        h.ButtonStyle.SUCCESS, f"{sid}:publish", label="Publish…"
+        h.ButtonStyle.SECONDARY, f"{sid}:save", label="💾 Save & close"
     )
     buttons.add_interactive_button(
-        h.ButtonStyle.DANGER, f"{sid}:discard", label="Discard draft"
+        h.ButtonStyle.SUCCESS, f"{sid}:publish", label="📣 Publish…"
     )
     components.append(buttons)
     return components
@@ -1364,15 +1224,21 @@ async def open_editor(ctx: lb.Context, bot: CachedFetchBot) -> None:
         )
         mctx.stop_interacting()
 
-    async def on_discard(mctx: lbc.MenuContext) -> None:
+    async def on_save(mctx: lbc.MenuContext) -> None:
         global _active_session
         async with _draft_lock:
             if _active_session == session.session_id:
+                await save_draft(session.ctx)
                 _active_session = None
+        await post_or_update_card(bot, session.ctx, session.meta)
         await mctx.respond(
             edit=True,
             flags=h.MessageFlag.IS_COMPONENTS_V2,
-            components=[build_container(["🗑️ Draft left as-is; editor closed."])],
+            components=[
+                build_container(
+                    ["💾 Saved — the drafts card is up to date. Not published yet."]
+                )
+            ],
         )
         mctx.stop_interacting()
 
@@ -1387,16 +1253,16 @@ async def open_editor(ctx: lb.Context, bot: CachedFetchBot) -> None:
         label="✏️",
     )
     menu.add_interactive_button(
+        h.ButtonStyle.SECONDARY,
+        on_save,
+        custom_id=f"{session.session_id}:save",
+        label="Save",
+    )
+    menu.add_interactive_button(
         h.ButtonStyle.SUCCESS,
         on_publish,
         custom_id=f"{session.session_id}:publish",
         label="Publish",
-    )
-    menu.add_interactive_button(
-        h.ButtonStyle.DANGER,
-        on_discard,
-        custom_id=f"{session.session_id}:discard",
-        label="Discard",
     )
     menu.add_interactive_button(
         h.ButtonStyle.SUCCESS,
@@ -1429,14 +1295,12 @@ async def run_reset_draft(bot: CachedFetchBot, *, ping_owners: bool) -> None:
     global _active_session
     config = await load_config()
     ctx = await build_draft_context(config)
-    flags = reconcile_picks(ctx)
 
     async with _draft_lock:
         # A new reset supersedes any in-flight editor session for the old week.
         _active_session = None
         meta = DraftMeta(
             status="draft",
-            needs_attention=flags,
             last_edited_ts=int(dt.datetime.now(tz=dt.UTC).timestamp()),
         )
         # Keep the existing card (if this is a rebuild of the same week) so we edit in
