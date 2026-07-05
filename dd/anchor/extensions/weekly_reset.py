@@ -134,6 +134,69 @@ DEFAULT_IB_WEEK_RESETS: tuple[int, ...] = ()
 
 DEFAULT_CRUCIBLE_1V6 = "Sparrow Racing, Rumble"
 
+# --- Bounded selector domains --------------------------------------------------------
+# Small, stable fields are picked from Choice dropdowns instead of free-typed
+# autocomplete, to cut the number of inputs. Each list is well under Discord's 25-choice
+# limit. (Large domains — GM strikes ~46, weapons — stay on manifest autocomplete.)
+
+# Crucible slots: the first mode of each is fixed; only the second (featured) mode is a
+# weekly input, chosen from CRUCIBLE_MODES.
+CRUCIBLE_3V3_FIRST = "Competitive"
+CRUCIBLE_6V6_FIRST = "Control"
+CRUCIBLE_MODES: tuple[str, ...] = (
+    "Clash",
+    "Control",
+    "Rift",
+    "Zone Control",
+    "Eruption",
+    "Relic",
+    "Collision",
+    "Momentum Control",
+    "Team Scorched",
+    "Rumble",
+    "Survival",
+    "Elimination",
+    "Countdown",
+    "Breakthrough",
+    "Lockdown",
+    "Salvage",
+    "Showdown",
+    "Mayhem",
+    "Supremacy",
+    "Scorched",
+)  # 20 modes < 25
+# Raid / dungeon domains (from the manifest; a new one ships ~1-2x/year — add it here).
+RAIDS: tuple[str, ...] = (
+    "Crota's End",
+    "Crown of Sorrow",
+    "Deep Stone Crypt",
+    "Garden of Salvation",
+    "King's Fall",
+    "Last Wish",
+    "Leviathan",
+    "Leviathan, Eater of Worlds",
+    "Leviathan, Spire of Stars",
+    "Root of Nightmares",
+    "Salvation's Edge",
+    "Scourge of the Past",
+    "The Desert Perpetual",
+    "Vault of Glass",
+    "Vow of the Disciple",
+)  # 15 < 25
+DUNGEONS: tuple[str, ...] = (
+    "Duality",
+    "Equilibrium",
+    "Ghosts of the Deep",
+    "Grasp of Avarice",
+    "Pit of Heresy",
+    "Prophecy",
+    "Spire of the Watcher",
+    "Sundered Doctrine",
+    "The Shattered Throne",
+    "Vesper's Host",
+    "Warlord's Ruin",
+)  # 11 < 25
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -1396,23 +1459,6 @@ class WeeklyResetShow(
 # still gated by the client-level ``owner_only`` hook — only writes are restricted.
 # ---------------------------------------------------------------------------
 
-# Activity field -> the manifest category its value autocompletes against. Suggestions
-# are derived live from DestinyActivityDefinition (see _build_indexes); the option still
-# accepts a free-typed value, so anything the manifest misses can still be typed.
-_ACTIVITY_CATEGORY: dict[str, str] = {
-    "gm_strike": "strike",
-    "seasonal_raid": "raid",
-    "rotator_raid_1": "raid",
-    "rotator_raid_2": "raid",
-    "seasonal_dungeon": "dungeon",
-    "rotator_dungeon_1": "dungeon",
-    "rotator_dungeon_2": "dungeon",
-    "pantheon_reprise": "pantheon",
-    "pantheon_encore": "pantheon",
-    "crucible_1v6": "crucible",
-    "crucible_3v3": "crucible",
-    "crucible_6v6": "crucible",
-}
 # Reward field -> the DestinyItem itemType its value autocompletes over (3=weapon,
 # 2=armour). Every reward slot today is a weapon, so only weapons are suggested; an
 # armour slot would set 2 here and get only armour.
@@ -1422,36 +1468,22 @@ _REWARD_ITEM_TYPE: dict[str, int] = {
     "control_weapon": 3,
     "zavala_weapon": 3,
 }
-_ACTIVITY_FIELDS: tuple[tuple[str, str], ...] = (
-    ("GM Nightfall strike", "gm_strike"),
-    ("Seasonal featured raid", "seasonal_raid"),
-    ("Seasonal featured dungeon", "seasonal_dungeon"),
-    ("Featured raid 1", "rotator_raid_1"),
-    ("Featured raid 2", "rotator_raid_2"),
-    ("Featured dungeon 1", "rotator_dungeon_1"),
-    ("Featured dungeon 2", "rotator_dungeon_2"),
-    ("Pantheon Reprise", "pantheon_reprise"),
-    ("Pantheon Encore", "pantheon_encore"),
-    ("Crucible 1v6", "crucible_1v6"),
-    ("Crucible 3v3", "crucible_3v3"),
-    ("Crucible 6v6", "crucible_6v6"),
-)
 _REWARD_FIELDS: tuple[tuple[str, str], ...] = (
     ("GM Nightfall reward weapon", "gm_weapon"),
     ("Vanguard / Quickplay weapon", "quickplay_weapon"),
     ("Crucible / Control weapon", "control_weapon"),
     ("Zavala's Weapon", "zavala_weapon"),
 )
-_ACTIVITY_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _ACTIVITY_FIELDS]
 _REWARD_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _REWARD_FIELDS]
+# Bounded-selector Choice lists (label == value) for the dedicated set_* commands.
+_CRUCIBLE_CHOICES = [lb.Choice(m, m) for m in CRUCIBLE_MODES]
+_RAID_CHOICES = [lb.Choice(r, r) for r in RAIDS]
+_DUNGEON_CHOICES = [lb.Choice(d, d) for d in DUNGEONS]
+_PANTHEON_CHOICES = [lb.Choice(b, b) for b in PANTHEON_BOSSES]
 
-# DestinyActivityModeType ids used to classify activities, + the PvP mode category
-# (DestinyActivityModeCategory: 1=PvE, 2=PvP, 3=Gambit).
+# DestinyActivityModeType ids used to classify activities (raid/dungeon vs strike).
 _MODE_RAID = 4
 _MODE_DUNGEON = 82
-_MODE_CATEGORY_PVP = 2
-# Non-mode PvP junk dropped from the Crucible pool (private/legacy/generic entries).
-_CRUCIBLE_JUNK = ("private matches", "trials of the nine", "pvp")
 # Variant/difficulty suffixes (after a ": ") stripped to reach the base activity name.
 _VARIANT_SUFFIXES = frozenset(
     {
@@ -1614,13 +1646,9 @@ def _clean_activity_name(name: str, category: str) -> str:
 async def _build_indexes() -> _Indexes:
     # Deduped by (name, type): one entry per named weapon/armour, newest hash wins.
     item_by_key: dict[tuple[str, str], tuple[str, int, str, int, str]] = {}
-    activities: dict[str, set[str]] = {
-        "raid": set(),
-        "dungeon": set(),
-        "strike": set(),
-        "pantheon": set(),
-        "crucible": set(),
-    }
+    # Only GM strikes need manifest autocomplete now; raids/dungeons/pantheon/crucible
+    # are bounded Choice selectors (see the *_CHOICES constants).
+    strikes: set[str] = set()
     try:
         path = await api._get_latest_manifest(schemas.BungieCredentials.api_key)
         async with aiosqlite.connect(path) as con:
@@ -1658,40 +1686,24 @@ async def _build_indexes() -> _Indexes:
             for (row,) in await cur.fetchall():
                 defn = json.loads(row)
                 type_name = activity_types.get(defn.get("activityTypeHash"), "")
-                category = _classify_activity(defn, type_name)
-                if category is None:
+                if _classify_activity(defn, type_name) != "strike":
                     continue
                 name = _clean_activity_name(
-                    (defn.get("displayProperties") or {}).get("name", ""), category
+                    (defn.get("displayProperties") or {}).get("name", ""), "strike"
                 )
                 if name:
-                    activities[category].add(name)
-
-            await cur.execute("SELECT json FROM DestinyActivityModeDefinition")
-            for (row,) in await cur.fetchall():
-                defn = json.loads(row)
-                if defn.get("activityModeCategory") != _MODE_CATEGORY_PVP:
-                    continue
-                name = (defn.get("displayProperties") or {}).get("name") or ""
-                if not name or any(junk in name.lower() for junk in _CRUCIBLE_JUNK):
-                    continue
-                activities["crucible"].add(name.removeprefix("Iron Banner ").strip())
+                    strikes.add(name)
     except Exception:
         logger.warning("weekly_reset: manifest index build failed", exc_info=True)
 
     result = _Indexes(
         items=sorted(item_by_key.values(), key=lambda e: e[0].lower()),
-        activities={key: sorted(names) for key, names in activities.items()},
+        activities={"strike": sorted(strikes)},
     )
     logger.info(
-        "weekly_reset indexes: %d items; raids=%d dungeons=%d strikes=%d "
-        "pantheon=%d crucible=%d",
+        "weekly_reset indexes: %d items; strikes=%d",
         len(result.items),
-        len(result.activities["raid"]),
-        len(result.activities["dungeon"]),
         len(result.activities["strike"]),
-        len(result.activities["pantheon"]),
-        len(result.activities["crucible"]),
     )
     return result
 
@@ -1707,23 +1719,17 @@ async def get_indexes() -> _Indexes:
         return _indexes
 
 
-async def _activity_value_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
+async def _gm_strike_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
+    # GM strike pool (~46 strikes + battlegrounds) is too large for a Choice selector,
+    # so it stays on manifest autocomplete. Blank until a character is typed.
     query = str(ctx.focused.value or "").lower()
-    if not query:
-        # Nothing typed yet: show no suggestions rather than an unfiltered list that can
-        # lag the selected field. Category filtering kicks in on the first keystroke.
+    if not query or _indexes is None:
+        if _indexes is None:
+            asyncio.create_task(get_indexes())  # warm for the next keystroke
         await ctx.respond([])
         return
-    if _indexes is None:
-        asyncio.create_task(get_indexes())  # warm for the next keystroke
-        await ctx.respond([])
-        return
-    field_opt = ctx.get_option("field")
-    field = str(field_opt.value) if field_opt and field_opt.value else ""
-    category = _ACTIVITY_CATEGORY.get(field, "")
-    names = _indexes.activities.get(category, [])
-    matches = [name for name in names if query in name.lower()]
-    await ctx.respond(matches[:25])
+    names = _indexes.activities.get("strike", [])
+    await ctx.respond([name for name in names if query in name.lower()][:25])
 
 
 async def _reward_value_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
@@ -1767,17 +1773,43 @@ async def resolve_reward_value(value: str) -> WeaponRef | None:
     return WeaponRef(name=value)
 
 
-def apply_activity_field(ctx: WeeklyResetContext, field: str, value: str) -> None:
-    if field == "rotator_raid_1":
-        ctx.rotator_raids = (value, ctx.rotator_raids[1])
-    elif field == "rotator_raid_2":
-        ctx.rotator_raids = (ctx.rotator_raids[0], value)
-    elif field == "rotator_dungeon_1":
-        ctx.rotator_dungeons = (value, ctx.rotator_dungeons[1])
-    elif field == "rotator_dungeon_2":
-        ctx.rotator_dungeons = (ctx.rotator_dungeons[0], value)
-    elif field in _ACTIVITY_CATEGORY:
-        setattr(ctx, field, value)
+def apply_gm_strike(ctx: WeeklyResetContext, value: str) -> None:
+    ctx.gm_strike = value
+
+
+def apply_crucible(ctx: WeeklyResetContext, three: str, six: str) -> None:
+    """First mode of each slot is fixed; only the featured (second) mode is chosen."""
+    if three:
+        ctx.crucible_3v3 = f"{CRUCIBLE_3V3_FIRST}, {three}"
+    if six:
+        ctx.crucible_6v6 = f"{CRUCIBLE_6V6_FIRST}, {six}"
+
+
+def apply_pantheon(ctx: WeeklyResetContext, reprise: str, encore: str) -> None:
+    if reprise:
+        ctx.pantheon_reprise = reprise
+    if encore:
+        ctx.pantheon_encore = encore
+
+
+def apply_raids(ctx: WeeklyResetContext, seasonal: str, feat1: str, feat2: str) -> None:
+    if seasonal:
+        ctx.seasonal_raid = seasonal
+    if feat1:
+        ctx.rotator_raids = (feat1, ctx.rotator_raids[1])
+    if feat2:
+        ctx.rotator_raids = (ctx.rotator_raids[0], feat2)
+
+
+def apply_dungeons(
+    ctx: WeeklyResetContext, seasonal: str, feat1: str, feat2: str
+) -> None:
+    if seasonal:
+        ctx.seasonal_dungeon = seasonal
+    if feat1:
+        ctx.rotator_dungeons = (feat1, ctx.rotator_dungeons[1])
+    if feat2:
+        ctx.rotator_dungeons = (ctx.rotator_dungeons[0], feat2)
 
 
 def apply_reward_field(
@@ -1814,16 +1846,15 @@ async def mutate_draft(
 
 
 @weekly_reset_group.register
-class WeeklyResetSetActivity(
+class WeeklyResetSetGmStrike(
     lb.SlashCommand,
-    name="set_activity",
-    description="Set an activity field (autocompletes names for that category)",
+    name="set_gm_strike",
+    description="Set the GM Nightfall strike (autocomplete)",
 ):
-    field = lb.string("field", "Which activity slot", choices=_ACTIVITY_FIELD_CHOICES)
     value = lb.string(
         "value",
-        "Start typing — suggestions are for the chosen category",
-        autocomplete=_activity_value_autocomplete,
+        "Start typing a strike / battleground name",
+        autocomplete=_gm_strike_autocomplete,
     )
 
     @lb.invoke
@@ -1831,11 +1862,129 @@ class WeeklyResetSetActivity(
         self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
     ) -> None:
         await ctx.defer(ephemeral=True)  # first edit may auto-fill from the API
-        field, value = self.field, self.value.strip()
-        await mutate_draft(
-            bot, ctx.user.id, lambda c: apply_activity_field(c, field, value)
+        value = self.value.strip()
+        await mutate_draft(bot, ctx.user.id, lambda c: apply_gm_strike(c, value))
+        await ctx.respond(
+            f"Set **GM Nightfall strike** → {value or '—'}", ephemeral=True
         )
-        await ctx.respond(f"Set **{field}** → {value or '—'}", ephemeral=True)
+
+
+@weekly_reset_group.register
+class WeeklyResetSetCrucible(
+    lb.SlashCommand,
+    name="set_crucible",
+    description="Set the Crucible featured modes (3v3=Competitive+…, 6v6=Control+…)",
+):
+    three_v_three = lb.string(
+        "three_v_three",
+        "3v3 featured mode (paired with Competitive)",
+        choices=_CRUCIBLE_CHOICES,
+        default="",
+    )
+    six_v_six = lb.string(
+        "six_v_six",
+        "6v6 featured mode (paired with Control)",
+        choices=_CRUCIBLE_CHOICES,
+        default="",
+    )
+
+    @lb.invoke
+    async def invoke(
+        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        three, six = self.three_v_three, self.six_v_six
+        await mutate_draft(bot, ctx.user.id, lambda c: apply_crucible(c, three, six))
+        done = []
+        if three:
+            done.append(f"3v3 → {CRUCIBLE_3V3_FIRST}, {three}")
+        if six:
+            done.append(f"6v6 → {CRUCIBLE_6V6_FIRST}, {six}")
+        await ctx.respond("Set " + ("; ".join(done) or "nothing"), ephemeral=True)
+
+
+@weekly_reset_group.register
+class WeeklyResetSetPantheon(
+    lb.SlashCommand,
+    name="set_pantheon",
+    description="Set the Pantheon Reprise / Encore bosses",
+):
+    reprise = lb.string(
+        "reprise", "Reprise boss", choices=_PANTHEON_CHOICES, default=""
+    )
+    encore = lb.string("encore", "Encore boss", choices=_PANTHEON_CHOICES, default="")
+
+    @lb.invoke
+    async def invoke(
+        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        reprise, encore = self.reprise, self.encore
+        await mutate_draft(
+            bot, ctx.user.id, lambda c: apply_pantheon(c, reprise, encore)
+        )
+        done = []
+        if reprise:
+            done.append(f"Reprise → {reprise}")
+        if encore:
+            done.append(f"Encore → {encore}")
+        await ctx.respond("Set " + ("; ".join(done) or "nothing"), ephemeral=True)
+
+
+@weekly_reset_group.register
+class WeeklyResetSetRaid(
+    lb.SlashCommand,
+    name="set_raid",
+    description="Set the seasonal / featured-rotator raids",
+):
+    seasonal = lb.string(
+        "seasonal", "Seasonal featured raid", choices=_RAID_CHOICES, default=""
+    )
+    featured_1 = lb.string(
+        "featured_1", "Featured rotator raid 1", choices=_RAID_CHOICES, default=""
+    )
+    featured_2 = lb.string(
+        "featured_2", "Featured rotator raid 2", choices=_RAID_CHOICES, default=""
+    )
+
+    @lb.invoke
+    async def invoke(
+        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        seasonal, feat1, feat2 = self.seasonal, self.featured_1, self.featured_2
+        await mutate_draft(
+            bot, ctx.user.id, lambda c: apply_raids(c, seasonal, feat1, feat2)
+        )
+        await ctx.respond("Updated the raids.", ephemeral=True)
+
+
+@weekly_reset_group.register
+class WeeklyResetSetDungeon(
+    lb.SlashCommand,
+    name="set_dungeon",
+    description="Set the seasonal / featured-rotator dungeons",
+):
+    seasonal = lb.string(
+        "seasonal", "Seasonal featured dungeon", choices=_DUNGEON_CHOICES, default=""
+    )
+    featured_1 = lb.string(
+        "featured_1", "Featured rotator dungeon 1", choices=_DUNGEON_CHOICES, default=""
+    )
+    featured_2 = lb.string(
+        "featured_2", "Featured rotator dungeon 2", choices=_DUNGEON_CHOICES, default=""
+    )
+
+    @lb.invoke
+    async def invoke(
+        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        seasonal, feat1, feat2 = self.seasonal, self.featured_1, self.featured_2
+        await mutate_draft(
+            bot, ctx.user.id, lambda c: apply_dungeons(c, seasonal, feat1, feat2)
+        )
+        await ctx.respond("Updated the dungeons.", ephemeral=True)
 
 
 @weekly_reset_group.register

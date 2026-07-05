@@ -238,10 +238,13 @@ def stub_indexes():
     wr._indexes = saved
 
 
-def test_activity_category_maps_to_known_categories() -> None:
-    valid = {"raid", "dungeon", "strike", "pantheon", "crucible"}
-    for _label, key in wr._ACTIVITY_FIELDS:
-        assert wr._ACTIVITY_CATEGORY.get(key) in valid, key
+def test_selector_domains_fit_discord_choice_limit() -> None:
+    # Each bounded selector must stay under Discord's 25-choice limit.
+    for domain in (wr.CRUCIBLE_MODES, wr.RAIDS, wr.DUNGEONS, wr.PANTHEON_BOSSES):
+        assert 0 < len(domain) < 25, len(domain)
+    # no duplicate choices
+    for domain in (wr.CRUCIBLE_MODES, wr.RAIDS, wr.DUNGEONS, wr.PANTHEON_BOSSES):
+        assert len(set(domain)) == len(domain)
 
 
 def test_reward_fields_are_weapons_only() -> None:
@@ -330,18 +333,29 @@ def test_clean_activity_name() -> None:
     assert wr._clean_activity_name("The Pantheon: Atraks Sovereign", "pantheon") == ""
 
 
-def test_apply_activity_field_rotators_and_plain() -> None:
+def test_apply_crucible_fixes_first_mode() -> None:
     ctx = wr.WeeklyResetContext(reset_ts=1)
-    wr.apply_activity_field(ctx, "rotator_raid_1", "Vault of Glass")
-    wr.apply_activity_field(ctx, "rotator_raid_2", "Crota's End")
-    wr.apply_activity_field(ctx, "rotator_dungeon_1", "Duality")
-    wr.apply_activity_field(ctx, "rotator_dungeon_2", "Prophecy")
+    wr.apply_crucible(ctx, "Clash", "Rift")
+    assert ctx.crucible_3v3 == "Competitive, Clash"
+    assert ctx.crucible_6v6 == "Control, Rift"
+    # only-one-provided leaves the other untouched
+    wr.apply_crucible(ctx, "Eruption", "")
+    assert ctx.crucible_3v3 == "Competitive, Eruption"
+    assert ctx.crucible_6v6 == "Control, Rift"
+
+
+def test_apply_pantheon_raids_dungeons() -> None:
+    ctx = wr.WeeklyResetContext(reset_ts=1)
+    wr.apply_pantheon(ctx, "Argos", "Calus")
+    assert (ctx.pantheon_reprise, ctx.pantheon_encore) == ("Argos", "Calus")
+    wr.apply_raids(ctx, "The Desert Perpetual", "Vault of Glass", "Crota's End")
+    assert ctx.seasonal_raid == "The Desert Perpetual"
     assert ctx.rotator_raids == ("Vault of Glass", "Crota's End")
+    wr.apply_dungeons(ctx, "Equilibrium", "Duality", "Prophecy")
+    assert ctx.seasonal_dungeon == "Equilibrium"
     assert ctx.rotator_dungeons == ("Duality", "Prophecy")
-    wr.apply_activity_field(ctx, "gm_strike", "The Sunless Cell")
-    wr.apply_activity_field(ctx, "crucible_6v6", "Control, Eruption")
+    wr.apply_gm_strike(ctx, "The Sunless Cell")
     assert ctx.gm_strike == "The Sunless Cell"
-    assert ctx.crucible_6v6 == "Control, Eruption"
 
 
 def test_apply_reward_field_sets_and_clears() -> None:
