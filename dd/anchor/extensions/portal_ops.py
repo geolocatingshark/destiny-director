@@ -131,6 +131,14 @@ class PortalOp(t.NamedTuple):
     reward_hash: int
     reward_emoji: str
     tier: int | None
+    # Discriminators used by consumers (e.g. the weekly-reset derivations) to classify
+    # an op without re-resolving its manifest defs. Defaulted so older call sites and
+    # tests keep working.
+    reward_item_type: int | None = None  # DestinyItemType: 3=weapon, 2=armour
+    activity_type_hash: int | None = None
+    challenge_count: int = 0
+    max_party: int | None = None
+    mode_types: tuple[int, ...] = ()  # DestinyActivityModeType list
 
 
 # ── Pure helpers (unit-tested in tests/test_portal_ops.py) ─────────────────────
@@ -387,6 +395,13 @@ async def fetch_portal_ops() -> list[PortalOp]:
                     reward_hash=reward_hash,
                     reward_emoji=_reward_emoji(reward_def),
                     tier=activity.get("difficultyTier"),
+                    reward_item_type=(reward_def or {}).get("itemType"),
+                    activity_type_hash=(activity_def or {}).get("activityTypeHash"),
+                    challenge_count=len((activity_def or {}).get("challenges") or []),
+                    max_party=matchmaking.get("maxParty"),
+                    mode_types=tuple(
+                        (activity_def or {}).get("activityModeTypes") or ()
+                    ),
                 )
             )
 

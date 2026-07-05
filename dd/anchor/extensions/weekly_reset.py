@@ -49,7 +49,6 @@ import typing as t
 import uuid
 
 import aiocron
-import aiohttp
 import aiosqlite
 import hikari as h
 import lightbulb as lb
@@ -94,9 +93,6 @@ ZAVALA_TIER_SUFFIX = "(T5/*rolls vary*)"
 TRIALS_IB_REMINDER = (
     "Reminder: Trials of Osiris is unavailable while Iron Banner is active."
 )
-
-# Scored Nightfall mode id (DestinyActivityModeType), used to spot the weekly Nightfall.
-NIGHTFALL_MODE_TYPE = 46
 
 # The seven Pantheon bosses (Pantheon 2.0 roster); the weekly Reprise/Encore pair is
 # picked from here by the team — Bungie publishes no forward schedule.
@@ -467,6 +463,15 @@ def current_reset_ts(now: dt.datetime | None = None) -> int:
     return int((REFERENCE_RESET + weeks * WEEK).timestamp())
 
 
+def next_reset_ts(reset_ts: int) -> int:
+    """First reset boundary strictly after ``reset_ts`` — i.e. the next Tuesday.
+
+    ``reset_ts`` is the *current* week's boundary (which drives the rotators), so
+    this is the moment the post's content resets, shown on the ``Resets:`` line.
+    """
+    return reset_ts + int(WEEK.total_seconds())
+
+
 def rotator_index(anchor_ts: int, reset_ts: int, length: int) -> int:
     """Which cycle entry is active this week (weeks since anchor, mod list length)."""
     if length <= 0:
@@ -488,80 +493,73 @@ def compute_rotator(
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_activity(
-    session: aiohttp.ClientSession,
-    activity_hash: int,
-    cache: dict[tuple[str, int], dict[str, t.Any] | None],
-) -> dict[str, t.Any] | None:
-    """Live per-hash DestinyActivityDefinition lookup (reuses portal_ops' resolver)."""
-    return await portal_ops._resolve_entity(
-        session, "DestinyActivityDefinition", activity_hash, cache
-    )
+class PortalDerivation(t.NamedTuple):
+    gm_strike: str
+    gm_weapon: WeaponRef | None
+    quickplay_weapon: WeaponRef | None
+    control_weapon: WeaponRef | None
 
 
-async def derive_gm_nightfall(session: aiohttp.ClientSession) -> str:
-    """Best-effort weekly Nightfall strike name from GetPublicMilestones.
+# Portal (component-204) derivation signatures. The GM Nightfall, the Vanguard
+# "Quickplay" weapon and the Crucible "Control" weapon all left the public API for the
+# authed Portal this era, so each is picked out of portal_ops' featured-op feed by a
+# structural signature — never a hard-coded activity/weapon name.
+_WEAPON_ITEM_TYPE = 3  # DestinyItemType.Weapon
+_STRIKE_ACTIVITY_TYPE_HASH = 556925641  # DestinyActivityTypeDefinition "Strike"
+_PVP_MODE_ALL = 5  # DestinyActivityModeType.AllPvP
+_SPARROW_RACING_MODE = 94  # DestinyActivityModeType.SparrowRacing (the 1v6 rotator)
+_QUICKPLAY_ACTIVITY_NAME = "Quickplay"  # the Vanguard playlist op
 
-    Returns "" on any problem; the reward weapon is not in the public API, so the team
-    supplies it (or it comes from the Zavala vendor options).
+
+async def derive_portal_fields() -> PortalDerivation:
+    """GM strike + Quickplay/Control weapons from the authed Portal (component 204).
+
+    Each slot is matched by a structural signature verified against a live week:
+
+    * GM Nightfall — the only Strike-type op carrying the weekly Nightfall *challenge*
+      (ordinary playlist strikes have none); its guaranteed reward is the GM weapon.
+    * Quickplay (Vanguard) weapon — the "Quickplay" op whose reward is a *weapon* (the
+      solo and fireteam Quickplay variants reward armour).
+    * Control (Crucible) weapon — the 6-player PvP op rewarding a weapon that is not the
+      1v6 Sparrow Racing rotator (this slot is Iron Banner on IB weeks).
+
+    Every derived slot is only a *starting* value — the team can still correct any of
+    them (`/weekly_reset set_reward` for the weapons). Anything Bungie doesn't surface
+    is left blank/None. The Zavala reward weapon stays manual (no attributable op).
     """
-    try:
-        milestones = await api.client.fetch_public_milestones(session)
-    except Exception:
-        logger.warning("weekly_reset: GetPublicMilestones failed", exc_info=True)
-        return ""
-
-    cache: dict[tuple[str, int], dict[str, t.Any] | None] = {}
-    best_name = ""
-    for milestone in milestones.values():
-        if not isinstance(milestone, dict):
-            continue
-        for activity in milestone.get("activities", []) or []:
-            activity_hash = activity.get("activityHash")
-            if not activity_hash:
-                continue
-            try:
-                defn = await _resolve_activity(session, activity_hash, cache)
-            except Exception:
-                continue
-            if not defn:
-                continue
-            if defn.get("directActivityModeType") != NIGHTFALL_MODE_TYPE:
-                continue
-            name = (defn.get("originalDisplayProperties") or {}).get("name") or (
-                defn.get("displayProperties") or {}
-            ).get("name", "")
-            if not name:
-                continue
-            # Prefer the Grandmaster tier when present; otherwise keep the first.
-            if "grandmaster" in name.lower():
-                return _strip_nightfall_prefix(name)
-            best_name = best_name or _strip_nightfall_prefix(name)
-    return best_name
-
-
-def _strip_nightfall_prefix(name: str) -> str:
-    for prefix in ("Grandmaster: ", "Nightfall: "):
-        if name.startswith(prefix):
-            return name[len(prefix) :]
-    return name
-
-
-async def derive_playlist_weapons() -> tuple[WeaponRef | None, WeaponRef | None]:
-    """(quickplay, control) featured weapons via portal_ops' component-204 read."""
     try:
         ops = await portal_ops.fetch_portal_ops()
     except Exception:
         logger.warning("weekly_reset: fetch_portal_ops failed", exc_info=True)
-        return (None, None)
+        return PortalDerivation("", None, None, None)
 
-    def first_for(tab: str) -> WeaponRef | None:
-        for op in ops:
-            if op.tab == tab and op.reward_hash:
-                return WeaponRef(name=op.reward_name, hash=op.reward_hash)
-        return None
-
-    return (first_for("Fireteam Ops"), first_for("Crucible"))
+    gm_strike = ""
+    gm_weapon: WeaponRef | None = None
+    quickplay: WeaponRef | None = None
+    control: WeaponRef | None = None
+    for op in ops:
+        if (
+            not gm_strike
+            and op.activity_type_hash == _STRIKE_ACTIVITY_TYPE_HASH
+            and op.challenge_count > 0
+        ):
+            gm_strike = op.activity_name
+            # The Nightfall op's guaranteed reward is the weekly GM weapon.
+            if op.reward_hash:
+                gm_weapon = WeaponRef(name=op.reward_name, hash=op.reward_hash)
+        if op.reward_item_type != _WEAPON_ITEM_TYPE or not op.reward_hash:
+            continue
+        reward = WeaponRef(name=op.reward_name, hash=op.reward_hash)
+        if quickplay is None and op.activity_name == _QUICKPLAY_ACTIVITY_NAME:
+            quickplay = reward
+        elif (
+            control is None
+            and _PVP_MODE_ALL in op.mode_types
+            and _SPARROW_RACING_MODE not in op.mode_types
+            and (op.max_party or 0) >= 6
+        ):
+            control = reward
+    return PortalDerivation(gm_strike, gm_weapon, quickplay, control)
 
 
 async def build_draft_context(
@@ -570,33 +568,41 @@ async def build_draft_context(
     """Assemble a fresh draft: compute + best-effort API + carried-over config."""
     config = config or await load_config()
     reset_ts = current_reset_ts()
+    # Weekly rotations (raids/dungeons, IB schedule) are keyed by the boundary shown on
+    # the "Resets:" line — the *next* Tuesday, when this week's content expires — since
+    # that is how the hand-authored posts our rotators are calibrated from label a week.
+    # Keying by ``reset_ts`` (the current week's *start*) retrieves the *previous*
+    # week's rotation (off-by-one).
+    rotation_ts = next_reset_ts(reset_ts)
 
     ctx = WeeklyResetContext(reset_ts=reset_ts)
     # Carried-over / deterministic fields.
     ctx.seasonal_raid = config.seasonal_raid
     ctx.seasonal_dungeon = config.seasonal_dungeon
     ctx.rotator_raids = compute_rotator(
-        config.raid_pairs, config.rotator_anchor, reset_ts
+        config.raid_pairs, config.rotator_anchor, rotation_ts
     )
     ctx.rotator_dungeons = compute_rotator(
-        config.dungeon_pairs, config.rotator_anchor, reset_ts
+        config.dungeon_pairs, config.rotator_anchor, rotation_ts
     )
     ctx.pantheon_reprise = config.last_pantheon_reprise
     ctx.pantheon_encore = config.last_pantheon_encore
     ctx.crucible_1v6 = config.crucible_1v6
     ctx.crucible_3v3 = config.crucible_3v3
     ctx.crucible_6v6 = config.crucible_6v6
-    ctx.iron_banner = reset_ts in config.ib_week_resets
+    ctx.iron_banner = rotation_ts in config.ib_week_resets
     ctx.trials_active = not ctx.iron_banner
     ctx.image_url = config.default_image_url
 
-    # Best-effort Bungie derivations (never fatal — the team fills any gaps).
-    # The Zavala/GM reward weapons are NOT derivable: the vendor's direct sales only
-    # expose focusing categories, not the specific weekly weapon — so they stay manual
-    # (set via `/weekly_reset set_reward`).
-    async with aiohttp.ClientSession() as session:
-        ctx.gm_strike = await derive_gm_nightfall(session)
-    ctx.quickplay_weapon, ctx.control_weapon = await derive_playlist_weapons()
+    # Best-effort Portal (component-204) derivations (never fatal — team fills gaps).
+    # GM strike + weapon, Quickplay and Control weapons come from the Portal feed and
+    # stay correctable (`/weekly_reset set_reward`). The Zavala reward weapon has no
+    # attributable featured op, so it stays manual.
+    derived = await derive_portal_fields()
+    ctx.gm_strike = derived.gm_strike
+    ctx.gm_weapon = derived.gm_weapon
+    ctx.quickplay_weapon = derived.quickplay_weapon
+    ctx.control_weapon = derived.control_weapon
 
     return ctx
 
@@ -612,7 +618,11 @@ def _weekly_reward(name: str) -> str:
 
 def build_body(ctx: WeeklyResetContext) -> str:
     """The full post markdown, with ``:emoji:`` tokens still un-substituted."""
-    lines: list[str] = ["# Weekly Reset Overview", "", f"Resets: <t:{ctx.reset_ts}:f>"]
+    lines: list[str] = [
+        "# Weekly Reset Overview",
+        "",
+        f"Resets: <t:{next_reset_ts(ctx.reset_ts)}:f>",
+    ]
 
     # EVENTS — only when there is something eventful to say.
     if ctx.iron_banner or ctx.events_narrative:

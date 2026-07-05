@@ -76,6 +76,14 @@ def test_current_reset_ts_floors_midweek() -> None:
     assert wr.current_reset_ts(midweek) == 1782234000
 
 
+@pytest.mark.parametrize("reset_ts", SAMPLE_RESETS)
+def test_next_reset_ts_is_the_following_tuesday(reset_ts: int) -> None:
+    # The next boundary is exactly one week on, and still lands on a reset instant.
+    nxt = wr.next_reset_ts(reset_ts)
+    assert nxt == reset_ts + 7 * 86400
+    assert wr.current_reset_ts(dt.datetime.fromtimestamp(nxt, tz=dt.UTC)) == nxt
+
+
 # --- deterministic rotator cycle --------------------------------------------------
 
 
@@ -89,6 +97,25 @@ def test_rotators_reproduce_sampled_weeks(
     anchor = wr.DEFAULT_ROTATOR_ANCHOR
     assert wr.compute_rotator(wr.DEFAULT_RAID_PAIRS, anchor, reset_ts) == raids
     assert wr.compute_rotator(wr.DEFAULT_DUNGEON_PAIRS, anchor, reset_ts) == dungeons
+
+
+def test_rotation_keyed_by_next_reset_boundary() -> None:
+    # Live truth for the week starting 2026-06-30 (reset_ts=1782838800): featured
+    # raids = Vault of Glass + Crota's End, dungeons = Warlord's Ruin + Grasp of
+    # Avarice. The rotation must be keyed by the *next* reset (the "Resets:" line, the
+    # rotators' calibration convention) — keying by reset_ts yields last week's set.
+    reset_ts = 1782838800
+    rot = wr.next_reset_ts(reset_ts)
+    assert set(
+        wr.compute_rotator(wr.DEFAULT_RAID_PAIRS, wr.DEFAULT_ROTATOR_ANCHOR, rot)
+    ) == {"Vault of Glass", "Crota's End"}
+    assert set(
+        wr.compute_rotator(wr.DEFAULT_DUNGEON_PAIRS, wr.DEFAULT_ROTATOR_ANCHOR, rot)
+    ) == {"Warlord's Ruin", "Grasp of Avarice"}
+    # And the (buggy) reset_ts keying would have returned a *different* set.
+    assert wr.compute_rotator(
+        wr.DEFAULT_RAID_PAIRS, wr.DEFAULT_ROTATOR_ANCHOR, rot
+    ) != wr.compute_rotator(wr.DEFAULT_RAID_PAIRS, wr.DEFAULT_ROTATOR_ANCHOR, reset_ts)
 
 
 def test_rotator_cycle_wraps() -> None:
@@ -107,7 +134,8 @@ def test_build_body_has_all_sections_and_deeplink() -> None:
     body = wr.build_body(_full_ctx())
     for marker in (
         "# Weekly Reset Overview",
-        "Resets: <t:1783443600:f>",
+        # Resets line shows the *next* Tuesday (reset_ts + 1 week), not reset_ts.
+        "Resets: <t:1784048400:f>",
         "**VANGUARD ALERTS (Seasonal Tab)**",
         "GM Alert: The Sunless Cell",
         "**FEATURED RAIDS & DUNGEONS**",
@@ -412,3 +440,79 @@ async def test_resolve_reward_free_text_and_blank(stub_indexes) -> None:
     typed = await wr.resolve_reward_value("Some Custom Roll")
     assert typed == wr.WeaponRef(name="Some Custom Roll") and typed.hash is None
     assert await wr.resolve_reward_value("   ") is None
+
+
+# --- Portal (component-204) derivation -------------------------------------------
+
+
+def _portal_op(name, *, item_type=None, type_hash=None, challenges=0, max_party=None,
+               modes=(), reward="", reward_hash=0):
+    from dd.anchor.extensions import portal_ops as po
+
+    return po.PortalOp(
+        tab="",
+        activity_name=name,
+        activity_type="",
+        reward_name=reward,
+        reward_hash=reward_hash,
+        reward_emoji="",
+        tier=None,
+        reward_item_type=item_type,
+        activity_type_hash=type_hash,
+        challenge_count=challenges,
+        max_party=max_party,
+        mode_types=modes,
+    )
+
+
+# The live DEV Portal feed for the week of 2026-06-30 (armour=2, weapon=3).
+_LIVE_PORTAL_OPS = [
+    _portal_op("Quickplay", item_type=2, max_party=3, modes=(3, 18, 7),
+               reward="Luminopotent Cuirass", reward_hash=1),  # Fireteam armour
+    _portal_op("Quickplay", item_type=2, max_party=1, modes=(3, 18, 7),
+               reward="Luminopotent Cloak", reward_hash=2),  # Solo armour
+    _portal_op("Quickplay", item_type=3, max_party=6, modes=(3, 18, 7),
+               reward="Tempered Dynamo", reward_hash=3),  # Vanguard weapon ✓
+    _portal_op("The Sunless Cell", item_type=3, type_hash=wr._STRIKE_ACTIVITY_TYPE_HASH,
+               challenges=1, max_party=3, modes=(3, 18, 7),
+               reward="Lotus-Eater", reward_hash=4),  # GM Nightfall ✓ (has a challenge)
+    _portal_op("The Insight Terminus", item_type=3,
+               type_hash=wr._STRIKE_ACTIVITY_TYPE_HASH, challenges=0, max_party=3,
+               modes=(3, 18, 7), reward="Cynosure", reward_hash=5),  # plain strike
+    _portal_op("Sparrow Racing League", item_type=3, max_party=6, modes=(94, 5),
+               reward="Veillantif-D", reward_hash=6),  # 1v6 — excluded from Control
+    _portal_op("Gambit", item_type=3, max_party=4, modes=(63, 64),
+               reward="Python", reward_hash=7),  # not AllPvP — excluded
+    _portal_op("Eruption", item_type=3, max_party=6, modes=(88, 5),
+               reward="The Helmsman", reward_hash=8),  # 6v6 PvP — Control ✓
+]
+
+
+@pytest.mark.asyncio
+async def test_derive_portal_fields_matches_live_week(monkeypatch) -> None:
+    from dd.anchor.extensions import portal_ops as po
+
+    async def fake_fetch():
+        return list(_LIVE_PORTAL_OPS)
+
+    monkeypatch.setattr(po, "fetch_portal_ops", fake_fetch)
+    result = await wr.derive_portal_fields()
+    # GM strike is the strike-type op with a weekly challenge, not the plain strike.
+    assert result.gm_strike == "The Sunless Cell"
+    # GM reward weapon is that same op's guaranteed reward.
+    assert result.gm_weapon == wr.WeaponRef("Lotus-Eater", 4)
+    # Quickplay picks the weapon, never the armour variants.
+    assert result.quickplay_weapon == wr.WeaponRef("Tempered Dynamo", 3)
+    # Control is the 6v6 PvP weapon, not Sparrow Racing (1v6) or Gambit.
+    assert result.control_weapon == wr.WeaponRef("The Helmsman", 8)
+
+
+@pytest.mark.asyncio
+async def test_derive_portal_fields_survives_fetch_failure(monkeypatch) -> None:
+    from dd.anchor.extensions import portal_ops as po
+
+    async def boom():
+        raise RuntimeError("portal down")
+
+    monkeypatch.setattr(po, "fetch_portal_ops", boom)
+    assert await wr.derive_portal_fields() == wr.PortalDerivation("", None, None, None)
