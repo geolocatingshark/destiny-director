@@ -236,20 +236,72 @@ def test_build_cv2_is_components_v2() -> None:
 
 
 @pytest.fixture
-def stub_item_index():
-    saved = wr._item_index
-    wr._item_index = [
-        ("Null Composure", 222, "Fusion Rifle"),
-        ("Cloudstrike", 333, "Sniper Rifle"),
-    ]
+def stub_indexes():
+    saved = wr._indexes
+    wr._indexes = wr._Indexes(
+        items=[
+            ("Null Composure", 222, "Fusion Rifle", 3),
+            ("Cloudstrike", 333, "Sniper Rifle", 3),
+            ("Chill Inhibitor", 444, "Grenade Launcher", 3),
+        ],
+        activities={
+            "raid": ["Crota's End", "Vault of Glass"],
+            "dungeon": ["Duality"],
+            "nightfall": ["The Sunless Cell"],
+            "pantheon": [],
+            "crucible": ["Control"],
+        },
+    )
     yield
-    wr._item_index = saved
+    wr._indexes = saved
 
 
-def test_activity_category_covers_every_field() -> None:
+def test_activity_category_maps_to_known_categories() -> None:
+    valid = {"raid", "dungeon", "nightfall", "pantheon", "crucible"}
     for _label, key in wr._ACTIVITY_FIELDS:
-        assert key in wr._ACTIVITY_CATEGORY, key
-        assert wr._ACTIVITY_CATEGORY[key], f"empty pool for {key}"
+        assert wr._ACTIVITY_CATEGORY.get(key) in valid, key
+
+
+def test_reward_fields_are_weapons_only() -> None:
+    for _label, key in wr._REWARD_FIELDS:
+        assert wr._REWARD_ITEM_TYPE[key] == 3
+
+
+@pytest.mark.parametrize(
+    ("defn", "expected"),
+    [
+        ({"activityModeTypes": [4]}, "raid"),
+        ({"directActivityModeType": 82}, "dungeon"),
+        ({"activityModeTypes": [46, 7]}, "nightfall"),
+        ({"displayProperties": {"name": "Pantheon: Nezarec Sublime"}}, "pantheon"),
+        ({"matchmaking": {"maxParty": 6}}, "raid"),  # fallback: 6-player = raid
+        ({"matchmaking": {"maxParty": 3}}, "dungeon"),  # fallback: 3-player = dungeon
+        ({"matchmaking": {"maxParty": 4}}, None),
+        ({}, None),
+    ],
+)
+def test_classify_activity(defn: dict, expected: str | None) -> None:
+    assert wr._classify_activity(defn) == expected
+
+
+def test_clean_activity_name_variants() -> None:
+    # raid/dungeon difficulty variants are dropped (the base is kept from its own row)
+    assert wr._clean_activity_name("Vault of Glass: Master", "raid") == ""
+    assert wr._clean_activity_name("Vault of Glass", "raid") == "Vault of Glass"
+    # nightfall prefixes stripped
+    assert (
+        wr._clean_activity_name("Grandmaster: The Sunless Cell", "nightfall")
+        == "The Sunless Cell"
+    )
+    assert (
+        wr._clean_activity_name("Nightfall: The Corrupted", "nightfall")
+        == "The Corrupted"
+    )
+    # pantheon prefix stripped
+    assert (
+        wr._clean_activity_name("Pantheon: Rhulk Indomitable", "pantheon")
+        == "Rhulk Indomitable"
+    )
 
 
 def test_apply_activity_field_rotators_and_plain() -> None:
@@ -277,21 +329,21 @@ def test_apply_reward_field_sets_and_clears() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_reward_by_hash(stub_item_index) -> None:
+async def test_resolve_reward_by_hash(stub_indexes) -> None:
     assert await wr.resolve_reward_value("222") == wr.WeaponRef(
         "Null Composure", 222, "fusion_rifle"
     )
 
 
 @pytest.mark.asyncio
-async def test_resolve_reward_by_name(stub_item_index) -> None:
+async def test_resolve_reward_by_name(stub_indexes) -> None:
     weapon = await wr.resolve_reward_value("cloudstrike")
     assert weapon is not None
     assert weapon.hash == 333 and weapon.emoji_name == "sniper_rifle"
 
 
 @pytest.mark.asyncio
-async def test_resolve_reward_free_text_and_blank(stub_item_index) -> None:
+async def test_resolve_reward_free_text_and_blank(stub_indexes) -> None:
     typed = await wr.resolve_reward_value("Some Custom Roll")
     assert typed == wr.WeaponRef(name="Some Custom Roll") and typed.hash is None
     assert await wr.resolve_reward_value("   ") is None
