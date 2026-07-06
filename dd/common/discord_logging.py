@@ -48,7 +48,7 @@ import lightbulb as lb
 
 from . import cfg
 from .bot import CachedFetchBot
-from .components import build_container
+from .components import build_container, cv2_error, respond_cv2
 
 # ``identity_for_exc``/``reference_code`` live in ``utils`` (pure, Discord-free) so
 # the mirror subsystem can reuse them without importing this handler. Re-exported
@@ -527,8 +527,22 @@ async def _report_uncaught_command_error(
     (which forwards to the alerts channel, tagged with the command name as the
     failed operation) and report it handled to suppress lightbulb's own duplicate
     traceback — which this module's handler ignores and so never surfaces.
+
+    Also shows the invoker a uniform CV2 error so a suppressed traceback doesn't
+    leave them with a silent "application did not respond". Best-effort: swallowed
+    if the interaction has already responded or expired.
     """
-    log_command_failure(exc)
+    name = log_command_failure(exc)
+    with contextlib.suppress(Exception):
+        await respond_cv2(
+            exc.context,
+            cv2_error(
+                "Something went wrong",
+                f"`/{name}` hit an unexpected error. It's been logged — please try "
+                "again.",
+            ),
+            ephemeral=True,
+        )
     return True
 
 

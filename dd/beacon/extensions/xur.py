@@ -23,6 +23,7 @@ import regex as re
 from dd.hmessage import HMessage
 
 from ...common import cfg
+from ...common.components import build_container
 from ...common.utils import accumulate
 from .. import utils
 from ..nav import NavPages, make_navigator_command, setup_nav_pages
@@ -45,6 +46,16 @@ class XurPages(NavPages):
     def preprocess_messages(self, messages: list[h.Message]) -> HMessage:
         if not messages:
             return self.no_data_message
+
+        # Components V2 posts (the migrated Xûr format) carry components, not embeds, so
+        # the embed/content post-processing below doesn't apply — return them as-is,
+        # mirroring the base NavPages.preprocess_messages.
+        if any(
+            h.MessageFlag.IS_COMPONENTS_V2 in (m.flags or h.MessageFlag.NONE)
+            for m in messages
+        ):
+            return accumulate([HMessage.from_message(m) for m in messages])
+
         # NOTE: This assumes that the xur message is sent with the
         # location gif as a link, not as an attachment
         # This will need to be updated if this is changed
@@ -86,15 +97,15 @@ _pages = setup_nav_pages(
     history_len=12,
     period=dt.timedelta(days=7),
     reference_date=REFERENCE_DATE,
+    cv2=True,
     no_data_message=HMessage(
-        embeds=[
-            h.Embed(
-                description=(
+        components=[
+            build_container(
+                [
                     "Xûr arrives at the Tower (Bazaar) every *Friday at reset* "
                     "(<t:1734109200:t>) and departs on *Tuesday at reset*."
-                ),
-                color=cfg.embed_default_color,
-            ),
+                ]
+            )
         ]
     ),
 )

@@ -151,6 +151,68 @@ def build_container(
     return container
 
 
+# --- one-off status responses (errors / successes / notices) ----------------------
+#
+# One source of truth for the accent colours and shape of the short CV2 responses a
+# command shows its invoker, replacing the per-file `_ERROR_COLOR` / `_WARN_COLOR` /
+# `_SUCCESS_COLOR` / ad-hoc `h.Embed(...)` stylings that had drifted apart across
+# extensions. Every user-facing status message routes through these so errors,
+# successes and notices look identical everywhere. Values match the previously
+# scattered constants (danger/success = posts.py; warning/neutral = controller.py).
+CV2_DANGER_COLOR = h.Color(0xED4245)
+CV2_SUCCESS_COLOR = h.Color(0x57F287)
+CV2_WARNING_COLOR = h.Color(0xFEE75C)
+CV2_NEUTRAL_COLOR = h.Color(0x5865F2)
+
+
+def cv2_error(title: str, body: str = "") -> h.impl.ContainerComponentBuilder:
+    """A CV2 error response: a bold ``⚠️ title`` line plus optional body, red accent.
+
+    Title and body share one text display (no divider between them) so short errors
+    stay compact. Send with ``flags=h.MessageFlag.IS_COMPONENTS_V2``.
+    """
+    text = f"⚠️ **{title}**"
+    if body:
+        text += f"\n{body}"
+    return build_container([text], accent_color=CV2_DANGER_COLOR)
+
+
+def cv2_success(body: str) -> h.impl.ContainerComponentBuilder:
+    """A CV2 success response: ``✅ body``, green accent."""
+    return build_container([f"✅ {body}"], accent_color=CV2_SUCCESS_COLOR)
+
+
+def cv2_notice(body: str) -> h.impl.ContainerComponentBuilder:
+    """A CV2 neutral notice/progress/confirmation response, blurple accent.
+
+    Use for "Doing X…" progress lines and plain confirmations that are neither an
+    error nor a success. When a progress notice is later edited into its result, keep
+    the result CV2 too — Discord forbids toggling ``IS_COMPONENTS_V2`` on an edit.
+    """
+    return build_container([body], accent_color=CV2_NEUTRAL_COLOR)
+
+
+async def respond_cv2(
+    ctx: lb.Context,
+    container: h.impl.ContainerComponentBuilder,
+    *,
+    ephemeral: bool = False,
+) -> h.Snowflakeish:
+    """Send a Components V2 status response through a lightbulb context.
+
+    A thin wrapper over ``ctx.respond`` that sets the ``IS_COMPONENTS_V2`` flag, so
+    every extension can emit a uniform CV2 error/success/notice without repeating the
+    flag plumbing. Returns the response handle (so a progress notice can later be
+    ``ctx.edit_response``-ed into its CV2 result). Pair with :func:`cv2_error` /
+    :func:`cv2_success` / :func:`cv2_notice`.
+    """
+    return await ctx.respond(
+        components=[container],
+        flags=h.MessageFlag.IS_COMPONENTS_V2,
+        ephemeral=ephemeral,
+    )
+
+
 def _embed_has_content(embed: h.Embed) -> bool:
     """Whether an embed carries anything ``embeds_to_container`` would render."""
     return bool(

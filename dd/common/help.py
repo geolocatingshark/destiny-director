@@ -499,8 +499,10 @@ def make_help_command(
                 query.casefold()
             )
             if detail is None:
-                await ctx.respond(
-                    f"No detailed help available for `{query}`.", ephemeral=True
+                await components.respond_cv2(
+                    ctx,
+                    components.cv2_error(f"No detailed help available for `{query}`."),
+                    ephemeral=True,
                 )
                 return
 

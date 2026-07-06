@@ -61,6 +61,7 @@ else:
         history_len=14,
         period=dt.timedelta(days=1),
         reference_date=REFERENCE_DATE,
+        cv2=True,
     )
 
     portal_command_group = lb.Group("portal", "Destiny 2 Portal Ops")

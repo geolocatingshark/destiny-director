@@ -151,23 +151,20 @@ async def format_post(
     except aiohttp.InvalidURL:
         ls_gif_url = None
 
-    embed = h.Embed(
-        title="**Destiny 2**",
-        description=(
-            "## [World Lost Sectors](https://kyber3000.com/LS)\n"
-            "\n"
-            "Changes daily at <t:1753894800:t> local time.\n"
-            "\n"
-        ),
-        color=cfg.embed_default_color,
-        url="https://lostsectortoday.com/",
-    )
-
     ls_extra_details_enabled = (
         await schemas.AutoPostSettings.get_lost_sector_details_enabled()
     )
 
-    description = embed.description or ""
+    # Components V2: the former embed's title + description become one text display and
+    # the trailing image a full-width media gallery (mirroring the old set_image). The
+    # markdown is unchanged so the rendered post looks the same as the embed did.
+    description = (
+        "**Destiny 2**\n"
+        "## [World Lost Sectors](https://kyber3000.com/LS)\n"
+        "\n"
+        "Changes daily at <t:1753894800:t> local time.\n"
+        "\n"
+    )
 
     for sector in sectors:
         sector: sector_accounting.Sector
@@ -194,20 +191,25 @@ async def format_post(
         construct_emoji_substituter(emoji_dict), description
     )
 
-    if len(description) >= 4096:
+    # Components V2 messages cap total text at 4000 characters.
+    if len(description) >= 4000:
         await discord_error_logger(
-            ValueError("WARNING: Embed is greater than 4096 characters!"),
-            operation="Lost sector embed",
+            ValueError("WARNING: CV2 text is greater than 4000 characters!"),
+            operation="Lost sector post",
         )
         # TODO: Mention owners for above
-        description = description[:4096]
+        description = description[:4000]
 
-    embed.description = description
-
+    container = h.impl.ContainerComponentBuilder(
+        accent_color=h.Color(cfg.embed_default_color)
+    )
+    container.add_text_display(description)
     if ls_gif_url:
-        embed.set_image(ls_gif_url)
+        gallery = h.impl.MediaGalleryComponentBuilder()
+        gallery.add_media_gallery_item(ls_gif_url)
+        container.add_component(gallery)
 
-    return HMessage(embeds=[embed])
+    return HMessage(components=[container])
 
 
 async def format_sector(sector: sector_accounting.Sector) -> str:

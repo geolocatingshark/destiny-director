@@ -30,8 +30,8 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
-from ...common.components import build_container
-from ...common.utils import accumulate, fetch_emoji_dict
+from ...common.components import build_container, cv2_notice, cv2_success, respond_cv2
+from ...common.utils import accumulate, discord_error_logger, fetch_emoji_dict
 from ...sector_accounting import xur as xur_support_data
 from .. import utils
 from ..autopost import make_autopost_control_commands
@@ -462,18 +462,30 @@ async def format_xur_vendor(
 
     description += XUR_FOOTER
     description = await substitute_user_side_emoji(emoji_dict, description)
-    embed = h.Embed(
-        description=description,
-        color=h.Color(cfg.embed_default_color),
-        url="https://kyberscorner.com",
+
+    # Components V2 messages cap total text at 4000 chars (tighter than an embed's
+    # 4096). Xûr is the longest post, so guard: an oversized inventory truncates with a
+    # warning rather than Discord hard-rejecting the whole autopost.
+    if len(description) >= 4000:
+        await discord_error_logger(
+            ValueError("WARNING: Xûr CV2 text is greater than 4000 characters!"),
+            operation="Xûr post",
+        )
+        description = description[:4000]
+
+    # Components V2: the whole post is one text display, with the optional default
+    # image as a trailing full-width media gallery (mirroring the old set_image).
+    container = h.impl.ContainerComponentBuilder(
+        accent_color=h.Color(cfg.embed_default_color)
     )
+    container.add_text_display(description)
 
     if await schemas.AutoPostSettings.get_xur_default_image_enabled():
-        embed.set_image(cfg.xur_image_url)
+        gallery = h.impl.MediaGalleryComponentBuilder()
+        gallery.add_media_gallery_item(cfg.xur_image_url)
+        container.add_component(gallery)
 
-    message = HMessage(embeds=[embed])
-
-    return message
+    return HMessage(components=[container])
 
 
 async def fetch_vendor_data(
@@ -652,6 +664,7 @@ async def on_start_schedule_autoposts(
             check_enabled=True,
             enabled_check_coro=schemas.AutoPostSettings.get_xur_enabled,
             construct_message_coro=xur_message_constructor,
+            cv2=True,
         )
 
 
@@ -674,17 +687,24 @@ class ControlXurDefaultImage(
         current_setting = await schemas.AutoPostSettings.get_xur_default_image_enabled()
 
         if desired_setting == current_setting:
-            await ctx.respond(
-                f"Xur's default image is already "
-                f"{'enabled' if desired_setting else 'disabled'}"
+            await respond_cv2(
+                ctx,
+                cv2_notice(
+                    f"Xur's default image is already "
+                    f"{'enabled' if desired_setting else 'disabled'}."
+                ),
             )
             return
 
         await schemas.AutoPostSettings.set_xur_default_image_enabled(
             enabled=desired_setting
         )
-        await ctx.respond(
-            f"Xur's default image is now {'enabled' if desired_setting else 'disabled'}"
+        await respond_cv2(
+            ctx,
+            cv2_success(
+                f"Xur's default image is now "
+                f"{'enabled' if desired_setting else 'disabled'}."
+            ),
         )
 
 
@@ -699,6 +719,7 @@ _xur_autopost_group = make_autopost_control_commands(
     channel_id=cfg.followables["xur"],
     message_constructor_coro=xur_message_constructor,
     message_announcer_coro=api_to_discord_announcer,
+    cv2=True,
 )
 
 _xur_autopost_group.register(ControlXurDefaultImage)

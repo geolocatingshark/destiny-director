@@ -28,7 +28,6 @@ from ...common.lost_sector import format_post, load_rotation
 from ...common.utils import accumulate
 from .. import utils
 from ..nav import (
-    NO_DATA_HERE_EMBED,
     NavPages,
     make_navigator_command,
     setup_nav_pages,
@@ -47,6 +46,16 @@ class SectorMessages(NavPages):
     def preprocess_messages(self, messages: list[h.Message]):
         if not messages:
             return self.no_data_message
+
+        # Components V2 posts (the migrated Lost Sector format) carry components, not
+        # embeds, so the embed/content post-processing below doesn't apply — return them
+        # as-is, mirroring the base NavPages.preprocess_messages.
+        if any(
+            h.MessageFlag.IS_COMPONENTS_V2 in (m.flags or h.MessageFlag.NONE)
+            for m in messages
+        ):
+            return accumulate([HMessage.from_message(m) for m in messages])
+
         for m in messages:
             m.embeds = utils.filter_discord_autoembeds(m)
         processed_messages = [
@@ -81,7 +90,7 @@ class SectorMessages(NavPages):
                 # is no data
                 lookahead_dict = {
                     **lookahead_dict,
-                    date: HMessage(embeds=[NO_DATA_HERE_EMBED]),
+                    date: self.no_data_message,
                 }
             else:
                 lookahead_dict = {
@@ -105,6 +114,7 @@ _pages = setup_nav_pages(
     lookahead_len=7,
     period=dt.timedelta(days=1),
     reference_date=REFERENCE_DATE,
+    cv2=True,
 )
 
 ls_group = lb.Group("ls", "Find out about today's lost sector")

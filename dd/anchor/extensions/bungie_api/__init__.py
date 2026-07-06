@@ -13,6 +13,7 @@ import aiohttp
 import lightbulb as lb
 
 from dd.anchor import web
+from dd.common.components import cv2_error, cv2_notice, cv2_success, respond_cv2
 
 from . import client
 from .constants import (
@@ -104,15 +105,25 @@ class Login(
 ):
     @lb.invoke
     async def invoke(self, ctx: lb.Context):
-        initial = await ctx.respond(f"Please log in at {oauth_url()}", ephemeral=True)
+        initial = await respond_cv2(
+            ctx, cv2_notice(f"Please log in at {oauth_url()}"), ephemeral=True
+        )
         try:
             await refresh_api_tokens(runner=get_webserver_runner(), with_login=True)
         except TimeoutError:
             await ctx.edit_response(
-                initial, "Login timed out after 15 minutes. Run `/bungie login` again."
+                initial,
+                components=[
+                    cv2_error(
+                        "Login timed out",
+                        "Timed out after 15 minutes. Run `/bungie login` again.",
+                    )
+                ],
             )
             return
-        await ctx.edit_response(initial, "Successfully logged in")
+        await ctx.edit_response(
+            initial, components=[cv2_success("Successfully logged in")]
+        )
 
 
 @bungie.register
@@ -125,7 +136,9 @@ class AccountNumbers(
     async def invoke(self, ctx: lb.Context):
         # Ack within Discord's 3s window with a placeholder, then edit in the result;
         # the token refresh + Bungie round-trips below take longer than 3s.
-        initial = await ctx.respond("Fetching account numbers...", ephemeral=True)
+        initial = await respond_cv2(
+            ctx, cv2_notice("Fetching account numbers…"), ephemeral=True
+        )
         access_token = await refresh_api_tokens(runner=get_webserver_runner())
 
         async with aiohttp.ClientSession() as session:
@@ -139,11 +152,15 @@ class AccountNumbers(
         # ephemeral one.
         await ctx.edit_response(
             initial,
-            "```"
-            f"Destiny Character ID: {character_id}\n"
-            f"Destiny Membership ID: {destiny_membership.membership_id}\n"
-            f"Destiny Membership Type: {destiny_membership.membership_type}"
-            "```",
+            components=[
+                cv2_notice(
+                    "```\n"
+                    f"Destiny Character ID: {character_id}\n"
+                    f"Destiny Membership ID: {destiny_membership.membership_id}\n"
+                    f"Destiny Membership Type: {destiny_membership.membership_type}"
+                    "\n```"
+                )
+            ],
         )
 
 

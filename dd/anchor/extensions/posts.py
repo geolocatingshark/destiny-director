@@ -23,7 +23,7 @@ from lightbulb import components as lbc
 
 from ...common import cfg, utils
 from ...common.bot import CachedFetchBot
-from ...common.components import build_container, embeds_to_container
+from ...common.components import cv2_error, cv2_notice, cv2_success, embeds_to_container
 from ..cv2_builder import build_components_with_user
 from ..cv2_nodes import Node
 from ..cv2_raw import RawComponentBuilder, fetch_raw_message_components
@@ -42,34 +42,30 @@ class CreateEmbed(lb.SlashCommand, name="embed", description="Create a new embed
         if embed is None:
             return
 
-        initial = await ctx.respond("Posting...", ephemeral=True)
+        await _respond_cv2(ctx, cv2_notice("Posting…"))
         channel = t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id))
         try:
             await channel.send(embed)
         except h.ForbiddenError as e:
-            await ctx.edit_response(
-                initial,
-                "**ForbiddenError**: It looks like I do not have permission to "
-                "send messages here",
+            await ctx.interaction.edit_initial_response(
+                components=[
+                    cv2_error(
+                        "Missing permissions",
+                        "It looks like I don't have permission to send messages here.",
+                    )
+                ],
             )
             logging.exception(e)
         except h.BadRequestError as e:
-            await ctx.edit_response(
-                initial,
-                "**BadRequestError**: It looks like the embed is either too large, has "
-                + "too many attachments, has attachments that are too large, or has "
-                + "exceeded some other limit. See description from documentation below:"
-                + "\n"
-                + "```\n"
-                + "This may be raised in several discrete situations, such as messages "
-                + "being empty with no attachments or embeds; messages with more than "
-                + "2000 characters in them, embeds that exceed one of the many embed "
-                + "limits; too many attachments; attachments that are too "
-                + "large; invalid "
-                + "image URLs in embeds; reply not found or not in the same "
-                + "channel; too "
-                + "many components.\n"
-                + "```\n",
+            await ctx.interaction.edit_initial_response(
+                components=[
+                    cv2_error(
+                        "Discord rejected the embed",
+                        "The embed may be empty, too large, have too many or "
+                        "oversized attachments, or exceed another Discord limit.\n"
+                        "```\n" + str(e) + "\n```",
+                    )
+                ],
             )
             logging.exception(e)
 
@@ -81,13 +77,13 @@ class EditEmbed(lb.MessageCommand, name="Edit embed", description="Edit an embed
 
         bot_user = bot.get_me()
         if not (bot_user and message.author.id == bot_user.id):
-            await ctx.respond(
-                "Can only edit messages posted by this bot", ephemeral=True
+            await _respond_cv2(
+                ctx, cv2_error("Can only edit messages posted by this bot")
             )
             return
 
         if not (message.embeds and len(message.embeds) == 1):
-            await ctx.respond("Can only edit messages with 1 embed", ephemeral=True)
+            await _respond_cv2(ctx, cv2_error("Can only edit messages with 1 embed"))
             return
 
         embed = await build_embed_with_user(
@@ -109,7 +105,7 @@ class CopyEmbed(
         message = self.target
 
         if not (message.embeds and len(message.embeds) == 1):
-            await ctx.respond("Can only edit messages with 1 embed", ephemeral=True)
+            await _respond_cv2(ctx, cv2_error("Can only edit messages with 1 embed"))
             return
 
         embed = await build_embed_with_user(
@@ -122,9 +118,6 @@ class CopyEmbed(
         await channel.send(embed=embed)
 
 
-_ERROR_COLOR = h.Color(0xED4245)  # Discord "danger" red
-_SUCCESS_COLOR = h.Color(0x57F287)  # Discord "green"
-
 # Discord rejects a Components V2 message longer than 4000 characters of text.
 _CV2_LIMIT_HINT = (
     "Make sure it's a valid Components V2 structure, within the 4000-character "
@@ -132,8 +125,15 @@ _CV2_LIMIT_HINT = (
 )
 
 
-def _error_embed(title: str, description: str) -> h.Embed:
-    return h.Embed(title=f"⚠️ {title}", description=description, color=_ERROR_COLOR)
+async def _respond_cv2(
+    ctx: lb.Context, container: h.impl.ContainerComponentBuilder
+) -> None:
+    """Send an ephemeral Components V2 status response (error/success/notice)."""
+    await ctx.respond(
+        components=[container],
+        flags=h.MessageFlag.IS_COMPONENTS_V2,
+        ephemeral=True,
+    )
 
 
 def _to_builders(nodes: list[Node]) -> list[RawComponentBuilder]:
@@ -152,13 +152,16 @@ async def _reject_unless_own_cv2(
     """Respond + return ``True`` if ``message`` isn't an editable bot CV2 message."""
     bot_user = bot.get_me()
     if not (bot_user and message.author.id == bot_user.id):
-        await ctx.respond("Can only edit messages posted by this bot", ephemeral=True)
+        await _respond_cv2(ctx, cv2_error("Can only edit messages posted by this bot"))
         return True
     if not _is_cv2(message):
-        await ctx.respond(
-            "This only works on Components V2 posts. Use **Edit embed** for embed "
-            "posts.",
-            ephemeral=True,
+        await _respond_cv2(
+            ctx,
+            cv2_error(
+                "Not a Components V2 post",
+                "This only works on Components V2 posts. Use **Edit embed** for "
+                "embed posts.",
+            ),
         )
         return True
     return False
@@ -170,17 +173,17 @@ async def _load_cv2_nodes(ctx: lb.Context, message: h.Message) -> list[Node] | N
         nodes = await fetch_raw_message_components(message.channel_id, message.id)
     except Exception as e:
         logging.exception(e)
-        await ctx.respond(
-            embed=_error_embed(
+        await _respond_cv2(
+            ctx,
+            cv2_error(
                 "Couldn't read this post",
                 "I failed to fetch this message's components from Discord.",
             ),
-            ephemeral=True,
         )
         return None
     if not nodes:
-        await ctx.respond(
-            "This message has no Components V2 content to edit", ephemeral=True
+        await _respond_cv2(
+            ctx, cv2_error("This message has no Components V2 content to edit")
         )
         return None
     return nodes
@@ -210,28 +213,25 @@ class PostComponents(
         try:
             posted = await channel.send(components=_to_builders(nodes))
         except h.ForbiddenError:
-            await ctx.respond(
-                embed=_error_embed(
+            await _respond_cv2(
+                ctx,
+                cv2_error(
                     "Missing permissions",
                     f"I don't have permission to post in <#{target_id}>.",
                 ),
-                ephemeral=True,
             )
             return
         except h.BadRequestError as e:
-            await ctx.respond(
-                embed=_error_embed(
+            await _respond_cv2(
+                ctx,
+                cv2_error(
                     "Discord rejected the message", _CV2_LIMIT_HINT.format(error=e)
                 ),
-                ephemeral=True,
             )
             return
 
         link = posted.make_link(ctx.guild_id)
-        await ctx.respond(
-            embed=h.Embed(description=f"✅ Posted: {link}", color=_SUCCESS_COLOR),
-            ephemeral=True,
-        )
+        await _respond_cv2(ctx, cv2_success(f"Posted: {link}"))
 
 
 class EditComponents(
@@ -260,19 +260,16 @@ class EditComponents(
                 components=_to_builders(edited), flags=h.MessageFlag.IS_COMPONENTS_V2
             )
         except h.BadRequestError as e:
-            await ctx.respond(
-                embed=_error_embed(
+            await _respond_cv2(
+                ctx,
+                cv2_error(
                     "Discord rejected the update", _CV2_LIMIT_HINT.format(error=e)
                 ),
-                ephemeral=True,
             )
             return
 
         link = message.make_link(ctx.guild_id)
-        await ctx.respond(
-            embed=h.Embed(description=f"✅ Updated: {link}", color=_SUCCESS_COLOR),
-            ephemeral=True,
-        )
+        await _respond_cv2(ctx, cv2_success(f"Updated: {link}"))
 
 
 class CopyComponents(
@@ -284,7 +281,13 @@ class CopyComponents(
     async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
         message = self.target
         if not _is_cv2(message):
-            await ctx.respond("This only works on Components V2 posts.", ephemeral=True)
+            await _respond_cv2(
+                ctx,
+                cv2_error(
+                    "Not a Components V2 post",
+                    "This only works on Components V2 posts.",
+                ),
+            )
             return
 
         nodes = await _load_cv2_nodes(ctx, message)
@@ -301,19 +304,16 @@ class CopyComponents(
         try:
             posted = await channel.send(components=_to_builders(edited))
         except h.BadRequestError as e:
-            await ctx.respond(
-                embed=_error_embed(
+            await _respond_cv2(
+                ctx,
+                cv2_error(
                     "Discord rejected the message", _CV2_LIMIT_HINT.format(error=e)
                 ),
-                ephemeral=True,
             )
             return
 
         link = posted.make_link(ctx.guild_id)
-        await ctx.respond(
-            embed=h.Embed(description=f"✅ Posted: {link}", color=_SUCCESS_COLOR),
-            ephemeral=True,
-        )
+        await _respond_cv2(ctx, cv2_success(f"Posted: {link}"))
 
 
 class ConvertToComponents(
@@ -327,39 +327,39 @@ class ConvertToComponents(
 
         bot_user = bot.get_me()
         if not (bot_user and message.author.id == bot_user.id):
-            await ctx.respond(
-                "Can only convert messages posted by this bot", ephemeral=True
+            await _respond_cv2(
+                ctx, cv2_error("Can only convert messages posted by this bot")
             )
             return
 
         if _is_cv2(message):
-            await ctx.respond(
-                embed=_error_embed(
+            await _respond_cv2(
+                ctx,
+                cv2_error(
                     "Already Components V2",
                     "This post is already a Components V2 message. Use **Edit "
                     "components** to change it.",
                 ),
-                ephemeral=True,
             )
             return
 
         if not message.embeds:
-            await ctx.respond(
-                embed=_error_embed(
+            await _respond_cv2(
+                ctx,
+                cv2_error(
                     "Nothing to convert", "This message has no embed to convert."
                 ),
-                ephemeral=True,
             )
             return
 
         container = embeds_to_container(message.embeds)
         if not container.components:
-            await ctx.respond(
-                embed=_error_embed(
+            await _respond_cv2(
+                ctx,
+                cv2_error(
                     "Nothing to convert",
                     "This message's embed has no content I can turn into components.",
                 ),
-                ephemeral=True,
             )
             return
 
@@ -390,19 +390,21 @@ class ConvertToComponents(
                     edit=True,
                     flags=h.MessageFlag.IS_COMPONENTS_V2,
                     components=[
-                        build_container(
-                            ["⚠️ I don't have permission to edit that message."]
-                        )
+                        cv2_error("I don't have permission to edit that message.")
                     ],
                 )
                 mctx.stop_interacting()
                 return
             except h.BadRequestError as e:
-                rejected = f"⚠️ Discord rejected the converted message.\n```\n{e}\n```"
                 await mctx.respond(
                     edit=True,
                     flags=h.MessageFlag.IS_COMPONENTS_V2,
-                    components=[build_container([rejected])],
+                    components=[
+                        cv2_error(
+                            "Discord rejected the converted message",
+                            f"```\n{e}\n```",
+                        )
+                    ],
                 )
                 mctx.stop_interacting()
                 return
@@ -411,7 +413,7 @@ class ConvertToComponents(
             await mctx.respond(
                 edit=True,
                 flags=h.MessageFlag.IS_COMPONENTS_V2,
-                components=[build_container([f"✅ Converted: {link}"])],
+                components=[cv2_success(f"Converted: {link}")],
             )
             mctx.stop_interacting()
 
@@ -421,9 +423,7 @@ class ConvertToComponents(
             await mctx.respond(
                 edit=True,
                 flags=h.MessageFlag.IS_COMPONENTS_V2,
-                components=[
-                    build_container(["Cancelled — the message was left unchanged."])
-                ],
+                components=[cv2_notice("Cancelled — the message was left unchanged.")],
             )
             mctx.stop_interacting()
 
@@ -457,8 +457,8 @@ class ConvertToComponents(
             with contextlib.suppress(h.HTTPResponseError):
                 await ctx.interaction.edit_initial_response(
                     components=[
-                        build_container(
-                            ["⏱️ Timed out — nothing changed. Run the command again."]
+                        cv2_notice(
+                            "⏱️ Timed out — nothing changed. Run the command again."
                         )
                     ],
                 )

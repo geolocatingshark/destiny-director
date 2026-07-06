@@ -426,12 +426,13 @@ async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
     description += PORTAL_OPS_FOOTER
     description = await substitute_user_side_emoji(emoji_dict, description)
 
-    embed = h.Embed(
-        description=description,
-        color=h.Color(cfg.embed_default_color),
-        url="https://kyberscorner.com",
+    # Components V2: the whole post is one text display (no image/fields), matching
+    # the Eververse/Ada layout.
+    container = h.impl.ContainerComponentBuilder(
+        accent_color=h.Color(cfg.embed_default_color)
     )
-    return HMessage(embeds=[embed])
+    container.add_text_display(description)
+    return HMessage(components=[container])
 
 
 def _next_daily_reset_unix() -> int:
@@ -481,6 +482,7 @@ else:
                 check_enabled=True,
                 enabled_check_coro=schemas.AutoPostSettings.get_portal_ops_enabled,
                 construct_message_coro=portal_ops_message_constructor,
+                cv2=True,
             )
 
     _portal_ops_autopost_group = make_autopost_control_commands(
@@ -490,6 +492,7 @@ else:
         channel_id=_portal_ops_channel,
         message_constructor_coro=portal_ops_message_constructor,
         message_announcer_coro=xur.api_to_discord_announcer,
+        cv2=True,
     )
 
     loader.command(_portal_ops_autopost_group)

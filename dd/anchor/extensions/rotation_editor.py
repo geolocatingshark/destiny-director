@@ -37,9 +37,11 @@ import typing as t
 from pathlib import Path
 
 import aiohttp.web
+import hikari as h
 import lightbulb as lb
 
 from ...common import cfg, rotation_schema, schemas
+from ...common.components import cv2_error, cv2_notice, respond_cv2
 from ...sector_accounting import (
     sector_accounting,
     xur as xur_support_data,
@@ -425,18 +427,25 @@ class Edit(
     @lb.invoke
     async def invoke(self, ctx: lb.Context) -> None:
         if not cfg.public_base_url:
-            await ctx.respond(
-                "No public base URL is configured (set PUBLIC_BASE_URL or run on "
-                "Railway), so I can't mint a reachable edit link.",
+            await respond_cv2(
+                ctx,
+                cv2_error(
+                    "No editor link available",
+                    "No public base URL is configured (set PUBLIC_BASE_URL or run "
+                    "on Railway), so I can't mint a reachable edit link.",
+                ),
                 ephemeral=True,
             )
             return
 
         token = RotationSessionManager.mint()
         url = f"{cfg.public_base_url}/rotation?token={token}"
-        await ctx.respond(
-            f"[Open the rotation editor here]({url}) — it lists every rotation and "
-            "stays signed in for 2 hours.",
+        await respond_cv2(
+            ctx,
+            cv2_notice(
+                f"[Open the rotation editor here]({url}) — it lists every rotation "
+                "and stays signed in for 2 hours."
+            ),
             ephemeral=True,
         )
 
@@ -460,13 +469,21 @@ class ImportFromSheet(
             await _import_xur_location_from_sheet(ctx)
             return
         if post_type != "lost_sector":
-            await ctx.respond(
-                f"`{post_type}` is not backed by a Google Sheet; nothing to import.",
+            await respond_cv2(
+                ctx,
+                cv2_error(
+                    "Nothing to import",
+                    f"`{post_type}` is not backed by a Google Sheet.",
+                ),
                 ephemeral=True,
             )
             return
 
-        initial = await ctx.respond("Importing from the live Sheet…", ephemeral=True)
+        initial = await ctx.respond(
+            components=[cv2_notice("Importing from the live Sheet…")],
+            flags=h.MessageFlag.IS_COMPONENTS_V2,
+            ephemeral=True,
+        )
 
         try:
             sheet_rotation = await asyncio.to_thread(
@@ -478,7 +495,10 @@ class ImportFromSheet(
         except Exception:
             logger.exception("Sheet import failed")
             await ctx.edit_response(
-                initial, "Import failed reading the Sheet — see logs."
+                initial,
+                components=[
+                    cv2_error("Import failed", "Couldn't read the Sheet — see logs.")
+                ],
             )
             return
 
@@ -487,14 +507,18 @@ class ImportFromSheet(
         await schemas.RotationData.set_data(post_type, doc)
 
         note = (
-            "rendered parity check passed ✓"
+            "rendered parity check passed ✅"
             if parity_ok
             else f"⚠️ parity mismatch on {mismatch} — review before relying on it"
         )
         await ctx.edit_response(
             initial,
-            f"Imported **{post_type}** into the DB store ({len(doc['sectors'])} "
-            f"sectors); {note}.",
+            components=[
+                cv2_notice(
+                    f"Imported **{post_type}** into the DB store "
+                    f"({len(doc['sectors'])} sectors); {note}."
+                )
+            ],
         )
 
 
@@ -537,7 +561,9 @@ def _rendered_parity(
 async def _import_xur_location_from_sheet(ctx: lb.Context) -> None:
     """One-shot import of the Xûr location worksheet into ``RotationData``."""
     initial = await ctx.respond(
-        "Importing Xûr locations from the live Sheet…", ephemeral=True
+        components=[cv2_notice("Importing Xûr locations from the live Sheet…")],
+        flags=h.MessageFlag.IS_COMPONENTS_V2,
+        ephemeral=True,
     )
 
     try:
@@ -548,7 +574,12 @@ async def _import_xur_location_from_sheet(ctx: lb.Context) -> None:
         )
     except Exception:
         logger.exception("Xûr location sheet import failed")
-        await ctx.edit_response(initial, "Import failed reading the Sheet — see logs.")
+        await ctx.edit_response(
+            initial,
+            components=[
+                cv2_error("Import failed", "Couldn't read the Sheet — see logs.")
+            ],
+        )
         return
 
     doc = sheet_locations.to_json()
@@ -556,14 +587,18 @@ async def _import_xur_location_from_sheet(ctx: lb.Context) -> None:
     await schemas.RotationData.set_data("xur_location", doc)
 
     note = (
-        "resolved-parity check passed ✓"
+        "resolved-parity check passed ✅"
         if parity_ok
         else "⚠️ parity mismatch — review before relying on it"
     )
     await ctx.edit_response(
         initial,
-        f"Imported **xur_location** into the DB store ({len(doc['locations'])} "
-        f"locations); {note}.",
+        components=[
+            cv2_notice(
+                f"Imported **xur_location** into the DB store "
+                f"({len(doc['locations'])} locations); {note}."
+            )
+        ],
     )
 
 

@@ -22,7 +22,7 @@ import lightbulb as lb
 from dd.hmessage import HMessage
 
 from ..common.bot import CachedFetchBot
-from ..common.components import build_container
+from ..common.components import cv2_error, cv2_notice, cv2_success
 
 logger = logging.getLogger(__name__)
 
@@ -54,20 +54,20 @@ def make_autopost_control_commands(
         async def invoke(self, ctx: lb.Context):
             enable = self.option.lower() == "enable"
             enabled = await enabled_getter()
+            state = "enabled" if enable else "disabled"
+            name = autopost_name.capitalize()
             if enable == enabled:
                 await ctx.respond(
-                    "{} announcements are already {}".format(
-                        autopost_name.capitalize(),
-                        "enabled" if enable else "disabled",
-                    )
+                    components=[
+                        cv2_notice(f"{name} announcements are already {state}.")
+                    ],
+                    flags=h.MessageFlag.IS_COMPONENTS_V2,
                 )
             else:
                 await enabled_setter(enabled=enable)
                 await ctx.respond(
-                    "{} announcements now {}".format(
-                        autopost_name.capitalize(),
-                        "Enabled" if enable else "Disabled",
-                    )
+                    components=[cv2_success(f"{name} announcements now {state}.")],
+                    flags=h.MessageFlag.IS_COMPONENTS_V2,
                 )
 
     @parent_group.register
@@ -80,9 +80,14 @@ def make_autopost_control_commands(
 
         @lb.invoke
         async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
-            initial = await ctx.respond("Announcing...")
+            initial = await ctx.respond(
+                components=[cv2_notice("Announcing…")],
+                flags=h.MessageFlag.IS_COMPONENTS_V2,
+            )
             if message_announcer_coro is None:
-                await ctx.edit_response(initial, "No announcer is configured")
+                await ctx.edit_response(
+                    initial, components=[cv2_error("No announcer is configured")]
+                )
                 return
             try:
                 await message_announcer_coro(
@@ -95,9 +100,11 @@ def make_autopost_control_commands(
                 )
             except Exception as e:
                 logger.exception(e)
-                await ctx.edit_response(initial, "An error occurred!\n" + str(e))
+                await ctx.edit_response(
+                    initial, components=[cv2_error("Announcement failed", str(e))]
+                )
             else:
-                await ctx.edit_response(initial, "Announced")
+                await ctx.edit_response(initial, components=[cv2_success("Announced")])
 
     @parent_group.register
     class Show(
@@ -113,9 +120,12 @@ def make_autopost_control_commands(
             if cv2:
                 initial = await ctx.respond(
                     flags=h.MessageFlag.IS_COMPONENTS_V2,
-                    components=[build_container(["Gathering data…"])],
+                    components=[cv2_notice("Gathering data…")],
                 )
             else:
+                # Not-yet-migrated (embed) post type: the placeholder is edited into
+                # the embed preview below, so it must stay non-CV2 — Discord forbids
+                # toggling IS_COMPONENTS_V2 on an edit. Becomes CV2 once the post does.
                 initial = await ctx.respond("Gathering data...")
             try:
                 message: HMessage = await message_constructor_coro(bot=bot)
@@ -124,7 +134,7 @@ def make_autopost_control_commands(
                 if cv2:
                     await ctx.edit_response(
                         initial,
-                        components=[build_container(["An error occurred!\n" + str(e)])],
+                        components=[cv2_error("Something went wrong", str(e))],
                     )
                 else:
                     await ctx.edit_response(initial, "An error occurred!\n" + str(e))

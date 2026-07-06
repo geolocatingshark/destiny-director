@@ -25,6 +25,7 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
+from ...common.components import cv2_error, cv2_notice, cv2_success, respond_cv2
 from ...common.lost_sector import format_post
 from ...common.utils import guild_scope
 from .. import utils
@@ -42,7 +43,12 @@ async def discord_announcer(
     check_enabled: bool = False,
     enabled_check_coro: t.Callable[[], t.Awaitable[bool | None]] | None = None,
     publish_message: bool = True,
+    cv2: bool = False,
 ):
+    # ``cv2`` is accepted for parity with ``make_autopost_control_commands`` (its
+    # ``send`` passes it through); this announcer creates a fresh message rather than
+    # editing a placeholder, so the sent format is whatever ``construct_message_coro``
+    # returns — no flag-toggle constraint to honour here.
     hmessage: HMessage | None = None
     # ``retries`` lives outside the loop so the backoff actually grows on a
     # sustained failure (a reset-each-iteration counter stays pinned at 2s).
@@ -92,16 +98,22 @@ class ControlLostSectorDetails(
         )
 
         if desired_setting == current_setting:
-            await ctx.respond(
-                f"Lost sector details are already "
-                f"{'enabled' if desired_setting else 'disabled'}"
+            await respond_cv2(
+                ctx,
+                cv2_notice(
+                    f"Lost sector details are already "
+                    f"{'enabled' if desired_setting else 'disabled'}."
+                ),
             )
             return
 
         await schemas.AutoPostSettings.set_lost_sector_details(enabled=desired_setting)
-        await ctx.respond(
-            f"Lost sector details are now "
-            f"{'enabled' if desired_setting else 'disabled'}"
+        await respond_cv2(
+            ctx,
+            cv2_success(
+                f"Lost sector details are now "
+                f"{'enabled' if desired_setting else 'disabled'}."
+            ),
         )
 
 
@@ -116,16 +128,22 @@ class LsUpdate(
         msg_to_update: h.Message = self.target
 
         if not await schemas.AutoPostSettings.get_lost_sector_enabled():
-            await ctx.respond("Please enable autoposts before using this cmd")
+            await respond_cv2(
+                ctx, cv2_error("Please enable autoposts before using this command.")
+            )
             return
 
         logger.info("Correcting posts")
 
-        initial = await ctx.respond("Updating post now", ephemeral=True)
+        initial = await ctx.respond(
+            components=[cv2_notice("Updating post now…")],
+            flags=h.MessageFlag.IS_COMPONENTS_V2,
+            ephemeral=True,
+        )
 
         message = await format_post(bot=bot)
         await msg_to_update.edit(**message.to_message_kwargs())
-        await ctx.edit_response(initial, "Post updated")
+        await ctx.edit_response(initial, components=[cv2_success("Post updated")])
 
 
 @loader.listener(h.StartedEvent)
@@ -157,6 +175,7 @@ _ls_autopost_group = make_autopost_control_commands(
     cfg.followables["lost_sector"],
     format_post,
     message_announcer_coro=discord_announcer,
+    cv2=True,
 )
 
 _ls_autopost_group.register(ControlLostSectorDetails)

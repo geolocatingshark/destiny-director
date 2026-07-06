@@ -45,6 +45,7 @@ from lightbulb import components as lbc
 from . import cfg, lifecycle
 from .auth import owner_only
 from .bot import CachedFetchBot
+from .components import build_container, cv2_notice, respond_cv2
 from .schemas import MirroredChannel
 
 _WARN_COLOR = h.Color(0xFEE75C)  # yellow
@@ -64,10 +65,13 @@ async def _run_lifecycle(
     """Stop/restart the bot; warn + require a DANGER override if mirrors are live."""
     n = mirror_check() if mirror_check is not None else 0
     if n == 0:
-        await ctx.respond(f"Bot is {action} now.", ephemeral=True)
+        await respond_cv2(ctx, cv2_notice(f"Bot is {action} now."), ephemeral=True)
         await lifecycle.request_shutdown(bot, exit_code)
         return
 
+    # Mirror-in-progress override flow (beacon only — anchor passes mirror_check=None,
+    # so n is always 0 above). Left as an embed + menu pending the deferred beacon CV2
+    # pass; converting an interactive embed+menu to CV2 is out of scope here.
     decided = False
 
     async def on_confirm(mctx: lbc.MenuContext) -> None:
@@ -233,6 +237,6 @@ def make_controller_group(
                 for (name, _), n in zip(followed, counts, strict=True):
                     lines.append(f"- `{name}` → {n} mirror dest(s)")
 
-            await ctx.respond("\n".join(lines))
+            await respond_cv2(ctx, build_container(["\n".join(lines)]))
 
     return group

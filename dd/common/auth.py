@@ -32,6 +32,7 @@ import typing as t
 import lightbulb as lb
 
 from .bot import CachedFetchBot
+from .components import cv2_error, respond_cv2
 
 
 class NotBotOwnerError(Exception):
@@ -70,8 +71,10 @@ async def owner_check_error_handler(
     """
     cause = exc.causes[0] if exc.causes else exc
     if isinstance(cause, NotBotOwnerError):
-        await exc.context.respond(
-            "You are not authorized to use this command.", ephemeral=True
+        await respond_cv2(
+            exc.context,
+            cv2_error("You are not authorized to use this command."),
+            ephemeral=True,
         )
         return True
     return False
