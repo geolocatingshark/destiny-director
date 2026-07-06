@@ -18,6 +18,7 @@ import contextlib
 import datetime as dt
 import logging
 import typing as t
+import uuid
 from asyncio import Task, create_task, sleep
 from random import randint
 from typing import override
@@ -204,18 +205,21 @@ def build_nav_row(
     lookahead_len: int,
     date_label: str,
     all_disabled: bool = False,
+    prev_id: str = _NAV_PREV_CUSTOM_ID,
+    next_id: str = _NAV_NEXT_CUSTOM_ID,
 ) -> list[h.api.InteractiveButtonBuilder]:
     """Build the prev / date-indicator / next buttons for a navigator action row.
 
-    The prev/next custom ids match those :class:`NavigatorView` registers on its menu;
-    the indicator is a disabled button whose label is the current page's date.
+    ``prev_id`` / ``next_id`` must match the ids :class:`NavigatorView` registers on its
+    menu — the caller passes per-instance ids so a press routes only to the owning menu;
+    the indicator is a disabled button (never interactive) whose label is the date.
     """
     prev_disabled = all_disabled or current_page <= 1 - history_len
     next_disabled = all_disabled or current_page >= lookahead_len
     return [
         h.impl.InteractiveButtonBuilder(
             style=h.ButtonStyle.PRIMARY,
-            custom_id=_NAV_PREV_CUSTOM_ID,
+            custom_id=prev_id,
             emoji=PREV_PAGE_EMOJI,
             is_disabled=prev_disabled,
         ),
@@ -227,7 +231,7 @@ def build_nav_row(
         ),
         h.impl.InteractiveButtonBuilder(
             style=h.ButtonStyle.PRIMARY,
-            custom_id=_NAV_NEXT_CUSTOM_ID,
+            custom_id=next_id,
             emoji=NEXT_PAGE_EMOJI,
             is_disabled=next_disabled,
         ),
@@ -286,17 +290,27 @@ class NavigatorView:
         self._ctx: lb.Context | None = None
         self._message: h.Message | None = None
 
+        # Per-instance button ids. lightbulb routes a component interaction to the first
+        # attached menu whose custom_ids match, with NO message binding, so shared ids
+        # would let a press on this navigator's message be handled by another live
+        # navigator's menu — editing this message with that navigator's pages (e.g.
+        # /lost sector showing /eververse content). Unique ids make the match resolve to
+        # exactly this instance's menu.
+        token = uuid.uuid4().hex
+        self._prev_id = f"{_NAV_PREV_CUSTOM_ID}:{token}"
+        self._next_id = f"{_NAV_NEXT_CUSTOM_ID}:{token}"
+
         self._menu = lbc.Menu()
         self._menu.add_interactive_button(
             h.ButtonStyle.PRIMARY,
             self._on_prev,
-            custom_id=_NAV_PREV_CUSTOM_ID,
+            custom_id=self._prev_id,
             emoji=PREV_PAGE_EMOJI,
         )
         self._menu.add_interactive_button(
             h.ButtonStyle.PRIMARY,
             self._on_next,
-            custom_id=_NAV_NEXT_CUSTOM_ID,
+            custom_id=self._next_id,
             emoji=NEXT_PAGE_EMOJI,
         )
 
@@ -333,6 +347,8 @@ class NavigatorView:
             lookahead_len=self._pages.lookahead_len,
             date_label=self._date_label(),
             all_disabled=all_disabled,
+            prev_id=self._prev_id,
+            next_id=self._next_id,
         ):
             row.add_component(button)
         return row

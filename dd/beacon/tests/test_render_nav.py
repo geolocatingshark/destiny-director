@@ -114,3 +114,23 @@ def test_cv2_page_renders_with_flag_and_container_untouched():
     # The source container is preserved (never mutated) and the nav row is appended.
     assert payload["components"][0] is container
     assert len(payload["components"]) == 2
+
+
+def test_navigators_use_distinct_instance_button_ids():
+    # Regression: shared button custom_ids let a press on one navigator's message be
+    # routed by lightbulb to another live navigator's menu, which then edits this
+    # message with its own pages. Per-instance ids keep a press on this navigator's
+    # message routing only to this navigator's menu.
+    page = HMessage(embeds=[h.Embed(title="t", description="d")])
+    n1 = NavigatorView(pages=_FakePages(page))  # ty: ignore[invalid-argument-type]
+    n2 = NavigatorView(pages=_FakePages(page))  # ty: ignore[invalid-argument-type]
+
+    assert n1._prev_id != n2._prev_id
+    assert n1._next_id != n2._next_id
+
+    # The rendered nav row carries THIS instance's ids (matching its own menu).
+    row = n1._render()["components"][-1]
+    ids = [b.custom_id for b in row.components]
+    assert n1._prev_id in ids
+    assert n1._next_id in ids
+    assert n2._prev_id not in ids

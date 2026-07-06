@@ -41,6 +41,7 @@ paginator sends/edits them as embeds driven by the exact same menu buttons.
 
 import contextlib
 import typing as t
+import uuid
 
 import hikari as h
 import lightbulb as lb
@@ -87,11 +88,14 @@ def nav_buttons_row(
     page_index: int,
     page_count: int,
     all_disabled: bool = False,
+    prev_id: str = _PREV_CUSTOM_ID,
+    next_id: str = _NEXT_CUSTOM_ID,
 ) -> list[h.api.InteractiveButtonBuilder]:
     """Build the prev / indicator / next interactive buttons for an action row.
 
-    The custom ids match the ones the :class:`Paginator` registers on its menu, so
-    presses on these (rendered inside a CV2 container) route to the menu callbacks.
+    ``prev_id`` / ``next_id`` must match the ids the :class:`Paginator` registers on its
+    menu — the caller passes per-instance ids so a press on this paginator's message
+    routes only to its own menu, not to another live paginator matching a shared id.
 
     Args:
         page_index: Zero-based index of the currently displayed page.
@@ -103,7 +107,7 @@ def nav_buttons_row(
     return [
         h.impl.InteractiveButtonBuilder(
             style=h.ButtonStyle.SECONDARY,
-            custom_id=_PREV_CUSTOM_ID,
+            custom_id=prev_id,
             emoji=PREV_PAGE_EMOJI,
             is_disabled=prev_disabled,
         ),
@@ -115,7 +119,7 @@ def nav_buttons_row(
         ),
         h.impl.InteractiveButtonBuilder(
             style=h.ButtonStyle.SECONDARY,
-            custom_id=_NEXT_CUSTOM_ID,
+            custom_id=next_id,
             emoji=NEXT_PAGE_EMOJI,
             is_disabled=next_disabled,
         ),
@@ -547,17 +551,25 @@ class Paginator:
         # matches on ``interaction.custom_id`` regardless of where the button is
         # rendered, so for CV2 we render visually-identical buttons (same custom ids)
         # inside the container and never send the menu's own rows.
+        # Per-instance button ids: lightbulb routes a component interaction to the first
+        # attached menu whose custom_ids match, with no message binding, so shared ids
+        # would let a press on this paginator's message be handled by another live
+        # paginator's menu. Unique ids make the match resolve to exactly this instance.
+        token = uuid.uuid4().hex
+        self._prev_id = f"{_PREV_CUSTOM_ID}:{token}"
+        self._next_id = f"{_NEXT_CUSTOM_ID}:{token}"
+
         self._menu = lbc.Menu()
         self._menu.add_interactive_button(
             h.ButtonStyle.SECONDARY,
             self._on_prev,
-            custom_id=_PREV_CUSTOM_ID,
+            custom_id=self._prev_id,
             emoji=PREV_PAGE_EMOJI,
         )
         self._menu.add_interactive_button(
             h.ButtonStyle.SECONDARY,
             self._on_next,
-            custom_id=_NEXT_CUSTOM_ID,
+            custom_id=self._next_id,
             emoji=NEXT_PAGE_EMOJI,
         )
 
@@ -595,6 +607,8 @@ class Paginator:
             page_index=self._index,
             page_count=self.page_count,
             all_disabled=all_disabled,
+            prev_id=self._prev_id,
+            next_id=self._next_id,
         )
         if components and isinstance(components[-1], h.impl.ContainerComponentBuilder):
             components[-1].add_action_row(nav)

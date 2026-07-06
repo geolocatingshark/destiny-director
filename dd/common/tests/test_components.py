@@ -163,3 +163,32 @@ async def test_timeout_is_capped_below_interaction_token_lifetime() -> None:
         [_container_page("a"), _container_page("b")], timeout=30
     )
     assert short._timeout == 30
+
+
+def _collect_custom_ids(comps: t.Iterable[t.Any]) -> list[str]:
+    out: list[str] = []
+    for c in comps:
+        cid = getattr(c, "custom_id", None)
+        if cid is not None:
+            out.append(cid)
+        children = getattr(c, "components", None)
+        if children:
+            out.extend(_collect_custom_ids(children))
+    return out
+
+
+async def test_paginators_use_distinct_instance_button_ids() -> None:
+    # Regression: shared button custom_ids let a press on one paginator's message be
+    # routed by lightbulb to another live paginator's menu. Per-instance ids keep a
+    # press routing only to the paginator that owns the pressed message.
+    p1 = _two_page_paginator()
+    p2 = _two_page_paginator()
+
+    assert p1._prev_id != p2._prev_id
+    assert p1._next_id != p2._next_id
+
+    # The rendered CV2 nav row carries this instance's ids (matching its own menu).
+    ids = _collect_custom_ids(p1._render_components())
+    assert p1._prev_id in ids
+    assert p1._next_id in ids
+    assert p2._prev_id not in ids
