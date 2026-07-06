@@ -131,3 +131,62 @@ def test_first_embed_color_wins_else_default() -> None:
 
 def test_empty_embed_yields_empty_container() -> None:
     assert components.embeds_to_container(h.Embed()).components == []
+
+
+# --- drop_remote_media -----------------------------------------------------------
+
+
+def test_drop_remote_media_skips_non_cdn_image_keeps_text() -> None:
+    embed = h.Embed(description="body")
+    embed.set_image("https://kyberscorner.com/lost-sector.gif")
+
+    children = components.embeds_to_container(embed, drop_remote_media=True).components
+
+    # The text survives; the remote image is not turned into a (streamed) media gallery.
+    assert [_text(c) for c in children] == ["body"]
+    assert not any(
+        isinstance(c, h.impl.MediaGalleryComponentBuilder) for c in children
+    )
+
+
+def test_drop_remote_media_keeps_discord_cdn_image() -> None:
+    embed = h.Embed(description="body")
+    embed.set_image("https://cdn.discordapp.com/attachments/1/2/big.png")
+
+    children = components.embeds_to_container(embed, drop_remote_media=True).components
+    gallery = children[-1]
+    assert isinstance(gallery, h.impl.MediaGalleryComponentBuilder)
+    assert [item.media for item in gallery.items] == [
+        "https://cdn.discordapp.com/attachments/1/2/big.png"
+    ]
+
+
+def test_drop_remote_media_skips_image_only_remote_embed() -> None:
+    # Only content is a remote image that gets dropped -> nothing to render, so the
+    # embed is skipped entirely (not an empty container the caller must special-case).
+    embed = h.Embed()
+    embed.set_image("https://kyberscorner.com/only.gif")
+    container = components.embeds_to_container(embed, drop_remote_media=True)
+    assert container.components == []
+
+
+def test_drop_remote_media_two_image_only_embeds_leave_no_dangling_separator() -> None:
+    # Regression: previously the first embed set rendered=True while adding nothing, so
+    # the second prepended a divider -> a separator-only container Discord rejects.
+    a, b = h.Embed(), h.Embed()
+    a.set_image("https://kyberscorner.com/a.gif")
+    b.set_image("https://kyberscorner.com/b.gif")
+    children = components.embeds_to_container([a, b], drop_remote_media=True).components
+    assert children == []
+
+
+def test_drop_remote_media_drops_remote_thumbnail_but_renders_text_plainly() -> None:
+    embed = h.Embed(title="T", description="D")
+    embed.set_thumbnail("https://kyberscorner.com/thumb.png")
+
+    children = components.embeds_to_container(embed, drop_remote_media=True).components
+    # No section (which would carry the streamed thumbnail); just plain text displays.
+    assert not any(
+        isinstance(c, h.impl.SectionComponentBuilder) for c in children
+    )
+    assert [_text(c) for c in children] == ["## T", "D"]

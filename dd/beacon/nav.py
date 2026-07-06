@@ -54,6 +54,77 @@ NEXT_PAGE_EMOJI = chr(9654)
 PREV_PAGE_EMOJI = chr(9664)
 
 
+# Discord counts Components V2 text in UTF-16 code units and rejects a message whose
+# total displayable text exceeds 4000 — tighter than an embed's 6000 budget (4096 in
+# the description alone). Convert with headroom so the converter's markdown/emoji
+# overhead and the counting difference can't tip a page over; over-long pages are
+# truncated with a visible note rather than dropped to the "could not display" fallback.
+_CV2_TEXT_BUDGET = 3900
+_CV2_TRUNCATION_NOTE = "\n\n-# … (truncated)"
+
+
+def _cv2_text_length(components: t.Iterable[h.api.ComponentBuilder]) -> int:
+    """Total rendered text across CV2 components, in UTF-16 code units (Discord's unit).
+
+    Recurses into containers and sections so every nested ``TextDisplay`` is counted.
+    Counting UTF-16 (not Python code points) keeps the budget honest for astral-plane
+    characters, which Discord counts as 2 toward the 4000 cap.
+    """
+    total = 0
+    for comp in components:
+        if isinstance(comp, h.impl.TextDisplayComponentBuilder):
+            total += len((comp.content or "").encode("utf-16-le")) // 2
+        else:
+            children = getattr(comp, "components", None)
+            if children:
+                total += _cv2_text_length(children)
+    return total
+
+
+def _capped_container_from_embeds(
+    embeds: list[h.Embed],
+    *,
+    budget: int = _CV2_TEXT_BUDGET,
+) -> h.impl.ContainerComponentBuilder:
+    """Convert embeds to a CV2 container, trimming text to fit ``budget`` (UTF-16).
+
+    Component builders are immutable once built (``TextDisplay.content`` has no setter
+    and ``container.components`` returns a copy), so an over-budget page is fixed by
+    trimming the source embeds' longest description and rebuilding — not by editing it.
+
+    ``budget`` lets the caller reserve room for text already on the page (e.g. native
+    CV2 containers sharing the same message). Each pass trims one description, so the
+    loop is bounded by the embed count; if text still overflows (titles/fields) the
+    send/_edit guard is the backstop.
+    """
+
+    def build() -> h.impl.ContainerComponentBuilder:
+        return dd_components.embeds_to_container(
+            embeds, accent_color=embed_default_color, drop_remote_media=True
+        )
+
+    container = build()
+    for _ in range(len(embeds) + 1):
+        overage = _cv2_text_length([container]) - budget
+        if overage <= 0:
+            break
+        target = max(
+            (e for e in embeds if e.description),
+            key=lambda e: len(e.description or ""),
+            default=None,
+        )
+        if target is None or not target.description:
+            break  # no description to trim (text in titles/fields) — guard backstops
+        prev = target.description
+        keep = len(prev) - overage - len(_CV2_TRUNCATION_NOTE)
+        trimmed = prev[: max(keep, 0)].rstrip() + _CV2_TRUNCATION_NOTE
+        if len(trimmed) >= len(prev):
+            break  # no progress (note ≥ trimmed text) — avoid spinning
+        target.description = trimmed
+        container = build()
+    return container
+
+
 class DateRangeDict(dict[dt.datetime, HMessage]):
     """Dict with keys that are contiguous date ranges up to limits
 
@@ -398,9 +469,35 @@ class NavigatorView:
 
     # -- sending / editing -------------------------------------------------
 
+    async def _respond_guarded(
+        self,
+        respond: t.Callable[[dict[str, t.Any]], t.Awaitable[t.Any]],
+        *,
+        operation: str,
+    ) -> None:
+        """Render the current page via ``respond``; on a client HTTP error fall back.
+
+        A page can fail to render — Discord rejects an oversized CV2 page, or a media
+        host 429s hikari's re-download — and that must never break the navigator. On
+        such an error we log and re-``respond`` with a minimal same-mode placeholder so
+        the initial open / prev / next stays usable. ``respond`` takes the payload.
+        """
+        try:
+            await respond(self._render())
+        except h.ClientHTTPResponseError as e:
+            await discord_error_logger(e, operation=operation)
+            # The fallback respond can also fail (a persistent 429, an expired
+            # interaction token). Suppress it — the original error is already logged and
+            # there is nothing further we can show — so it never escapes the button
+            # handler / send.
+            with contextlib.suppress(h.HikariError):
+                await respond(self._fallback_render())
+
     async def send(self, ctx: lb.Context) -> None:
         """Send the current page from a ``lb.Context`` and attach the paginator."""
-        await ctx.respond(**self._render())
+        await self._respond_guarded(
+            lambda payload: ctx.respond(**payload), operation="Navigator page send"
+        )
         if not self.needs_pagination:
             return
         self._ctx = ctx
@@ -412,7 +509,30 @@ class NavigatorView:
         await self._on_timeout()
 
     async def _edit(self, mctx: lbc.MenuContext) -> None:
-        await mctx.respond(edit=True, **self._render())
+        await self._respond_guarded(
+            lambda payload: mctx.respond(edit=True, **payload),
+            operation="Navigator page edit",
+        )
+
+    def _fallback_render(self) -> dict[str, t.Any]:
+        """A minimal same-mode payload shown when a page fails to render.
+
+        Same-mode is mandatory (Discord forbids toggling IS_COMPONENTS_V2 on an edit).
+        A navigator is single-mode, so key off the navigator's ``cv2`` flag rather than
+        the failed page. The nav row is kept so the user can page away.
+        """
+        row = self._nav_action_row() if self.needs_pagination else None
+        if self._pages.cv2:
+            comps: list[h.api.ComponentBuilder] = [
+                dd_components.cv2_error("This page could not be displayed")
+            ]
+            if row is not None:
+                comps.append(row)
+            return {"components": comps, "flags": h.MessageFlag.IS_COMPONENTS_V2}
+        payload: dict[str, t.Any] = {"embeds": [NO_DATA_HERE_EMBED]}
+        if row is not None:
+            payload["components"] = [row]
+        return payload
 
     async def _on_prev(self, mctx: lbc.MenuContext) -> None:
         self.current_page -= 1
@@ -531,6 +651,13 @@ class NavPages(DateRangeDict):
             return self.no_data_message
         msg: HMessage = accumulate([HMessage.from_message(msg) for msg in messages])
 
+        # Components V2 navigator: convert any legacy embed pages to CV2 so every page
+        # is single-mode (a navigator edits one message and Discord forbids toggling
+        # IS_COMPONENTS_V2 on an edit). This supersedes the embed post-processing below,
+        # which only applies to the classic embed navigators (cv2=False).
+        if self.cv2:
+            return self._finalize_cv2(msg)
+
         # Components V2 message: no embed/content post-processing applies.
         if msg.components:
             return msg
@@ -549,6 +676,40 @@ class NavPages(DateRangeDict):
         msg.embeds = list(filter(lambda x: x.title or x.description, msg.embeds))
 
         return msg
+
+    def _finalize_cv2(self, msg: HMessage) -> HMessage:
+        """Coerce a page into Components V2 for a cv2 navigator.
+
+        Legacy embed pages still in a followable's history are converted in-memory to
+        CV2 so every page a cv2 navigator renders is CV2 — the navigator edits one
+        message and Discord forbids toggling IS_COMPONENTS_V2 across an edit. Plain
+        message content and attachments are dropped (the converter only reads embeds);
+        acceptable for the transition window, which self-heals as history rolls over.
+        """
+        if not self.cv2:
+            return msg
+
+        # Keep any native CV2 containers (already-migrated posts); append a converted
+        # container for any legacy embeds sharing the period (accumulate concatenates
+        # both when a single period bin holds an embed post and a CV2 post).
+        containers: list[h.api.ComponentBuilder] = list(msg.components)
+        if msg.embeds:
+            # _capped_container_from_embeds converts and trims to the 4000-char CV2 cap.
+            # The cap is message-wide, so reserve the budget already used by native CV2
+            # containers on this page (a mixed period bin) before trimming the converted
+            # part. drop_remote_media (inside it): the navigator re-renders on every
+            # press and hikari re-downloads a CV2 media item each time — a third-party
+            # host (e.g. the Lost Sector gif) rate-limits (429) under that. Native CV2
+            # pages already use Discord-CDN media, so only converted embeds need this.
+            remaining = _CV2_TEXT_BUDGET - _cv2_text_length(containers)
+            container = _capped_container_from_embeds(msg.embeds, budget=remaining)
+            if container.components:
+                containers.append(container)
+
+        if not containers:
+            return self.no_data_message
+
+        return HMessage(components=containers)
 
     @classmethod
     async def from_channel(cls, bot: h.RESTAware, channel, **kwargs) -> t.Self:
@@ -764,8 +925,15 @@ class ResetPages(NavPages):
 
     @override
     def preprocess_messages(self, messages: list[h.Message]) -> HMessage:
+        # Components V2 navigator (portal_ops): the base already does cv2 conversion.
+        # The embed merges below are only for the weekly-reset navigator (cv2=False),
+        # which also uses this subclass.
+        if self.cv2:
+            return super().preprocess_messages(messages)
+
         if not messages:
             return self.no_data_message
+
         for message in messages:
             message.embeds = utils.filter_discord_autoembeds(message)
         msg_proto = accumulate([HMessage.from_message(message) for message in messages])

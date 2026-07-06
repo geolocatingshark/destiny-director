@@ -42,6 +42,7 @@ paginator sends/edits them as embeds driven by the exact same menu buttons.
 import contextlib
 import typing as t
 import uuid
+from urllib.parse import urlparse
 
 import hikari as h
 import lightbulb as lb
@@ -213,22 +214,55 @@ async def respond_cv2(
     )
 
 
-def _embed_has_content(embed: h.Embed) -> bool:
-    """Whether an embed carries anything ``embeds_to_container`` would render."""
+def _embed_has_content(embed: h.Embed, *, drop_remote_media: bool = False) -> bool:
+    """Whether an embed carries anything ``embeds_to_container`` would render.
+
+    With ``drop_remote_media`` set, a remote (non-CDN) image/thumbnail counts as absent
+    since the converter drops it — so an embed whose *only* content is remote media is
+    skipped rather than rendering an empty (separator-only) container Discord rejects.
+    """
+
+    def _media_kept(media: h.EmbedImage | None) -> bool:
+        return media is not None and (
+            not drop_remote_media or _is_discord_cdn_media(media.url)
+        )
+
     return bool(
         (embed.author and embed.author.name)
         or embed.title
         or embed.description
         or embed.fields
-        or embed.image
-        or embed.thumbnail
+        or _media_kept(embed.image)
+        or _media_kept(embed.thumbnail)
         or (embed.footer and embed.footer.text)
         or embed.timestamp
     )
 
 
+# Discord fetches an embed's image URL server-side, but hikari uploads a Components V2
+# media item by *streaming* (downloading) it on every send. On a frequently re-rendered
+# surface like the navigator that means re-fetching a third-party host on every page
+# view, which can trip that host's rate limit (429). ``drop_remote_media`` lets such
+# callers skip any media not already hosted on Discord's CDN.
+_DISCORD_CDN_HOST_SUFFIXES = ("discordapp.com", "discordapp.net", "discord.com")
+
+
+def _is_discord_cdn_media(url: str) -> bool:
+    """Whether a media URL is Discord-hosted (safe to re-send without re-fetching)."""
+    if url.startswith("attachment://"):
+        return True
+    host = (urlparse(url).hostname or "").lower()
+    return any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in _DISCORD_CDN_HOST_SUFFIXES
+    )
+
+
 def _add_embed_to_container(
-    container: h.impl.ContainerComponentBuilder, embed: h.Embed
+    container: h.impl.ContainerComponentBuilder,
+    embed: h.Embed,
+    *,
+    drop_remote_media: bool = False,
 ) -> None:
     """Render one embed's parts onto ``container`` (see ``embeds_to_container``)."""
     # Author -> a subtext line (masked-linked when it has a url; the icon is dropped,
@@ -245,6 +279,8 @@ def _add_embed_to_container(
         )
     description = embed.description or None
     thumb_url = embed.thumbnail.url if embed.thumbnail else None
+    if drop_remote_media and thumb_url and not _is_discord_cdn_media(thumb_url):
+        thumb_url = None
 
     # Thumbnail (embed top-right) -> a section whose accessory is the thumbnail,
     # holding the title/description text. A section needs 1-3 text displays, so this
@@ -275,8 +311,11 @@ def _add_embed_to_container(
         container.add_separator(divider=False)
         container.add_text_display(f"**{field.name}**\n{field.value}")
 
-    # Large image -> a full-width media gallery.
-    if embed.image:
+    # Large image -> a full-width media gallery. Skipped when it's a remote (non-CDN)
+    # URL and the caller opted out, to avoid hikari re-downloading it on every send.
+    if embed.image and (
+        not drop_remote_media or _is_discord_cdn_media(embed.image.url)
+    ):
         gallery = h.impl.MediaGalleryComponentBuilder()
         gallery.add_media_gallery_item(embed.image.url)
         container.add_component(gallery)
@@ -296,6 +335,7 @@ def embeds_to_container(
     embeds: h.Embed | t.Sequence[h.Embed],
     *,
     accent_color: h.Color | None = None,
+    drop_remote_media: bool = False,
 ) -> h.impl.ContainerComponentBuilder:
     """Convert one or more embeds into a single CV2 container (faithful layout).
 
@@ -315,6 +355,10 @@ def embeds_to_container(
     Embeds are separated by divider separators. Embeds with no renderable content are
     skipped; if none render the result is an empty container (no ``.components``), which
     the caller should treat as "nothing to convert".
+
+    ``drop_remote_media`` skips any image/thumbnail not hosted on Discord's CDN, so a
+    frequently re-rendered caller (the navigator) doesn't make hikari re-download a
+    third-party host on every send.
     """
     if isinstance(embeds, h.Embed):
         embeds = [embeds]
@@ -328,11 +372,11 @@ def embeds_to_container(
     container = h.impl.ContainerComponentBuilder(accent_color=accent_color)
     rendered = False
     for embed in embeds:
-        if not _embed_has_content(embed):
+        if not _embed_has_content(embed, drop_remote_media=drop_remote_media):
             continue
         if rendered:
             container.add_separator(divider=True)
-        _add_embed_to_container(container, embed)
+        _add_embed_to_container(container, embed, drop_remote_media=drop_remote_media)
         rendered = True
 
     return container

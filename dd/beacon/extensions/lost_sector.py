@@ -17,7 +17,6 @@ import datetime as dt
 import typing as t
 from typing import override
 
-import hikari as h
 import lightbulb as lb
 
 from dd.hmessage import HMessage
@@ -25,8 +24,6 @@ from dd.hmessage import HMessage
 from ...common import cfg
 from ...common.bot import ServerEmojiEnabledBot
 from ...common.lost_sector import format_post, load_rotation
-from ...common.utils import accumulate
-from .. import utils
 from ..nav import (
     NavPages,
     make_navigator_command,
@@ -42,34 +39,9 @@ FOLLOWABLE_CHANNEL = cfg.followables["lost_sector"]
 
 
 class SectorMessages(NavPages):
-    @override
-    def preprocess_messages(self, messages: list[h.Message]):
-        if not messages:
-            return self.no_data_message
-
-        # Components V2 posts (the migrated Lost Sector format) carry components, not
-        # embeds, so the embed/content post-processing below doesn't apply — return them
-        # as-is, mirroring the base NavPages.preprocess_messages.
-        if any(
-            h.MessageFlag.IS_COMPONENTS_V2 in (m.flags or h.MessageFlag.NONE)
-            for m in messages
-        ):
-            return accumulate([HMessage.from_message(m) for m in messages])
-
-        for m in messages:
-            m.embeds = utils.filter_discord_autoembeds(m)
-        processed_messages = [
-            HMessage.from_message(m).merge_content_into_embed(prepend=False)
-            # Remove merge_attachements_into_embed since it cause embeds to disappear
-            # Did not investigate further as this functionality was not used in the
-            # last 3 months at least
-            # .merge_attachements_into_embed(default_url=cfg.default_url)
-            for m in messages
-        ]
-
-        processed_message = accumulate(processed_messages)
-
-        return processed_message
+    # preprocess_messages is inherited: this navigator is cv2=True, so the base method
+    # converts any legacy embed pages in history to Components V2. Only lookahead is
+    # overridden (it generates future pages, already CV2 via format_post).
 
     @override
     async def lookahead(self, after: dt.datetime) -> dict[dt.datetime, HMessage]:
