@@ -51,8 +51,12 @@ class SectorMessages(NavPages):
 
         lookahead_dict = {}
 
+        # ``after`` is index 1 (tomorrow); the navigator lets the user reach index
+        # lookahead_len, so generate indices 1..lookahead_len (lookahead_len dates).
+        # A short range left the last reachable forward page ("+lookahead_len days")
+        # permanently empty ("No data here").
         for date in [
-            start_date + self.period * n for n in range(0, self.lookahead_len - 1)
+            start_date + self.period * n for n in range(self.lookahead_len)
         ]:
             try:
                 sectors = sector_on(date)
