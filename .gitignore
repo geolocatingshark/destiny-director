@@ -177,3 +177,7 @@ Twitter Keys.txt
 .idea
 # Ad-hoc investigation scratch (Portal API etc.) — not for commit
 scratch/
+# Core dumps (crashed-process memory images). Never commit — they contain live
+# secrets (bot tokens) lifted from process memory. GitHub push-protection blocks them.
+core
+core.[0-9]*
