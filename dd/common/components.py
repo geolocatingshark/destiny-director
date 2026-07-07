@@ -125,6 +125,71 @@ def cap_cv2_text(text: str, *, budget: int = CV2_TEXT_BUDGET) -> str:
     return cut.rstrip() + CV2_TRUNCATION_NOTE
 
 
+def fit_cv2_components(
+    components: t.Sequence[h.api.ComponentBuilder],
+    *,
+    budget: int = CV2_TEXT_BUDGET,
+) -> list[h.api.ComponentBuilder]:
+    """Return ``components`` guaranteed to hold at most ``budget`` UTF-16 text units.
+
+    The single enforcement point for the CV2 text cap on an *assembled* message: a page
+    built from heterogeneous parts — native CV2 containers rebuilt from a source post,
+    embeds converted in-memory, several messages accumulated into one bin — is passed
+    through this so Discord never rejects it for length, no matter where the text came
+    from. Builders are immutable, so an over-budget page is rebuilt with its text
+    displays trimmed front-to-back (earliest text kept whole, the tail trimmed then
+    dropped); a text display trimmed to nothing is removed, and a section left with no
+    text is dropped. Non-text components (media galleries, separators, buttons) are
+    preserved untouched. Under budget (the common case) the input is returned as-is.
+    """
+    if cv2_text_length(components) <= budget:
+        return list(components)
+
+    remaining = budget
+
+    def rebuild(comp: h.api.ComponentBuilder) -> h.api.ComponentBuilder | None:
+        nonlocal remaining
+        if isinstance(comp, h.impl.TextDisplayComponentBuilder):
+            content = comp.content or ""
+            if remaining <= 0 or not content:
+                return None
+            length = cv2_utf16_len(content)
+            if length <= remaining:
+                remaining -= length
+                return comp
+            trimmed = cap_cv2_text(content, budget=remaining)
+            remaining = 0
+            return text_display(trimmed) if trimmed else None
+        if isinstance(comp, h.impl.ContainerComponentBuilder):
+            container = h.impl.ContainerComponentBuilder(
+                accent_color=comp.accent_color, spoiler=comp.is_spoiler
+            )
+            for child in comp.components:
+                rebuilt = rebuild(child)
+                if rebuilt is not None:
+                    # rebuild() preserves each child's concrete type (or trims text to a
+                    # new TextDisplay); all are valid container children. ty only sees
+                    # the broad recursion return type, so cast.
+                    container.add_component(t.cast(t.Any, rebuilt))
+            return container
+        if isinstance(comp, h.impl.SectionComponentBuilder):
+            texts = [
+                t.cast(h.impl.TextDisplayComponentBuilder, c)
+                for c in map(rebuild, comp.components)
+                if c is not None
+            ]
+            if not texts:
+                return None  # a section requires at least one text display
+            section = h.impl.SectionComponentBuilder(accessory=comp.accessory)
+            for text in texts:
+                section.add_component(text)
+            return section
+        # No text to trim (separator, media gallery, action row, file) — reuse as-is.
+        return comp
+
+    return [c for c in map(rebuild, components) if c is not None]
+
+
 async def _alert_cv2_overflow(post_name: str, message: str) -> None:
     """Raise a CRITICAL (owner-pinging) alert that a CV2 autopost overflowed the cap."""
     # Local import avoids a components <-> utils import cycle.

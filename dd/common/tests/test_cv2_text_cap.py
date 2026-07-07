@@ -87,6 +87,52 @@ async def test_guard_cv2_post_text_is_silent_within_budget(monkeypatch):
     assert calls == []
 
 
+# --- fit_cv2_components (whole-page cap on assembled builders) --------------------
+
+
+def _container(*texts: str) -> h.impl.ContainerComponentBuilder:
+    c = h.impl.ContainerComponentBuilder()
+    for i, text in enumerate(texts):
+        if i:
+            c.add_separator(divider=True)
+        c.add_text_display(text)
+    return c
+
+
+def test_fit_cv2_components_passes_through_when_within_budget():
+    comps = [_container("a", "b")]
+    assert components.fit_cv2_components(comps, budget=100) is not comps  # a new list
+    out = components.fit_cv2_components(comps, budget=100)
+    assert out[0] is comps[0]  # under budget -> builders reused untouched
+
+
+def test_fit_cv2_components_trims_a_single_oversized_container():
+    out = components.fit_cv2_components([_container("x" * 5000)], budget=100)
+    assert components.cv2_text_length(out) <= 100
+
+
+def test_fit_cv2_components_caps_the_stacked_aggregate():
+    # Two native containers that each fit alone but overflow together (the navigator
+    # accumulate case) — the whole page must still come in under budget.
+    out = components.fit_cv2_components(
+        [_container("a" * 80), _container("b" * 80)], budget=100
+    )
+    assert components.cv2_text_length(out) <= 100
+    # Front content is kept whole; the tail is what gets trimmed.
+    assert out[0].components[0].content == "a" * 80
+
+
+def test_fit_cv2_components_preserves_non_text_and_drops_emptied_displays():
+    container = h.impl.ContainerComponentBuilder()
+    container.add_text_display("k" * 200)
+    container.add_component(components.url_media_gallery("https://x/y.gif"))
+    (out_container,) = components.fit_cv2_components([container], budget=50)
+    kinds = [type(c).__name__ for c in out_container.components]
+    # The media gallery survives even though the text before it was trimmed.
+    assert "MediaGalleryComponentBuilder" in kinds
+    assert components.cv2_text_length([out_container]) <= 50
+
+
 # --- guard_cv2_post_sections (reserve header/footer, truncate body) --------------
 
 

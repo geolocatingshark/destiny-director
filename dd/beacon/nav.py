@@ -54,53 +54,6 @@ NEXT_PAGE_EMOJI = chr(9654)
 PREV_PAGE_EMOJI = chr(9664)
 
 
-def _capped_container_from_embeds(
-    embeds: list[h.Embed],
-    *,
-    budget: int = dd_components.CV2_TEXT_BUDGET,
-) -> h.impl.ContainerComponentBuilder:
-    """Convert embeds to a CV2 container, trimming text to fit ``budget`` (UTF-16).
-
-    Component builders are immutable once built (``TextDisplay.content`` has no setter
-    and ``container.components`` returns a copy), so an over-budget page is fixed by
-    trimming the source embeds' longest description and rebuilding — not by editing it.
-
-    ``budget`` lets the caller reserve room for text already on the page (e.g. native
-    CV2 containers sharing the same message). Each pass trims one description, so the
-    loop is bounded by the embed count; if text still overflows (titles/fields) the
-    send/_edit guard is the backstop.
-    """
-
-    def build() -> h.impl.ContainerComponentBuilder:
-        return dd_components.embeds_to_container(
-            embeds, accent_color=embed_default_color
-        )
-
-    container = build()
-    for _ in range(len(embeds) + 1):
-        overage = dd_components.cv2_text_length([container]) - budget
-        if overage <= 0:
-            break
-        target = max(
-            (e for e in embeds if e.description),
-            key=lambda e: len(e.description or ""),
-            default=None,
-        )
-        if target is None or not target.description:
-            break  # no description to trim (text in titles/fields) — guard backstops
-        prev = target.description
-        # Trim the longest description by the container's overage, reusing the shared
-        # (UTF-16, surrogate-safe, note-appending) cap primitive.
-        trimmed = dd_components.cap_cv2_text(
-            prev, budget=dd_components.cv2_utf16_len(prev) - overage
-        )
-        if dd_components.cv2_utf16_len(trimmed) >= dd_components.cv2_utf16_len(prev):
-            break  # no progress — avoid spinning
-        target.description = trimmed
-        container = build()
-    return container
-
-
 class DateRangeDict(dict[dt.datetime, HMessage]):
     """Dict with keys that are contiguous date ranges up to limits
 
@@ -667,25 +620,26 @@ class NavPages(DateRangeDict):
 
         # Keep any native CV2 containers (already-migrated posts); append a converted
         # container for any legacy embeds sharing the period (accumulate concatenates
-        # both when a single period bin holds an embed post and a CV2 post).
+        # both when a single period bin holds an embed post and a CV2 post). Images
+        # convert to URL-referenced media galleries — Discord fetches them, the bot
+        # never re-downloads/uploads them, so re-rendering is cheap.
         containers: list[h.api.ComponentBuilder] = list(msg.components)
         if msg.embeds:
-            # _capped_container_from_embeds converts and trims to the 4000-char CV2 cap.
-            # The cap is message-wide, so reserve the budget already used by native CV2
-            # containers on this page (a mixed period bin) before trimming the converted
-            # part. (Images convert to URL-referenced media galleries — Discord fetches
-            # them, the bot never re-downloads/uploads them, so re-rendering is cheap.)
-            remaining = dd_components.CV2_TEXT_BUDGET - dd_components.cv2_text_length(
-                containers
+            container = dd_components.embeds_to_container(
+                msg.embeds, accent_color=embed_default_color
             )
-            container = _capped_container_from_embeds(msg.embeds, budget=remaining)
             if container.components:
                 containers.append(container)
 
         if not containers:
             return self.no_data_message
 
-        return HMessage(components=containers)
+        # Single enforcement point for the 4000-char CV2 cap. The page is assembled from
+        # heterogeneous parts — native containers, converted embeds, and however many
+        # messages ``accumulate`` merged into this bin — any of which can push the
+        # message-wide text over the limit. Trim the whole page once so Discord never
+        # rejects it for length, rather than each source guarding itself.
+        return HMessage(components=dd_components.fit_cv2_components(containers))
 
     @classmethod
     async def from_channel(cls, bot: h.RESTAware, channel, **kwargs) -> t.Self:
