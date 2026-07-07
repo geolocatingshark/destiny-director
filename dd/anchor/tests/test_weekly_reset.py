@@ -61,6 +61,11 @@ def _full_ctx() -> wr.WeeklyResetContext:
     ctx.zavala_weapon = wr.WeaponRef("Horror's Least", 444, "pulse_rifle")
     ctx.crucible_3v3 = "Competitive, Clash"
     ctx.crucible_6v6 = "Control, Eruption"
+    ctx.conquests = {
+        "Expert": ["Sunless Cell"],
+        "GM": ["Arms Dealer", "Scarlet Keep"],
+    }
+    ctx.update_link = {"label": "Update 9.7.0.3", "url": "https://example.com/notes"}
     ctx.notes = ["Duality is available due to a bug."]
     return ctx
 
@@ -140,10 +145,17 @@ def test_build_body_has_all_sections_and_deeplink() -> None:
         "# Weekly Reset Overview",
         # Resets line shows the *next* Tuesday (reset_ts + 1 week), not reset_ts.
         "Resets: <t:1784048400:f>",
-        "**VANGUARD ALERTS (Seasonal Tab)**",
+        "**UPDATES & EVENTS**",
+        "[Update 9.7.0.3](https://example.com/notes)",
+        "Trials returns on Friday at reset",  # relocated from the old bottom block
+        "**VANGUARD ALERTS**",
+        wr.VANGUARD_EXPLAINER,
         "Quickplay - [Service Revolver]",  # manually-set weekly weapon
         "GM Alert: The Sunless Cell",
         "Control - [The Helmsman]",  # manually-set weekly weapon
+        "**CONQUESTS (Seasonal Tab)**",
+        "Expert: Sunless Cell",
+        "GM: Arms Dealer, Scarlet Keep",
         "**FEATURED RAIDS & DUNGEONS**",
         "Crota's End + Vault of Glass",
         "Reprise: Argos",
@@ -153,6 +165,8 @@ def test_build_body_has_all_sections_and_deeplink() -> None:
         "See you starside",
     ):
         assert marker in body, marker
+    # The "(Seasonal Tab)" qualifier moved off the Vanguard header to Conquests.
+    assert "**VANGUARD ALERTS (Seasonal Tab)**" not in body
     # light.gg deep link uses the item hash (fixes the old bare placeholder).
     assert "https://light.gg/db/items/444" in body
 
@@ -163,7 +177,7 @@ def test_iron_banner_week_hides_trials_line_shows_reminder() -> None:
     ctx.trials_active = False
     body = wr.build_body(ctx)
     assert "Iron Banner has returned" in body
-    assert "From Friday - Tuesday" not in body  # the Trials line is gated off
+    assert "Trials returns on Friday at reset" not in body  # Trials gated off on IB
     assert wr.TRIALS_IB_REMINDER in body
 
 
@@ -171,7 +185,7 @@ def test_trials_line_shows_on_non_ib_week() -> None:
     ctx = _full_ctx()
     ctx.iron_banner = False
     ctx.trials_active = True
-    assert "From Friday - Tuesday" in wr.build_body(ctx)
+    assert "Trials returns on Friday at reset" in wr.build_body(ctx)
 
 
 def test_hand_typed_weapon_has_no_link() -> None:
@@ -190,6 +204,61 @@ def test_context_round_trip() -> None:
     assert restored.to_dict() == ctx.to_dict()
     assert restored.rotator_raids == ("Crota's End", "Vault of Glass")
     assert restored.zavala_weapon is not None and restored.zavala_weapon.hash == 444
+    assert restored.conquests == {
+        "Expert": ["Sunless Cell"],
+        "GM": ["Arms Dealer", "Scarlet Keep"],
+    }
+    assert restored.update_link == {
+        "label": "Update 9.7.0.3",
+        "url": "https://example.com/notes",
+    }
+
+
+def test_parse_conquest_name_selects_and_cleans() -> None:
+    # Real manifest names -> (post tier, clean base). Grandmaster maps to the "GM" tier,
+    # and a base name containing its own colon is preserved.
+    assert wr._parse_conquest_name("Expert Conquest: Sunless Cell: Customize") == (
+        "Expert",
+        "Sunless Cell",
+    )
+    assert wr._parse_conquest_name("Grandmaster Conquest: Scarlet Keep: Customize") == (
+        "GM",
+        "Scarlet Keep",
+    )
+    assert wr._parse_conquest_name(
+        "Ultimate Conquest: Operation: Seraph's Shield: Customize"
+    ) == ("Ultimate", "Operation: Seraph's Shield")
+    # Non-Conquest variants are excluded (return None) — this is bug (2)'s fix.
+    for non_conquest in (
+        "The Sunless Cell: Customize",
+        "The Sunless Cell",
+        "Nightfall: Advanced",
+        "Defiant Battleground: EDZ",
+    ):
+        assert wr._parse_conquest_name(non_conquest) is None, non_conquest
+
+
+def test_apply_conquests_sets_and_clears() -> None:
+    ctx = wr.WeeklyResetContext(reset_ts=1)
+    wr.apply_conquests(ctx, "GM", "Arms Dealer, Scarlet Keep , ")
+    assert ctx.conquests["GM"] == ["Arms Dealer", "Scarlet Keep"]
+    # Renders in CONQUEST_TIERS order under the section header.
+    assert "GM: Arms Dealer, Scarlet Keep" in wr.build_body(ctx)
+    wr.apply_conquests(ctx, "GM", "   ")  # blank clears the tier
+    assert "GM" not in ctx.conquests
+    assert "**CONQUESTS (Seasonal Tab)**" not in wr.build_body(ctx)
+
+
+def test_apply_update_sets_and_clears() -> None:
+    ctx = wr.WeeklyResetContext(reset_ts=1)
+    wr.apply_update(ctx, "Update 9.7.0.3", "https://example.com/x")
+    assert ctx.update_link == {
+        "label": "Update 9.7.0.3",
+        "url": "https://example.com/x",
+    }
+    assert "[Update 9.7.0.3](https://example.com/x)" in wr.build_body(ctx)
+    wr.apply_update(ctx, "", "")  # blank url clears the link
+    assert ctx.update_link is None
 
 
 def test_config_round_trip_and_defaults() -> None:
@@ -266,6 +335,12 @@ def stub_indexes():
             "strike": ["The Sunless Cell"],
             "pantheon": ["Argos", "Calus"],
             "crucible": ["Control"],
+        },
+        conquests={
+            "Expert": ["Sunless Cell"],
+            "Master": ["Conductor's Keep"],
+            "GM": ["Arms Dealer", "Scarlet Keep"],
+            "Ultimate": ["Lightblade"],
         },
     )
     yield
@@ -453,8 +528,17 @@ async def test_resolve_reward_free_text_and_blank(stub_indexes) -> None:
 # --- Portal (component-204) derivation -------------------------------------------
 
 
-def _portal_op(name, *, item_type=None, type_hash=None, challenges=0, max_party=None,
-               modes=(), reward="", reward_hash=0):
+def _portal_op(
+    name,
+    *,
+    item_type=None,
+    type_hash=None,
+    challenges=0,
+    max_party=None,
+    modes=(),
+    reward="",
+    reward_hash=0,
+):
     from dd.anchor.extensions import portal_ops as po
 
     return po.PortalOp(
@@ -476,16 +560,42 @@ def _portal_op(name, *, item_type=None, type_hash=None, challenges=0, max_party=
 # A live-shaped DEV Portal feed. Only the GM Nightfall is derived; the daily Quickplay
 # and Control weapon ops are here to prove they're ignored (they live in Portal Ops).
 _LIVE_PORTAL_OPS = [
-    _portal_op("Quickplay", item_type=3, max_party=6, modes=(3, 18, 7),
-               reward="Tempered Dynamo", reward_hash=3),  # daily weapon — ignored
-    _portal_op("The Sunless Cell", item_type=3, type_hash=wr._STRIKE_ACTIVITY_TYPE_HASH,
-               challenges=1, max_party=3, modes=(3, 18, 7),
-               reward="Lotus-Eater", reward_hash=4),  # GM Nightfall ✓ (has a challenge)
-    _portal_op("The Insight Terminus", item_type=3,
-               type_hash=wr._STRIKE_ACTIVITY_TYPE_HASH, challenges=0, max_party=3,
-               modes=(3, 18, 7), reward="Cynosure", reward_hash=5),  # plain strike — no
-    _portal_op("Eruption", item_type=3, max_party=6, modes=(88, 5),
-               reward="The Helmsman", reward_hash=8),  # daily PvP weapon — ignored
+    _portal_op(
+        "Quickplay",
+        item_type=3,
+        max_party=6,
+        modes=(3, 18, 7),
+        reward="Tempered Dynamo",
+        reward_hash=3,
+    ),  # daily weapon — ignored
+    _portal_op(
+        "The Sunless Cell",
+        item_type=3,
+        type_hash=wr._STRIKE_ACTIVITY_TYPE_HASH,
+        challenges=1,
+        max_party=3,
+        modes=(3, 18, 7),
+        reward="Lotus-Eater",
+        reward_hash=4,
+    ),  # GM Nightfall ✓ (has a challenge)
+    _portal_op(
+        "The Insight Terminus",
+        item_type=3,
+        type_hash=wr._STRIKE_ACTIVITY_TYPE_HASH,
+        challenges=0,
+        max_party=3,
+        modes=(3, 18, 7),
+        reward="Cynosure",
+        reward_hash=5,
+    ),  # plain strike — no
+    _portal_op(
+        "Eruption",
+        item_type=3,
+        max_party=6,
+        modes=(88, 5),
+        reward="The Helmsman",
+        reward_hash=8,
+    ),  # daily PvP weapon — ignored
 ]
 
 

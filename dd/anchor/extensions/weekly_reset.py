@@ -93,6 +93,14 @@ ZAVALA_TIER_SUFFIX = "(T5/*rolls vary*)"
 TRIALS_IB_REMINDER = (
     "Reminder: Trials of Osiris is unavailable while Iron Banner is active."
 )
+#: Static explainer under the VANGUARD ALERTS header (rewards are the weekly-challenge
+#: drops).
+VANGUARD_EXPLAINER = "Reward listed is for completing the weekly challenge."
+#: CONQUESTS (Seasonal Tab) difficulty tiers, in post order. The weekly tier->activity
+#: assignment is Portal presentation data the Bungie API does not expose (activities
+#: surface as untiered "…: Customize" entries), so this section is hand-curated — see
+#: plans/weekly_reset_conquests.md.
+CONQUEST_TIERS = ("Expert", "Master", "GM", "Ultimate")
 
 # The seven Pantheon bosses (Pantheon 2.0 roster); the weekly Reprise/Encore pair is
 # picked from here by the team — Bungie publishes no forward schedule.
@@ -290,9 +298,14 @@ class WeeklyResetContext:
     crucible_1v6: str = DEFAULT_CRUCIBLE_1V6
     crucible_3v3: str = ""
     crucible_6v6: str = ""
-    # EVENTS / Trials
+    # CONQUESTS (Seasonal Tab) — hand-curated per tier (not API-derivable). Keys are
+    # CONQUEST_TIERS; values are activity-name lists.
+    conquests: dict[str, list[str]] = dataclasses.field(default_factory=dict)
+    # UPDATES & EVENTS / Trials
     iron_banner: bool = False
     trials_active: bool = True
+    #: Optional Bungie patch-notes link, ``{"label": ..., "url": ...}``.
+    update_link: dict[str, str] | None = None
     # Editorial
     image_url: str | None = None
     events_narrative: str = ""
@@ -322,8 +335,10 @@ class WeeklyResetContext:
             "crucible_1v6": self.crucible_1v6,
             "crucible_3v3": self.crucible_3v3,
             "crucible_6v6": self.crucible_6v6,
+            "conquests": {k: list(v) for k, v in self.conquests.items()},
             "iron_banner": self.iron_banner,
             "trials_active": self.trials_active,
+            "update_link": dict(self.update_link) if self.update_link else None,
             "image_url": self.image_url,
             "events_narrative": self.events_narrative,
             "notes": list(self.notes),
@@ -357,8 +372,13 @@ class WeeklyResetContext:
             crucible_1v6=d.get("crucible_1v6", DEFAULT_CRUCIBLE_1V6),
             crucible_3v3=d.get("crucible_3v3", ""),
             crucible_6v6=d.get("crucible_6v6", ""),
+            conquests={
+                str(k): [str(x) for x in (v or [])]
+                for k, v in (d.get("conquests") or {}).items()
+            },
             iron_banner=bool(d.get("iron_banner", False)),
             trials_active=bool(d.get("trials_active", True)),
+            update_link=dict(d["update_link"]) if d.get("update_link") else None,
             image_url=d.get("image_url"),
             events_narrative=d.get("events_narrative", ""),
             notes=list(d.get("notes") or []),
@@ -600,9 +620,18 @@ def build_body(ctx: WeeklyResetContext) -> str:
         f"Resets: <t:{next_reset_ts(ctx.reset_ts)}:f>",
     ]
 
-    # EVENTS — only when there is something eventful to say.
-    if ctx.iron_banner or ctx.events_narrative:
-        lines += ["", "**EVENTS**", ""]
+    # UPDATES & EVENTS — the Bungie patch link, the Trials-returns reminder, and any
+    # editorial events. Trials is mutually exclusive with Iron Banner weeks.
+    trials_line = ctx.trials_active and not ctx.iron_banner
+    if ctx.update_link or ctx.iron_banner or ctx.events_narrative or trials_line:
+        lines += ["", "**UPDATES & EVENTS**", ""]
+        if ctx.update_link:
+            label = ctx.update_link.get("label") or "Update"
+            url = ctx.update_link.get("url") or ""
+            if url:
+                lines.append(f":Bungie: {SEP} [{label}]({url})")
+        if trials_line:
+            lines.append(f":trials: {SEP} Trials returns on Friday at reset")
         if ctx.iron_banner:
             lines.append(f":IronBanner: {SEP} Iron Banner has returned!")
             lines += ["", TRIALS_IB_REMINDER]
@@ -611,7 +640,7 @@ def build_body(ctx: WeeklyResetContext) -> str:
 
     # VANGUARD ALERTS. GM is Portal-derived; Quickplay/Control are the manually-set
     # weekly featured weapons (the API exposes only the daily reward or the full pool).
-    lines += ["", "**VANGUARD ALERTS (Seasonal Tab)**", ""]
+    lines += ["", "**VANGUARD ALERTS**", "", VANGUARD_EXPLAINER, ""]
     if ctx.quickplay_weapon:
         lines.append(
             f":vanguard_strikes: {SEP} Quickplay - {ctx.quickplay_weapon.markdown()}"
@@ -625,6 +654,15 @@ def build_body(ctx: WeeklyResetContext) -> str:
         lines.append(f":raid: {SEP} {_weekly_reward(ctx.seasonal_raid)}")
     if ctx.seasonal_dungeon:
         lines.append(f":dungeon: {SEP} {_weekly_reward(ctx.seasonal_dungeon)}")
+
+    # CONQUESTS (Seasonal Tab) — one line per non-empty tier, in CONQUEST_TIERS order.
+    # Hand-curated; the API can't supply the weekly tier->activity map (see the plan).
+    if any(ctx.conquests.get(tier) for tier in CONQUEST_TIERS):
+        lines += ["", "**CONQUESTS (Seasonal Tab)**", ""]
+        for tier in CONQUEST_TIERS:
+            activities = [a for a in ctx.conquests.get(tier, []) if a]
+            if activities:
+                lines.append(f":Conquests: {SEP} {tier}: {', '.join(activities)}")
 
     # FEATURED RAIDS & DUNGEONS
     if any(ctx.rotator_raids) or any(ctx.rotator_dungeons):
@@ -670,14 +708,6 @@ def build_body(ctx: WeeklyResetContext) -> str:
             lines.append(f":crucible: {SEP} 3v3: {ctx.crucible_3v3}")
         if ctx.crucible_6v6:
             lines.append(f":crucible: {SEP} 6v6: {ctx.crucible_6v6}")
-
-    # Trials window (mutually exclusive with Iron Banner weeks).
-    if ctx.trials_active and not ctx.iron_banner:
-        lines += [
-            "",
-            "**From Friday - Tuesday**",
-            f":trials: {SEP} 3v3: Trials of Osiris",
-        ]
 
     # MORE
     lines += [
@@ -744,6 +774,7 @@ def activity_record(ctx: WeeklyResetContext) -> dict[str, t.Any]:
         "crucible_1v6": ctx.crucible_1v6 or None,
         "crucible_3v3": ctx.crucible_3v3 or None,
         "crucible_6v6": ctx.crucible_6v6 or None,
+        "conquests": {k: v for k, v in ctx.conquests.items() if v} or None,
         "iron_banner": ctx.iron_banner,
         "trials_active": ctx.trials_active,
     }
@@ -1534,6 +1565,7 @@ _REWARD_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _REWARD_FIELDS]
 _RAID_CHOICES = [lb.Choice(r, r) for r in RAIDS]
 _DUNGEON_CHOICES = [lb.Choice(d, d) for d in DUNGEONS]
 _PANTHEON_CHOICES = [lb.Choice(b, b) for b in PANTHEON_BOSSES]
+_CONQUEST_TIER_CHOICES = [lb.Choice(tier, tier) for tier in CONQUEST_TIERS]
 
 # DestinyActivityModeType ids used to classify activities (raid/dungeon vs strike).
 _MODE_RAID = 4
@@ -1606,6 +1638,34 @@ _STRIKE_JUNK = (
 )
 
 
+# Conquest activities are named "<Tier> Conquest: <Base>: Customize" in the manifest.
+# <Base> may contain its own colon (e.g. "Operation: Seraph's Shield"), so capture it
+# greedily between the fixed prefix and the ": Customize" suffix (don't split on ":").
+_CONQUEST_NAME_RE = re.compile(r"^(\S+) Conquest: (.+): Customize$")
+#: Manifest tier word -> the post's CONQUEST_TIERS label ("Grandmaster" -> "GM").
+_CONQUEST_MANIFEST_TIER = {
+    "Expert": "Expert",
+    "Master": "Master",
+    "Grandmaster": "GM",
+    "Ultimate": "Ultimate",
+}
+
+
+def _parse_conquest_name(raw_name: str) -> tuple[str, str] | None:
+    """Parse a manifest Conquest activity name into ``(post_tier, base_name)``.
+
+    ``"Expert Conquest: Sunless Cell: Customize"`` -> ``("Expert", "Sunless Cell")``;
+    ``"Grandmaster Conquest: Scarlet Keep: Customize"`` -> ``("GM", "Scarlet Keep")``.
+    Returns ``None`` for any non-Conquest name (plain strikes, ``: Customize`` missions,
+    etc.), which is how the pool excludes the non-Conquest variants.
+    """
+    match = _CONQUEST_NAME_RE.match(raw_name.strip())
+    if not match:
+        return None
+    tier = _CONQUEST_MANIFEST_TIER.get(match.group(1))
+    return (tier, match.group(2).strip()) if tier else None
+
+
 @dataclasses.dataclass
 class _Indexes:
     """Manifest-derived autocomplete data, built once and cached."""
@@ -1614,6 +1674,8 @@ class _Indexes:
     items: list[tuple[str, int, str, int, str]]
     #: category ("raid"/"dungeon"/"strike"/"pantheon"/"crucible") -> sorted names.
     activities: dict[str, list[str]]
+    #: Conquests pool: post tier ("Expert"/"Master"/"GM"/"Ultimate") -> sorted names.
+    conquests: dict[str, list[str]]
 
 
 _indexes: _Indexes | None = None
@@ -1703,6 +1765,9 @@ async def _build_indexes() -> _Indexes:
     # Only GM strikes need manifest autocomplete now; raids/dungeons/pantheon/crucible
     # are bounded Choice selectors (see the *_CHOICES constants).
     strikes: set[str] = set()
+    # Conquests pool, bucketed by post tier: only the manifest "<Tier> Conquest: <Base>:
+    # Customize" activities, keyed by tier so the autocomplete matches the picked tier.
+    conquest_by_tier: dict[str, set[str]] = {tier: set() for tier in CONQUEST_TIERS}
     try:
         path = await api._get_latest_manifest(schemas.BungieCredentials.api_key)
         async with aiosqlite.connect(path) as con:
@@ -1739,25 +1804,30 @@ async def _build_indexes() -> _Indexes:
             await cur.execute("SELECT json FROM DestinyActivityDefinition")
             for (row,) in await cur.fetchall():
                 defn = json.loads(row)
+                raw_name = (defn.get("displayProperties") or {}).get("name", "")
+                # Conquests: keep only the "<Tier> Conquest: <Base>: Customize" entries,
+                # bucketed by tier — independent of the strike cleaning below.
+                parsed = _parse_conquest_name(raw_name)
+                if parsed:
+                    conquest_by_tier[parsed[0]].add(parsed[1])
                 type_name = activity_types.get(defn.get("activityTypeHash"), "")
-                if _classify_activity(defn, type_name) != "strike":
-                    continue
-                name = _clean_activity_name(
-                    (defn.get("displayProperties") or {}).get("name", ""), "strike"
-                )
-                if name:
-                    strikes.add(name)
+                if _classify_activity(defn, type_name) == "strike":
+                    cleaned = _clean_activity_name(raw_name, "strike")
+                    if cleaned:
+                        strikes.add(cleaned)
     except Exception:
         logger.warning("weekly_reset: manifest index build failed", exc_info=True)
 
     result = _Indexes(
         items=sorted(item_by_key.values(), key=lambda e: e[0].lower()),
         activities={"strike": sorted(strikes)},
+        conquests={tier: sorted(names) for tier, names in conquest_by_tier.items()},
     )
     logger.info(
-        "weekly_reset indexes: %d items; strikes=%d",
+        "weekly_reset indexes: %d items; strikes=%d; conquests=%d",
         len(result.items),
         len(result.activities["strike"]),
+        sum(len(names) for names in result.conquests.values()),
     )
     return result
 
@@ -1818,6 +1888,34 @@ async def _reward_value_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None
     await ctx.respond(choices)
 
 
+async def _conquests_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
+    # The field is a comma-separated list; complete only the segment being typed while
+    # preserving any already-entered activities. Suggestions are scoped to the tier the
+    # user has picked (the sibling `tier` option); if none yet, offer every tier's ops.
+    raw = str(ctx.focused.value or "")
+    head, _, last = raw.rpartition(",")
+    query = last.strip().lower()
+    if not query or _indexes is None:
+        if _indexes is None:
+            asyncio.create_task(get_indexes())  # warm for the next keystroke
+        await ctx.respond([])
+        return
+    tier_opt = ctx.get_option("tier")
+    tier = str(tier_opt.value) if tier_opt and tier_opt.value else ""
+    if tier:
+        pool = _indexes.conquests.get(tier, [])
+    else:  # tier not chosen yet — fall back to every tier's activities
+        pool = sorted({n for names in _indexes.conquests.values() for n in names})
+    prefix = f"{head.rstrip()}, " if head.strip() else ""
+    out: list[str] = []
+    for name in pool:
+        if query in name.lower():
+            out.append(f"{prefix}{name}"[:100])
+        if len(out) >= 25:
+            break
+    await ctx.respond(out)
+
+
 async def resolve_reward_value(value: str) -> WeaponRef | None:
     """A hash (picked from autocomplete) -> full WeaponRef; else a plain typed name."""
     value = value.strip()
@@ -1845,6 +1943,24 @@ def apply_crucible(ctx: WeeklyResetContext, three: str, six: str) -> None:
         ctx.crucible_3v3 = f"{CRUCIBLE_3V3_FIRST}, {three}"
     if six:
         ctx.crucible_6v6 = f"{CRUCIBLE_6V6_FIRST}, {six}"
+
+
+def apply_conquests(ctx: WeeklyResetContext, tier: str, value: str) -> None:
+    """Replace one Conquests tier's activity list from a comma-separated string.
+
+    An empty ``value`` clears that tier.
+    """
+    activities = [part.strip() for part in value.split(",") if part.strip()]
+    if activities:
+        ctx.conquests[tier] = activities
+    else:
+        ctx.conquests.pop(tier, None)
+
+
+def apply_update(ctx: WeeklyResetContext, label: str, url: str) -> None:
+    """Set (or clear, when ``url`` is blank) the UPDATES & EVENTS Bungie patch link."""
+    label, url = label.strip(), url.strip()
+    ctx.update_link = {"label": label or "Update", "url": url} if url else None
 
 
 def apply_pantheon(ctx: WeeklyResetContext, reprise: str, encore: str) -> None:
@@ -2081,6 +2197,52 @@ class WeeklyResetSetReward(
         else:
             shown = "—"
         await ctx.respond(f"Set **{field}** → {shown}", ephemeral=True)
+
+
+@weekly_reset_group.register
+class WeeklyResetSetConquests(
+    lb.SlashCommand,
+    name="set_conquests",
+    description="Set a Conquests tier's activities (comma-separated; blank clears)",
+):
+    tier = lb.string("tier", "Difficulty tier", choices=_CONQUEST_TIER_CHOICES)
+    value = lb.string(
+        "value",
+        "Activities, comma-separated (autocompletes names; blank clears the tier)",
+        autocomplete=_conquests_autocomplete,
+        default="",
+    )
+
+    @lb.invoke
+    async def invoke(
+        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        tier, value = self.tier, self.value
+        await mutate_draft(bot, ctx.user.id, lambda c: apply_conquests(c, tier, value))
+        shown = ", ".join(p.strip() for p in value.split(",") if p.strip()) or "—"
+        await ctx.respond(f"Set **{tier}** Conquests → {shown}", ephemeral=True)
+
+
+@weekly_reset_group.register
+class WeeklyResetSetUpdate(
+    lb.SlashCommand,
+    name="set_update",
+    description="Set the UPDATES & EVENTS Bungie patch-notes link (blank url clears)",
+):
+    url = lb.string("url", "Patch-notes URL (blank to clear the link)", default="")
+    label = lb.string("label", "Link text, e.g. 'Update 9.7.0.3'", default="")
+
+    @lb.invoke
+    async def invoke(
+        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        url, label = self.url, self.label
+        await mutate_draft(bot, ctx.user.id, lambda c: apply_update(c, label, url))
+        await ctx.respond(
+            f"Set **update link** → {label or url or '—'}", ephemeral=True
+        )
 
 
 @loader.listener(h.StartedEvent)
