@@ -55,29 +55,21 @@ class SectorMessages(NavPages):
         # lookahead_len, so generate indices 1..lookahead_len (lookahead_len dates).
         # A short range left the last reachable forward page ("+lookahead_len days")
         # permanently empty ("No data here").
-        for date in [
-            start_date + self.period * n for n in range(self.lookahead_len)
-        ]:
+        for date in [start_date + self.period * n for n in range(self.lookahead_len)]:
             try:
                 sectors = sector_on(date)
             except KeyError:
                 # A KeyError will be raised if TBC is selected for the google sheet
                 # In this case, we will just return a message saying that there
                 # is no data
-                lookahead_dict = {
-                    **lookahead_dict,
-                    date: self.no_data_message,
-                }
+                lookahead_dict[date] = self.no_data_message
             else:
-                lookahead_dict = {
-                    **lookahead_dict,
-                    date: await format_post(
-                        bot=bot,
-                        sectors=sectors,
-                        date=date,
-                        emoji_dict=bot.emoji,
-                    ),
-                }
+                lookahead_dict[date] = await format_post(
+                    bot=bot,
+                    sectors=sectors,
+                    date=date,
+                    emoji_dict=bot.emoji,
+                )
 
         return lookahead_dict
 

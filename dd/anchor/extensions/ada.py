@@ -127,18 +127,31 @@ async def format_ada_vendor(
     async def _sub(content: str) -> str:
         return await substitute_user_side_emoji(emoji_dict, content)
 
+    title = await _sub(ADA_TITLE + "\n" + _inventory_changes_line())
+    footer = await _sub(ADA_FOOTER)
+    # The title and footer are fixed; only the shader block grows. Reserve their budget
+    # and truncate just the shader block (with a CRITICAL alert) so an oversized
+    # inventory never drops the post or loses the footer.
+    reserve = components.cv2_utf16_len(title) + components.cv2_utf16_len(footer)
+    shader_block = await components.guard_cv2_post_text(
+        await _sub(_render_shader_block(shaders)),
+        post_name="Ada",
+        budget=max(components.CV2_TEXT_BUDGET - reserve, 0),
+    )
+
     # Components V2 container with a linked title over a divider, matching Eververse.
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)
     )
-    container.add_text_display(await _sub(ADA_TITLE + "\n" + _inventory_changes_line()))
+    container.add_text_display(title)
     container.add_separator(divider=True)
-    container.add_text_display(await _sub(_render_shader_block(shaders)))
+    container.add_text_display(shader_block)
     container.add_separator(divider=True)
-    container.add_text_display(await _sub(ADA_FOOTER))
+    container.add_text_display(footer)
 
-    # Backstop: CRITICAL-alert if this multi-text-display post exceeds the CV2 cap.
-    await components.guard_cv2_post_length([container], post_name="Ada")
+    # Backstop: CRITICAL-alert if the built post still exceeds the CV2 cap (e.g. the
+    # fixed title/footer alone overflow — the truncation above cannot help then).
+    await components.warn_cv2_post_over_limit([container], post_name="Ada")
     return HMessage(components=[container])
 
 

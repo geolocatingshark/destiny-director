@@ -190,16 +190,12 @@ async def format_post(
 
     header, body, footer = _sub(header), _sub(body), _sub(footer)
 
-    # Components V2 caps total text at 4000. Truncate only the sectors/details body,
-    # reserving room for the header and the rewards/links footer so they always survive
-    # a detail-heavy day; an over-budget body raises a CRITICAL (owner-pinging) alert.
-    reserve = components.cv2_utf16_len(header) + components.cv2_utf16_len(footer)
-    body = await components.guard_cv2_post_text(
-        body,
-        post_name="Lost Sector",
-        budget=max(components.CV2_TEXT_BUDGET - reserve, 0),
+    # Components V2 caps total text at 4000. Reserve the header and the rewards/links
+    # footer and truncate only the sectors/details body, so they always survive a
+    # detail-heavy day; an over-budget body raises a CRITICAL (owner-pinging) alert.
+    description = await components.guard_cv2_post_sections(
+        header, body, footer, post_name="Lost Sector"
     )
-    description = header + body + footer
 
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)

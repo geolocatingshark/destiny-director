@@ -112,7 +112,13 @@ def cap_cv2_text(text: str, *, budget: int = CV2_TEXT_BUDGET) -> str:
     encoded = text.encode("utf-16-le")
     if len(encoded) // 2 <= budget:
         return text
-    keep = max(budget - cv2_utf16_len(CV2_TRUNCATION_NOTE), 0)
+    note_len = cv2_utf16_len(CV2_TRUNCATION_NOTE)
+    if budget < note_len:
+        # No room for the note without exceeding budget — hard-slice to the budget so
+        # the result still honours the cap (``* 2`` keeps a code-unit boundary;
+        # errors="ignore" drops a lone surrogate if the cut landed mid-pair).
+        return encoded[: max(budget, 0) * 2].decode("utf-16-le", errors="ignore")
+    keep = budget - note_len
     # ``keep * 2`` is a code-unit boundary; errors="ignore" drops a lone surrogate if
     # the cut landed mid-pair.
     cut = encoded[: keep * 2].decode("utf-16-le", errors="ignore")
@@ -149,12 +155,35 @@ async def guard_cv2_post_text(
     return cap_cv2_text(text, budget=budget)
 
 
-async def guard_cv2_post_length(
+async def guard_cv2_post_sections(
+    header: str,
+    body: str,
+    footer: str,
+    *,
+    post_name: str,
+    budget: int = CV2_TEXT_BUDGET,
+) -> str:
+    """Assemble ``header + body + footer``, truncating only ``body`` on overflow.
+
+    The fixed header/footer budget is reserved so those always survive a body-heavy
+    day; only the variable ``body`` is routed through :func:`guard_cv2_post_text`
+    (truncate + CRITICAL alert). All three parts must already be emoji-substituted —
+    the budget is measured on the final rendered text.
+    """
+    reserve = cv2_utf16_len(header) + cv2_utf16_len(footer)
+    body = await guard_cv2_post_text(
+        body, post_name=post_name, budget=max(budget - reserve, 0)
+    )
+    return header + body + footer
+
+
+async def warn_cv2_post_over_limit(
     components: t.Iterable[h.api.ComponentBuilder], *, post_name: str
 ) -> None:
     """Backstop for a built autopost: CRITICAL-alert if its total CV2 text would exceed
     Discord's hard limit (and thus be rejected). Catches multi-text-display posts that
-    never route through :func:`guard_cv2_post_text`.
+    never route through :func:`guard_cv2_post_text`. Alert-only — it does not mutate the
+    components, so callers that can overflow must truncate their variable body first.
     """
     length = cv2_text_length(components)
     if length <= CV2_TEXT_LIMIT:

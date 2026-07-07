@@ -185,3 +185,20 @@ def test_url_media_gallery_helper_uploads_nothing() -> None:
     _payload, attachments = gallery.build()
     assert list(attachments) == []
     assert [item.media for item in gallery.items] == ["https://kyberscorner.com/x.gif"]
+
+
+def test_hikari_url_media_build_shape_is_pinned() -> None:
+    # Tripwire: url_media_gallery/url_thumbnail rely on hikari's builders emitting the
+    # URL in the payload while also returning one resource they would upload — which
+    # our _Url* subclasses drop so Discord fetches the URL instead. The bot runs under
+    # ``python -OO`` (asserts stripped), so this lives as a test: if a hikari upgrade
+    # changes the (payload, resources) shape, CI fails loudly rather than the autoposts
+    # silently 413ing on a re-uploaded ~15 MB gif.
+    url = "https://kyberscorner.com/x.gif"
+    for builder in (
+        h.impl.MediaGalleryItemBuilder(media=url),
+        h.impl.ThumbnailComponentBuilder(media=url),
+    ):
+        payload, resources = builder.build()
+        assert payload["media"]["url"] == url
+        assert len(list(resources)) == 1  # the resource _url_only strips

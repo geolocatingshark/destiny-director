@@ -34,7 +34,7 @@ from ...common.components import (
     build_container,
     cv2_notice,
     cv2_success,
-    guard_cv2_post_text,
+    guard_cv2_post_sections,
     respond_cv2,
     url_media_gallery,
 )
@@ -433,28 +433,29 @@ async def format_xur_vendor(
 
     emoji_dict = await fetch_emoji_dict(bot)
 
-    description = "# [XÛR'S LOOT](https://kyber3000.com/D2-Xur)\n\n"
-    description += xur_departure_string()
-    description += xur_location_fragment(vendor.location or "", xur_locations)
+    header = "# [XÛR'S LOOT](https://kyber3000.com/D2-Xur)\n\n"
+    header += xur_departure_string()
+    header += xur_location_fragment(vendor.location or "", xur_locations)
+
     exotic_armor_pieces: list[api.DestinyArmor] = [
         t.cast(api.DestinyArmor, item)
         for item in vendor.sale_items
         if item.is_exotic and item.is_armor
     ]
     exotic_armor_pieces.sort(key=lambda x: x.class_)
-    description += exotic_armor_fragment(
+    body = exotic_armor_fragment(
         exotic_armor_pieces,
         allowed_emoji_list=emoji_dict.keys(),
     )
-    description += exotic_weapons_fragment(
+    body += exotic_weapons_fragment(
         [item for item in vendor.sale_items if item.is_exotic and item.is_weapon],
         emoji_include_list=emoji_dict.keys(),
     )
-    description += exotic_catalysts_fragment(
+    body += exotic_catalysts_fragment(
         [item for item in vendor.sale_items if item.is_exotic and item.is_catalyst],
         emoji_include_list=emoji_dict.keys(),
     )
-    description += legendary_armor_sets_fragment(
+    body += legendary_armor_sets_fragment(
         [
             t.cast(api.DestinyArmor, item)
             for item in vendor.sale_items
@@ -462,18 +463,20 @@ async def format_xur_vendor(
         ],
         emoji_include_list=emoji_dict.keys(),
     )
-    description += legendary_weapons_fragment(
+    body += legendary_weapons_fragment(
         [item for item in vendor.sale_items if item.is_weapon and item.is_legendary],
         emoji_include_list=emoji_dict.keys(),
     )
 
-    description += XUR_FOOTER
-    description = await substitute_user_side_emoji(emoji_dict, description)
+    header = await substitute_user_side_emoji(emoji_dict, header)
+    body = await substitute_user_side_emoji(emoji_dict, body)
+    footer = await substitute_user_side_emoji(emoji_dict, XUR_FOOTER)
 
     # Components V2 caps total text at 4000 chars (tighter than an embed's 4096). Xûr is
-    # the longest post, so guard: an oversized inventory truncates with a CRITICAL
-    # (owner-pinging) alert rather than Discord hard-rejecting the whole autopost.
-    description = await guard_cv2_post_text(description, post_name="Xûr")
+    # the longest post, so reserve the fixed header/footer and truncate only the
+    # inventory body (with a CRITICAL owner-pinging alert) — the "View More"/sign-off
+    # footer always survives rather than being tail-cut off an oversized post.
+    description = await guard_cv2_post_sections(header, body, footer, post_name="Xûr")
 
     # Components V2: the whole post is one text display, with the optional default
     # image as a trailing full-width media gallery (mirroring the old set_image).

@@ -339,18 +339,11 @@ async def format_eververse_vendor(
     async def _sub(content: str) -> str:
         return await substitute_user_side_emoji(emoji_dict, content)
 
-    # Components V2: a container with one text display per block, with separators
-    # giving visual space between each section's heading and its contents.
-    container = h.impl.ContainerComponentBuilder(
-        accent_color=h.Color(cfg.embed_default_color)
+    title = await _sub(
+        "# :eververse: [Today 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)"
     )
-    container.add_text_display(
-        await _sub(
-            "# :eververse: [Today 𝘢𝘵 Eververse](https://kyber3000.com/Eververse)"
-        )
-    )
-
-    bright_dust_body = (
+    bright_dust_heading = await _sub("## :bright_dust: Bright Dust Offerings")
+    bright_dust_body = await _sub(
         _render_offering_groups(
             _group_eververse_offerings(list(pool.values())),
             manifest_table,
@@ -358,22 +351,57 @@ async def format_eververse_vendor(
         )
         or "No Bright Dust offerings are available right now."
     )
-    container.add_separator(divider=True)
-    container.add_text_display(await _sub("## :bright_dust: Bright Dust Offerings"))
-    container.add_separator(spacing=h.SpacingType.SMALL, divider=False)
-    container.add_text_display(await _sub(bright_dust_body))
 
     silver_groups = _group_eververse_offerings(silver_items or [])
+    silver_heading = silver_body = ""
     if silver_groups:
-        container.add_separator(divider=True)
-        container.add_text_display(await _sub("## :silver: Silver Offerings"))
-        container.add_separator(spacing=h.SpacingType.SMALL, divider=False)
-        container.add_text_display(
-            await _sub(_render_offering_groups(silver_groups, manifest_table, "Silver"))
+        silver_heading = await _sub("## :silver: Silver Offerings")
+        silver_body = await _sub(
+            _render_offering_groups(silver_groups, manifest_table, "Silver")
         )
 
-    # Backstop: CRITICAL-alert if this multi-text-display post exceeds the CV2 cap.
-    await components.guard_cv2_post_length([container], post_name="Eververse")
+    # The title/headings are fixed; the two bodies grow. Reserve the fixed text, give
+    # Bright Dust first claim on the remaining budget, then let Silver take whatever is
+    # left — so an oversized day trims Silver first and never drops the post. A body
+    # that overflows raises a CRITICAL (owner-pinging) alert.
+    reserve = (
+        components.cv2_utf16_len(title)
+        + components.cv2_utf16_len(bright_dust_heading)
+        + components.cv2_utf16_len(silver_heading)
+    )
+    bright_dust_body = await components.guard_cv2_post_text(
+        bright_dust_body,
+        post_name="Eververse",
+        budget=max(components.CV2_TEXT_BUDGET - reserve, 0),
+    )
+    if silver_groups:
+        used = reserve + components.cv2_utf16_len(bright_dust_body)
+        silver_body = await components.guard_cv2_post_text(
+            silver_body,
+            post_name="Eververse",
+            budget=max(components.CV2_TEXT_BUDGET - used, 0),
+        )
+
+    # Components V2: a container with one text display per block, with separators
+    # giving visual space between each section's heading and its contents.
+    container = h.impl.ContainerComponentBuilder(
+        accent_color=h.Color(cfg.embed_default_color)
+    )
+    container.add_text_display(title)
+    container.add_separator(divider=True)
+    container.add_text_display(bright_dust_heading)
+    container.add_separator(spacing=h.SpacingType.SMALL, divider=False)
+    container.add_text_display(bright_dust_body)
+
+    if silver_groups:
+        container.add_separator(divider=True)
+        container.add_text_display(silver_heading)
+        container.add_separator(spacing=h.SpacingType.SMALL, divider=False)
+        container.add_text_display(silver_body)
+
+    # Backstop: CRITICAL-alert if the built post still exceeds the CV2 cap (e.g. the
+    # fixed title/headings alone overflow — the truncation above cannot help then).
+    await components.warn_cv2_post_over_limit([container], post_name="Eververse")
     return HMessage(components=[container])
 
 

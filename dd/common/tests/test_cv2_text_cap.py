@@ -48,6 +48,14 @@ def test_cap_cv2_text_cuts_on_a_codepoint_boundary():
     capped.encode("utf-16-le").decode("utf-16-le")  # round-trips (no lone surrogate)
 
 
+@pytest.mark.parametrize("budget", [0, -5, 5, 10])
+def test_cap_cv2_text_never_exceeds_a_tiny_budget(budget):
+    # When there's no room for the ~18-unit truncation note, the note must be dropped
+    # rather than returned whole (which would itself blow the budget).
+    capped = components.cap_cv2_text("x" * 500, budget=budget)
+    assert components.cv2_utf16_len(capped) <= max(budget, 0)
+
+
 # --- guard_cv2_post_text (truncate + CRITICAL alert) -----------------------------
 
 
@@ -79,22 +87,51 @@ async def test_guard_cv2_post_text_is_silent_within_budget(monkeypatch):
     assert calls == []
 
 
-# --- guard_cv2_post_length (built-container backstop) ------------------------------
+# --- guard_cv2_post_sections (reserve header/footer, truncate body) --------------
 
 
 @pytest.mark.asyncio
-async def test_guard_cv2_post_length_alerts_over_hard_limit(monkeypatch):
+async def test_guard_cv2_post_sections_keeps_header_and_footer(monkeypatch):
+    calls = _record_alerts(monkeypatch)
+    header, footer = "HEADER\n", "\nFOOTER"
+    out = await components.guard_cv2_post_sections(
+        header, "b" * 8000, footer, post_name="Lost Sector"
+    )
+    assert out.startswith(header)
+    assert out.endswith(footer)  # footer survives the overflow, not tail-cut
+    assert "truncated" in out
+    assert components.cv2_text_length([components.text_display(out)]) <= (
+        components.CV2_TEXT_BUDGET
+    )
+    assert calls == [("Lost Sector autopost", logging.CRITICAL)]
+
+
+@pytest.mark.asyncio
+async def test_guard_cv2_post_sections_silent_within_budget(monkeypatch):
+    calls = _record_alerts(monkeypatch)
+    out = await components.guard_cv2_post_sections(
+        "H", "body", "F", post_name="Lost Sector"
+    )
+    assert out == "HbodyF"
+    assert calls == []
+
+
+# --- warn_cv2_post_over_limit (built-container backstop) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_warn_cv2_post_over_limit_alerts_over_hard_limit(monkeypatch):
     calls = _record_alerts(monkeypatch)
     container = h.impl.ContainerComponentBuilder()
     container.add_text_display("z" * 5000)  # over CV2_TEXT_LIMIT (4000)
-    await components.guard_cv2_post_length([container], post_name="Eververse")
+    await components.warn_cv2_post_over_limit([container], post_name="Eververse")
     assert calls == [("Eververse autopost", logging.CRITICAL)]
 
 
 @pytest.mark.asyncio
-async def test_guard_cv2_post_length_silent_within_limit(monkeypatch):
+async def test_warn_cv2_post_over_limit_silent_within_limit(monkeypatch):
     calls = _record_alerts(monkeypatch)
     container = h.impl.ContainerComponentBuilder()
     container.add_text_display("a small post")
-    await components.guard_cv2_post_length([container], post_name="Eververse")
+    await components.warn_cv2_post_over_limit([container], post_name="Eververse")
     assert calls == []
