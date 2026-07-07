@@ -1,0 +1,31 @@
+# Dependabot configuration.
+#
+# Python deps are managed with uv (uv.lock). This file's sole purpose is to stop
+# Dependabot from churning security-update PRs for `asyncmy`, which has an open
+# CRITICAL advisory with NO upstream fix:
+#
+#   CVE-2025-65896 / GHSA-qhqw-rrw9-25rm
+#   "SQL injection via crafted dict keys" (same root cause as PyMySQL CVE-2024-36039)
+#   asyncmy <= 0.2.11 is vulnerable; 0.2.11 is the latest release and the upstream
+#   issue (long2ice/asyncmy#134) is still open, so there is no version to bump to.
+#
+# We are NOT exploitable: asyncmy is used only as SQLAlchemy's async MySQL driver,
+# and SQLAlchemy's asyncmy dialect uses paramstyle="format" (positional %s params
+# passed as a sequence, never a dict), so the vulnerable dict-key escape path is
+# never reached. Our dict keys are ORM column names, never user input.
+# Full assessment + accepted-risk decision: plans/asyncmy_sqli_advisory.md
+#
+# NOTE: this `ignore` stops Dependabot PRs; it does NOT dismiss the alert shown in
+# the Security tab. That alert must be dismissed manually there as
+# "Risk is tolerable" (not exploitable) until upstream ships a fix.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Don't open version-bump PRs; we only want the targeted asyncmy ignore below.
+    open-pull-requests-limit: 0
+    ignore:
+      # No patched release exists and we're not exploitable — see header.
+      - dependency-name: "asyncmy"
