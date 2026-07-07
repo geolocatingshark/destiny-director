@@ -8,7 +8,7 @@ already found and fixed in `dd/beacon/extensions/user_commands.py` (dynamic-comm
 
 **Method.** Each of 39 module units was read in full on both sides and compared
 semantically (commands/scope, schedules, listeners, permissions, flags, formatting,
-wiring) — not by raw diff. Baseline = v2 sibling checkout `/home/gavin/destiny-director`
+wiring) — not by raw diff. Baseline = v2 sibling checkout `/home/<pi-user>/destiny-director`
 vs the current v3 working tree (which already contains the two fixes, so they do not
 re-appear). Produced by a 41-agent fan-out workflow; coverage verified 39/39.
 

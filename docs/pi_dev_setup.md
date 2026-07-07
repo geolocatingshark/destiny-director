@@ -1,13 +1,16 @@
 # Remote Raspberry Pi 5 dev environment
 
 Develop Destiny Director inside a long-lived Docker container on a Raspberry Pi 5
-(`linux/arm64`). Workflow is **terminal-only**: `ssh` into the Pi host → `docker exec`
-into the container → run `claude` / git / make. The container bakes the toolchain
+(`linux/arm64`). The primary workflow is terminal-based: `ssh` into the Pi host →
+`docker exec` into the container → run `claude` / git / make. An in-container sshd
+(port 2222) additionally lets **Zed remote directly into `/workspace`** (see
+[Zed remote / SSH access](#zed-remote--ssh-access)). The container bakes the toolchain
 (uv + Node/Claude Code + Railway CLI + Atlas + make); the repo is bind-mounted, so edits
 on the host clone and inside the container are the same files.
 
-Files: `Dockerfile.dev`, `docker-entrypoint.dev.sh`, `docker-compose.dev.yml`. Git
-identity keys live in a gitignored `.dev-ssh/` dir that rides along with the clone.
+Files: `Dockerfile.dev`, `docker-entrypoint.dev.sh`, `docker-compose.dev.yml`,
+`sshd_config.dev`. Git identity keys live in a gitignored `.dev-ssh/` dir that rides
+along with the clone.
 
 ## Prerequisites (assumed already done on the Pi)
 
@@ -138,6 +141,33 @@ RAM; keep it stopped when not integration-testing.
 
 ## Editing
 
-Terminal-only: edit via Claude Code or a terminal editor (`vim`/`nano`/`helix`,
-`apt`-installable in-container) inside `docker exec`. No editor is installed on or
-tunnelled through the Pi host.
+Terminal-only by default: edit via Claude Code or a terminal editor (`vim`/`nano`/`helix`,
+`apt`-installable in-container) inside `docker exec`. No editor is installed on the Pi host.
+
+### Zed remote / SSH access
+
+The container also runs an in-container sshd (port 2222) so **Zed can remote directly into
+`/workspace`** (reversing the original terminal-only, no-sshd/no-ports decision). It runs as
+the non-root `dev` user, key-only — so only `dev` can log in, preserving the `docker exec`
+model and uid-1000 file ownership. Authorized keys are **not hardcoded**: the compose file
+bind-mounts the Pi host user's `.ssh` directory (from `DEV_SSH_AUTHORIZED_KEYS` in `.env`,
+e.g. `/home/<pi-user>/.ssh/`) read-only, and sshd reads `authorized_keys` from it — so it
+authorizes the same keys that already log into the Pi host. Host `2222` publishes the
+container's sshd; the host key is persisted in the `dd-ssh-host` volume so Zed's
+`known_hosts` stays stable across `make dev-down && make dev-up`.
+
+To use it:
+
+1. Ensure `DEV_SSH_AUTHORIZED_KEYS` is set in `.env` (Pi host user's `.ssh` dir) and that
+   its `authorized_keys` lists the public key you'll connect with (Zed's key).
+2. `make dev-up` rebuilds the image (with `openssh-server`) and starts sshd on 2222.
+3. Locally: `ssh -p 2222 dev@<pi-ip>` should log in as `dev`. For access off-LAN, point a
+   **Cloudflare tunnel** at the Pi host's TCP port 2222 (configured from the Cloudflare
+   dashboard — out of repo scope; key-based SSH only, pair with Cloudflare Access as you
+   see fit).
+4. In Zed, add an SSH remote to that host as user `dev` with the matching private key and
+   open `/workspace`. Zed uploads its server and connects; SSH sessions inherit the app env
+   (`.env` vars + the venv on `PATH`) via `~/.ssh/environment`, so tools resolve as they do
+   under `docker exec`.
+
+The old `docker exec -it dd-dev fish` path still works unchanged.

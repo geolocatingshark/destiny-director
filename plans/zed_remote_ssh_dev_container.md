@@ -11,7 +11,7 @@ exposed ports — access is `docker exec` reached through the Pi *host's* own ss
 The user now wants to **reverse that decision** so **Zed can remote directly into the
 container**:
 
-1. The container's sshd must accept the **same authorized keys as `/home/gavin/.ssh/`**
+1. The container's sshd must accept the **same authorized keys as `/home/<pi-user>/.ssh/`**
    (i.e. the Pi host user's `authorized_keys`).
 2. Zed connects over SSH straight into the container.
 3. The user will set up a Cloudflare tunnel from the dashboard pointing a chosen URL at
@@ -24,7 +24,7 @@ SSH sessions so Zed terminals work like `docker exec`, and **update the docs**.
 
 **Authorized-keys source (per user):** no hardcoded default anywhere in code/config.
 Instead a new `DEV_SSH_AUTHORIZED_KEYS` var in `.env` holds the Pi host user's `.ssh`
-**directory** (`/home/gavin/.ssh/`); compose interpolates it as the source of a read-only
+**directory** (`/home/<pi-user>/.ssh/`); compose interpolates it as the source of a read-only
 volume and sshd reads `authorized_keys` from inside it. Compose auto-reads the project
 `.env` for interpolation, so the var is available for the volume source path.
 
@@ -66,7 +66,7 @@ StrictModes yes
 - Extend the pre-create `mkdir` (currently `/home/dev/.cache/uv /home/dev/.claude
   /home/dev/.config/railway`) to also create **`/home/dev/.ssh-host`** (host-key volume
   mountpoint, dev-owned). `/home/dev/.host-ssh` needs no pre-create — it's a **directory**
-  bind mount, so it inherits the mounted `.ssh` dir's ownership (Pi `gavin`, uid 1000 ==
+  bind mount, so it inherits the mounted `.ssh` dir's ownership (Pi `<pi-user>`, uid 1000 ==
   container `dev`, mode 700), which satisfies `StrictModes yes`.
 - `COPY --chown=${USER_UID}:${USER_GID} sshd_config.dev /home/dev/sshd_config`.
 - Add `EXPOSE 2222` (documentation only).
@@ -110,7 +110,7 @@ Document the new var so the template stays complete:
 # Pi dev container: the Pi HOST user's .ssh directory, bind-mounted read-only so the
 # in-container sshd (Zed-remote, port 2222) authorizes the same keys. Its authorized_keys
 # must list the pubkey(s) that will connect (e.g. Zed's).
-DEV_SSH_AUTHORIZED_KEYS=/home/gavin/.ssh/
+DEV_SSH_AUTHORIZED_KEYS=/home/<pi-user>/.ssh/
 ```
 (`cfg.py` ignores unknown env vars, so this is compose-only — it does not affect the bots.)
 
@@ -119,7 +119,7 @@ DEV_SSH_AUTHORIZED_KEYS=/home/gavin/.ssh/
 - Update the "terminal-only / no editor tunnelled" framing (`docs/pi_dev_setup.md:1-10`,
   `:139-143`) to add a **"Zed remote / SSH access"** subsection: the container now runs an
   sshd on port 2222 (login user `dev`, key-only, keys sourced from the Pi host's
-  `/home/gavin/.ssh/authorized_keys`); expose it to Zed via the Cloudflare tunnel the user
+  `/home/<pi-user>/.ssh/authorized_keys`); expose it to Zed via the Cloudflare tunnel the user
   configures to host `:2222`.
 - Add a one-line note in `plans/remote_pi_docker_dev_env.md` recording that the
   no-sshd/no-ports decision was intentionally reversed to enable Zed-remote, with the date.
@@ -142,7 +142,7 @@ config symlink. No `.dev-ssh` change is required for elegance here.
   scope, and it preserves the `docker exec` default-user and uid-1000 file ownership.
   `UsePAM no` is required (PAM needs root).
 - **`StrictModes yes` passes** because the `authorized_keys` file is owned by uid 1000
-  (Pi `gavin` == container `dev`) and its parent `/home/dev/.host-ssh` is pre-created
+  (Pi `<pi-user>` == container `dev`) and its parent `/home/dev/.host-ssh` is pre-created
   dev-owned 700; all path components are owned by root or `dev`.
 - **Host key in a named volume** (`dd-ssh-host`) keeps the server key stable across
   rebuilds, so Zed/known_hosts doesn't complain after `make dev-down && make dev-up`
@@ -151,7 +151,7 @@ config symlink. No `.dev-ssh` change is required for elegance here.
 ## Verification
 
 1. `make dev-up` → `docker logs dd-dev` shows `Server listening on 0.0.0.0 port 2222`.
-2. From the Pi host, with a key whose pubkey is in `/home/gavin/.ssh/authorized_keys`:
+2. From the Pi host, with a key whose pubkey is in `/home/<pi-user>/.ssh/authorized_keys`:
    `ssh -p 2222 dev@localhost` → logs in as `dev`; check env injected:
    `echo "$MYSQL_URL"; which uv; python --version` all resolve.
 3. `ssh -p 2222 dev@localhost 'cd /workspace && make test'` runs the unit suite (proves
@@ -164,9 +164,9 @@ config symlink. No `.dev-ssh` change is required for elegance here.
 
 ## Steps required from you (the user)
 
-1. **`.env` on the Pi:** add `DEV_SSH_AUTHORIZED_KEYS=/home/gavin/.ssh/` (the code change
+1. **`.env` on the Pi:** add `DEV_SSH_AUTHORIZED_KEYS=/home/<pi-user>/.ssh/` (the code change
    only ships the `.env-example` line).
-2. **authorized_keys:** ensure `/home/gavin/.ssh/authorized_keys` contains the **public**
+2. **authorized_keys:** ensure `/home/<pi-user>/.ssh/authorized_keys` contains the **public**
    key you'll connect with (e.g. the key Zed uses). Same file your Pi host login already
    uses — nothing new if that key already connects to the Pi.
 3. **Rebuild:** run `make dev-up` on the Pi (rebuilds the image with `openssh-server` and

@@ -25,8 +25,11 @@ services:
       - dd-claude:/home/dev/.claude            # persist Claude Code login/config
       - dd-railway:/home/dev/.config/railway   # persist `railway login`
       - /var/run/docker.sock:/var/run/docker.sock  # optional: `atlas migrate diff`
+      - ${DEV_SSH_AUTHORIZED_KEYS}:/home/dev/.host-ssh:ro   # Pi host user's .ssh dir (from .env); sshd reads authorized_keys here
+      - dd-ssh-host:/home/dev/.ssh-host        # persist sshd host key -> stable known_hosts
+    ports:
+      - "2222:2222"   # host 2222 -> container sshd; Cloudflare tunnel points here
     depends_on: [mysql]
-    # No ports: the container exposes no network service; access is docker exec.
     # Do NOT mount over /home/dev/venv or all of /home/dev — it would erase the
     # pre-built venv.
   mysql:
@@ -43,4 +46,5 @@ volumes:
   dd-uv-cache:
   dd-claude:
   dd-railway:
+  dd-ssh-host:
   dd-mysql-data:

@@ -18,5 +18,22 @@ fi
 # clone is absent or offline.
 [ -f /workspace/pyproject.toml ] && uv sync --frozen || true
 
-# Keep the container alive; all work happens via `docker exec`.
-exec sleep infinity
+# In-container sshd (Zed-remote / direct SSH). Generate the host key once into the
+# persisted dd-ssh-host volume so Zed's known_hosts survives rebuilds.
+mkdir -p "$HOME/.ssh-host" && chmod 700 "$HOME/.ssh-host"
+[ -f "$HOME/.ssh-host/ssh_host_ed25519_key" ] || \
+  ssh-keygen -t ed25519 -f "$HOME/.ssh-host/ssh_host_ed25519_key" -N "" -C dd-dev-host
+
+# SSH/Zed sessions don't inherit the entrypoint's env, so publish it (with the venv
+# on PATH) to ~/.ssh/environment, which sshd reads via PermitUserEnvironment. Filter
+# shell noise; one KEY=value per line, no quotes (PermitUserEnvironment format).
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+{
+  echo "PATH=/home/dev/venv/bin:$PATH"
+  env | grep -vE '^(PATH|PWD|SHLVL|_|HOME|OLDPWD|HOSTNAME)='
+} > "$HOME/.ssh/environment"
+chmod 600 "$HOME/.ssh/environment"
+
+# sshd becomes PID 1, keeps the container alive, and serves SSH; -e routes its log
+# to `docker logs`. All work still also reachable via `docker exec`.
+exec /usr/sbin/sshd -D -e -f /home/dev/sshd_config

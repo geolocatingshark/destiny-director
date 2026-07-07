@@ -15,9 +15,10 @@ ARG USER_GID=1000
 # fish is the interactive shell (matches the host); bash stays the dev account's
 # login shell for Claude Code + entrypoint/make tooling. openssh-client is
 # required for git push over git@github.com (Debian's git does not pull an ssh
-# client under --no-install-recommends).
+# client under --no-install-recommends). openssh-server runs the in-container
+# sshd (port 2222, non-root) so Zed can remote directly in (see sshd_config.dev).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential git make fish openssh-client curl gnupg ca-certificates tzdata \
+        build-essential git make fish openssh-client openssh-server curl gnupg ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Node 22 LTS + Claude Code.
@@ -67,14 +68,20 @@ WORKDIR /workspace
 
 # Pre-create the dirs that compose mounts named volumes onto, as the dev user, so
 # the (initially empty) volumes inherit uid-1000 ownership instead of root:root —
-# otherwise uv/claude/railway can't write to them.
-RUN mkdir -p /home/dev/.cache/uv /home/dev/.claude /home/dev/.config/railway
+# otherwise uv/claude/railway can't write to them. .ssh-host holds the persisted
+# sshd host key (dd-ssh-host volume). .host-ssh needs no pre-create — it's a
+# directory bind mount that inherits the mounted .ssh dir's ownership.
+RUN mkdir -p /home/dev/.cache/uv /home/dev/.claude /home/dev/.config/railway /home/dev/.ssh-host
 
 # Pre-build the full dependency set (dev + speedups) into /home/dev/venv. The
 # editable project is added at container start once /workspace is mounted.
 COPY --chown=${USER_UID}:${USER_GID} pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/home/dev/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
     uv sync --frozen --no-install-project
+
+# In-container sshd config (Zed-remote / direct SSH on port 2222, non-root `dev`).
+COPY --chown=${USER_UID}:${USER_GID} sshd_config.dev /home/dev/sshd_config
+EXPOSE 2222
 
 COPY --chown=${USER_UID}:${USER_GID} docker-entrypoint.dev.sh /home/dev/entrypoint.sh
 CMD ["bash", "/home/dev/entrypoint.sh"]

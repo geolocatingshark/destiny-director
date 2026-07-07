@@ -22,6 +22,9 @@ Decisions locked from Q&A:
   all run on the remote, inside the container. **No in-container sshd** and **no editor
   stretch** — the dev container exposes no ports and needs no Pi-host changes beyond a
   normal clone.
+  > **Reversed 2026-07-07:** the no-sshd/no-ports decision was intentionally reversed to
+  > enable Zed-remote access — the container now runs a non-root sshd on port 2222. See
+  > `plans/zed_remote_ssh_dev_container.md`.
 
 Why Debian over Alpine: on `arm64` almost every native dep ships a glibc `manylinux`
 wheel, so builds are fast and reliable; on musl many would compile from source. Audit
