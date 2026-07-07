@@ -158,7 +158,7 @@ async def format_post(
     # Components V2: the former embed's title + description become one text display and
     # the trailing image a full-width media gallery (mirroring the old set_image). The
     # markdown is unchanged so the rendered post looks the same as the embed did.
-    description = (
+    header = (
         "**Destiny 2**\n"
         "## [World Lost Sectors](https://kyber3000.com/LS)\n"
         "\n"
@@ -166,36 +166,40 @@ async def format_post(
         "\n"
     )
 
+    body = ""
     for sector in sectors:
         sector: sector_accounting.Sector
-        description += f":LS: **[{sector.name}]({sector.shortlink_gfx})**\n"
+        body += f":LS: **[{sector.name}]({sector.shortlink_gfx})**\n"
         if ls_extra_details_enabled:
-            description += format_data(sector)
-
+            body += format_data(sector)
     if not ls_extra_details_enabled:
-        description += "\n"
+        body += "\n"
 
-    description += (
+    footer = (
         "Rewards:\n"
-        + ":enhancement_core: Enhancement Core\n"
-        + ":exotic_engram: Exotic Engram (If-Solo)\n"
-        + ":legendary_weap: Legendary Weapon (If-Solo)\n"
-        + "\n"
-    )
-    description += (
+        ":enhancement_core: Enhancement Core\n"
+        ":exotic_engram: Exotic Engram (If-Solo)\n"
+        ":legendary_weap: Legendary Weapon (If-Solo)\n"
+        "\n"
         "[View more details](https://lostsectortoday.com) ↗\n"
         "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
     )
 
-    description = re_user_side_emoji.sub(
-        construct_emoji_substituter(emoji_dict), description
-    )
+    def _sub(text: str) -> str:
+        return re_user_side_emoji.sub(construct_emoji_substituter(emoji_dict), text)
 
-    # Components V2 caps total text at 4000 chars: truncate to fit with a CRITICAL
-    # (owner-pinging) alert rather than letting Discord hard-reject the whole autopost.
-    description = await components.guard_cv2_post_text(
-        description, post_name="Lost Sector"
+    header, body, footer = _sub(header), _sub(body), _sub(footer)
+
+    # Components V2 caps total text at 4000. Truncate only the sectors/details body,
+    # reserving room for the header and the rewards/links footer so they always survive
+    # a detail-heavy day; an over-budget body raises a CRITICAL (owner-pinging) alert.
+    reserve = components.cv2_utf16_len(header) + components.cv2_utf16_len(footer)
+    body = await components.guard_cv2_post_text(
+        body,
+        post_name="Lost Sector",
+        budget=max(components.CV2_TEXT_BUDGET - reserve, 0),
     )
+    description = header + body + footer
 
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)
