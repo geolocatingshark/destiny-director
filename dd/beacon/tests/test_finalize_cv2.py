@@ -73,9 +73,9 @@ def test_embed_page_is_converted_to_cv2():
     assert result.embeds == []  # the source embed is not carried over
 
 
-def test_embed_page_drops_remote_image_media():
-    # A converted history page must not carry a streamed remote image (the navigator
-    # re-renders often; re-downloading a third-party host 429s — see /ls incident).
+def test_embed_page_keeps_remote_image_url_referenced():
+    # A converted history page keeps the image, referenced by URL (Discord fetches it),
+    # so the navigator uploads nothing on re-render — no 429/413 round-trip.
     pages = _bare_pages(cv2=True)
     embed = h.Embed(description="lost sector")
     embed.set_image("https://kyberscorner.com/ls.gif")
@@ -83,9 +83,11 @@ def test_embed_page_drops_remote_image_media():
 
     container = result.components[0]
     assert isinstance(container, h.impl.ContainerComponentBuilder)
-    assert not any(
+    assert any(
         isinstance(c, h.impl.MediaGalleryComponentBuilder) for c in container.components
     )
+    _payload, attachments = container.build()
+    assert list(attachments) == []  # URL-referenced, nothing uploaded
 
 
 def test_native_cv2_page_passes_through():

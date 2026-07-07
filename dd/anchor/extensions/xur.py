@@ -30,7 +30,13 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
-from ...common.components import build_container, cv2_notice, cv2_success, respond_cv2
+from ...common.components import (
+    build_container,
+    cv2_notice,
+    cv2_success,
+    respond_cv2,
+    url_media_gallery,
+)
 from ...common.utils import accumulate, discord_error_logger, fetch_emoji_dict
 from ...sector_accounting import xur as xur_support_data
 from .. import utils
@@ -481,9 +487,7 @@ async def format_xur_vendor(
     container.add_text_display(description)
 
     if await schemas.AutoPostSettings.get_xur_default_image_enabled():
-        gallery = h.impl.MediaGalleryComponentBuilder()
-        gallery.add_media_gallery_item(cfg.xur_image_url)
-        container.add_component(gallery)
+        container.add_component(url_media_gallery(cfg.xur_image_url))
 
     return HMessage(components=[container])
 

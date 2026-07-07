@@ -133,60 +133,55 @@ def test_empty_embed_yields_empty_container() -> None:
     assert components.embeds_to_container(h.Embed()).components == []
 
 
-# --- drop_remote_media -----------------------------------------------------------
+# --- URL-referenced media (no upload / no round-trip) ----------------------------
 
 
-def test_drop_remote_media_skips_non_cdn_image_keeps_text() -> None:
+def _uploads(container: h.impl.ContainerComponentBuilder) -> list:
+    """Resources hikari would upload for this container (empty => URL-referenced)."""
+    _payload, attachments = container.build()
+    return list(attachments)
+
+
+def test_image_media_is_url_referenced_not_uploaded() -> None:
     embed = h.Embed(description="body")
     embed.set_image("https://kyberscorner.com/lost-sector.gif")
 
-    children = components.embeds_to_container(embed, drop_remote_media=True).components
+    container = components.embeds_to_container(embed)
 
-    # The text survives; the remote image is not turned into a (streamed) media gallery.
-    assert [_text(c) for c in children] == ["body"]
-    assert not any(
-        isinstance(c, h.impl.MediaGalleryComponentBuilder) for c in children
-    )
-
-
-def test_drop_remote_media_keeps_discord_cdn_image() -> None:
-    embed = h.Embed(description="body")
-    embed.set_image("https://cdn.discordapp.com/attachments/1/2/big.png")
-
-    children = components.embeds_to_container(embed, drop_remote_media=True).components
-    gallery = children[-1]
+    # The image is kept as a media gallery referencing the URL...
+    gallery = container.components[-1]
     assert isinstance(gallery, h.impl.MediaGalleryComponentBuilder)
     assert [item.media for item in gallery.items] == [
-        "https://cdn.discordapp.com/attachments/1/2/big.png"
+        "https://kyberscorner.com/lost-sector.gif"
     ]
+    # ...but nothing is uploaded — Discord fetches the URL (no 413 / round-trip).
+    assert _uploads(container) == []
 
 
-def test_drop_remote_media_skips_image_only_remote_embed() -> None:
-    # Only content is a remote image that gets dropped -> nothing to render, so the
-    # embed is skipped entirely (not an empty container the caller must special-case).
-    embed = h.Embed()
-    embed.set_image("https://kyberscorner.com/only.gif")
-    container = components.embeds_to_container(embed, drop_remote_media=True)
-    assert container.components == []
-
-
-def test_drop_remote_media_two_image_only_embeds_leave_no_dangling_separator() -> None:
-    # Regression: previously the first embed set rendered=True while adding nothing, so
-    # the second prepended a divider -> a separator-only container Discord rejects.
-    a, b = h.Embed(), h.Embed()
-    a.set_image("https://kyberscorner.com/a.gif")
-    b.set_image("https://kyberscorner.com/b.gif")
-    children = components.embeds_to_container([a, b], drop_remote_media=True).components
-    assert children == []
-
-
-def test_drop_remote_media_drops_remote_thumbnail_but_renders_text_plainly() -> None:
+def test_thumbnail_media_is_url_referenced_not_uploaded() -> None:
     embed = h.Embed(title="T", description="D")
     embed.set_thumbnail("https://kyberscorner.com/thumb.png")
 
-    children = components.embeds_to_container(embed, drop_remote_media=True).components
-    # No section (which would carry the streamed thumbnail); just plain text displays.
-    assert not any(
-        isinstance(c, h.impl.SectionComponentBuilder) for c in children
-    )
-    assert [_text(c) for c in children] == ["## T", "D"]
+    container = components.embeds_to_container(embed)
+    (section,) = container.components
+    assert isinstance(section, h.impl.SectionComponentBuilder)
+    assert isinstance(section.accessory, h.impl.ThumbnailComponentBuilder)
+    assert section.accessory.media == "https://kyberscorner.com/thumb.png"
+    assert _uploads(container) == []
+
+
+def test_image_only_embed_renders_the_image_referenced() -> None:
+    # An image-only embed is no longer dropped — the image is referenced by URL.
+    embed = h.Embed()
+    embed.set_image("https://kyberscorner.com/only.gif")
+
+    container = components.embeds_to_container(embed)
+    assert isinstance(container.components[-1], h.impl.MediaGalleryComponentBuilder)
+    assert _uploads(container) == []
+
+
+def test_url_media_gallery_helper_uploads_nothing() -> None:
+    gallery = components.url_media_gallery("https://kyberscorner.com/x.gif")
+    _payload, attachments = gallery.build()
+    assert list(attachments) == []
+    assert [item.media for item in gallery.items] == ["https://kyberscorner.com/x.gif"]

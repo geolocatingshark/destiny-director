@@ -10,7 +10,7 @@ import hikari as h
 
 from dd.hmessage import HMessage
 
-from ..common import cfg, schemas
+from ..common import cfg, components, schemas
 from ..common.utils import discord_error_logger, fetch_emoji_dict
 from ..sector_accounting import sector_accounting
 from .utils import (
@@ -205,9 +205,9 @@ async def format_post(
     )
     container.add_text_display(description)
     if ls_gif_url:
-        gallery = h.impl.MediaGalleryComponentBuilder()
-        gallery.add_media_gallery_item(ls_gif_url)
-        container.add_component(gallery)
+        # URL-referenced (Discord fetches it) rather than uploaded — the gif is ~15 MB,
+        # which would 413 on upload and re-download from the host on every send.
+        container.add_component(components.url_media_gallery(ls_gif_url))
 
     return HMessage(components=[container])
 

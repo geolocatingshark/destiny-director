@@ -100,7 +100,7 @@ def _capped_container_from_embeds(
 
     def build() -> h.impl.ContainerComponentBuilder:
         return dd_components.embeds_to_container(
-            embeds, accent_color=embed_default_color, drop_remote_media=True
+            embeds, accent_color=embed_default_color
         )
 
     container = build()
@@ -697,10 +697,8 @@ class NavPages(DateRangeDict):
             # _capped_container_from_embeds converts and trims to the 4000-char CV2 cap.
             # The cap is message-wide, so reserve the budget already used by native CV2
             # containers on this page (a mixed period bin) before trimming the converted
-            # part. drop_remote_media (inside it): the navigator re-renders on every
-            # press and hikari re-downloads a CV2 media item each time — a third-party
-            # host (e.g. the Lost Sector gif) rate-limits (429) under that. Native CV2
-            # pages already use Discord-CDN media, so only converted embeds need this.
+            # part. (Images convert to URL-referenced media galleries — Discord fetches
+            # them, the bot never re-downloads/uploads them, so re-rendering is cheap.)
             remaining = _CV2_TEXT_BUDGET - _cv2_text_length(containers)
             container = _capped_container_from_embeds(msg.embeds, budget=remaining)
             if container.components:
