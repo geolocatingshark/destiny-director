@@ -22,11 +22,13 @@ services:
     volumes:
       - .:/workspace                          # bind-mount the host clone; dev user uid built to match (USER_UID)
       - dd-uv-cache:/home/dev/.cache/uv        # persist uv cache (fast re-syncs)
-      - dd-claude:/home/dev/.claude            # persist Claude Code login/config
-      - dd-railway:/home/dev/.config/railway   # persist `railway login`
+      - dd-claude:/home/dev/.claude            # persist Claude Code login/config (incl. ~/.claude.json via CLAUDE_CONFIG_DIR)
+      - dd-railway:/home/dev/.railway          # persist `railway login` (CLI writes ~/.railway/config.json, not ~/.config/railway)
       - /var/run/docker.sock:/var/run/docker.sock  # optional: `atlas migrate diff`
       - ${DEV_SSH_AUTHORIZED_KEYS}:/home/dev/.host-ssh:ro   # Pi host user's .ssh dir (from .env); sshd reads authorized_keys here
       - dd-ssh-host:/home/dev/.ssh-host        # persist sshd host key -> stable known_hosts
+      - dd-zed-server:/home/dev/.zed_server    # persist Zed's remote server binary (no re-download per rebuild)
+      - dd-local-share:/home/dev/.local/share  # persist fish history + bash history (HISTFILE points here)
     ports:
       - "2222:2222"   # host 2222 -> container sshd; Cloudflare tunnel points here
     depends_on: [mysql]
@@ -47,4 +49,6 @@ volumes:
   dd-claude:
   dd-railway:
   dd-ssh-host:
+  dd-zed-server:
+  dd-local-share:
   dd-mysql-data:
