@@ -1,9 +1,22 @@
 # Plan: make all anchor user-facing messages CV2 and style-consistent
 
-> **Status: READY (2026-07-05).** Independent of the autopost migration — can land
-> before or alongside it. Goal: every response the anchor bot shows a user (errors,
-> successes, confirmations, progress) is **Components V2** and follows **one**
-> style, whether the code path historically used plain text, an embed, or CV2.
+> **Status: DEFERRED / SCOPED (2026-07-07).** Not done in the CV2-migration session —
+> explicitly deferred to a **later phase**. Scope locked with the user this session:
+> - **Approach: the full sweep** below (convert every plain-text/embed error, success
+>   and confirmation to the shared CV2 helpers; delete `_error_embed`; one color set).
+> - **INCLUDE `dd/common/controller.py`** — normalize the shared confirm/timeout
+>   dialogs to the one color set. NB: `controller.py` is `dd/common`, so this also
+>   changes the **beacon** bot's surface, not just anchor.
+> - **EXCLUDE the `/post` embed command and the right-click embed context-menu
+>   commands** ("Convert to components" / "Edit components" / "Copy embed"): those
+>   embed authoring surfaces are slated for a **separate later phase-out**, so do not
+>   CV2-ify their responses now. The interactive embed-builder UI (`embeds.py` /
+>   `cv2_builder.py`) chrome is part of that same phase-out — also out of scope here.
+>
+> Goal (unchanged): every remaining response the anchor bot shows a user (errors,
+> successes, confirmations, progress) is **Components V2** and follows **one** style,
+> whether the code path historically used plain text, an embed, or CV2. Original
+> readiness notes (2026-07-05) below.
 
 ## The problem (from the 2026-07-05 audit)
 
