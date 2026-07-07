@@ -89,10 +89,13 @@ def _capped_container_from_embeds(
         if target is None or not target.description:
             break  # no description to trim (text in titles/fields) — guard backstops
         prev = target.description
-        keep = len(prev) - overage - len(dd_components.CV2_TRUNCATION_NOTE)
-        trimmed = prev[: max(keep, 0)].rstrip() + dd_components.CV2_TRUNCATION_NOTE
-        if len(trimmed) >= len(prev):
-            break  # no progress (note ≥ trimmed text) — avoid spinning
+        # Trim the longest description by the container's overage, reusing the shared
+        # (UTF-16, surrogate-safe, note-appending) cap primitive.
+        trimmed = dd_components.cap_cv2_text(
+            prev, budget=dd_components.cv2_utf16_len(prev) - overage
+        )
+        if dd_components.cv2_utf16_len(trimmed) >= dd_components.cv2_utf16_len(prev):
+            break  # no progress — avoid spinning
         target.description = trimmed
         container = build()
     return container

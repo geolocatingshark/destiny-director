@@ -106,16 +106,27 @@ def cv2_text_length(components: t.Iterable[h.api.ComponentBuilder]) -> int:
 def cap_cv2_text(text: str, *, budget: int = CV2_TEXT_BUDGET) -> str:
     """Truncate ``text`` to ``budget`` UTF-16 units, appending a ``… (truncated)`` note.
 
-    Cuts on a code-point boundary (never mid-surrogate) and counts in UTF-16 so the
-    result genuinely fits Discord's cap.
+    Counts and slices in UTF-16 (Discord's unit) so the result genuinely fits the cap,
+    dropping a trailing lone surrogate rather than splitting a code point.
     """
-    if cv2_utf16_len(text) <= budget:
+    encoded = text.encode("utf-16-le")
+    if len(encoded) // 2 <= budget:
         return text
-    keep = budget - cv2_utf16_len(CV2_TRUNCATION_NOTE)
-    cut = text[: max(keep, 0)]
-    while cv2_utf16_len(cut) > keep:
-        cut = cut[:-1]
+    keep = max(budget - cv2_utf16_len(CV2_TRUNCATION_NOTE), 0)
+    # ``keep * 2`` is a code-unit boundary; errors="ignore" drops a lone surrogate if
+    # the cut landed mid-pair.
+    cut = encoded[: keep * 2].decode("utf-16-le", errors="ignore")
     return cut.rstrip() + CV2_TRUNCATION_NOTE
+
+
+async def _alert_cv2_overflow(post_name: str, message: str) -> None:
+    """Raise a CRITICAL (owner-pinging) alert that a CV2 autopost overflowed the cap."""
+    # Local import avoids a components <-> utils import cycle.
+    from .utils import discord_error_logger
+
+    await discord_error_logger(
+        ValueError(message), operation=f"{post_name} autopost", level=logging.CRITICAL
+    )
 
 
 async def guard_cv2_post_text(
@@ -130,16 +141,10 @@ async def guard_cv2_post_text(
     length = cv2_utf16_len(text)
     if length <= budget:
         return text
-    # Local import avoids a components <-> utils import cycle.
-    from .utils import discord_error_logger
-
-    await discord_error_logger(
-        ValueError(
-            f"{post_name} CV2 post is {length} UTF-16 units (over the {budget} budget) "
-            "— truncated, content lost"
-        ),
-        operation=f"{post_name} autopost",
-        level=logging.CRITICAL,
+    await _alert_cv2_overflow(
+        post_name,
+        f"{post_name} CV2 post is {length} UTF-16 units (over the {budget} budget) "
+        "— truncated, content lost",
     )
     return cap_cv2_text(text, budget=budget)
 
@@ -154,15 +159,10 @@ async def guard_cv2_post_length(
     length = cv2_text_length(components)
     if length <= CV2_TEXT_LIMIT:
         return
-    from .utils import discord_error_logger
-
-    await discord_error_logger(
-        ValueError(
-            f"{post_name} CV2 post is {length} UTF-16 units, over Discord's "
-            f"{CV2_TEXT_LIMIT} cap — Discord will reject it"
-        ),
-        operation=f"{post_name} autopost",
-        level=logging.CRITICAL,
+    await _alert_cv2_overflow(
+        post_name,
+        f"{post_name} CV2 post is {length} UTF-16 units, over Discord's "
+        f"{CV2_TEXT_LIMIT} cap — Discord will reject it",
     )
 
 
@@ -333,18 +333,25 @@ def _embed_has_content(embed: h.Embed) -> bool:
 # so these variants reference the URL and upload nothing.
 
 
+def _url_only(built: tuple) -> tuple:
+    """Keep a component ``build()`` payload (which carries ``media.url``) but drop the
+    resource hikari would upload, so Discord fetches the URL instead of the bot
+    re-uploading it.
+    """
+    payload, _resources = built
+    return payload, ()
+
+
 class _UrlMediaGalleryItemBuilder(h.impl.MediaGalleryItemBuilder):
     @t.override
     def build(self):
-        payload, _resources = super().build()
-        return payload, ()
+        return _url_only(super().build())
 
 
 class _UrlThumbnailComponentBuilder(h.impl.ThumbnailComponentBuilder):
     @t.override
     def build(self):
-        payload, _resources = super().build()
-        return payload, ()
+        return _url_only(super().build())
 
 
 def url_media_gallery(url: str) -> h.impl.MediaGalleryComponentBuilder:
