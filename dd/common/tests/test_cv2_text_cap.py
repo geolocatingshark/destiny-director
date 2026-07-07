@@ -119,7 +119,11 @@ def test_fit_cv2_components_caps_the_stacked_aggregate():
     )
     assert components.cv2_text_length(out) <= 100
     # Front content is kept whole; the tail is what gets trimmed.
-    assert out[0].components[0].content == "a" * 80
+    first = out[0]
+    assert isinstance(first, h.impl.ContainerComponentBuilder)
+    head = first.components[0]
+    assert isinstance(head, h.impl.TextDisplayComponentBuilder)
+    assert head.content == "a" * 80
 
 
 def test_fit_cv2_components_preserves_non_text_and_drops_emptied_displays():
@@ -127,6 +131,7 @@ def test_fit_cv2_components_preserves_non_text_and_drops_emptied_displays():
     container.add_text_display("k" * 200)
     container.add_component(components.url_media_gallery("https://x/y.gif"))
     (out_container,) = components.fit_cv2_components([container], budget=50)
+    assert isinstance(out_container, h.impl.ContainerComponentBuilder)
     kinds = [type(c).__name__ for c in out_container.components]
     # The media gallery survives even though the text before it was trimmed.
     assert "MediaGalleryComponentBuilder" in kinds

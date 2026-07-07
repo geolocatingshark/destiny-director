@@ -385,18 +385,32 @@ async def discord_error_logger(
 
     ``operation`` is a short human label for what was being attempted (e.g.
     ``"Mirror update"``); when given it is surfaced in the alert header so the
-    failure reads at a glance. ``level`` sets the log level — pass
-    ``logging.CRITICAL`` to raise a 🚨 owner-pinging alert (a single occurrence
-    pings, no storm needed).
+    failure reads at a glance.
+
+    ``level`` escalates the alert: pass ``logging.CRITICAL`` to raise a 🚨
+    owner-pinging alert for a single occurrence (no storm needed). An escalated
+    alert is treated as a *proactive notice* (e.g. an autopost was truncated to fit
+    the cap) rather than a crash — its message is rendered as clean alert text with
+    **no traceback**, so it reads as an alert and not an error report. A default
+    (ERROR) call keeps the exception's traceback; storm-escalation to CRITICAL
+    happens in the handler and preserves that real traceback.
     """
     code = (
         str(error_reference) if error_reference else reference_code(identity_for_exc(e))
     )
-    logging.getLogger("dd.error").log(
-        level,
-        "Error reference: %s",
-        code,
-        exc_info=e,
-        extra={"dd_operation": operation} if operation else None,
-    )
+    logger = logging.getLogger("dd.error")
+    if level > logging.ERROR:
+        # Escalated proactive alert: log the message with no exc_info (so no traceback
+        # block) and stamp the reference so the header code matches the returned one.
+        logger.log(
+            level, "%s", str(e), extra={"dd_operation": operation, "dd_reference": code}
+        )
+    else:
+        logger.log(
+            level,
+            "Error reference: %s",
+            code,
+            exc_info=e,
+            extra={"dd_operation": operation} if operation else None,
+        )
     return code

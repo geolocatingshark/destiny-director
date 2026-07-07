@@ -15,6 +15,7 @@
 
 # Pure-logic unit tests for dd.common.utils — no database or network.
 
+import logging
 import typing as t
 
 import pytest
@@ -205,3 +206,52 @@ async def test_ensure_session_uses_provided_session():
 def test_ensure_session_lives_on_utils():
     # Guards the import path the schema models rely on.
     assert callable(utils.ensure_session)
+
+
+# --- discord_error_logger level flag (escalate to a clean pinging alert) --------
+
+
+class _CapturingHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def dd_error_records():
+    handler = _CapturingHandler()
+    logger = logging.getLogger("dd.error")
+    logger.addHandler(handler)
+    try:
+        yield handler.records
+    finally:
+        logger.removeHandler(handler)
+
+
+@pytest.mark.asyncio
+async def test_error_logger_critical_flag_pings_clean_without_traceback(
+    dd_error_records,
+):
+    code = await utils.discord_error_logger(
+        ValueError("Xûr post truncated"),
+        operation="Xûr autopost",
+        level=logging.CRITICAL,
+    )
+    (record,) = dd_error_records
+    assert record.levelno == logging.CRITICAL  # escalated -> owner ping
+    assert record.exc_info is None  # no traceback -> renders as an alert, not an error
+    assert record.getMessage() == "Xûr post truncated"
+    # The header code (stamped on the record) matches the returned code.
+    assert getattr(record, "dd_reference", None) == code
+    assert record.__dict__.get("dd_operation") == "Xûr autopost"
+
+
+@pytest.mark.asyncio
+async def test_error_logger_default_level_keeps_the_traceback(dd_error_records):
+    await utils.discord_error_logger(ValueError("boom"), operation="Mirror update")
+    (record,) = dd_error_records
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None  # real error keeps its traceback

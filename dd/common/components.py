@@ -191,7 +191,11 @@ def fit_cv2_components(
 
 
 async def _alert_cv2_overflow(post_name: str, message: str) -> None:
-    """Raise a CRITICAL (owner-pinging) alert that a CV2 autopost overflowed the cap."""
+    """Raise a CRITICAL (owner-pinging) alert that a CV2 autopost overflowed the cap.
+
+    Escalates via the ``level`` flag so a single occurrence pings the owners; the
+    escalated alert renders as a clean notice (no traceback) rather than an error.
+    """
     # Local import avoids a components <-> utils import cycle.
     from .utils import discord_error_logger
 
