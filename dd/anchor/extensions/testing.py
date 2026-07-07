@@ -19,6 +19,12 @@
 every branch of ``dd.common.components.embeds_to_container`` — so you can then run the
 "Convert to components" command on it and eyeball the conversion. It must be posted *by
 this bot* because "Convert to components" only acts on the bot's own messages.
+
+`/testing overflow_alert` deliberately builds an over-budget Components V2 post and
+routes it through the real ``guard_cv2_post_sections`` path, so the CRITICAL
+owner-pinging overflow alert fires on demand — a repeatable way to eyeball that the
+alert renders as a clean notice (no traceback) and that the fixed header/footer survive
+the body truncation.
 """
 
 import datetime
@@ -27,7 +33,7 @@ import typing as t
 import hikari as h
 import lightbulb as lb
 
-from ...common import cfg, utils
+from ...common import cfg, components, utils
 from ...common.bot import CachedFetchBot
 
 loader = lb.Loader()
@@ -109,6 +115,46 @@ class ConvertSampleEmbed(
             "image gallery, footer+timestamp / footer-only / timestamp-only, and the "
             "divider between embeds. (The 'empty embed skipped' branch can't be "
             "produced by a real sent embed.)",
+            ephemeral=True,
+        )
+
+
+@testing_group.register
+class OverflowAlert(
+    lb.SlashCommand,
+    name="overflow_alert",
+    description="Force a CV2 over-limit post to fire the CRITICAL overflow alert",
+):
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+        # Mirror the Lost Sector autopost shape — a fixed header + rewards-style footer
+        # that must survive, and a variable body — but blow the body well past the CV2
+        # budget. guard_cv2_post_sections then truncates only the body, keeps the
+        # header/footer, and fires the CRITICAL (owner-pinging) overflow alert: the
+        # dd4313a path, on demand and without waiting for a real over-budget rotation.
+        header = "# 🧪 CV2 overflow alert test\n\n"
+        footer = "\n\n-# footer sentinel — this must survive the truncation"
+        body = "Filler line sent to blow past the CV2 text budget. " * 130
+
+        description = await components.guard_cv2_post_sections(
+            header, body, footer, post_name="CV2 overflow test"
+        )
+
+        container = h.impl.ContainerComponentBuilder(
+            accent_color=h.Color(cfg.embed_default_color)
+        )
+        container.add_text_display(description)
+
+        channel = t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id))
+        await channel.send(
+            components=[container], flags=h.MessageFlag.IS_COMPONENTS_V2
+        )
+        await ctx.respond(
+            "Forced a CV2 overflow. In the owner **alerts channel** you should now see "
+            "a clean 🚨 **CRITICAL** notice — *“CV2 overflow test autopost is N UTF-16 "
+            "units (over the … budget) — truncated, content lost”* — with **no Python "
+            "traceback** (the dd4313a fix). The message posted above keeps its header "
+            "and footer sentinel with the body truncated (guard_cv2_post_sections).",
             ephemeral=True,
         )
 
