@@ -373,6 +373,7 @@ async def discord_error_logger(
     error_reference: str | int | None = None,
     *,
     operation: str | None = None,
+    level: int = logging.ERROR,
 ) -> str:
     """Surface an exception to the Discord alerts channel and the console.
 
@@ -384,12 +385,15 @@ async def discord_error_logger(
 
     ``operation`` is a short human label for what was being attempted (e.g.
     ``"Mirror update"``); when given it is surfaced in the alert header so the
-    failure reads at a glance.
+    failure reads at a glance. ``level`` sets the log level — pass
+    ``logging.CRITICAL`` to raise a 🚨 owner-pinging alert (a single occurrence
+    pings, no storm needed).
     """
     code = (
         str(error_reference) if error_reference else reference_code(identity_for_exc(e))
     )
-    logging.getLogger("dd.error").error(
+    logging.getLogger("dd.error").log(
+        level,
         "Error reference: %s",
         code,
         exc_info=e,

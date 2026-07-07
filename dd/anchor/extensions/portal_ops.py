@@ -46,7 +46,7 @@ import lightbulb as lb
 
 from dd.hmessage import HMessage
 
-from ...common import cfg, schemas
+from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
 from ..autopost import make_autopost_control_commands
@@ -425,6 +425,10 @@ async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
 
     description += PORTAL_OPS_FOOTER
     description = await substitute_user_side_emoji(emoji_dict, description)
+    # Truncate to the CV2 cap with a CRITICAL (owner-pinging) alert on overflow.
+    description = await components.guard_cv2_post_text(
+        description, post_name="Portal Ops"
+    )
 
     # Components V2: the whole post is one text display (no image/fields), matching
     # the Eververse/Ada layout.

@@ -34,10 +34,11 @@ from ...common.components import (
     build_container,
     cv2_notice,
     cv2_success,
+    guard_cv2_post_text,
     respond_cv2,
     url_media_gallery,
 )
-from ...common.utils import accumulate, discord_error_logger, fetch_emoji_dict
+from ...common.utils import accumulate, fetch_emoji_dict
 from ...sector_accounting import xur as xur_support_data
 from .. import utils
 from ..autopost import make_autopost_control_commands
@@ -469,15 +470,10 @@ async def format_xur_vendor(
     description += XUR_FOOTER
     description = await substitute_user_side_emoji(emoji_dict, description)
 
-    # Components V2 messages cap total text at 4000 chars (tighter than an embed's
-    # 4096). Xûr is the longest post, so guard: an oversized inventory truncates with a
-    # warning rather than Discord hard-rejecting the whole autopost.
-    if len(description) >= 4000:
-        await discord_error_logger(
-            ValueError("WARNING: Xûr CV2 text is greater than 4000 characters!"),
-            operation="Xûr post",
-        )
-        description = description[:4000]
+    # Components V2 caps total text at 4000 chars (tighter than an embed's 4096). Xûr is
+    # the longest post, so guard: an oversized inventory truncates with a CRITICAL
+    # (owner-pinging) alert rather than Discord hard-rejecting the whole autopost.
+    description = await guard_cv2_post_text(description, post_name="Xûr")
 
     # Components V2: the whole post is one text display, with the optional default
     # image as a trailing full-width media gallery (mirroring the old set_image).

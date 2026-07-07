@@ -34,7 +34,7 @@ import lightbulb as lb
 
 from dd.hmessage import HMessage
 
-from ...common import cfg, schemas
+from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
 from ..autopost import make_autopost_control_commands
@@ -137,6 +137,8 @@ async def format_ada_vendor(
     container.add_separator(divider=True)
     container.add_text_display(await _sub(ADA_FOOTER))
 
+    # Backstop: CRITICAL-alert if this multi-text-display post exceeds the CV2 cap.
+    await components.guard_cv2_post_length([container], post_name="Ada")
     return HMessage(components=[container])
 
 

@@ -11,7 +11,7 @@ import hikari as h
 from dd.hmessage import HMessage
 
 from ..common import cfg, components, schemas
-from ..common.utils import discord_error_logger, fetch_emoji_dict
+from ..common.utils import fetch_emoji_dict
 from ..sector_accounting import sector_accounting
 from .utils import (
     construct_emoji_substituter,
@@ -191,14 +191,11 @@ async def format_post(
         construct_emoji_substituter(emoji_dict), description
     )
 
-    # Components V2 messages cap total text at 4000 characters.
-    if len(description) >= 4000:
-        await discord_error_logger(
-            ValueError("WARNING: CV2 text is greater than 4000 characters!"),
-            operation="Lost sector post",
-        )
-        # TODO: Mention owners for above
-        description = description[:4000]
+    # Components V2 caps total text at 4000 chars: truncate to fit with a CRITICAL
+    # (owner-pinging) alert rather than letting Discord hard-reject the whole autopost.
+    description = await components.guard_cv2_post_text(
+        description, post_name="Lost Sector"
+    )
 
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)

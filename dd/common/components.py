@@ -40,6 +40,7 @@ paginator sends/edits them as embeds driven by the exact same menu buttons.
 """
 
 import contextlib
+import logging
 import typing as t
 import uuid
 
@@ -66,6 +67,103 @@ _NEXT_CUSTOM_ID = "dd_paginator:next"
 # single embed.
 Cv2PageFactory = t.Callable[[], list[h.api.ComponentBuilder]]
 Page = Cv2PageFactory | h.Embed
+
+
+# ---------------------------------------------------------------------------
+# CV2 text limits (one source of truth, shared by autoposts and the navigator)
+# ---------------------------------------------------------------------------
+#
+# Discord hard-caps a Components V2 message's total displayable text at 4000 code units,
+# and counts in UTF-16 (an astral-plane glyph counts as 2). CV2_TEXT_BUDGET is the safe
+# target we truncate to — a margin below the limit for the counting difference plus the
+# converter's markdown/emoji overhead.
+CV2_TEXT_LIMIT = 4000
+CV2_TEXT_BUDGET = 3900
+CV2_TRUNCATION_NOTE = "\n\n-# … (truncated)"
+
+
+def cv2_utf16_len(text: str) -> int:
+    """Length of ``text`` in UTF-16 code units — the unit Discord counts CV2 text in."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def cv2_text_length(components: t.Iterable[h.api.ComponentBuilder]) -> int:
+    """Total displayable CV2 text across component builders, in UTF-16 units.
+
+    Recurses into containers and sections so every nested ``TextDisplay`` is counted.
+    """
+    total = 0
+    for comp in components:
+        if isinstance(comp, h.impl.TextDisplayComponentBuilder):
+            total += cv2_utf16_len(comp.content or "")
+        else:
+            children = getattr(comp, "components", None)
+            if children:
+                total += cv2_text_length(children)
+    return total
+
+
+def cap_cv2_text(text: str, *, budget: int = CV2_TEXT_BUDGET) -> str:
+    """Truncate ``text`` to ``budget`` UTF-16 units, appending a ``… (truncated)`` note.
+
+    Cuts on a code-point boundary (never mid-surrogate) and counts in UTF-16 so the
+    result genuinely fits Discord's cap.
+    """
+    if cv2_utf16_len(text) <= budget:
+        return text
+    keep = budget - cv2_utf16_len(CV2_TRUNCATION_NOTE)
+    cut = text[: max(keep, 0)]
+    while cv2_utf16_len(cut) > keep:
+        cut = cut[:-1]
+    return cut.rstrip() + CV2_TRUNCATION_NOTE
+
+
+async def guard_cv2_post_text(
+    text: str, *, post_name: str, budget: int = CV2_TEXT_BUDGET
+) -> str:
+    """Truncate an autopost body to the CV2 budget; raise a CRITICAL alert on overflow.
+
+    A Components V2 autopost that outgrows the 4000-char cap is otherwise silently
+    rejected by Discord (dropped post). When ``text`` exceeds ``budget`` this pings the
+    owners (so the truncation / near-miss is caught) and returns the capped text.
+    """
+    length = cv2_utf16_len(text)
+    if length <= budget:
+        return text
+    # Local import avoids a components <-> utils import cycle.
+    from .utils import discord_error_logger
+
+    await discord_error_logger(
+        ValueError(
+            f"{post_name} CV2 post is {length} UTF-16 units (over the {budget} budget) "
+            "— truncated, content lost"
+        ),
+        operation=f"{post_name} autopost",
+        level=logging.CRITICAL,
+    )
+    return cap_cv2_text(text, budget=budget)
+
+
+async def guard_cv2_post_length(
+    components: t.Iterable[h.api.ComponentBuilder], *, post_name: str
+) -> None:
+    """Backstop for a built autopost: CRITICAL-alert if its total CV2 text would exceed
+    Discord's hard limit (and thus be rejected). Catches multi-text-display posts that
+    never route through :func:`guard_cv2_post_text`.
+    """
+    length = cv2_text_length(components)
+    if length <= CV2_TEXT_LIMIT:
+        return
+    from .utils import discord_error_logger
+
+    await discord_error_logger(
+        ValueError(
+            f"{post_name} CV2 post is {length} UTF-16 units, over Discord's "
+            f"{CV2_TEXT_LIMIT} cap — Discord will reject it"
+        ),
+        operation=f"{post_name} autopost",
+        level=logging.CRITICAL,
+    )
 
 
 # ---------------------------------------------------------------------------

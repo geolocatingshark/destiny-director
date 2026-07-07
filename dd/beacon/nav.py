@@ -54,37 +54,10 @@ NEXT_PAGE_EMOJI = chr(9654)
 PREV_PAGE_EMOJI = chr(9664)
 
 
-# Discord counts Components V2 text in UTF-16 code units and rejects a message whose
-# total displayable text exceeds 4000 — tighter than an embed's 6000 budget (4096 in
-# the description alone). Convert with headroom so the converter's markdown/emoji
-# overhead and the counting difference can't tip a page over; over-long pages are
-# truncated with a visible note rather than dropped to the "could not display" fallback.
-_CV2_TEXT_BUDGET = 3900
-_CV2_TRUNCATION_NOTE = "\n\n-# … (truncated)"
-
-
-def _cv2_text_length(components: t.Iterable[h.api.ComponentBuilder]) -> int:
-    """Total rendered text across CV2 components, in UTF-16 code units (Discord's unit).
-
-    Recurses into containers and sections so every nested ``TextDisplay`` is counted.
-    Counting UTF-16 (not Python code points) keeps the budget honest for astral-plane
-    characters, which Discord counts as 2 toward the 4000 cap.
-    """
-    total = 0
-    for comp in components:
-        if isinstance(comp, h.impl.TextDisplayComponentBuilder):
-            total += len((comp.content or "").encode("utf-16-le")) // 2
-        else:
-            children = getattr(comp, "components", None)
-            if children:
-                total += _cv2_text_length(children)
-    return total
-
-
 def _capped_container_from_embeds(
     embeds: list[h.Embed],
     *,
-    budget: int = _CV2_TEXT_BUDGET,
+    budget: int = dd_components.CV2_TEXT_BUDGET,
 ) -> h.impl.ContainerComponentBuilder:
     """Convert embeds to a CV2 container, trimming text to fit ``budget`` (UTF-16).
 
@@ -105,7 +78,7 @@ def _capped_container_from_embeds(
 
     container = build()
     for _ in range(len(embeds) + 1):
-        overage = _cv2_text_length([container]) - budget
+        overage = dd_components.cv2_text_length([container]) - budget
         if overage <= 0:
             break
         target = max(
@@ -116,8 +89,8 @@ def _capped_container_from_embeds(
         if target is None or not target.description:
             break  # no description to trim (text in titles/fields) — guard backstops
         prev = target.description
-        keep = len(prev) - overage - len(_CV2_TRUNCATION_NOTE)
-        trimmed = prev[: max(keep, 0)].rstrip() + _CV2_TRUNCATION_NOTE
+        keep = len(prev) - overage - len(dd_components.CV2_TRUNCATION_NOTE)
+        trimmed = prev[: max(keep, 0)].rstrip() + dd_components.CV2_TRUNCATION_NOTE
         if len(trimmed) >= len(prev):
             break  # no progress (note ≥ trimmed text) — avoid spinning
         target.description = trimmed
@@ -699,7 +672,9 @@ class NavPages(DateRangeDict):
             # containers on this page (a mixed period bin) before trimming the converted
             # part. (Images convert to URL-referenced media galleries — Discord fetches
             # them, the bot never re-downloads/uploads them, so re-rendering is cheap.)
-            remaining = _CV2_TEXT_BUDGET - _cv2_text_length(containers)
+            remaining = dd_components.CV2_TEXT_BUDGET - dd_components.cv2_text_length(
+                containers
+            )
             container = _capped_container_from_embeds(msg.embeds, budget=remaining)
             if container.components:
                 containers.append(container)

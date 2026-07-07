@@ -13,12 +13,13 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Unit tests for NavPages._finalize_cv2 and _cv2_text_length (no Discord I/O)."""
+"""Unit tests for NavPages._finalize_cv2 (no Discord I/O)."""
 
 import hikari as h
 
-from dd.beacon.nav import NavPages, _cv2_text_length
+from dd.beacon.nav import NavPages
 from dd.common import components as dd_components
+from dd.common.components import cv2_text_length
 from dd.hmessage import HMessage
 
 
@@ -45,7 +46,7 @@ def test_cv2_text_length_counts_astral_chars_as_two():
     # Discord counts CV2 text in UTF-16 units, so a non-BMP glyph counts as 2, not 1.
     container = h.impl.ContainerComponentBuilder()
     container.add_text_display("💀ab")  # 1 astral (2 UTF-16 units) + 2 ascii = 4
-    assert _cv2_text_length([container]) == 4
+    assert cv2_text_length([container]) == 4
 
 
 def test_cv2_text_length_sums_nested_text():
@@ -57,7 +58,7 @@ def test_cv2_text_length_sums_nested_text():
     section.add_text_display("abc")  # 3 (nested inside a section)
     container.add_component(section)
 
-    assert _cv2_text_length([container]) == 8
+    assert cv2_text_length([container]) == 8
 
 
 # --- _finalize_cv2 ---------------------------------------------------------------
@@ -133,7 +134,7 @@ def test_oversized_page_is_truncated_to_fit_the_cap():
 
     # The converted page is trimmed under Discord's hard 4000-char cap (Discord would
     # otherwise reject it) and carries a visible truncation note.
-    assert _cv2_text_length(result.components) <= 4000
+    assert cv2_text_length(result.components) <= 4000
     text = " ".join(
         c.content
         for cont in result.components

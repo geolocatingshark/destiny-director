@@ -10,7 +10,7 @@ import regex as re
 
 from dd.hmessage import HMessage
 
-from ...common import cfg, schemas
+from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
 from ..autopost import make_autopost_control_commands
@@ -372,6 +372,8 @@ async def format_eververse_vendor(
             await _sub(_render_offering_groups(silver_groups, manifest_table, "Silver"))
         )
 
+    # Backstop: CRITICAL-alert if this multi-text-display post exceeds the CV2 cap.
+    await components.guard_cv2_post_length([container], post_name="Eververse")
     return HMessage(components=[container])
 
 
