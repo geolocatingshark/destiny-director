@@ -431,30 +431,6 @@ class MirroredChannel(Base):
 
     @classmethod
     @ensure_session(db_session)
-    async def log_legacy_mirror_success(
-        cls, src_id: int, dest_id: int, session: AsyncSession = _UNSET
-    ) -> None:
-        """Log the successful use of a mirror
-
-        In case of a successful mirror, the error rate is set to 0
-        """
-        src_id = int(src_id)
-        dest_id = int(dest_id)
-        await session.execute(
-            update(cls)
-            .where(
-                and_(
-                    cls.src_id == src_id,
-                    cls.dest_id == dest_id,
-                    cls.enabled,
-                    cls.legacy,
-                )
-            )
-            .values(legacy_error_rate=0)
-        )
-
-    @classmethod
-    @ensure_session(db_session)
     async def log_legacy_mirror_success_in_batch(
         cls, src_id: int, dest_ids: list[int], session: AsyncSession = _UNSET
     ) -> None:
@@ -475,30 +451,6 @@ class MirroredChannel(Base):
                 )
             )
             .values(legacy_error_rate=0)
-        )
-
-    @classmethod
-    @ensure_session(db_session)
-    async def log_legacy_mirror_failure(
-        cls, src_id: int, dest_id: int, session: AsyncSession = _UNSET
-    ) -> None:
-        """Log the failure of a mirror
-
-        In case of a failure, the error rate is increased by 1
-        """
-        src_id = int(src_id)
-        dest_id = int(dest_id)
-        await session.execute(
-            update(cls)
-            .where(
-                and_(
-                    cls.src_id == src_id,
-                    cls.dest_id == dest_id,
-                    cls.enabled,
-                    cls.legacy,
-                )
-            )
-            .values(legacy_error_rate=cls.legacy_error_rate + 1)
         )
 
     @classmethod

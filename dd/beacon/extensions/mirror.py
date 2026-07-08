@@ -886,8 +886,12 @@ async def message_create_repeater_impl(
 
         # Log successes, failures and message pairs to the db
         maybe_exceptions = await aio.gather(
+            # Only PERMANENT failures count toward the cross-run auto-disable.
+            # Transient-exhausted targets (a short 5xx/timeout outage) are left in
+            # neither batch, so their error_rate is untouched — see
+            # ``permanent_failed_targets``.
             MirroredChannel.log_legacy_mirror_failure_in_batch(
-                channel.id, list(control.failed_targets.keys())
+                channel.id, list(control.permanent_failed_targets.keys())
             ),
             MirroredChannel.log_legacy_mirror_success_in_batch(
                 channel.id, list(control.successful_targets.keys())
@@ -923,6 +927,12 @@ async def message_create_repeater_impl(
     if disabled_mirrors:
         num_disabled = len(disabled_mirrors)
         total = control.total_targets
+        # ``disable_legacy_failing_mirrors`` sweeps *global* failure state, so its
+        # result can include dests of other sources that crossed the threshold. Scope
+        # the escalation fraction to this run's source; the message still lists all.
+        num_disabled_this_run = sum(
+            1 for mirror in disabled_mirrors if mirror[0] == channel.id
+        )
         message = (
             ("Disabled " if cfg.disable_bad_channels else "Would disable ")
             + str(num_disabled)
@@ -931,11 +941,13 @@ async def message_create_repeater_impl(
         )
         # Escalate by how big a share of this run's targets got disabled: critical
         # past max(10%, 10), error past max(5%, 5), else just a console warning.
-        if num_disabled > max(
+        if num_disabled_this_run > max(
             _DISABLE_CRITICAL_MIN, _DISABLE_CRITICAL_FRACTION * total
         ):
             health_logger.critical(message)
-        elif num_disabled > max(_DISABLE_ERROR_MIN, _DISABLE_ERROR_FRACTION * total):
+        elif num_disabled_this_run > max(
+            _DISABLE_ERROR_MIN, _DISABLE_ERROR_FRACTION * total
+        ):
             health_logger.error(message)
         else:
             health_logger.warning(message)

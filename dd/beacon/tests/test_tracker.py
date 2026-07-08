@@ -102,6 +102,44 @@ def test_newly_sent_only_includes_fresh_sends() -> None:
     assert t.successful_targets == {10: 900, 11: 700}
 
 
+def test_permanent_failed_targets_only_includes_permanent() -> None:
+    # ch 10 fails PERMANENT; ch 11 exhausts its transient retries.
+    t = _tracker({10: None, 11: None}, retry_threshold=2)
+    t.report_scheduled(10)
+    t._apply_outcome(_fail(10, ErrorClass.PERMANENT))  # noqa: SLF001
+    for _ in range(2):
+        t.report_scheduled(11)
+        t._apply_outcome(_fail(11, ErrorClass.TRANSIENT))  # noqa: SLF001
+    # Both are "failed" (won't be retried)...
+    assert set(t.failed_targets) == {10, 11}
+    # ...but only the permanent one counts toward cross-run auto-disable.
+    assert set(t.permanent_failed_targets) == {10}
+
+
+def test_permanent_failed_targets_empty_for_transient_only_run() -> None:
+    # Canonical weekly / short-outage case: every failure this run is a transient
+    # blip (5xx/timeout). Nothing may count toward disable, or a healthy source is
+    # eventually unfollowed on unlucky outages that land on its post moments.
+    t = _tracker({10: None, 11: None}, retry_threshold=2)
+    for ch in (10, 11):
+        for _ in range(2):
+            t.report_scheduled(ch)
+            t._apply_outcome(_fail(ch, ErrorClass.TRANSIENT))  # noqa: SLF001
+    assert set(t.failed_targets) == {10, 11}
+    assert t.permanent_failed_targets == {}
+
+
+def test_permanent_failed_targets_excludes_later_success() -> None:
+    # A permanent failure is never rescheduled, so it cannot later succeed; but guard
+    # the general invariant that a succeeded target never appears as permanent-failed.
+    t = _tracker({10: None}, retry_threshold=3)
+    t.report_scheduled(10)
+    t._apply_outcome(_fail(10, ErrorClass.TRANSIENT))  # noqa: SLF001
+    t.report_scheduled(10)
+    t._apply_outcome(KernelSuccess(channel_id=10, message_id=1))  # noqa: SLF001
+    assert t.permanent_failed_targets == {}
+
+
 def test_cancel_flag_stops_scheduling() -> None:
     t = _tracker({10: None, 11: None})
     t._cancelled = True  # noqa: SLF001

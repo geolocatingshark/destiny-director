@@ -404,6 +404,23 @@ class KernelWorkTracker:
         }
 
     @property
+    def permanent_failed_targets(self) -> dict[int, int | None]:
+        """Failed IDs classed ``PERMANENT`` — the only ones that count toward the
+        cross-run auto-disable.
+
+        Excludes transient-exhausted failures (a target that merely hit the in-run
+        retry threshold on 5xx/timeouts). Counting those toward disable makes the
+        signal hostage to post cadence: a chatty source racks up failures during a
+        short outage. A dead channel (deleted / kicked / perms revoked) fails
+        ``PERMANENT`` regardless of cadence.
+        """
+        return {
+            channel_id: message_id
+            for channel_id, message_id in self.failed_targets.items()
+            if channel_id in self._permanently_failed
+        }
+
+    @property
     def successful_targets(self) -> dict[int, int]:
         return self._completed_successfully
 
