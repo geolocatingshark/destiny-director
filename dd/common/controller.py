@@ -45,12 +45,15 @@ from lightbulb import components as lbc
 from . import cfg, lifecycle
 from .auth import owner_only
 from .bot import CachedFetchBot
-from .components import build_container, cv2_notice, respond_cv2
+from .components import (
+    CV2_DANGER_COLOR,
+    CV2_NEUTRAL_COLOR,
+    CV2_WARNING_COLOR,
+    build_container,
+    cv2_notice,
+    respond_cv2,
+)
 from .schemas import MirroredChannel
-
-_WARN_COLOR = h.Color(0xFEE75C)  # yellow
-_DANGER_COLOR = h.Color(0xED4245)  # red
-_NEUTRAL_COLOR = h.Color(0x5865F2)  # blurple
 
 
 async def _run_lifecycle(
@@ -71,7 +74,8 @@ async def _run_lifecycle(
 
     # Mirror-in-progress override flow (beacon only — anchor passes mirror_check=None,
     # so n is always 0 above). Left as an embed + menu pending the deferred beacon CV2
-    # pass; converting an interactive embed+menu to CV2 is out of scope here.
+    # pass; converting an interactive embed+menu to CV2 is out of scope here. Its accent
+    # colours now come from the shared CV2_* constants so there's one palette repo-wide.
     decided = False
 
     async def on_confirm(mctx: lbc.MenuContext) -> None:
@@ -82,7 +86,7 @@ async def _run_lifecycle(
         decided = True
         await mctx.respond(
             edit=True,
-            embed=h.Embed(description=f"Bot is {action} now.", color=_DANGER_COLOR),
+            embed=h.Embed(description=f"Bot is {action} now.", color=CV2_DANGER_COLOR),
             components=[],
         )
         await lifecycle.request_shutdown(bot, exit_code)
@@ -97,7 +101,7 @@ async def _run_lifecycle(
         await mctx.respond(
             edit=True,
             embed=h.Embed(
-                description="Aborted — no action taken.", color=_NEUTRAL_COLOR
+                description="Aborted — no action taken.", color=CV2_NEUTRAL_COLOR
             ),
             components=[],
         )
@@ -125,7 +129,7 @@ async def _run_lifecycle(
                 "will interrupt them — already-sent destinations are recorded and the "
                 "rest reconcile on the next run. Wait for them to finish, or override."
             ),
-            color=_WARN_COLOR,
+            color=CV2_WARNING_COLOR,
         ),
         components=menu,
         ephemeral=True,
@@ -137,7 +141,7 @@ async def _run_lifecycle(
         # Timed out without a choice — disable the (now stale) buttons.
         await ctx.interaction.edit_initial_response(
             embed=h.Embed(
-                description="Timed out — no action taken.", color=_NEUTRAL_COLOR
+                description="Timed out — no action taken.", color=CV2_NEUTRAL_COLOR
             ),
             components=[],
         )
