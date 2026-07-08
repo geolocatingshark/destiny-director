@@ -1,0 +1,221 @@
+<!doctype html>
+<!--
+  Weekly Reset Overview form — a self-contained, dependency-free form for editing the
+  weekly_reset draft. Reached from the link minted by `/weekly_reset edit_web`; served by
+  dd.anchor.extensions.weekly_reset, whose GET handler substitutes the __BOOTSTRAP__
+  placeholder with {draft, options, autopost_enabled, conquest_tiers, reward_fields}. The
+  page edits the draft client-side and POSTs it to /weekly_reset/{preview,save,publish,
+  auto} — auth is the weekly_reset_session cookie (sent automatically on the same-origin
+  fetch), so no token is embedded here. The server re-resolves weapons, re-applies the
+  business rules and re-validates on save, so this form is a convenience, not a trust
+  boundary. Native inputs only (Tom Select + layout polish come in a later step).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Weekly Reset Overview</title>
+    <link rel="stylesheet" href="/static/shared.css" />
+    <link rel="stylesheet" href="/static/weekly_reset_form.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Weekly Reset Overview</h1>
+      <p class="muted" id="authNote"></p>
+    </header>
+
+    <main>
+      <form id="form">
+        <fieldset>
+          <legend>Reset</legend>
+          <div class="field">
+            <label for="resetAt">Reset boundary (UTC — Tuesday 17:00)</label>
+            <input type="datetime-local" id="resetAt" />
+            <span class="muted">Leave blank to use the current week's reset.</span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Updates &amp; Events</legend>
+          <div class="checks">
+            <label class="inline"><input type="checkbox" id="ironBanner" /> Iron Banner active</label>
+            <label class="inline"><input type="checkbox" id="trialsActive" /> Trials active</label>
+          </div>
+          <span class="muted">Iron Banner forces Trials off (enforced on save).</span>
+          <div class="row">
+            <div class="field">
+              <label for="updateLabel">Update label</label>
+              <input type="text" id="updateLabel" placeholder="Update 9.7.0.3" />
+            </div>
+            <div class="field">
+              <label for="updateUrl">Update URL</label>
+              <input type="url" id="updateUrl" placeholder="https://…" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="eventsNarrative">Events narrative</label>
+            <textarea id="eventsNarrative" placeholder="Optional editorial events prose."></textarea>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Vanguard</legend>
+          <div class="field">
+            <label for="gmStrike">GM Nightfall strike</label>
+            <input type="text" id="gmStrike" list="strikeList" />
+          </div>
+          <div class="field">
+            <label for="gmWeapon">GM Nightfall reward weapon</label>
+            <input type="text" id="gmWeapon" list="weaponList" />
+          </div>
+          <div class="field">
+            <label for="quickplayWeapon">Quickplay featured weapon</label>
+            <input type="text" id="quickplayWeapon" list="weaponList" />
+          </div>
+          <div class="field">
+            <label for="controlWeapon">Control featured weapon</label>
+            <input type="text" id="controlWeapon" list="weaponList" />
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="seasonalRaid">Seasonal raid (weekly reward)</label>
+              <input type="text" id="seasonalRaid" list="raidList" />
+            </div>
+            <div class="field">
+              <label for="seasonalDungeon">Seasonal dungeon (weekly reward)</label>
+              <input type="text" id="seasonalDungeon" list="dungeonList" />
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Conquests (Seasonal Tab)</legend>
+          <p class="muted">Tick the activities featured at each tier this week.</p>
+          <div id="conquests"></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Featured Raids &amp; Dungeons</legend>
+          <div class="row">
+            <div class="field">
+              <label for="rotRaid1">Featured raid 1</label>
+              <select id="rotRaid1"></select>
+            </div>
+            <div class="field">
+              <label for="rotRaid2">Featured raid 2</label>
+              <select id="rotRaid2"></select>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="rotDun1">Featured dungeon 1</label>
+              <select id="rotDun1"></select>
+            </div>
+            <div class="field">
+              <label for="rotDun2">Featured dungeon 2</label>
+              <select id="rotDun2"></select>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Featured Pantheon</legend>
+          <div class="row">
+            <div class="field">
+              <label for="pantheonReprise">Reprise</label>
+              <select id="pantheonReprise"></select>
+            </div>
+            <div class="field">
+              <label for="pantheonEncore">Encore</label>
+              <select id="pantheonEncore"></select>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Zavala's Weapon</legend>
+          <div class="field">
+            <label for="zavalaWeapon">Weapon</label>
+            <input type="text" id="zavalaWeapon" list="weaponList" />
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Crucible Ops</legend>
+          <div class="field">
+            <label for="crucible1v6">1v6</label>
+            <input type="text" id="crucible1v6" placeholder="Sparrow Racing, Rumble" />
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="crucible3v3">3v3 featured mode</label>
+              <select id="crucible3v3"></select>
+            </div>
+            <div class="field">
+              <label for="crucible6v6">6v6 featured mode</label>
+              <select id="crucible6v6"></select>
+            </div>
+          </div>
+          <span class="muted">The fixed first mode is prepended automatically.</span>
+        </fieldset>
+
+        <fieldset>
+          <legend>Notes &amp; Links</legend>
+          <div class="field">
+            <label for="notesText">Info notes (one per line)</label>
+            <textarea id="notesText" placeholder="Duality is available due to a bug."></textarea>
+          </div>
+          <div class="field">
+            <label for="linksText">Extra links (one per line — "Label | https://url")</label>
+            <textarea id="linksText" placeholder="Patch notes | https://…"></textarea>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Image</legend>
+          <div class="field">
+            <label for="imageUrl">Header image URL</label>
+            <input type="url" id="imageUrl" placeholder="https://…" />
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Autopost</legend>
+          <label class="inline"><input type="checkbox" id="autopost" /> Auto-build a fresh draft every Tuesday reset</label>
+        </fieldset>
+      </form>
+
+      <section>
+        <h2>Preview</h2>
+        <ul id="problems" class="hidden"></ul>
+        <pre id="previewBox">Loading preview…</pre>
+      </section>
+    </main>
+
+    <datalist id="weaponList"></datalist>
+    <datalist id="strikeList"></datalist>
+    <datalist id="raidList"></datalist>
+    <datalist id="dungeonList"></datalist>
+
+    <div class="toolbar">
+      <button id="saveBtn" type="button">💾 Save draft</button>
+      <button id="publishBtn" class="secondary" type="button">📣 Save &amp; publish</button>
+      <span class="grow"></span>
+      <span id="status"></span>
+    </div>
+
+    <!--
+      The server (dd.anchor.extensions.weekly_reset) injects the bootstrap JSON by
+      .replace()-ing the __BOOTSTRAP__ placeholder in the inline script below with
+      {draft, options, autopost_enabled, conquest_tiers, reward_fields}. That placeholder
+      MUST stay inline here (this page is templated per request), so it can't live in the
+      statically-served weekly_reset_form.js. This tiny non-deferred script runs at parse
+      time — before the deferred shared.js / weekly_reset_form.js — so the global is set
+      first.
+    -->
+    <script>window.__BOOTSTRAP__ = /*__BOOTSTRAP__*/ null;</script>
+    <script defer src="/static/shared.js"></script>
+    <script defer src="/static/weekly_reset_form.js"></script>
+  </body>
+</html>

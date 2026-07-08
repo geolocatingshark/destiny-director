@@ -22,7 +22,10 @@ Components V2 builder.
 """
 
 import datetime as dt
+import json
+import typing as t
 
+import aiohttp.web
 import hikari as h
 import pytest
 
@@ -352,8 +355,6 @@ def test_activity_record_is_flat_and_parseable() -> None:
     assert rec["rotator_raids"] == ["Crota's End", "Vault of Glass"]
     assert rec["seasonal_raid"] == "The Desert Perpetual"
     # every value must be JSON-serialisable
-    import json
-
     assert json.loads(json.dumps(rec)) == rec
 
 
@@ -595,3 +596,157 @@ async def test_derive_portal_fields_survives_fetch_failure(monkeypatch) -> None:
 
     monkeypatch.setattr(po, "fetch_portal_ops", boom)
     assert await wr.derive_portal_fields() == wr.PortalDerivation("", None)
+
+
+# --- web form: session manager ----------------------------------------------------
+
+
+def test_weekly_reset_session_mint_resolves() -> None:
+    token = wr.WeeklyResetSessionManager.mint()
+    assert wr.WeeklyResetSessionManager.resolve(token)
+
+
+def test_weekly_reset_session_rejects_garbage_and_tampering() -> None:
+    assert not wr.WeeklyResetSessionManager.resolve("")
+    assert not wr.WeeklyResetSessionManager.resolve("never-minted")
+    # A tampered (extended) expiry no longer matches the signature.
+    token = wr.WeeklyResetSessionManager.mint()
+    expiry_str, _, sig = token.partition(".")
+    forged = f"{int(expiry_str) + 100_000}.{sig}"
+    assert not wr.WeeklyResetSessionManager.resolve(forged)
+
+
+def test_weekly_reset_session_expiry() -> None:
+    # A correctly-signed token whose embedded expiry is in the past is rejected.
+    past = int((dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).timestamp())
+    expired = wr.WeeklyResetSessionManager._sign(past)
+    assert not wr.WeeklyResetSessionManager.resolve(expired)
+
+
+def test_weekly_reset_session_key_distinct_from_rotation_editor() -> None:
+    # Distinct signing-key salts: a token minted for one surface must never authenticate
+    # the other, even though both derive from the same anchor bot token.
+    from dd.anchor.extensions import rotation_editor as editor
+
+    assert not editor.RotationSessionManager.resolve(
+        wr.WeeklyResetSessionManager.mint()
+    )
+    assert not wr.WeeklyResetSessionManager.resolve(
+        editor.RotationSessionManager.mint()
+    )
+
+
+# --- web form: payload -> context mapping -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_context_from_payload_resolves_and_enforces_rules(stub_indexes) -> None:
+    payload = {
+        "reset_ts": 1783443600,
+        "gm_strike": "The Sunless Cell",
+        "gm_weapon": "222",  # manifest hash -> full WeaponRef (server-resolved)
+        "quickplay_weapon": "Custom Roll",  # unknown -> plain (unlinked) name
+        "control_weapon": "",  # blank -> None
+        "zavala_weapon": "Cloudstrike",  # by-name -> full WeaponRef
+        "rotator_raids": ["Crota's End", "Vault of Glass"],
+        "crucible_3v3": "Clash",
+        "crucible_6v6": "",
+        "conquests": {"GM": ["Arms Dealer", ""], "Expert": []},
+        "iron_banner": True,
+        "trials_active": True,  # must be forced off by the IB rule
+        "update_label": "",
+        "update_url": "https://example.com/notes",
+        "notes_text": "Duality is available due to a bug.\n\n  ",
+        "links_text": "Guide | https://example.com\nBad | ftp://x",
+    }
+    ctx = await wr._context_from_payload(payload)
+    # Weapon slots resolved server-side (by hash + by name); unknown kept as plain name.
+    assert ctx.gm_weapon == wr.WeaponRef("Null Composure", 222, "fusion_rifle")
+    assert ctx.zavala_weapon == wr.WeaponRef("Cloudstrike", 333, "sniper_rifle")
+    assert ctx.quickplay_weapon == wr.WeaponRef(name="Custom Roll")
+    assert ctx.control_weapon is None
+    # Iron Banner forces Trials off, regardless of the submitted trials_active.
+    assert ctx.iron_banner is True and ctx.trials_active is False
+    # Featured crucible mode prefixed with the fixed first mode; empty slot stays empty.
+    assert ctx.crucible_3v3 == "Competitive, Clash"
+    assert ctx.crucible_6v6 == ""
+    # Conquests: blank entries dropped, empty tiers omitted.
+    assert ctx.conquests == {"GM": ["Arms Dealer"]}
+    # update_link defaults label; notes trimmed to non-blank lines; links http(s) only.
+    assert ctx.update_link == {"label": "Update", "url": "https://example.com/notes"}
+    assert ctx.notes == ["Duality is available due to a bug."]
+    assert ctx.extra_links == [{"label": "Guide", "url": "https://example.com"}]
+
+
+def test_parse_links_accepts_http_only() -> None:
+    links = wr._parse_links(
+        "Guide | https://example.com\n"
+        "Insecure | http://ok.example\n"
+        "Bad scheme | ftp://nope\n"
+        "no pipe here\n"
+        "  Trimmed  |  https://trim.example  "
+    )
+    assert links == [
+        {"label": "Guide", "url": "https://example.com"},
+        {"label": "Insecure", "url": "http://ok.example"},
+        {"label": "Trimmed", "url": "https://trim.example"},
+    ]
+
+
+# --- web form: routes (fake-request) ----------------------------------------------
+
+
+class _FakeRequest:
+    """Minimal aiohttp.web.Request stand-in for the weekly-reset route handlers."""
+
+    def __init__(
+        self,
+        *,
+        body: t.Any = None,
+        cookies: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        query: dict[str, str] | None = None,
+    ) -> None:
+        self.query = query or {}
+        self.cookies = cookies or {}
+        self.headers = headers or {}
+        self._body = body
+
+    async def json(self) -> t.Any:
+        return self._body
+
+
+def _req(**kwargs: t.Any) -> aiohttp.web.Request:
+    return t.cast(aiohttp.web.Request, _FakeRequest(**kwargs))
+
+
+def _authed_cookies() -> dict[str, str]:
+    return {wr._SESSION_COOKIE: wr.WeeklyResetSessionManager.mint()}
+
+
+@pytest.mark.asyncio
+async def test_publish_returns_problems_for_invalid_draft(monkeypatch) -> None:
+    # An empty draft fails validate_post, so publish_draft raises ValueError before it
+    # ever touches the bot — a non-None sentinel just clears the 503 "bot unset" gate.
+    monkeypatch.setattr(wr, "_bot", object())
+    await wr.save_draft(wr.WeeklyResetContext(reset_ts=1))
+    await wr.save_meta(wr.DraftMeta())
+    resp = await wr._handle_publish(_req(cookies=_authed_cookies()))
+    assert resp.status == 422
+    assert json.loads(resp.text or "")["problems"]
+
+
+@pytest.mark.asyncio
+async def test_publish_without_cookie_is_401() -> None:
+    resp = await wr._handle_publish(_req())
+    assert resp.status == 401
+
+
+@pytest.mark.asyncio
+async def test_auto_toggle_round_trips() -> None:
+    resp = await wr._handle_auto(
+        _req(cookies=_authed_cookies(), body={"enabled": True})
+    )
+    assert resp.status == 200
+    assert json.loads(resp.text or "") == {"enabled": True}
+    assert await wr.schemas.AutoPostSettings.get_weekly_reset_enabled() is True

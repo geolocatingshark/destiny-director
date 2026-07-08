@@ -23,7 +23,8 @@ mirrored it. This extension automates that authoring:
    carried-over curated bits, and persists a **draft** (the WeeklyResetContext) to the
    ``weekly_reset_draft`` :class:`~dd.common.schemas.RotationData` row.
 2. The team fills in the weapons/rotators/prose the API can't supply through an
-   owner-authenticated **web form** (built in a following step), backed by the same
+   owner-authenticated **web form** (``/weekly_reset edit_web`` mints the link; the
+   routes and auth live at the bottom of this module), backed by the same
    data/render/publish core below.
 3. On publish the assembled post is crossposted to
    :data:`cfg.followables["weekly_reset"]`; beacon mirrors it as usual.
@@ -42,12 +43,17 @@ the web form.
 import asyncio
 import dataclasses
 import datetime as dt
+import hashlib
+import hmac
+import html
 import json
 import logging
 import re
 import typing as t
+from pathlib import Path
 
 import aiocron
+import aiohttp.web
 import aiosqlite
 import hikari as h
 import lightbulb as lb
@@ -56,7 +62,8 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
-from .. import utils
+from ...common.components import cv2_error, cv2_notice, respond_cv2
+from .. import utils, web
 from ..embeds import substitute_user_side_emoji
 from . import (
     bungie_api as api,
@@ -1340,6 +1347,402 @@ async def mutate_draft(
         await save_meta(meta)
 
 
+# ---------------------------------------------------------------------------
+# Owner-authenticated web form — auth + routes (mirrors rotation_editor.py)
+# ---------------------------------------------------------------------------
+#
+# The Discord input UI is gone; input now flows through this form. Auth is an
+# HMAC-signed, bot-token-keyed session cookie (~2h, no store), minted by the owner-only
+# ``/weekly_reset edit_web`` command and traded for a cookie on first load — cloned from
+# ``RotationSessionManager``. Every state-changing route ALSO checks the request
+# ``Origin`` (defence-in-depth atop ``SameSite=Lax``). All security-relevant transforms
+# (weapon resolution, the Iron-Banner⇒Trials-off rule, link validation) run server-side
+# in :func:`_context_from_payload`; the client payload is never trusted for them.
+
+_FORM_HTML_PATH = (
+    Path(__file__).resolve().parent.parent / "web_static" / "weekly_reset_form.html"
+)
+_SESSION_TTL = dt.timedelta(hours=2)
+_SESSION_COOKIE = "weekly_reset_session"
+_EXPIRED_MSG = "This link has expired. Run /weekly_reset edit_web for a fresh one."
+
+#: The live bot, stashed by the StartedEvent listener so the ``/publish`` route can
+#: reach the REST client. A module global (not aiohttp app state) because the listener
+#: that holds the bot is DI-injected and never sees the app object, while the routes
+#: live in this module — a global is the least-plumbing option. ``None`` until the
+#: StartedEvent fires, at which point ``/publish`` stops 503-ing.
+_bot: CachedFetchBot | None = None
+
+
+def _signing_key() -> bytes:
+    """Stable secret for signing session tokens, derived from the anchor bot token.
+
+    Uses a DISTINCT salt from the rotation editor's key, so a token minted for one
+    surface can never authenticate the other. Deriving (not using the token raw) keeps
+    the bot token itself out of the signing material; no new env var is needed.
+    """
+    return hashlib.sha256(
+        b"weekly-reset-session|" + cfg.discord_token_anchor.encode()
+    ).digest()
+
+
+class WeeklyResetSessionManager:
+    """Stateless, signed editor-session tokens (cloned from RotationSessionManager).
+
+    A token is ``"<expiry_epoch>.<hex_hmac>"``; the HMAC (SHA-256, keyed by a secret
+    derived from the anchor bot token) covers the expiry, so it survives process
+    restarts and carries no server-side state. Minted by the owner-only
+    ``/weekly_reset edit_web`` command and multi-use for its whole ~2-hour life; tokens
+    simply expire, nothing to revoke.
+    """
+
+    @classmethod
+    def _sign(cls, expiry_epoch: int) -> str:
+        sig = hmac.new(
+            _signing_key(), str(expiry_epoch).encode(), hashlib.sha256
+        ).hexdigest()
+        return f"{expiry_epoch}.{sig}"
+
+    @classmethod
+    def mint(cls) -> str:
+        expiry = dt.datetime.now(dt.UTC) + _SESSION_TTL
+        return cls._sign(int(expiry.timestamp()))
+
+    @classmethod
+    def resolve(cls, token: str) -> bool:
+        """Whether ``token`` is a well-signed, unexpired session token."""
+        expiry_str, _, _sig = token.partition(".")
+        try:
+            expiry_epoch = int(expiry_str)
+        except ValueError:
+            return False
+        # Constant-time compare of the whole "<exp>.<sig>" against a fresh signature —
+        # rejects both a tampered expiry and a bad signature.
+        if not hmac.compare_digest(token, cls._sign(expiry_epoch)):
+            return False
+        return expiry_epoch > int(dt.datetime.now(dt.UTC).timestamp())
+
+
+def _session_from_request(request: aiohttp.web.Request) -> str:
+    return request.cookies.get(_SESSION_COOKIE, "")
+
+
+def _set_session_cookie(response: aiohttp.web.StreamResponse, token: str) -> None:
+    response.set_cookie(
+        _SESSION_COOKIE,
+        token,
+        max_age=int(_SESSION_TTL.total_seconds()),
+        httponly=True,
+        # Secure only over https (local http tunnels can't set a Secure cookie);
+        # Railway's public_base_url is https.
+        secure=cfg.public_base_url.startswith("https"),
+        # Lax (not Strict) so the cookie survives the cross-site top-level arrival from
+        # Discord + the same-origin redirect, while withheld on cross-site POSTs.
+        samesite="Lax",
+        path="/weekly_reset",
+    )
+
+
+def _origin_ok(request: aiohttp.web.Request) -> bool:
+    """Reject cross-site POSTs (defence-in-depth atop the SameSite=Lax cookie).
+
+    A browser sends ``Origin`` on state-changing fetches; if present it must match our
+    own origin. Absent, or with no public origin configured, we defer to SameSite/allow.
+    """
+    origin = request.headers.get("Origin")
+    if not origin or not cfg.public_base_url:
+        return True
+    return origin.rstrip("/") == cfg.public_base_url.rstrip("/")
+
+
+def _authed(request: aiohttp.web.Request) -> bool:
+    return WeeklyResetSessionManager.resolve(_session_from_request(request))
+
+
+def _pair(raw: t.Any) -> tuple[str, str]:
+    """Coerce an arbitrary client value into a 2-tuple of trimmed strings."""
+    values = [str(x).strip() for x in (raw or [])]
+    values = (values + ["", ""])[:2]
+    return (values[0], values[1])
+
+
+async def _build_options() -> dict[str, t.Any]:
+    """Option pools shipped in the page bootstrap and filtered client-side."""
+    indexes = await get_indexes()
+    return {
+        "items": [
+            {"name": name, "hash": hash_, "type": type_name, "rarity": rarity}
+            for (name, hash_, type_name, _item_type, rarity) in indexes.items
+        ],
+        "conquests": {tier: list(names) for tier, names in indexes.conquests.items()},
+        "strikes": list(indexes.activities.get("strike", [])),
+        "raids": list(RAIDS),
+        "dungeons": list(DUNGEONS),
+        "pantheon": list(PANTHEON_BOSSES),
+        "crucible_modes": list(CRUCIBLE_MODES),
+        "crucible_3v3_first": CRUCIBLE_3V3_FIRST,
+        "crucible_6v6_first": CRUCIBLE_6V6_FIRST,
+    }
+
+
+async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> WeeklyResetContext:
+    """Build a :class:`WeeklyResetContext` from the form JSON, entirely server-side.
+
+    The client is never trusted for security-relevant transforms: each weapon slot is
+    resolved from its submitted value (a manifest hash or a typed name) via
+    :func:`resolve_reward_value`; the Iron-Banner⇒Trials-off rule is enforced; the
+    featured Crucible modes are prefixed with their fixed first mode; notes are split
+    per-line and links validated to http(s) via :func:`_parse_links`.
+    """
+    ctx = WeeklyResetContext(
+        reset_ts=int(payload.get("reset_ts") or current_reset_ts())
+    )
+
+    ctx.gm_strike = str(payload.get("gm_strike", "")).strip()
+    ctx.gm_weapon = await resolve_reward_value(str(payload.get("gm_weapon", "")))
+    ctx.quickplay_weapon = await resolve_reward_value(
+        str(payload.get("quickplay_weapon", ""))
+    )
+    ctx.control_weapon = await resolve_reward_value(
+        str(payload.get("control_weapon", ""))
+    )
+    ctx.zavala_weapon = await resolve_reward_value(
+        str(payload.get("zavala_weapon", ""))
+    )
+
+    ctx.seasonal_raid = str(payload.get("seasonal_raid", DEFAULT_SEASONAL_RAID)).strip()
+    ctx.seasonal_dungeon = str(
+        payload.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON)
+    ).strip()
+    ctx.rotator_raids = _pair(payload.get("rotator_raids"))
+    ctx.rotator_dungeons = _pair(payload.get("rotator_dungeons"))
+    ctx.pantheon_reprise = str(payload.get("pantheon_reprise", "")).strip()
+    ctx.pantheon_encore = str(payload.get("pantheon_encore", "")).strip()
+
+    # Crucible: the first mode of each slot is fixed; only the featured (second) mode is
+    # a weekly input, prefixed with its fixed first mode (mirrors apply_crucible).
+    ctx.crucible_1v6 = str(payload.get("crucible_1v6", "")).strip()
+    three = str(payload.get("crucible_3v3", "")).strip()
+    six = str(payload.get("crucible_6v6", "")).strip()
+    ctx.crucible_3v3 = f"{CRUCIBLE_3V3_FIRST}, {three}" if three else ""
+    ctx.crucible_6v6 = f"{CRUCIBLE_6V6_FIRST}, {six}" if six else ""
+
+    raw_conquests = payload.get("conquests") or {}
+    ctx.conquests = {
+        tier: activities
+        for tier in CONQUEST_TIERS
+        if (
+            activities := [
+                str(a).strip() for a in raw_conquests.get(tier, []) if str(a).strip()
+            ]
+        )
+    }
+
+    # Iron Banner and Trials are mutually exclusive — IB forces Trials off, server-side.
+    ctx.iron_banner = bool(payload.get("iron_banner", False))
+    ctx.trials_active = (
+        False if ctx.iron_banner else bool(payload.get("trials_active", True))
+    )
+
+    update_url = str(payload.get("update_url", "")).strip()
+    update_label = str(payload.get("update_label", "")).strip()
+    ctx.update_link = (
+        {"label": update_label or "Update", "url": update_url} if update_url else None
+    )
+
+    ctx.image_url = str(payload.get("image_url", "")).strip() or None
+    ctx.events_narrative = str(payload.get("events_narrative", "")).strip()
+    ctx.notes = [
+        line.strip()
+        for line in str(payload.get("notes_text", "")).splitlines()
+        if line.strip()
+    ]
+    ctx.extra_links = _parse_links(str(payload.get("links_text", "")))
+    return ctx
+
+
+def _json_401() -> aiohttp.web.Response:
+    return aiohttp.web.json_response({"error": _EXPIRED_MSG}, status=401)
+
+
+def _json_403() -> aiohttp.web.Response:
+    return aiohttp.web.json_response(
+        {"error": "Cross-origin request refused."}, status=403
+    )
+
+
+async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    # Entry: a fresh ?token=… from the slash command. Trade it for a session cookie and
+    # redirect to the bare path so the token doesn't linger in the URL / history.
+    entry_token = request.query.get("token", "")
+    if entry_token:
+        if not WeeklyResetSessionManager.resolve(entry_token):
+            return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
+        response = aiohttp.web.HTTPFound("/weekly_reset")
+        _set_session_cookie(response, entry_token)
+        return response
+
+    if not _authed(request):
+        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
+
+    draft = await load_draft() or await build_draft_context()
+    bootstrap = {
+        "draft": draft.to_dict(),
+        "options": await _build_options(),
+        "autopost_enabled": bool(
+            await schemas.AutoPostSettings.get_weekly_reset_enabled()
+        ),
+        "conquest_tiers": list(CONQUEST_TIERS),
+        "reward_fields": [list(field) for field in _REWARD_FIELDS],
+    }
+    # Escape "<" so a "</script>" in the data can't break out of the inline <script>.
+    bootstrap_js = json.dumps(bootstrap).replace("<", "\\u003c")
+    page = _FORM_HTML_PATH.read_text(encoding="utf-8").replace(
+        "/*__BOOTSTRAP__*/ null", bootstrap_js
+    )
+    return aiohttp.web.Response(text=page, content_type="text/html")
+
+
+async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    if not _authed(request):
+        return _json_401()
+    if not _origin_ok(request):
+        return _json_403()
+    try:
+        payload = await request.json()
+    except Exception:
+        return aiohttp.web.json_response({"error": "Malformed body."}, status=400)
+
+    ctx = await _context_from_payload(payload)
+    problems = validate_post(ctx)
+    if problems:
+        return aiohttp.web.json_response({"problems": problems}, status=422)
+
+    async with _draft_lock:
+        await save_draft(ctx)
+        meta = await load_meta()
+        meta.status = "draft"
+        meta.last_edited_ts = int(dt.datetime.now(tz=dt.UTC).timestamp())
+        await save_meta(meta)
+    logger.info("weekly_reset: draft saved via web form")
+    return aiohttp.web.json_response({"ok": True, "draft": ctx.to_dict()})
+
+
+async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    if not _authed(request):
+        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
+    if not _origin_ok(request):
+        return aiohttp.web.Response(status=403, text="Cross-origin request refused.")
+    try:
+        payload = await request.json()
+    except Exception:
+        return aiohttp.web.Response(status=400, text="Malformed body.")
+    ctx = await _context_from_payload(payload)
+    # Plain-text body with :emoji: tokens un-substituted; html.escape so the <pre> shows
+    # the raw markdown (incl. "<t:…>") literally and nothing can inject markup.
+    return aiohttp.web.Response(
+        text=html.escape(build_body(ctx)), content_type="text/html"
+    )
+
+
+async def _handle_publish(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    if not _authed(request):
+        return _json_401()
+    if not _origin_ok(request):
+        return _json_403()
+    if _bot is None:
+        return aiohttp.web.json_response(
+            {"error": "Bot is still starting — try again in a moment."}, status=503
+        )
+    # Publish the latest SAVED draft (the client saves first), under the same lock the
+    # save path uses, so a concurrent save can't race the publish.
+    async with _draft_lock:
+        ctx = await load_draft()
+        if ctx is None:
+            return aiohttp.web.json_response(
+                {"problems": ["No draft to publish — save one first."]}, status=422
+            )
+        meta = await load_meta()
+        try:
+            meta, note = await publish_draft(_bot, ctx, meta)
+        except ValueError as exc:
+            return aiohttp.web.json_response(
+                {"problems": str(exc).split("; ")}, status=422
+            )
+        await save_meta(meta)
+    return aiohttp.web.json_response({"note": note})
+
+
+async def _handle_auto(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    if not _authed(request):
+        return _json_401()
+    if not _origin_ok(request):
+        return _json_403()
+    try:
+        payload = await request.json()
+    except Exception:
+        return aiohttp.web.json_response({"error": "Malformed body."}, status=400)
+    await schemas.AutoPostSettings.set_weekly_reset(bool(payload.get("enabled", False)))
+    state = bool(await schemas.AutoPostSettings.get_weekly_reset_enabled())
+    return aiohttp.web.json_response({"enabled": state})
+
+
+def register_weekly_reset_routes(app: aiohttp.web.Application) -> None:
+    """Add the weekly-reset web form routes to the shared persistent app."""
+    app.router.add_get("/weekly_reset", _handle_form_get)
+    app.router.add_post("/weekly_reset/save", _handle_save)
+    app.router.add_post("/weekly_reset/preview", _handle_preview)
+    app.router.add_post("/weekly_reset/publish", _handle_publish)
+    app.router.add_post("/weekly_reset/auto", _handle_auto)
+
+
+web.register_routes(register_weekly_reset_routes)
+
+
+# ---------------------------------------------------------------------------
+# Slash command — the sole remaining weekly_reset Discord surface
+# ---------------------------------------------------------------------------
+
+
+weekly_reset_group = lb.Group("weekly_reset", "Weekly Reset Overview (owner only)")
+
+
+@weekly_reset_group.register
+class EditWeb(
+    lb.SlashCommand,
+    name="edit_web",
+    description="Open the owner-only weekly-reset web form",
+):
+    @lb.invoke
+    async def invoke(self, ctx: lb.Context) -> None:
+        if not cfg.public_base_url:
+            await respond_cv2(
+                ctx,
+                cv2_error(
+                    "No editor link available",
+                    "No public base URL is configured (set PUBLIC_BASE_URL or run on "
+                    "Railway), so I can't mint a reachable edit link.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        token = WeeklyResetSessionManager.mint()
+        url = f"{cfg.public_base_url}/weekly_reset?token={token}"
+        # Ephemeral (owner-private) response, mirroring rotation_editor's mint command;
+        # the anchor bot is owner-only in its entirety, so this is only ever seen by the
+        # owner who ran it and keeps the token out of any shared channel.
+        await respond_cv2(
+            ctx,
+            cv2_notice(
+                f"[Open the weekly-reset form here]({url}) — it stays signed in for "
+                "about 2 hours. Edit, preview, save, publish and toggle the autopost "
+                "all from that page."
+            ),
+            ephemeral=True,
+        )
+
+
 @loader.listener(h.StartedEvent)
 async def _schedule_weekly_reset(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
@@ -1347,14 +1750,24 @@ async def _schedule_weekly_reset(
     if not cfg.drafts_channel:
         return
 
+    # Stash the live bot so the web form's /publish route can reach the REST client.
+    global _bot
+    _bot = bot
+
     # Prewarm the manifest-backed option-pool indexes so the first form load is fast.
     asyncio.create_task(get_indexes())
 
-    # Tuesday 17:00 UTC weekly reset.
-    # TODO(step5): expose enable/disable + owner web link via the web form.
+    # Tuesday 17:00 UTC weekly reset. Enable/disable lives on the web form's autopost
+    # toggle (POST /weekly_reset/auto -> AutoPostSettings.set_weekly_reset).
     @aiocron.crontab("0 17 * * TUE", start=True)
     # Testing: post every minute -> @aiocron.crontab("* * * * *", start=True)
     async def autopost_weekly_reset() -> None:
         if not await schemas.AutoPostSettings.get_weekly_reset_enabled():
             return
         await run_reset_draft(bot, ping_owners=True)
+
+
+# The web form's routes are always registered (above); the slash command that mints the
+# link is gated on the drafts channel — the same gate that guards the autopost cron.
+if cfg.drafts_channel:
+    loader.command(weekly_reset_group)

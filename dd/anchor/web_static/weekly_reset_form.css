@@ -1,0 +1,60 @@
+/*
+  Weekly Reset Overview form styles. Layered on /static/shared.css (base reset + theme).
+  Deliberately minimal — a later step swaps the native weapon/conquest inputs for Tom
+  Select and polishes the layout. Served statically from /static/weekly_reset_form.css.
+*/
+main { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
+#form { display: flex; flex-direction: column; gap: 1rem; }
+
+fieldset {
+  border: 1px solid #333; border-radius: 8px; padding: .6rem 1rem 1rem;
+  display: flex; flex-direction: column; gap: .3rem; margin: 0;
+}
+legend { font-weight: 600; padding: 0 .4rem; }
+
+.field { display: flex; flex-direction: column; gap: .3rem; }
+.field > label { font-size: .85rem; color: #cfd3d6; }
+
+.row { display: flex; gap: .8rem; flex-wrap: wrap; }
+.row .field { flex: 1 1 14rem; }
+
+input[type="text"], input[type="url"], input[type="datetime-local"],
+select, textarea {
+  width: 100%; padding: .45rem .55rem; font: inherit;
+  background: #24272e; color: #e6e6e6;
+  border: 1px solid #3a3f47; border-radius: 6px;
+}
+textarea { min-height: 4.5rem; resize: vertical; }
+
+.checks { display: flex; flex-wrap: wrap; gap: .35rem 1.1rem; margin: .2rem 0; }
+.checks label { font-size: .88rem; display: inline-flex; align-items: center; gap: .35rem; }
+.checks input { margin: 0; }
+label.inline { flex-direction: row; align-items: center; gap: .4rem; }
+
+#conquests { display: flex; flex-direction: column; gap: .6rem; }
+#conquests fieldset { padding: .4rem .8rem .6rem; gap: .2rem; }
+
+.toolbar {
+  position: sticky; bottom: 0; z-index: 2;
+  display: flex; gap: .6rem; align-items: center;
+  padding: .7rem 0; margin-top: 1rem;
+  background: #1b1d22; border-top: 1px solid #333;
+}
+button {
+  padding: .5rem .9rem; font: inherit; cursor: pointer;
+  border: 1px solid #3a3f47; border-radius: 6px; background: #2e5bff; color: #fff;
+}
+button.secondary { background: #24272e; color: #e6e6e6; }
+.grow { flex: 1; }
+
+#status.ok { color: #7ee787; }
+#status.err { color: #ff7b72; }
+
+#problems { color: #ff7b72; margin: .4rem 0; padding-left: 1.2rem; }
+#problems.hidden { display: none; }
+
+#previewBox {
+  white-space: pre-wrap; word-break: break-word;
+  background: #14161a; border: 1px solid #333; border-radius: 8px;
+  padding: 1rem; font: inherit; overflow-x: auto;
+}
