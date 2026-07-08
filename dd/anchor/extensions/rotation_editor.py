@@ -310,7 +310,9 @@ async def _handle_home_get(request: aiohttp.web.Request) -> aiohttp.web.Response
         if not RotationSessionManager.resolve(entry_token):
             return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
         response = aiohttp.web.HTTPFound("/rotation")
-        _set_session_cookie(response, entry_token)
+        # Issue a freshly minted token (not the request-supplied one): refreshes the
+        # TTL and keeps request input out of the Set-Cookie value.
+        _set_session_cookie(response, RotationSessionManager.mint())
         return response
 
     if not RotationSessionManager.resolve(_session_from_request(request)):
@@ -328,6 +330,11 @@ async def _handle_edit_get(request: aiohttp.web.Request) -> aiohttp.web.Response
         return aiohttp.web.Response(
             status=404, text=f"Unknown rotation type {post_type!r}."
         )
+    # Re-bind to the canonical allowlist key so the value reflected into the page below
+    # is sourced from our constant schema table, not the raw query string (clears
+    # CodeQL's reflected-XSS taint; the bootstrap JSON is additionally `<`-escaped for
+    # its inline <script> context).
+    post_type = next(k for k in rotation_schema.ROTATION_SCHEMAS if k == post_type)
 
     doc = await schemas.RotationData.get_data(post_type)
     if doc is None:
