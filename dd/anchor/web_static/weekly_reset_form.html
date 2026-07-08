@@ -181,9 +181,10 @@
         <fieldset>
           <legend>Image</legend>
           <div class="field">
-            <label for="imageUrl">Header image URL</label>
+            <label for="imageUrl">Image URL (shown at the bottom of the post)</label>
             <input type="url" id="imageUrl" placeholder="https://…" />
           </div>
+          <label class="inline"><input type="checkbox" id="imageDefault" /> Use this as the default image for future weeks</label>
         </fieldset>
 
         <fieldset>
@@ -205,6 +206,7 @@
     <div class="toolbar">
       <button id="saveBtn" type="button">💾 Save draft</button>
       <button id="publishBtn" class="secondary" type="button">📣 Save &amp; publish</button>
+      <button id="deleteBtn" class="danger" type="button" disabled>🗑 Delete post</button>
       <span class="grow"></span>
       <span id="status"></span>
     </div>
