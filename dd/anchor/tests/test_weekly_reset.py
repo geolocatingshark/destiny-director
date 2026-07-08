@@ -614,6 +614,10 @@ def test_weekly_reset_session_rejects_garbage_and_tampering() -> None:
     expiry_str, _, sig = token.partition(".")
     forged = f"{int(expiry_str) + 100_000}.{sig}"
     assert not wr.WeeklyResetSessionManager.resolve(forged)
+    # A non-ASCII cookie must fail closed (return False), not raise TypeError from
+    # hmac.compare_digest and 500 the route.
+    assert not wr.WeeklyResetSessionManager.resolve("1.\udcff")
+    assert not wr.WeeklyResetSessionManager.resolve("héllo")
 
 
 def test_weekly_reset_session_expiry() -> None:

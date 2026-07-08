@@ -73,7 +73,12 @@ async def start(port: int | None = None) -> None:
     # OAuth callback), so it can't collide.
     app.router.add_static("/static/", _WEB_STATIC_DIR)
 
-    runner = aiohttp.web.AppRunner(app)
+    # access_log=None disables aiohttp's default request-line access log. The editor
+    # entry links and the OAuth callback carry secrets in the query string
+    # (?token=…, ?code=/?state=…); the default log records the full request line, which
+    # would leak those to anyone with log-read access (CWE-532). This app logs its own
+    # meaningful events via the module logger, so the request log has little value here.
+    runner = aiohttp.web.AppRunner(app, access_log=None)
     await runner.setup()
     bind_port = cfg.port if port is None else port
     site = aiohttp.web.TCPSite(runner, "0.0.0.0", bind_port)

@@ -1414,11 +1414,14 @@ class WeeklyResetSessionManager:
         expiry_str, _, _sig = token.partition(".")
         try:
             expiry_epoch = int(expiry_str)
-        except ValueError:
+            # Constant-time compare of the whole "<exp>.<sig>" against a fresh signature
+            # — rejects a tampered expiry or a bad signature. compare_digest raises
+            # TypeError on a non-ASCII token, so guard it too: a hostile cookie must
+            # fail closed (401), not 500 the route.
+            valid_sig = hmac.compare_digest(token, cls._sign(expiry_epoch))
+        except (ValueError, TypeError):
             return False
-        # Constant-time compare of the whole "<exp>.<sig>" against a fresh signature —
-        # rejects both a tampered expiry and a bad signature.
-        if not hmac.compare_digest(token, cls._sign(expiry_epoch)):
+        if not valid_sig:
             return False
         return expiry_epoch > int(dt.datetime.now(dt.UTC).timestamp())
 
