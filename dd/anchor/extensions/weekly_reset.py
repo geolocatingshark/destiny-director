@@ -20,46 +20,42 @@ a human hand-authored the post and dropped it into the announce channel, and bea
 mirrored it. This extension automates that authoring:
 
 1. At Tuesday reset a cron derives everything the Bungie API can give us, merges the
-   carried-over curated bits, and posts a **draft** (a live Components V2 preview)
-   to the team drafts channel (:data:`cfg.drafts_channel`), pinging the
-   bot owners.
-2. The team opens ``/weekly_reset edit`` — an owner-only, ephemeral interactive editor —
-   picks the weapons/rotators/etc. and types the editorial prose.
-3. They preview the assembled post and, on confirm, publish it (crossposted) to
+   carried-over curated bits, and persists a **draft** (the WeeklyResetContext) to the
+   ``weekly_reset_draft`` :class:`~dd.common.schemas.RotationData` row.
+2. The team fills in the weapons/rotators/prose the API can't supply through an
+   owner-authenticated **web form** (built in a following step), backed by the same
+   data/render/publish core below.
+3. On publish the assembled post is crossposted to
    :data:`cfg.followables["weekly_reset"]`; beacon mirrors it as usual.
 
 Everything the API can't supply (editorial prose, the featured raid/dungeon rotators,
 Iron Banner/Trials schedule, Pantheon pair) carries over week-to-week in the
-``weekly_reset_config`` :class:`~dd.common.schemas.RotationData` row and is editable in
-Discord — no web form, no redeploy.
+``weekly_reset_config`` :class:`~dd.common.schemas.RotationData` row.
 
-The interactive editor + commands live in the back half of this module; the front
-half is pure data: the context model, the persisted config, the Bungie derivations
-and the Components V2 renderer.
+This module is the UI-agnostic core: the context model, the persisted config, the
+Bungie derivations, the Components V2 renderer, the manifest-backed option pools, the
+publish path (:func:`publish_draft`) and the reset-day autopost cron. The Discord input
+UI (a `/weekly_reset` command group + interactive editor) has been removed in favour of
+the web form.
 """
 
 import asyncio
-import contextlib
 import dataclasses
 import datetime as dt
 import json
 import logging
 import re
 import typing as t
-import uuid
 
 import aiocron
 import aiosqlite
 import hikari as h
 import lightbulb as lb
-from lightbulb import components as lbc
 
 from dd.hmessage import HMessage
 
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
-from ...common.components import build_container
-from ...common.utils import guild_scope
 from .. import utils
 from ..embeds import substitute_user_side_emoji
 from . import (
@@ -858,714 +854,91 @@ async def save_meta(meta: DraftMeta) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Owner gating + single-writer session control
+# Publishing
+# ---------------------------------------------------------------------------
+
+
+async def publish_draft(
+    bot: CachedFetchBot, ctx: WeeklyResetContext, meta: DraftMeta
+) -> tuple[DraftMeta, str]:
+    """Publish (or re-publish) ``ctx`` to the ``weekly_reset`` followable.
+
+    The first publish crossposts a fresh message and logs the activity choices; a
+    later publish edits the already-published message in place so beacon re-mirrors
+    the edit to every follower. Returns the updated ``meta`` and a short note. Raises
+    ``ValueError`` (joined ``validate_post`` problems) instead of publishing an
+    invalid post.
+    """
+    problems = validate_post(ctx)
+    if problems:
+        raise ValueError("; ".join(problems))
+    hmessage = await format_weekly_reset(ctx, bot)
+    channel_id = cfg.followables["weekly_reset"]
+    initial_publish = not meta.published_message_id
+    if meta.published_message_id:
+        # Already published this week: edit the post in place so fixes reach followers
+        # via beacon's edit reconciliation, no duplicate post.
+        await bot.rest.edit_message(
+            channel_id,
+            meta.published_message_id,
+            components=hmessage.components,
+        )
+        note = "✏️ Updated the published post — beacon re-mirrors the edit."
+    else:
+        posted = await utils.send_message(bot, hmessage, channel_id, crosspost=True)
+        meta.published_message_id = posted.id
+        note = "✅ Published and crossposted — beacon will mirror it out."
+    meta.status = "published"
+    await save_meta(meta)
+    # Log the activity choices once per week (first publish) for later analysis.
+    if initial_publish:
+        await record_publish(bot, ctx)
+    return meta, note
+
+
+# ---------------------------------------------------------------------------
+# Single-writer lock
 # ---------------------------------------------------------------------------
 
 #: Serialises read-modify-write of the shared draft doc (single bot process).
 _draft_lock = asyncio.Lock()
-#: The session id currently allowed to mutate the draft; older sessions are superseded.
-_active_session: str | None = None
-#: Editor session cap — comfortably inside the 15-min interaction-token TTL so the final
-#: "controls disabled" edit still lands; every edit is persisted, so a timeout loses
-#: nothing (re-run /weekly_reset edit to resume).
-_SESSION_TIMEOUT = 840
-
-
-async def _is_owner(bot: CachedFetchBot, user_id: int) -> bool:
-    return user_id in await bot.fetch_owner_ids()
 
 
 # ---------------------------------------------------------------------------
-# The drafts-channel card = the canonical live preview
-# ---------------------------------------------------------------------------
-
-
-def _card_status_text(meta: DraftMeta) -> str:
-    bits: list[str] = []
-    if meta.status == "published":
-        bits.append("✅ Published")
-    else:
-        bits.append("📝 Draft")
-    if meta.last_edited_by:
-        bits.append(
-            f"last edit by <@{meta.last_edited_by}> <t:{meta.last_edited_ts}:R>"
-        )
-    if meta.needs_attention:
-        bits.append("⚠️ needs attention: " + ", ".join(meta.needs_attention))
-    return "-# " + " · ".join(bits)
-
-
-async def render_card(
-    ctx: WeeklyResetContext, meta: DraftMeta, bot: CachedFetchBot
-) -> list[h.api.ComponentBuilder]:
-    """Card body: the live post preview + a status line + the how-to-edit hint."""
-    preview = await format_weekly_reset(ctx, bot)
-    components = list(preview.components)
-    container = components[0]
-    if isinstance(container, h.impl.ContainerComponentBuilder):
-        container.add_separator(divider=True)
-        container.add_text_display(_card_status_text(meta))
-        container.add_text_display(
-            "-# ▶ Run `/weekly_reset edit` to pick, edit and publish this post."
-        )
-    return components
-
-
-async def post_or_update_card(
-    bot: CachedFetchBot,
-    ctx: WeeklyResetContext,
-    meta: DraftMeta,
-    *,
-    ping_owners: bool = False,
-) -> DraftMeta:
-    """Edit the existing card in place, or post a fresh one (pinging owners once)."""
-    channel_id = cfg.drafts_channel
-    if not channel_id:
-        return meta
-    components = await render_card(ctx, meta, bot)
-
-    if meta.card_message_id:
-        try:
-            await bot.rest.edit_message(
-                channel_id, meta.card_message_id, components=components
-            )
-            return meta
-        except Exception:
-            logger.warning("weekly_reset: card edit failed; reposting", exc_info=True)
-
-    # Fresh card. Ping the owners with a tiny companion message (a CV2 post has no
-    # `content`, so a mention there is unreliable) then post the card itself.
-    if ping_owners:
-        try:
-            owner_ids = await bot.fetch_owner_ids()
-            mention = " ".join(f"<@{oid}>" for oid in owner_ids)
-            await bot.rest.create_message(
-                channel_id,
-                f"{mention} 🗓️ Weekly reset draft is ready to review.",
-                user_mentions=True,
-            )
-        except Exception:
-            logger.warning("weekly_reset: owner ping failed", exc_info=True)
-
-    posted = await bot.rest.create_message(
-        channel_id,
-        components=components,
-        flags=h.MessageFlag.IS_COMPONENTS_V2,
-    )
-    meta.card_channel_id = channel_id
-    meta.card_message_id = posted.id
-    await save_meta(meta)
-    return meta
-
-
-# ---------------------------------------------------------------------------
-# Editor: the section model (which selects/modal each section shows)
-# ---------------------------------------------------------------------------
-
-# Only the fields NOT covered by the `/weekly_reset set_activity` / `set_reward`
-# autocomplete commands live in the editor: the Iron Banner/Trials toggles + prose,
-# ad-hoc notes/links, and the header image.
-_SECTIONS: tuple[tuple[str, str], ...] = (
-    ("events", "Events & Trials"),
-    ("notes", "Notes & Links"),
-    ("image", "Image"),
-)
-_SECTION_LABELS = dict(_SECTIONS)
-
-# A select "option" tuple: (label, value, is_default).
-Option = tuple[str, str, bool]
-
-
-def _select_a(ctx: WeeklyResetContext, section: str) -> tuple[str, list[Option]] | None:
-    """Placeholder + options for the section's first select, if it has one.
-
-    Weapons/activities are set via the autocomplete ``/weekly_reset set_*`` commands, so
-    the only in-editor selects left are the Iron Banner / Trials toggles.
-    """
-    if section == "events":
-        opts = [
-            ("Iron Banner: ON", "ib_on", ctx.iron_banner),
-            ("Iron Banner: OFF", "ib_off", not ctx.iron_banner),
-        ]
-        return ("Iron Banner this week?", opts)
-    return None
-
-
-def _select_b(ctx: WeeklyResetContext, section: str) -> tuple[str, list[Option]] | None:
-    if section == "events":
-        opts = [
-            ("Trials line: ON", "trials_on", ctx.trials_active),
-            ("Trials line: OFF", "trials_off", not ctx.trials_active),
-        ]
-        return ("Show the Trials line?", opts)
-    return None
-
-
-def _apply_select_a(ctx: WeeklyResetContext, section: str, value: str) -> None:
-    if section == "events":
-        ctx.iron_banner = value == "ib_on"
-        if ctx.iron_banner:
-            ctx.trials_active = False
-
-
-def _apply_select_b(ctx: WeeklyResetContext, section: str, value: str) -> None:
-    if section == "events":
-        ctx.trials_active = value == "trials_on"
-
-
-# A modal field spec: (label, current_value, multiline).
-Field = tuple[str, str, bool]
-
-
-def _modal_spec(
-    ctx: WeeklyResetContext, section: str
-) -> tuple[str, list[Field]] | None:
-    """Title + field specs for the section's free-text modal, if it has one."""
-    if section == "events":
-        return (
-            "Events narrative",
-            [("Events prose (optional)", ctx.events_narrative, True)],
-        )
-    if section == "notes":
-        return (
-            "Notes & Links",
-            [
-                ("Info notes (one per line)", "\n".join(ctx.notes), True),
-                (
-                    "Extra links — 'Label | https://url' per line",
-                    _links_text(ctx),
-                    True,
-                ),
-            ],
-        )
-    if section == "image":
-        return (
-            "Header image",
-            [("Image URL (blank to clear)", ctx.image_url or "", False)],
-        )
-    return None
-
-
-def _apply_modal(ctx: WeeklyResetContext, section: str, values: list[str]) -> None:
-    if section == "events":
-        ctx.events_narrative = (values[0] if values else "").strip()
-    elif section == "notes":
-        notes_raw = values[0] if values else ""
-        links_raw = values[1] if len(values) > 1 else ""
-        ctx.notes = [line.strip() for line in notes_raw.splitlines() if line.strip()]
-        ctx.extra_links = _parse_links(links_raw)
-    elif section == "image":
-        url = (values[0] if values else "").strip()
-        ctx.image_url = url or None
-
-
-def _links_text(ctx: WeeklyResetContext) -> str:
-    return "\n".join(
-        f"{link.get('label', '')} | {link.get('url', '')}" for link in ctx.extra_links
-    )
-
-
-def _parse_links(raw: str) -> list[dict[str, str]]:
-    links: list[dict[str, str]] = []
-    for line in raw.splitlines():
-        if "|" not in line:
-            continue
-        label, url = (part.strip() for part in line.split("|", 1))
-        if label and url.startswith(("http://", "https://")):
-            links.append({"label": label, "url": url})
-    return links
-
-
-# ---------------------------------------------------------------------------
-# Editor session + rendering
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class _Session:
-    session_id: str
-    invoker_id: int
-    ctx: WeeklyResetContext
-    meta: DraftMeta
-    section: str = "events"
-    confirm: bool = False
-
-
-def _summary(ctx: WeeklyResetContext, section: str) -> str:
-    """Compact view of the current section's values (the full preview is the card)."""
-    if section == "events":
-        return (
-            f"Iron Banner: {'ON' if ctx.iron_banner else 'OFF'}\n"
-            f"Trials line: {'ON' if ctx.trials_active else 'OFF'}\n"
-            f"Prose: {ctx.events_narrative or '—'}"
-        )
-    if section == "notes":
-        return f"Notes: {len(ctx.notes)}\nExtra links: {len(ctx.extra_links)}"
-    if section == "image":
-        return f"Image: {ctx.image_url or '—'}"
-    return ""
-
-
-def _render_editor(session: _Session) -> list[h.api.ComponentBuilder]:
-    sid = session.session_id
-    ctx = session.ctx
-    section = session.section
-
-    if session.confirm:
-        republish = bool(session.meta.published_message_id)
-        container = build_container(
-            [
-                "## Update the published post?"
-                if republish
-                else "## Publish weekly reset?",
-                (
-                    "This edits the already-published post in place; beacon re-mirrors "
-                    "the change to every follower."
-                    if republish
-                    else "This posts **exactly the card** in the drafts channel and "
-                    "crossposts it; beacon mirrors it to every follower."
-                ),
-            ]
-        )
-        row = h.impl.MessageActionRowBuilder()
-        row.add_interactive_button(
-            h.ButtonStyle.SUCCESS,
-            f"{sid}:confirm",
-            label="Confirm update" if republish else "Confirm publish",
-        )
-        row.add_interactive_button(h.ButtonStyle.SECONDARY, f"{sid}:back", label="Back")
-        return [container, row]
-
-    container = build_container(
-        [
-            "## Weekly Reset — editor",
-            f"Editing: **{_SECTION_LABELS[section]}**\n{_summary(ctx, section)}",
-            "-# The full live preview is the draft card in the drafts channel.",
-        ]
-    )
-    components: list[h.api.ComponentBuilder] = [container]
-
-    # Section picker.
-    section_row = h.impl.MessageActionRowBuilder()
-    section_menu = section_row.add_text_menu(
-        f"{sid}:section", placeholder="Jump to a section…"
-    )
-    for key, label in _SECTIONS:
-        section_menu.add_option(label, key, is_default=key == section)
-    components.append(section_row)
-
-    # Section-specific selects.
-    spec_a = _select_a(ctx, section)
-    if spec_a:
-        placeholder, options = spec_a
-        row_a = h.impl.MessageActionRowBuilder()
-        menu_a = row_a.add_text_menu(f"{sid}:pick_a", placeholder=placeholder)
-        for label, value, default in options:
-            menu_a.add_option(label, value, is_default=default)
-        components.append(row_a)
-    spec_b = _select_b(ctx, section)
-    if spec_b:
-        placeholder, options = spec_b
-        row_b = h.impl.MessageActionRowBuilder()
-        menu_b = row_b.add_text_menu(f"{sid}:pick_b", placeholder=placeholder)
-        for label, value, default in options:
-            menu_b.add_option(label, value, is_default=default)
-        components.append(row_b)
-
-    # Action buttons: edit this section's text, save & close, or go to publish.
-    buttons = h.impl.MessageActionRowBuilder()
-    if _modal_spec(ctx, section):
-        buttons.add_interactive_button(
-            h.ButtonStyle.PRIMARY, f"{sid}:text", label="✏️ Edit text"
-        )
-    buttons.add_interactive_button(
-        h.ButtonStyle.SECONDARY, f"{sid}:save", label="💾 Save & close"
-    )
-    buttons.add_interactive_button(
-        h.ButtonStyle.SUCCESS, f"{sid}:publish", label="📣 Publish…"
-    )
-    components.append(buttons)
-    return components
-
-
-class _FieldsModal(lbc.Modal):
-    """Generic free-text modal; on submit it applies values and re-renders."""
-
-    def __init__(
-        self,
-        field_specs: list[Field],
-        on_apply: t.Callable[[list[str]], t.Awaitable[list[h.api.ComponentBuilder]]],
-    ) -> None:
-        self._inputs: list[lbc.TextInput] = []
-        for label, value, multiline in field_specs:
-            add = (
-                self.add_paragraph_text_input
-                if multiline
-                else self.add_short_text_input
-            )
-            self._inputs.append(
-                add(label[:45], value=value or h.UNDEFINED, required=False)
-            )
-        self._on_apply = on_apply
-
-    async def on_submit(self, ctx: lbc.ModalContext) -> None:
-        values = [ctx.value_for(field) or "" for field in self._inputs]
-        await ctx.interaction.create_initial_response(
-            h.ResponseType.DEFERRED_MESSAGE_UPDATE
-        )
-        components = await self._on_apply(values)
-        await ctx.interaction.edit_initial_response(components=components)
-
-
-async def open_editor(ctx: lb.Context, bot: CachedFetchBot) -> None:
-    """Open the owner-only, ephemeral interactive editor (canonical entry point)."""
-    global _active_session
-
-    draft = await load_draft()
-    if draft is None:
-        draft = await build_draft_context()
-        await save_draft(draft)
-    meta = await load_meta()
-
-    session = _Session(
-        session_id=uuid.uuid4().hex[:8],
-        invoker_id=ctx.user.id,
-        ctx=draft,
-        meta=meta,
-    )
-    _active_session = session.session_id
-
-    async def _mutate(fn: t.Callable[[WeeklyResetContext], None]) -> bool:
-        """Apply ``fn`` to the draft under the single-writer lock, then persist.
-
-        Returns False (and does nothing) if this session has been superseded.
-        """
-        async with _draft_lock:
-            if _active_session != session.session_id:
-                return False
-            # Pick up any out-of-band edits (e.g. the /weekly_reset set_* commands)
-            # before applying this one, so concurrent writers don't clobber.
-            latest = await load_draft()
-            if latest is not None:
-                session.ctx = latest
-            fn(session.ctx)
-            session.meta.status = "draft"
-            session.meta.last_edited_by = session.invoker_id
-            session.meta.last_edited_ts = int(dt.datetime.now(tz=dt.UTC).timestamp())
-            await save_draft(session.ctx)
-            await save_meta(session.meta)
-        await post_or_update_card(bot, session.ctx, session.meta)
-        return True
-
-    async def _rerender(mctx: lbc.MenuContext) -> None:
-        await mctx.respond(
-            edit=True,
-            flags=h.MessageFlag.IS_COMPONENTS_V2,
-            components=_render_editor(session),
-        )
-
-    async def _superseded(mctx: lbc.MenuContext) -> None:
-        await mctx.respond(
-            edit=True,
-            flags=h.MessageFlag.IS_COMPONENTS_V2,
-            components=[
-                build_container(
-                    ["⚠️ Another editor session took over — this one is now read-only."]
-                )
-            ],
-        )
-        mctx.stop_interacting()
-
-    async def on_section(mctx: lbc.MenuContext) -> None:
-        session.section = mctx.interaction.values[0]
-        session.confirm = False
-        await _rerender(mctx)
-
-    async def on_pick_a(mctx: lbc.MenuContext) -> None:
-        value = mctx.interaction.values[0]
-        if not await _mutate(lambda c: _apply_select_a(c, session.section, value)):
-            await _superseded(mctx)
-            return
-        await _rerender(mctx)
-
-    async def on_pick_b(mctx: lbc.MenuContext) -> None:
-        value = mctx.interaction.values[0]
-        if not await _mutate(lambda c: _apply_select_b(c, session.section, value)):
-            await _superseded(mctx)
-            return
-        await _rerender(mctx)
-
-    async def on_text(mctx: lbc.MenuContext) -> None:
-        spec = _modal_spec(session.ctx, session.section)
-        if spec is None:
-            return
-        title, fields = spec
-
-        async def apply(values: list[str]) -> list[h.api.ComponentBuilder]:
-            ok = await _mutate(lambda c: _apply_modal(c, session.section, values))
-            return (
-                _render_editor(session)
-                if ok
-                else [build_container(["⚠️ Session superseded — nothing changed."])]
-            )
-
-        modal = _FieldsModal(fields, apply)
-        modal_cid = f"wr_modal:{uuid.uuid4().hex}"
-        await mctx.respond_with_modal(title, modal_cid, components=modal)
-        with contextlib.suppress(asyncio.TimeoutError):
-            await modal.attach(mctx.client, modal_cid, timeout=300)
-
-    async def on_publish(mctx: lbc.MenuContext) -> None:
-        problems = validate_post(session.ctx)
-        if problems:
-            await mctx.respond(
-                "Can't publish yet:\n- " + "\n- ".join(problems), ephemeral=True
-            )
-            return
-        session.confirm = True
-        await _rerender(mctx)
-
-    async def on_back(mctx: lbc.MenuContext) -> None:
-        session.confirm = False
-        await _rerender(mctx)
-
-    async def on_confirm(mctx: lbc.MenuContext) -> None:
-        global _active_session
-        async with _draft_lock:
-            if _active_session != session.session_id:
-                await _superseded(mctx)
-                return
-            problems = validate_post(session.ctx)
-            if problems:
-                session.confirm = False
-                await _rerender(mctx)
-                return
-            hmessage = await format_weekly_reset(session.ctx, bot)
-            channel_id = cfg.followables["weekly_reset"]
-            initial_publish = not session.meta.published_message_id
-            if session.meta.published_message_id:
-                # Already published this week: edit the post in place so fixes reach
-                # followers via beacon's edit reconciliation, no duplicate post.
-                await bot.rest.edit_message(
-                    channel_id,
-                    session.meta.published_message_id,
-                    components=hmessage.components,
-                )
-                note = "✏️ Updated the published post — beacon re-mirrors the edit."
-            else:
-                posted = await utils.send_message(
-                    bot, hmessage, channel_id, crosspost=True
-                )
-                session.meta.published_message_id = posted.id
-                note = "✅ Published and crossposted — beacon will mirror it out."
-            session.meta.status = "published"
-            await save_meta(session.meta)
-            _active_session = None
-        # Log the activity choices once per week (first publish) for later analysis.
-        if initial_publish:
-            await record_publish(bot, session.ctx)
-        await post_or_update_card(bot, session.ctx, session.meta)
-        await mctx.respond(
-            edit=True,
-            flags=h.MessageFlag.IS_COMPONENTS_V2,
-            components=[build_container([note])],
-        )
-        mctx.stop_interacting()
-
-    async def on_save(mctx: lbc.MenuContext) -> None:
-        global _active_session
-        async with _draft_lock:
-            if _active_session == session.session_id:
-                await save_draft(session.ctx)
-                _active_session = None
-        await post_or_update_card(bot, session.ctx, session.meta)
-        await mctx.respond(
-            edit=True,
-            flags=h.MessageFlag.IS_COMPONENTS_V2,
-            components=[
-                build_container(
-                    ["💾 Saved — the drafts card is up to date. Not published yet."]
-                )
-            ],
-        )
-        mctx.stop_interacting()
-
-    menu = lbc.Menu()
-    menu.add_text_select(["_"], on_section, custom_id=f"{session.session_id}:section")
-    menu.add_text_select(["_"], on_pick_a, custom_id=f"{session.session_id}:pick_a")
-    menu.add_text_select(["_"], on_pick_b, custom_id=f"{session.session_id}:pick_b")
-    menu.add_interactive_button(
-        h.ButtonStyle.PRIMARY,
-        on_text,
-        custom_id=f"{session.session_id}:text",
-        label="✏️",
-    )
-    menu.add_interactive_button(
-        h.ButtonStyle.SECONDARY,
-        on_save,
-        custom_id=f"{session.session_id}:save",
-        label="Save",
-    )
-    menu.add_interactive_button(
-        h.ButtonStyle.SUCCESS,
-        on_publish,
-        custom_id=f"{session.session_id}:publish",
-        label="Publish",
-    )
-    menu.add_interactive_button(
-        h.ButtonStyle.SUCCESS,
-        on_confirm,
-        custom_id=f"{session.session_id}:confirm",
-        label="Confirm",
-    )
-    menu.add_interactive_button(
-        h.ButtonStyle.SECONDARY,
-        on_back,
-        custom_id=f"{session.session_id}:back",
-        label="Back",
-    )
-
-    await ctx.respond(
-        flags=h.MessageFlag.IS_COMPONENTS_V2 | h.MessageFlag.EPHEMERAL,
-        components=_render_editor(session),
-    )
-    with contextlib.suppress(asyncio.TimeoutError):
-        await menu.attach(ctx.client, timeout=_SESSION_TIMEOUT)
-
-
-# ---------------------------------------------------------------------------
-# Reset-day cron + commands
+# Reset-day cron
 # ---------------------------------------------------------------------------
 
 
 async def run_reset_draft(bot: CachedFetchBot, *, ping_owners: bool) -> None:
-    """Build a fresh draft from API + config and (re)post the drafts card."""
-    global _active_session
+    """Build a fresh draft (API + config) and persist it as the new week's draft."""
     config = await load_config()
     ctx = await build_draft_context(config)
 
     async with _draft_lock:
-        # A new reset supersedes any in-flight editor session for the old week.
-        _active_session = None
         meta = DraftMeta(
             status="draft",
             last_edited_ts=int(dt.datetime.now(tz=dt.UTC).timestamp()),
         )
-        # Keep the existing card (if this is a rebuild of the same week) so we edit in
-        # place rather than spamming a new card.
-        existing = await load_meta()
-        if existing.card_message_id and existing.status != "published":
-            meta.card_channel_id = existing.card_channel_id
-            meta.card_message_id = existing.card_message_id
         await save_draft(ctx)
         await save_meta(meta)
 
-    await post_or_update_card(
-        bot, ctx, meta, ping_owners=ping_owners and not meta.card_message_id
-    )
-
-
-weekly_reset_group = lb.Group(
-    "weekly_reset", "Build and publish the Weekly Reset Overview post"
-)
-
-
-@weekly_reset_group.register
-class WeeklyResetAuto(
-    lb.SlashCommand,
-    name="auto",
-    description="Enable/disable the automatic reset-day draft",
-):
-    option = lb.string(
-        "option",
-        "Enable or disable",
-        choices=[lb.Choice("Enable", "Enable"), lb.Choice("Disable", "Disable")],
-    )
-
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context) -> None:
-        enable = self.option.lower() == "enable"
-        await schemas.AutoPostSettings.set_weekly_reset(enable)
-        await ctx.respond(
-            f"Weekly-reset auto-draft {'enabled' if enable else 'disabled'}.",
-            ephemeral=True,
-        )
-
-
-@weekly_reset_group.register
-class WeeklyResetDraft(
-    lb.SlashCommand,
-    name="draft",
-    description="Fetch the API now and (re)build the draft card",
-):
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await ctx.defer(ephemeral=True)
-        await run_reset_draft(bot, ping_owners=False)
-        await ctx.respond("Draft rebuilt — see the drafts channel.", ephemeral=True)
-
-
-@weekly_reset_group.register
-class WeeklyResetEdit(
-    lb.SlashCommand,
-    name="edit",
-    description="Open the interactive editor to pick, edit and publish",
-):
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await open_editor(ctx, bot)
-
-
-@weekly_reset_group.register
-class WeeklyResetShow(
-    lb.SlashCommand, name="show", description="Preview the current draft (ephemeral)"
-):
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        hmessage = await weekly_reset_message_constructor(bot)
-        await ctx.respond(
-            flags=h.MessageFlag.IS_COMPONENTS_V2 | h.MessageFlag.EPHEMERAL,
-            components=hmessage.components,
-        )
+    if ping_owners:
+        logger.info("weekly_reset: fresh draft built for the new reset week")
+        # TODO(step5): notify owners with the web draft link
 
 
 # ---------------------------------------------------------------------------
-# Autocomplete-driven set commands
-#
-# Discord autocomplete only exists on slash-command options, and its responses are
-# dispatched *before* the CHECKS pipeline — so they are NOT owner-gated. That is fine
-# here by design: the suggestions leak to anyone, but the invoke (the actual write) is
-# still gated by the client-level ``owner_only`` hook — only writes are restricted.
+# Manifest-backed option pools + apply mutators
 # ---------------------------------------------------------------------------
 
-# Reward field -> the DestinyItem itemType its value autocompletes over (3=weapon,
-# 2=armour). Every reward slot today is a weapon, so only weapons are suggested; an
-# armour slot would set 2 here and get only armour.
-_REWARD_ITEM_TYPE: dict[str, int] = {
-    "gm_weapon": 3,
-    "quickplay_weapon": 3,
-    "control_weapon": 3,
-    "zavala_weapon": 3,
-}
+# Reward slots as (label, attribute): the web form renders one weapon picker per entry
+# and ``apply_reward_field`` writes the resolved WeaponRef back.
 _REWARD_FIELDS: tuple[tuple[str, str], ...] = (
     ("GM Nightfall reward weapon", "gm_weapon"),
     ("Vanguard / Quickplay weapon", "quickplay_weapon"),
     ("Crucible / Control weapon", "control_weapon"),
     ("Zavala's Weapon", "zavala_weapon"),
 )
-_REWARD_FIELD_CHOICES = [lb.Choice(label, key) for label, key in _REWARD_FIELDS]
-# Bounded-selector Choice lists (label == value) for the dedicated set_* commands.
-# (Crucible modes exceed 25, so they use autocomplete instead — _crucible_autocomplete.)
-_RAID_CHOICES = [lb.Choice(r, r) for r in RAIDS]
-_DUNGEON_CHOICES = [lb.Choice(d, d) for d in DUNGEONS]
-_PANTHEON_CHOICES = [lb.Choice(b, b) for b in PANTHEON_BOSSES]
-_CONQUEST_TIER_CHOICES = [lb.Choice(tier, tier) for tier in CONQUEST_TIERS]
 
 # DestinyActivityModeType ids used to classify activities (raid/dungeon vs strike).
 _MODE_RAID = 4
@@ -1843,79 +1216,6 @@ async def get_indexes() -> _Indexes:
         return _indexes
 
 
-async def _gm_strike_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
-    # GM strike pool (~46 strikes + battlegrounds) is too large for a Choice selector,
-    # so it stays on manifest autocomplete. Blank until a character is typed.
-    query = str(ctx.focused.value or "").lower()
-    if not query or _indexes is None:
-        if _indexes is None:
-            asyncio.create_task(get_indexes())  # warm for the next keystroke
-        await ctx.respond([])
-        return
-    names = _indexes.activities.get("strike", [])
-    await ctx.respond([name for name in names if query in name.lower()][:25])
-
-
-async def _crucible_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
-    # >25 modes (base + Labs), so autocomplete rather than a Choice selector. Show the
-    # whole list on an empty query (it's short) and filter as the user types.
-    query = str(ctx.focused.value or "").lower()
-    matches = [m for m in CRUCIBLE_MODES if query in m.lower()]
-    await ctx.respond(matches[:25])
-
-
-async def _reward_value_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
-    field_opt = ctx.get_option("field")
-    field = str(field_opt.value) if field_opt and field_opt.value else ""
-    allowed = _REWARD_ITEM_TYPE.get(field, 3)  # weapons-only by default
-    if _indexes is None:
-        asyncio.create_task(get_indexes())  # warm for the next keystroke
-        await ctx.respond([])
-        return
-    query = str(ctx.focused.value or "").lower()
-    if not query:
-        await ctx.respond([])
-        return
-    choices: dict[str, str] = {}
-    for name, hash_, type_name, item_type, rarity in _indexes.items:
-        if item_type != allowed or query not in name.lower():
-            continue
-        suffix = " · ".join(part for part in (type_name, rarity) if part)
-        label = f"{name} — {suffix}" if suffix else name
-        choices[label[:100]] = str(hash_)  # value = hash, so the pick is unambiguous
-        if len(choices) >= 25:
-            break
-    await ctx.respond(choices)
-
-
-async def _conquests_autocomplete(ctx: "lb.AutocompleteContext[str]") -> None:
-    # The field is a comma-separated list; complete only the segment being typed while
-    # preserving any already-entered activities. Suggestions are scoped to the tier the
-    # user has picked (the sibling `tier` option); if none yet, offer every tier's ops.
-    raw = str(ctx.focused.value or "")
-    head, _, last = raw.rpartition(",")
-    query = last.strip().lower()
-    if not query or _indexes is None:
-        if _indexes is None:
-            asyncio.create_task(get_indexes())  # warm for the next keystroke
-        await ctx.respond([])
-        return
-    tier_opt = ctx.get_option("tier")
-    tier = str(tier_opt.value) if tier_opt and tier_opt.value else ""
-    if tier:
-        pool = _indexes.conquests.get(tier, [])
-    else:  # tier not chosen yet — fall back to every tier's activities
-        pool = sorted({n for names in _indexes.conquests.values() for n in names})
-    prefix = f"{head.rstrip()}, " if head.strip() else ""
-    out: list[str] = []
-    for name in pool:
-        if query in name.lower():
-            out.append(f"{prefix}{name}"[:100])
-        if len(out) >= 25:
-            break
-    await ctx.respond(out)
-
-
 async def resolve_reward_value(value: str) -> WeaponRef | None:
     """A hash (picked from autocomplete) -> full WeaponRef; else a plain typed name."""
     value = value.strip()
@@ -1997,12 +1297,30 @@ def apply_reward_field(
         setattr(ctx, field, weapon)
 
 
+def _parse_links(raw: str) -> list[dict[str, str]]:
+    """Parse the Notes & Links textarea ('Label | https://url' per line).
+
+    Kept as the web /save helper (Step 5); only http(s) URLs are accepted.
+    """
+    links: list[dict[str, str]] = []
+    for line in raw.splitlines():
+        if "|" not in line:
+            continue
+        label, url = (part.strip() for part in line.split("|", 1))
+        if label and url.startswith(("http://", "https://")):
+            links.append({"label": label, "url": url})
+    return links
+
+
 async def mutate_draft(
-    bot: CachedFetchBot,
     invoker_id: int,
     fn: t.Callable[[WeeklyResetContext], None],
 ) -> None:
-    """Load-modify-save the persisted draft under the lock, then refresh the card."""
+    """Load-modify-save the persisted draft under the lock; the web /save primitive.
+
+    Nothing calls this after the Discord input UI was removed; the web form's /save
+    route (Step 5) reuses it.
+    """
     # Auto-fill from the API the first time a field is set, so reset time, seasonal
     # raid/dungeon and the computed rotators are pre-populated instead of blank. Built
     # outside the lock (it does network I/O), then committed only if still absent.
@@ -2020,229 +1338,6 @@ async def mutate_draft(
         meta.last_edited_ts = int(dt.datetime.now(tz=dt.UTC).timestamp())
         await save_draft(draft)
         await save_meta(meta)
-    await post_or_update_card(bot, draft, meta)
-
-
-@weekly_reset_group.register
-class WeeklyResetSetGmStrike(
-    lb.SlashCommand,
-    name="set_gm_strike",
-    description="Set the GM Nightfall strike (autocomplete)",
-):
-    value = lb.string(
-        "value",
-        "Start typing a strike / battleground name",
-        autocomplete=_gm_strike_autocomplete,
-    )
-
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await ctx.defer(ephemeral=True)  # first edit may auto-fill from the API
-        value = self.value.strip()
-        await mutate_draft(bot, ctx.user.id, lambda c: apply_gm_strike(c, value))
-        await ctx.respond(
-            f"Set **GM Nightfall strike** → {value or '—'}", ephemeral=True
-        )
-
-
-@weekly_reset_group.register
-class WeeklyResetSetCrucible(
-    lb.SlashCommand,
-    name="set_crucible",
-    description="Set the Crucible featured modes (3v3=Competitive+…, 6v6=Control+…)",
-):
-    three_v_three = lb.string(
-        "three_v_three",
-        "3v3 featured mode (paired with Competitive)",
-        autocomplete=_crucible_autocomplete,
-        default="",
-    )
-    six_v_six = lb.string(
-        "six_v_six",
-        "6v6 featured mode (paired with Control)",
-        autocomplete=_crucible_autocomplete,
-        default="",
-    )
-
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await ctx.defer(ephemeral=True)
-        three, six = self.three_v_three, self.six_v_six
-        await mutate_draft(bot, ctx.user.id, lambda c: apply_crucible(c, three, six))
-        done = []
-        if three:
-            done.append(f"3v3 → {CRUCIBLE_3V3_FIRST}, {three}")
-        if six:
-            done.append(f"6v6 → {CRUCIBLE_6V6_FIRST}, {six}")
-        await ctx.respond("Set " + ("; ".join(done) or "nothing"), ephemeral=True)
-
-
-@weekly_reset_group.register
-class WeeklyResetSetPantheon(
-    lb.SlashCommand,
-    name="set_pantheon",
-    description="Set the Pantheon Reprise / Encore bosses",
-):
-    reprise = lb.string(
-        "reprise", "Reprise boss", choices=_PANTHEON_CHOICES, default=""
-    )
-    encore = lb.string("encore", "Encore boss", choices=_PANTHEON_CHOICES, default="")
-
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await ctx.defer(ephemeral=True)
-        reprise, encore = self.reprise, self.encore
-        await mutate_draft(
-            bot, ctx.user.id, lambda c: apply_pantheon(c, reprise, encore)
-        )
-        done = []
-        if reprise:
-            done.append(f"Reprise → {reprise}")
-        if encore:
-            done.append(f"Encore → {encore}")
-        await ctx.respond("Set " + ("; ".join(done) or "nothing"), ephemeral=True)
-
-
-@weekly_reset_group.register
-class WeeklyResetSetRaid(
-    lb.SlashCommand,
-    name="set_raid",
-    description="Set the seasonal / featured-rotator raids",
-):
-    seasonal = lb.string(
-        "seasonal", "Seasonal featured raid", choices=_RAID_CHOICES, default=""
-    )
-    featured_1 = lb.string(
-        "featured_1", "Featured rotator raid 1", choices=_RAID_CHOICES, default=""
-    )
-    featured_2 = lb.string(
-        "featured_2", "Featured rotator raid 2", choices=_RAID_CHOICES, default=""
-    )
-
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await ctx.defer(ephemeral=True)
-        seasonal, feat1, feat2 = self.seasonal, self.featured_1, self.featured_2
-        await mutate_draft(
-            bot, ctx.user.id, lambda c: apply_raids(c, seasonal, feat1, feat2)
-        )
-        await ctx.respond("Updated the raids.", ephemeral=True)
-
-
-@weekly_reset_group.register
-class WeeklyResetSetDungeon(
-    lb.SlashCommand,
-    name="set_dungeon",
-    description="Set the seasonal / featured-rotator dungeons",
-):
-    seasonal = lb.string(
-        "seasonal", "Seasonal featured dungeon", choices=_DUNGEON_CHOICES, default=""
-    )
-    featured_1 = lb.string(
-        "featured_1", "Featured rotator dungeon 1", choices=_DUNGEON_CHOICES, default=""
-    )
-    featured_2 = lb.string(
-        "featured_2", "Featured rotator dungeon 2", choices=_DUNGEON_CHOICES, default=""
-    )
-
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await ctx.defer(ephemeral=True)
-        seasonal, feat1, feat2 = self.seasonal, self.featured_1, self.featured_2
-        await mutate_draft(
-            bot, ctx.user.id, lambda c: apply_dungeons(c, seasonal, feat1, feat2)
-        )
-        await ctx.respond("Updated the dungeons.", ephemeral=True)
-
-
-@weekly_reset_group.register
-class WeeklyResetSetReward(
-    lb.SlashCommand,
-    name="set_reward",
-    description="Set a weapon/armour reward (autocompletes Destiny items)",
-):
-    field = lb.string("field", "Which reward slot", choices=_REWARD_FIELD_CHOICES)
-    value = lb.string(
-        "value",
-        "Search weapons/armour, or type a name (blank to clear)",
-        autocomplete=_reward_value_autocomplete,
-    )
-
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await ctx.defer(
-            ephemeral=True
-        )  # index build / first-edit auto-fill can be slow
-        field = self.field
-        weapon = await resolve_reward_value(self.value)
-        await mutate_draft(
-            bot, ctx.user.id, lambda c: apply_reward_field(c, field, weapon)
-        )
-        if weapon and weapon.hash:
-            shown = f"[{weapon.name}]({weapon.lightgg_url})"
-        elif weapon:
-            shown = weapon.name
-        else:
-            shown = "—"
-        await ctx.respond(f"Set **{field}** → {shown}", ephemeral=True)
-
-
-@weekly_reset_group.register
-class WeeklyResetSetConquests(
-    lb.SlashCommand,
-    name="set_conquests",
-    description="Set a Conquests tier's activities (comma-separated; blank clears)",
-):
-    tier = lb.string("tier", "Difficulty tier", choices=_CONQUEST_TIER_CHOICES)
-    value = lb.string(
-        "value",
-        "Activities, comma-separated (autocompletes names; blank clears the tier)",
-        autocomplete=_conquests_autocomplete,
-        default="",
-    )
-
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await ctx.defer(ephemeral=True)
-        tier, value = self.tier, self.value
-        await mutate_draft(bot, ctx.user.id, lambda c: apply_conquests(c, tier, value))
-        shown = ", ".join(p.strip() for p in value.split(",") if p.strip()) or "—"
-        await ctx.respond(f"Set **{tier}** Conquests → {shown}", ephemeral=True)
-
-
-@weekly_reset_group.register
-class WeeklyResetSetUpdate(
-    lb.SlashCommand,
-    name="set_update",
-    description="Set the UPDATES & EVENTS Bungie patch-notes link (blank url clears)",
-):
-    url = lb.string("url", "Patch-notes URL (blank to clear the link)", default="")
-    label = lb.string("label", "Link text, e.g. 'Update 9.7.0.3'", default="")
-
-    @lb.invoke
-    async def invoke(
-        self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED
-    ) -> None:
-        await ctx.defer(ephemeral=True)
-        url, label = self.url, self.label
-        await mutate_draft(bot, ctx.user.id, lambda c: apply_update(c, label, url))
-        await ctx.respond(
-            f"Set **update link** → {label or url or '—'}", ephemeral=True
-        )
 
 
 @loader.listener(h.StartedEvent)
@@ -2252,29 +1347,14 @@ async def _schedule_weekly_reset(
     if not cfg.drafts_channel:
         return
 
-    # Prewarm the manifest-backed autocomplete indexes so the first keystroke is fast.
+    # Prewarm the manifest-backed option-pool indexes so the first form load is fast.
     asyncio.create_task(get_indexes())
 
     # Tuesday 17:00 UTC weekly reset.
+    # TODO(step5): expose enable/disable + owner web link via the web form.
     @aiocron.crontab("0 17 * * TUE", start=True)
     # Testing: post every minute -> @aiocron.crontab("* * * * *", start=True)
     async def autopost_weekly_reset() -> None:
         if not await schemas.AutoPostSettings.get_weekly_reset_enabled():
             return
         await run_reset_draft(bot, ping_owners=True)
-
-
-if cfg.drafts_channel:
-    loader.command(
-        weekly_reset_group,
-        guilds=guild_scope(
-            *cfg.test_env,
-            cfg.control_discord_server_id,
-            cfg.kyber_discord_server_id,
-        ),
-    )
-else:
-    logger.info(
-        "Weekly-reset autopost dormant: set DRAFTS_CHANNEL_ID to enable "
-        "the /weekly_reset commands + reset-day draft."
-    )

@@ -15,10 +15,10 @@
 
 """Unit tests for the ``weekly_reset`` extension's pure logic (no Discord I/O).
 
-The interactive menu/modal flow is verified manually on dev; here we exercise the
-reset-time maths, the deterministic rotator cycle (anchored to the three real posts this
-was built from), the post-body renderer, (de)serialisation, validation, reconciliation
-and the Components V2 builder.
+Here we exercise the reset-time maths, the deterministic rotator cycle (anchored to the
+three real posts this was built from), the post-body renderer, (de)serialisation,
+validation, the manifest option pools + apply mutators + reward resolver, and the
+Components V2 builder.
 """
 
 import datetime as dt
@@ -284,28 +284,7 @@ def test_validate_flags_bad_image_url() -> None:
     assert any("Image URL" in p for p in wr.validate_post(ctx))
 
 
-# --- editor section model + CV2 builder -------------------------------------------
-
-
-def test_section_model_covers_every_section() -> None:
-    ctx = _full_ctx()
-    for key, _ in wr._SECTIONS:
-        # None of these should raise for any section.
-        wr._select_a(ctx, key)
-        wr._select_b(ctx, key)
-        wr._modal_spec(ctx, key)
-        assert isinstance(wr._summary(ctx, key), str)
-
-
-def test_modal_round_trip_notes_and_links() -> None:
-    ctx = wr.WeeklyResetContext(reset_ts=1)
-    wr._apply_modal(
-        ctx,
-        "notes",
-        ["First note\nSecond note", "Guide | https://example.com\nbad line"],
-    )
-    assert ctx.notes == ["First note", "Second note"]
-    assert ctx.extra_links == [{"label": "Guide", "url": "https://example.com"}]
+# --- CV2 builder ------------------------------------------------------------------
 
 
 def test_build_cv2_is_components_v2() -> None:
@@ -317,7 +296,7 @@ def test_build_cv2_is_components_v2() -> None:
     assert kwargs["components"] and "content" not in kwargs
 
 
-# --- autocomplete set commands (activities + item rewards) ------------------------
+# --- manifest option pools + apply mutators + reward resolver ---------------------
 
 
 @pytest.fixture
@@ -347,16 +326,13 @@ def stub_indexes():
     wr._indexes = saved
 
 
-def test_choice_selector_domains_fit_discord_limit() -> None:
-    # The Choice-selector fields must stay under Discord's 25-choice limit.
-    for domain in (wr.RAIDS, wr.DUNGEONS, wr.PANTHEON_BOSSES):
-        assert 0 < len(domain) < 25, len(domain)
-    # Crucible exceeds 25 (base + Labs), which is why it uses autocomplete instead.
-    assert len(wr.CRUCIBLE_MODES) > 25
+def test_option_pool_domains_have_no_duplicates() -> None:
+    # These option pools feed the web form's selectors; each must be non-empty, have no
+    # blank entries, and carry no duplicates.
+    for domain in (wr.RAIDS, wr.DUNGEONS, wr.PANTHEON_BOSSES, wr.CRUCIBLE_MODES):
+        assert domain and all(domain)
+        assert len(set(domain)) == len(domain), domain
     assert "Heavy Metal Supremacy" in wr.CRUCIBLE_MODES
-    # no duplicate choices anywhere
-    for domain in (wr.CRUCIBLE_MODES, wr.RAIDS, wr.DUNGEONS, wr.PANTHEON_BOSSES):
-        assert len(set(domain)) == len(domain)
 
 
 def test_seasonal_defaults() -> None:
@@ -379,11 +355,6 @@ def test_activity_record_is_flat_and_parseable() -> None:
     import json
 
     assert json.loads(json.dumps(rec)) == rec
-
-
-def test_reward_fields_are_weapons_only() -> None:
-    for _label, key in wr._REWARD_FIELDS:
-        assert wr._REWARD_ITEM_TYPE[key] == 3
 
 
 @pytest.mark.parametrize(
