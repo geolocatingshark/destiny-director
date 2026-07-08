@@ -1734,7 +1734,9 @@ async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response
         if not WeeklyResetSessionManager.resolve(entry_token):
             return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
         response = aiohttp.web.HTTPFound("/weekly_reset")
-        _set_session_cookie(response, entry_token)
+        # Issue a freshly minted token (not the request-supplied one): refreshes the
+        # TTL and keeps request input out of the Set-Cookie value.
+        _set_session_cookie(response, WeeklyResetSessionManager.mint())
         return response
 
     if not _authed(request):
