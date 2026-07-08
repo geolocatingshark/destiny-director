@@ -1,0 +1,15 @@
+/*
+  Shared base / reset / theme for the anchor web editors (the rotation editor today; a
+  weekly-reset form later). Page-specific styles live alongside each page (e.g.
+  editor.css). Served statically from /static/shared.css — no build step.
+*/
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  margin: 0; padding: 0 1.2rem 1.2rem; max-width: 880px; margin-inline: auto;
+  background: #1b1d22; color: #e6e6e6; line-height: 1.4;
+}
+header { padding-top: 1.2rem; }
+h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
+.muted { color: #9aa0a6; font-size: .85rem; }

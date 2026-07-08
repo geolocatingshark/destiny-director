@@ -25,12 +25,18 @@ started once on ``StartedEvent`` (see ``dd/anchor/__main__.py``) and stopped on
 
 import logging
 import typing as t
+from pathlib import Path
 
 import aiohttp.web
 
 from ..common import cfg
 
 logger = logging.getLogger(__name__)
+
+# The directory of static web assets (editor html/css/js) served under /static/. Derived
+# the same way the feature modules resolve their templates (this module lives in
+# dd/anchor/, so its parent holds web_static/), not a hardcoded absolute path.
+_WEB_STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 
 # Route registrars contributed by feature modules at import time. Applied in order when
 # the app is built in start(). Kept as module state so modules stay decoupled from the
@@ -61,6 +67,11 @@ async def start(port: int | None = None) -> None:
     app = aiohttp.web.Application()
     for registrar in _route_registrars:
         registrar(app)
+
+    # Serve the split editor assets (css/js) so pages can <link>/<script> them instead
+    # of inlining. The /static/ prefix is distinct from every feature route (/rotation…,
+    # OAuth callback), so it can't collide.
+    app.router.add_static("/static/", _WEB_STATIC_DIR)
 
     runner = aiohttp.web.AppRunner(app)
     await runner.setup()
