@@ -952,10 +952,10 @@ async def message_create_repeater_impl(
 
         # Log successes, failures and message pairs to the db
         maybe_exceptions = await aio.gather(
-            MirroredChannel.log_legacy_mirror_failure_in_batch(
+            MirroredChannel.add_confirmed_dead_strikes_in_batch(
                 channel.id, confirmed_dead_dests
             ),
-            MirroredChannel.log_legacy_mirror_success_in_batch(
+            MirroredChannel.clear_mirror_strikes_in_batch(
                 channel.id, list(control.successful_targets.keys())
             ),
             # Record only the freshly-sent dest message pairs. For a SEND every success
@@ -1177,6 +1177,23 @@ async def message_update_repeater_impl(
         await control.run_till_completion(lock_held=True)
 
         flag_mirror_failure_ratio(control)
+
+        # A successful authenticated edit refutes both "confirmed-dead" conditions (the
+        # channel exists and the bot can reach it), so clear any stale failing streak on
+        # the dests that succeeded — otherwise a dest that recovered via edits (never a
+        # fresh send) keeps stale strikes and could be auto-disabled once its streak
+        # ages past the forgiveness window. Gated on disable_bad_channels, since the
+        # strike counters feed nothing else. Accepted trade-off: a dest with
+        # SEND_MESSAGES revoked can still edit the bot's OWN old messages, so repeated
+        # edits keep clearing its strikes and delay pruning — this errs toward not
+        # wrongly disabling a recovered dest, the bias we want.
+        if cfg.disable_bad_channels and control.successful_targets:
+            try:
+                await MirroredChannel.clear_mirror_strikes_in_batch(
+                    msg.channel_id, list(control.successful_targets.keys())
+                )
+            except Exception as e:
+                logging.error("Error clearing mirror strikes on edit success: %s", e)
 
         # Record only the newly-sent pairs (dests reconciled via a fresh send); edited
         # dests already have their MirroredMessage pair.

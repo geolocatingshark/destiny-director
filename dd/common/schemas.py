@@ -148,9 +148,9 @@ class MirroredChannel(Base):
     legacy = Column("legacy", Boolean)
     enabled = Column("enabled", Boolean, default=True)
     role_mention_id = Column("role_mention_id", BigInteger, default=None)
-    legacy_error_rate = Column("legacy_error_rate", Integer, default=0)
+    legacy_disable_strikes = Column("legacy_disable_strikes", Integer, default=0)
     # First-confirmed-failure timestamp for the current failing streak (cleared on any
-    # success). Pairs with ``legacy_error_rate`` as the time gate on auto-disable: a
+    # success). Pairs with ``legacy_disable_strikes`` as the auto-disable time gate: a
     # confirmed-failing mirror must stay failing for the forgiveness window before it is
     # disabled, so a brief perm reshuffle on a chatty source can't disable it on a few
     # quick posts. Nullable — NULL means "not currently in a failing streak".
@@ -437,13 +437,15 @@ class MirroredChannel(Base):
 
     @classmethod
     @ensure_session(db_session)
-    async def log_legacy_mirror_success_in_batch(
+    async def clear_mirror_strikes_in_batch(
         cls, src_id: int, dest_ids: list[int], session: AsyncSession = _UNSET
     ) -> None:
-        """Log the successful use of a batch of mirror pairs
+        """Clear the auto-disable strike state for a batch of legacy mirror pairs.
 
-        In case of a successful mirror, the error rate is reset to 0 and the failing
-        streak (``legacy_failing_since``) is cleared.
+        Called for destinations that just delivered successfully (a send or an edit):
+        resets ``legacy_disable_strikes`` to 0 and clears the failing streak
+        (``legacy_failing_since``), so a recovered destination is not later disabled on
+        stale state.
         """
         src_id = int(src_id)
         dest_ids = [int(dest_id) for dest_id in dest_ids]
@@ -457,22 +459,31 @@ class MirroredChannel(Base):
                     cls.legacy,
                 )
             )
-            .values(legacy_error_rate=0, legacy_failing_since=None)
+            .values(legacy_disable_strikes=0, legacy_failing_since=None)
         )
 
     @classmethod
     @ensure_session(db_session)
-    async def log_legacy_mirror_failure_in_batch(
-        cls, src_id: int, dest_ids: list[int], session: AsyncSession = _UNSET
+    async def add_confirmed_dead_strikes_in_batch(
+        cls,
+        src_id: int,
+        confirmed_dead_dest_ids: list[int],
+        session: AsyncSession = _UNSET,
     ) -> None:
-        """Log the failure of a batch of mirror pairs
+        """Add an auto-disable strike to a batch of legacy mirror pairs.
 
-        In case of a failure, the error rate is increased by 1 and, if this is the
-        start of a failing streak, ``legacy_failing_since`` is stamped (``COALESCE``
-        leaves an existing streak start untouched).
+        PRECONDITION: pass only destinations already *confirmed dead* (perms genuinely
+        missing / channel or guild gone) — the perm check is done above the DB layer by
+        ``mirror._confirm_dead_dests`` (via ``utils.confirm_dest_unsendable``), the one
+        sanctioned caller. Do NOT pass raw ``failed_targets``: a transient blip or a
+        perms-fine PERMANENT failure (e.g. a malformed-payload 50035) must not earn a
+        strike, or auto-disable becomes hostage to post cadence again.
+
+        Increments ``legacy_disable_strikes`` by 1 and, if this starts a streak, stamps
+        ``legacy_failing_since`` (``COALESCE`` keeps an existing streak start).
         """
         src_id = int(src_id)
-        dest_ids = [int(dest_id) for dest_id in dest_ids]
+        dest_ids = [int(dest_id) for dest_id in confirmed_dead_dest_ids]
         await session.execute(
             update(cls)
             .where(
@@ -484,7 +495,7 @@ class MirroredChannel(Base):
                 )
             )
             .values(
-                legacy_error_rate=cls.legacy_error_rate + 1,
+                legacy_disable_strikes=cls.legacy_disable_strikes + 1,
                 legacy_failing_since=coalesce(
                     cls.legacy_failing_since, dt.datetime.now(tz=dt.UTC)
                 ),
@@ -502,9 +513,9 @@ class MirroredChannel(Base):
     ) -> list[tuple[int, int]]:
         """Return mirrors that have failed past both the count and time gates.
 
-        A mirror qualifies only when its ``legacy_error_rate`` has reached ``threshold``
-        **and** its failing streak (``legacy_failing_since``) started at or before
-        ``failing_since_before`` (default when ``None``: now minus
+        A mirror qualifies only when its ``legacy_disable_strikes`` has reached
+        ``threshold`` **and** its failing streak (``legacy_failing_since``) began at or
+        before ``failing_since_before`` (default when ``None``: now minus
         ``cfg.mirror_disable_forgiveness_hours``). The time gate protects frequent
         sources: a chatty channel can hit the count in minutes during a brief perm
         reshuffle, but won't clear the forgiveness window. A NULL
@@ -519,7 +530,7 @@ class MirroredChannel(Base):
                 and_(
                     cls.enabled,
                     cls.legacy,
-                    cls.legacy_error_rate >= threshold,
+                    cls.legacy_disable_strikes >= threshold,
                     cls.legacy_failing_since <= failing_since_before,
                 )
             )
@@ -563,7 +574,7 @@ class MirroredChannel(Base):
                 and_(
                     cls.enabled,
                     cls.legacy,
-                    cls.legacy_error_rate >= threshold,
+                    cls.legacy_disable_strikes >= threshold,
                     cls.legacy_failing_since <= failing_since_before,
                 )
             )
@@ -638,7 +649,7 @@ class MirroredChannel(Base):
             )
             .values(
                 enabled=True,
-                legacy_error_rate=0,
+                legacy_disable_strikes=0,
                 legacy_failing_since=None,
                 legacy_disable_for_failure_on_date=None,
             )

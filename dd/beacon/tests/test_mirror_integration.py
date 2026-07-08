@@ -253,8 +253,8 @@ async def test_failing_dest_is_disabled(
     # the next send fails for it. Pre-load two failures so a single failing send
     # reaches the disable threshold of 3.
     await mirror_env.rest.delete_channel(broken.id)
-    await MirroredChannel.log_legacy_mirror_failure_in_batch(src.id, [broken.id])
-    await MirroredChannel.log_legacy_mirror_failure_in_batch(src.id, [broken.id])
+    await MirroredChannel.add_confirmed_dead_strikes_in_batch(src.id, [broken.id])
+    await MirroredChannel.add_confirmed_dead_strikes_in_batch(src.id, [broken.id])
 
     posted = await _send(mirror_env, src, "partial send")
 

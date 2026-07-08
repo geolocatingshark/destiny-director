@@ -351,7 +351,9 @@ async def test_disable_failing_mirrors_no_cartesian_overmatch(MirroredChannel):
                     [(s1, d_a), (s2, d_b)]
                 )
             )
-            .values(legacy_error_rate=3, legacy_failing_since=dt.datetime(2020, 1, 1))
+            .values(
+                legacy_disable_strikes=3, legacy_failing_since=dt.datetime(2020, 1, 1)
+            )
         )
 
     disabled = await MirroredChannel.disable_legacy_failing_mirrors(threshold=3)
@@ -371,7 +373,7 @@ async def _get_row(MirroredChannel, src_id, dest_id):
     async with schemas.db_session() as session, session.begin():
         row = await session.execute(
             select(
-                MirroredChannel.legacy_error_rate,
+                MirroredChannel.legacy_disable_strikes,
                 MirroredChannel.legacy_failing_since,
                 MirroredChannel.enabled,
             ).where(
@@ -389,12 +391,12 @@ async def test_failure_batch_stamps_failing_since_once(MirroredChannel):
     src, dest = 30, 31
     await MirroredChannel.add_mirror(src, dest, 99, legacy=True)
 
-    await MirroredChannel.log_legacy_mirror_failure_in_batch(src, [dest])
+    await MirroredChannel.add_confirmed_dead_strikes_in_batch(src, [dest])
     rate1, since1, _ = await _get_row(MirroredChannel, src, dest)
     assert rate1 == 1
     assert since1 is not None
 
-    await MirroredChannel.log_legacy_mirror_failure_in_batch(src, [dest])
+    await MirroredChannel.add_confirmed_dead_strikes_in_batch(src, [dest])
     rate2, since2, _ = await _get_row(MirroredChannel, src, dest)
     assert rate2 == 2
     assert since2 == since1  # streak-start unchanged
@@ -405,11 +407,11 @@ async def test_success_batch_clears_failing_since(MirroredChannel):
     src, dest = 40, 41
     await MirroredChannel.add_mirror(src, dest, 99, legacy=True)
 
-    await MirroredChannel.log_legacy_mirror_failure_in_batch(src, [dest])
+    await MirroredChannel.add_confirmed_dead_strikes_in_batch(src, [dest])
     _, since, _ = await _get_row(MirroredChannel, src, dest)
     assert since is not None
 
-    await MirroredChannel.log_legacy_mirror_success_in_batch(src, [dest])
+    await MirroredChannel.clear_mirror_strikes_in_batch(src, [dest])
     rate, since_after, _ = await _get_row(MirroredChannel, src, dest)
     assert rate == 0
     assert since_after is None
@@ -432,7 +434,7 @@ async def test_disable_respects_time_floor(MirroredChannel):
             update(MirroredChannel)
             .where(MirroredChannel.src_id == old_src)
             .values(
-                legacy_error_rate=3,
+                legacy_disable_strikes=3,
                 legacy_failing_since=now - window - dt.timedelta(hours=1),
             )
         )
@@ -440,7 +442,7 @@ async def test_disable_respects_time_floor(MirroredChannel):
             update(MirroredChannel)
             .where(MirroredChannel.src_id == fresh_src)
             .values(
-                legacy_error_rate=3,
+                legacy_disable_strikes=3,
                 legacy_failing_since=now - window + dt.timedelta(hours=1),
             )
         )
@@ -464,7 +466,7 @@ async def test_disable_skips_null_failing_since(MirroredChannel):
         await session.execute(
             update(MirroredChannel)
             .where(MirroredChannel.src_id == src)
-            .values(legacy_error_rate=5, legacy_failing_since=None)
+            .values(legacy_disable_strikes=5, legacy_failing_since=None)
         )
 
     disabled = await MirroredChannel.disable_legacy_failing_mirrors(threshold=3)

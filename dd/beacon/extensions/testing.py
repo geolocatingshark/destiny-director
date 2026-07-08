@@ -338,7 +338,7 @@ class MirrorFailRateBump(
 
         dest_ids = await MirroredChannel.fetch_dests(source_id)
         for _ in range(self.times):
-            await MirroredChannel.log_legacy_mirror_failure_in_batch(
+            await MirroredChannel.add_confirmed_dead_strikes_in_batch(
                 source_id, dest_ids
             )
 
