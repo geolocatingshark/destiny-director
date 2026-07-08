@@ -1434,6 +1434,14 @@ class AutoPostSettings(Base):
     async def set_portal_ops(cls, enabled: bool) -> None:
         return await cls.set_enabled("portal_ops", enabled)
 
+    @classmethod
+    async def get_weekly_reset_enabled(cls) -> bool | None:
+        return await cls.get_enabled("weekly_reset")
+
+    @classmethod
+    async def set_weekly_reset(cls, enabled: bool) -> None:
+        return await cls.set_enabled("weekly_reset", enabled)
+
 
 class RotationData(Base):
     """Whole-document JSON store for rotation-based posts (one row per post type).
