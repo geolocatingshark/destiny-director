@@ -547,6 +547,17 @@ async def api_to_discord_announcer(
     publish_message: bool = True,
     cv2: bool = False,
 ):
+    # Bail out before posting anything if the autopost is disabled (or never
+    # enabled — ``get_enabled`` returns None). This is the ONLY enabled-check: it
+    # runs before the placeholder is posted, so a disabled autopost leaks nothing.
+    # Re-checking mid-loop would be worse than useless — by then the placeholder is
+    # already up, so a mid-run ``return`` would orphan it (the original bug). Once
+    # we've committed to posting, we always finish the placeholder→edit→crosspost.
+    if check_enabled and (
+        enabled_check_coro is None or not await enabled_check_coro()
+    ):
+        return
+
     # Match the placeholder's type to the final post (CV2 vs embed) so the edit loop
     # below never has to toggle IS_COMPONENTS_V2 (which Discord forbids on edit).
     if cv2:
@@ -578,11 +589,6 @@ async def api_to_discord_announcer(
     alerted = False
     while True:
         try:
-            if check_enabled and (
-                enabled_check_coro is None or not await enabled_check_coro()
-            ):
-                return
-
             await api.check_bungie_api_online(raise_exception=True)
 
             hmessage = await construct_message_coro(bot=bot)
@@ -615,10 +621,6 @@ async def api_to_discord_announcer(
     alerted = False
     while True:
         try:
-            if check_enabled and (
-                enabled_check_coro is None or not await enabled_check_coro()
-            ):
-                return
             await msg.edit(**hmessage.to_message_kwargs())
         except Exception as e:
             if retries == 0:
