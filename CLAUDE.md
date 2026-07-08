@@ -105,6 +105,8 @@ DB layer, or building a message/embed, read it.** Quick orientation:
 - **Branches/remotes:** `dev` is the integration branch — feature/worktree branches merge
   there first. Two remotes: `origin` (gsfernandes81) and `shark` (geolocatingshark).
   Pushing to `shark/main` is a **prod deploy** — see the confirmation rule above.
+- **plans/:** Stores deferred plans. When a plan is executed completely, ALWAYS remove
+  it from this directory. Prompt the user in case the plan was partially executed.
 
 ## Database & migrations
 
