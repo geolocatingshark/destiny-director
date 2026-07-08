@@ -138,7 +138,7 @@ async def _on_command_error(
     if isinstance(cause, NotBotOwnerError):
         return False
 
-    name = log_command_failure(exc, logger=logger)
+    name, _ = log_command_failure(exc, logger=logger)
     await ctx.respond(_error_response(f"An error occured running `/{name}`.\n", cause))
     return True
 

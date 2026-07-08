@@ -502,19 +502,23 @@ def log_command_failure(
     exc: lb.exceptions.ExecutionPipelineFailedException,
     *,
     logger: logging.Logger | None = None,
-) -> str:
+) -> tuple[str, str]:
     """Log a failed command pipeline, tagged with the command as the operation.
 
     Routes through ``logger`` (default ``dd.error``) so the failure reaches the
-    alerts channel labelled with the command name. Returns that name for callers
-    that also surface it to the user. ``exc_info`` is the real cause rather than
-    the ``ExecutionPipelineFailedException`` wrapper the handler is invoked with.
+    alerts channel labelled with the command name. Returns ``(name, code)`` for
+    callers that also surface them to the user: ``name`` is the command name and
+    ``code`` is the deterministic reference code for the cause, computed here from
+    the same identity that is logged so the reply and the resulting alert provably
+    share it. ``exc_info`` is the real cause rather than the
+    ``ExecutionPipelineFailedException`` wrapper the handler is invoked with.
     """
     name = exc.context.command_data.qualified_name
     cause = exc.causes[0] if exc.causes else exc
+    code = reference_code(identity_for_exc(cause))
     log = logger if logger is not None else logging.getLogger("dd.error")
     log.error("`/%s` failed", name, exc_info=cause, extra={"dd_operation": f"/{name}"})
-    return name
+    return name, code
 
 
 async def _report_uncaught_command_error(
@@ -532,14 +536,14 @@ async def _report_uncaught_command_error(
     leave them with a silent "application did not respond". Best-effort: swallowed
     if the interaction has already responded or expired.
     """
-    name = log_command_failure(exc)
+    name, code = log_command_failure(exc)
     with contextlib.suppress(Exception):
         await respond_cv2(
             exc.context,
             cv2_error(
                 "Something went wrong",
-                f"`/{name}` hit an unexpected error. It's been logged — please try "
-                "again.",
+                f"`/{name}` hit an unexpected error. It's been logged "
+                f"(ref: `{code}`) — please try again.",
             ),
             ephemeral=True,
         )
