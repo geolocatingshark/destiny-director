@@ -1,14 +1,19 @@
 <!doctype html>
 <!--
-  Weekly Reset Overview form — a self-contained, dependency-free form for editing the
-  weekly_reset draft. Reached from the link minted by `/weekly_reset edit_web`; served by
+  Weekly Reset Overview form — a self-contained form for editing the weekly_reset draft.
+  Reached from the link minted by `/weekly_reset edit_web`; served by
   dd.anchor.extensions.weekly_reset, whose GET handler substitutes the __BOOTSTRAP__
   placeholder with {draft, options, autopost_enabled, conquest_tiers, reward_fields}. The
   page edits the draft client-side and POSTs it to /weekly_reset/{preview,save,publish,
   auto} — auth is the weekly_reset_session cookie (sent automatically on the same-origin
   fetch), so no token is embedded here. The server re-resolves weapons, re-applies the
   business rules and re-validates on save, so this form is a convenience, not a trust
-  boundary. Native inputs only (Tom Select + layout polish come in a later step).
+  boundary.
+
+  Widgets: the weapon pickers, GM strike, Crucible featured modes, raid/dungeon/pantheon
+  selects and Conquest tiers are Tom Select (vendored under /static/vendor/, no build step,
+  no runtime CDN); dates, checkboxes and free-text stay native. Tom Select's stylesheet is
+  loaded before weekly_reset_form.css so the dark-theme overrides there win.
 -->
 <html lang="en">
   <head>
@@ -17,6 +22,7 @@
     <meta name="robots" content="noindex, nofollow" />
     <title>Weekly Reset Overview</title>
     <link rel="stylesheet" href="/static/shared.css" />
+    <link rel="stylesheet" href="/static/vendor/tom-select.min.css" />
     <link rel="stylesheet" href="/static/weekly_reset_form.css" />
   </head>
   <body>
@@ -25,8 +31,8 @@
       <p class="muted" id="authNote"></p>
     </header>
 
-    <main>
-      <form id="form">
+    <main class="layout">
+      <form id="form" class="form-col">
         <fieldset>
           <legend>Reset</legend>
           <div class="field">
@@ -63,35 +69,35 @@
           <legend>Vanguard</legend>
           <div class="field">
             <label for="gmStrike">GM Nightfall strike</label>
-            <input type="text" id="gmStrike" list="strikeList" />
+            <select id="gmStrike"></select>
           </div>
           <div class="field">
             <label for="gmWeapon">GM Nightfall reward weapon</label>
-            <input type="text" id="gmWeapon" list="weaponList" />
+            <select id="gmWeapon"></select>
           </div>
           <div class="field">
             <label for="quickplayWeapon">Quickplay featured weapon</label>
-            <input type="text" id="quickplayWeapon" list="weaponList" />
+            <select id="quickplayWeapon"></select>
           </div>
           <div class="field">
             <label for="controlWeapon">Control featured weapon</label>
-            <input type="text" id="controlWeapon" list="weaponList" />
+            <select id="controlWeapon"></select>
           </div>
           <div class="row">
             <div class="field">
               <label for="seasonalRaid">Seasonal raid (weekly reward)</label>
-              <input type="text" id="seasonalRaid" list="raidList" />
+              <select id="seasonalRaid"></select>
             </div>
             <div class="field">
               <label for="seasonalDungeon">Seasonal dungeon (weekly reward)</label>
-              <input type="text" id="seasonalDungeon" list="dungeonList" />
+              <select id="seasonalDungeon"></select>
             </div>
           </div>
         </fieldset>
 
         <fieldset>
           <legend>Conquests (Seasonal Tab)</legend>
-          <p class="muted">Tick the activities featured at each tier this week.</p>
+          <p class="muted">Pick the activities featured at each tier this week.</p>
           <div id="conquests"></div>
         </fieldset>
 
@@ -137,7 +143,7 @@
           <legend>Zavala's Weapon</legend>
           <div class="field">
             <label for="zavalaWeapon">Weapon</label>
-            <input type="text" id="zavalaWeapon" list="weaponList" />
+            <select id="zavalaWeapon"></select>
           </div>
         </fieldset>
 
@@ -186,17 +192,15 @@
         </fieldset>
       </form>
 
-      <section>
-        <h2>Preview</h2>
+      <aside class="preview-col">
+        <div class="preview-head">
+          <h2>Preview</h2>
+          <button id="refreshBtn" class="secondary tiny" type="button">↻ Refresh</button>
+        </div>
         <ul id="problems" class="hidden"></ul>
         <pre id="previewBox">Loading preview…</pre>
-      </section>
+      </aside>
     </main>
-
-    <datalist id="weaponList"></datalist>
-    <datalist id="strikeList"></datalist>
-    <datalist id="raidList"></datalist>
-    <datalist id="dungeonList"></datalist>
 
     <div class="toolbar">
       <button id="saveBtn" type="button">💾 Save draft</button>
@@ -211,10 +215,11 @@
       {draft, options, autopost_enabled, conquest_tiers, reward_fields}. That placeholder
       MUST stay inline here (this page is templated per request), so it can't live in the
       statically-served weekly_reset_form.js. This tiny non-deferred script runs at parse
-      time — before the deferred shared.js / weekly_reset_form.js — so the global is set
-      first.
+      time — before the deferred vendor / shared.js / weekly_reset_form.js — so the global
+      is set first.
     -->
     <script>window.__BOOTSTRAP__ = /*__BOOTSTRAP__*/ null;</script>
+    <script defer src="/static/vendor/tom-select.complete.min.js"></script>
     <script defer src="/static/shared.js"></script>
     <script defer src="/static/weekly_reset_form.js"></script>
   </body>

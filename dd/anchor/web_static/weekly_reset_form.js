@@ -1,13 +1,20 @@
-// Weekly Reset Overview form script. A self-contained, dependency-free form for editing
-// the weekly_reset draft, served statically from /static/weekly_reset_form.js (no build
-// step). The page (weekly_reset_form.html) is served by dd.anchor.extensions.weekly_reset,
-// which substitutes {draft, options, autopost_enabled, conquest_tiers, reward_fields} into
-// a small inline <script> as window.__BOOTSTRAP__ before this script runs. This script
-// reads that global, edits the draft client-side and POSTs it (via the shared api()
-// helper) to /weekly_reset/{preview,save,publish,auto} — auth is the weekly_reset_session
-// cookie (sent automatically on the same-origin fetch), so no token is embedded here. The
-// server re-resolves weapons, re-applies the business rules and re-validates, so this form
-// is a convenience, not a trust boundary. Native inputs only (Tom Select comes later).
+// Weekly Reset Overview form script. A self-contained form for editing the weekly_reset
+// draft, served statically from /static/weekly_reset_form.js (no build step). The page
+// (weekly_reset_form.html) is served by dd.anchor.extensions.weekly_reset, which
+// substitutes {draft, options, autopost_enabled, conquest_tiers, reward_fields} into a
+// small inline <script> as window.__BOOTSTRAP__ before this script runs. This script reads
+// that global, edits the draft client-side and POSTs it (via the shared api() helper) to
+// /weekly_reset/{preview,save,publish,auto} — auth is the weekly_reset_session cookie (sent
+// automatically on the same-origin fetch), so no token is embedded here. The server
+// re-resolves weapons, re-applies the business rules and re-validates, so this form is a
+// convenience, not a trust boundary.
+//
+// Widgets: Tom Select (vendored, window.TomSelect) backs the searchable pickers — the four
+// weapon slots (option value = manifest hash, label = "name — type · rarity"), the GM
+// strike + Crucible featured modes, the raid/dungeon/pantheon selects and the multi-select
+// Conquest tiers. readForm() reads them via getValue(); the submitted payload shape is
+// unchanged from the native-input version so the server's _context_from_payload contract
+// holds.
 
 const BOOT = window.__BOOTSTRAP__;
 const { draft, options, conquest_tiers } = BOOT;
@@ -21,37 +28,81 @@ const el = (tag, props = {}, kids = []) => {
 $("authNote").textContent =
   "Signed in via Discord for this editing session (about 2 hours). Save writes straight to the draft.";
 
-// name(lower) -> item hash, so weapon slots submit the manifest hash (for the light.gg
-// deep link) when the typed name matches a known item; otherwise the raw text is sent and
-// the server keeps it as a plain (unlinked) name.
-const itemByName = new Map(options.items.map((i) => [i.name.toLowerCase(), i.hash]));
+// Tom Select instances, keyed by element id (plus "conq_<tier>"), so readForm() can pull
+// their values with getValue().
+const TS = {};
 
-// --- option population -------------------------------------------------
-function fillDatalist(id, names) {
-  $(id).replaceChildren(...names.map((n) => el("option", { value: n })));
-}
-fillDatalist("weaponList", options.items.map((i) => i.name));
-fillDatalist("strikeList", options.strikes);
-fillDatalist("raidList", options.raids);
-fillDatalist("dungeonList", options.dungeons);
-
-// A <select> with a blank first option; keeps the current value selectable even if it's
-// not in the bounded domain (e.g. a hand-typed rotator carried over from an old draft).
-function fillSelect(id, values, selected) {
-  selected = selected || "";
-  const pool = selected && !values.includes(selected) ? [...values, selected] : values;
-  $(id).replaceChildren(
-    el("option", { value: "", textContent: "—" }),
-    ...pool.map((v) =>
-      el("option", { value: v, textContent: v, selected: v === selected }),
-    ),
-  );
+// Any edit re-syncs the Iron-Banner⇒Trials gate and re-renders the debounced preview.
+// Native inputs bubble "input"; Tom Select fires this via each instance's onChange.
+function onEdit() {
+  syncTrials();
+  schedulePreview();
 }
 
-// The featured (second) mode out of a "First, Second" crucible value.
-function featured(value) {
-  const parts = (value || "").split(", ");
-  return parts.length > 1 ? parts.slice(1).join(", ") : "";
+// item hash (string) -> item record, for hydrating a weapon slot from its saved hash and
+// for rendering the "name — type · rarity" label.
+const itemByHash = new Map(options.items.map((i) => [String(i.hash), i]));
+
+// The full weapon pool as Tom Select options (~4166 rows). Value is the manifest hash (as
+// a string) so the slot submits the hash for the light.gg deep link; searching spans the
+// name/type/rarity so typeahead finds a weapon by any of them.
+const weaponOptions = options.items.map((i) => ({
+  value: String(i.hash),
+  name: i.name,
+  type: i.type,
+  rarity: i.rarity,
+  label: `${i.name} — ${i.type} · ${i.rarity}`,
+}));
+
+// --- Tom Select builders -----------------------------------------------
+// A single-select typeahead over a weapon pool. Hydrates from the saved WeaponRef: by hash
+// when we have one (and it's in the pool), else by injecting the plain name as a one-off
+// option so a carried-over unlinked name survives and re-submits as raw text (the server
+// resolves either a hash or a name via resolve_reward_value).
+function tsWeapon(id, weaponRef) {
+  const ts = new TomSelect($(id), {
+    options: weaponOptions,
+    valueField: "value",
+    labelField: "label",
+    searchField: ["name", "type", "rarity"],
+    maxOptions: 50,
+    placeholder: "Search weapons…",
+    plugins: ["clear_button"],
+    onChange: onEdit,
+    render: {
+      option: (d, esc) => `<div>${esc(d.label || d.value)}</div>`,
+      item: (d, esc) => `<div>${esc(d.label || d.value)}</div>`,
+    },
+  });
+  if (weaponRef) {
+    const hash = weaponRef.hash != null ? String(weaponRef.hash) : "";
+    if (hash && itemByHash.has(hash)) {
+      ts.setValue(hash, true);
+    } else if (weaponRef.name) {
+      ts.addOption({ value: weaponRef.name, label: weaponRef.name, name: weaponRef.name });
+      ts.setValue(weaponRef.name, true);
+    }
+  }
+  TS[id] = ts;
+  return ts;
+}
+
+// A single-select typeahead over a bounded string pool; the option value IS the name, so
+// the slot submits the plain name. A carried-over current value not in the pool is injected
+// up front so it isn't silently dropped.
+function tsSingle(id, values, current) {
+  const cur = (current || "").trim();
+  const pool = cur && !values.includes(cur) ? [cur, ...values] : values;
+  const ts = new TomSelect($(id), {
+    options: pool.map((v) => ({ value: v, text: v })),
+    maxOptions: 500,
+    placeholder: "Search…",
+    plugins: ["clear_button"],
+    onChange: onEdit,
+  });
+  ts.setValue(cur, true);
+  TS[id] = ts;
+  return ts;
 }
 
 // --- populate from the draft -------------------------------------------
@@ -66,13 +117,6 @@ $("trialsActive").checked = !!draft.trials_active;
 $("updateLabel").value = (draft.update_link && draft.update_link.label) || "";
 $("updateUrl").value = (draft.update_link && draft.update_link.url) || "";
 $("eventsNarrative").value = draft.events_narrative || "";
-$("gmStrike").value = draft.gm_strike || "";
-$("gmWeapon").value = (draft.gm_weapon && draft.gm_weapon.name) || "";
-$("quickplayWeapon").value = (draft.quickplay_weapon && draft.quickplay_weapon.name) || "";
-$("controlWeapon").value = (draft.control_weapon && draft.control_weapon.name) || "";
-$("seasonalRaid").value = draft.seasonal_raid || "";
-$("seasonalDungeon").value = draft.seasonal_dungeon || "";
-$("zavalaWeapon").value = (draft.zavala_weapon && draft.zavala_weapon.name) || "";
 $("crucible1v6").value = draft.crucible_1v6 || "";
 $("imageUrl").value = draft.image_url || "";
 $("notesText").value = (draft.notes || []).join("\n");
@@ -81,32 +125,54 @@ $("linksText").value = (draft.extra_links || [])
   .join("\n");
 $("autopost").checked = !!BOOT.autopost_enabled;
 
-fillSelect("rotRaid1", options.raids, R[0]);
-fillSelect("rotRaid2", options.raids, R[1]);
-fillSelect("rotDun1", options.dungeons, D[0]);
-fillSelect("rotDun2", options.dungeons, D[1]);
-fillSelect("pantheonReprise", options.pantheon, draft.pantheon_reprise);
-fillSelect("pantheonEncore", options.pantheon, draft.pantheon_encore);
-fillSelect("crucible3v3", options.crucible_modes, featured(draft.crucible_3v3));
-fillSelect("crucible6v6", options.crucible_modes, featured(draft.crucible_6v6));
+// The featured (second) mode out of a "First, Second" crucible value.
+function featured(value) {
+  const parts = (value || "").split(", ");
+  return parts.length > 1 ? parts.slice(1).join(", ") : "";
+}
 
-// --- conquests: a checkbox group per tier ------------------------------
-const conquestBoxes = {}; // tier -> [checkbox]
+// Weapon pickers.
+tsWeapon("gmWeapon", draft.gm_weapon);
+tsWeapon("quickplayWeapon", draft.quickplay_weapon);
+tsWeapon("controlWeapon", draft.control_weapon);
+tsWeapon("zavalaWeapon", draft.zavala_weapon);
+
+// Bounded-pool single-selects.
+tsSingle("gmStrike", options.strikes, draft.gm_strike);
+tsSingle("seasonalRaid", options.raids, draft.seasonal_raid);
+tsSingle("seasonalDungeon", options.dungeons, draft.seasonal_dungeon);
+tsSingle("rotRaid1", options.raids, R[0]);
+tsSingle("rotRaid2", options.raids, R[1]);
+tsSingle("rotDun1", options.dungeons, D[0]);
+tsSingle("rotDun2", options.dungeons, D[1]);
+tsSingle("pantheonReprise", options.pantheon, draft.pantheon_reprise);
+tsSingle("pantheonEncore", options.pantheon, draft.pantheon_encore);
+tsSingle("crucible3v3", options.crucible_modes, featured(draft.crucible_3v3));
+tsSingle("crucible6v6", options.crucible_modes, featured(draft.crucible_6v6));
+
+// --- conquests: a Tom Select multi per tier ----------------------------
 for (const tier of conquest_tiers) {
   const chosen = (draft.conquests || {})[tier] || [];
-  // Union of the manifest pool + anything already in the draft, so a carried-over pick
-  // that isn't in the current pool isn't silently dropped.
+  // Union of the manifest pool + anything already in the draft, so a carried-over pick that
+  // isn't in the current pool isn't silently dropped.
   const pool = [...new Set([...(options.conquests[tier] || []), ...chosen])].sort();
-  const boxes = [];
-  const list = el("div", { className: "checks" });
-  for (const name of pool) {
-    const cb = el("input", { type: "checkbox", value: name });
-    cb.checked = chosen.includes(name);
-    boxes.push(cb);
-    list.append(el("label", {}, [cb, " " + name]));
-  }
-  conquestBoxes[tier] = boxes;
-  $("conquests").append(el("fieldset", {}, [el("legend", { textContent: tier }), list]));
+  const sel = el("select", { id: "conq_" + tier, multiple: true });
+  $("conquests").append(
+    el("div", { className: "field" }, [
+      el("label", { htmlFor: "conq_" + tier, textContent: tier }),
+      sel,
+    ]),
+  );
+  const ts = new TomSelect(sel, {
+    options: pool.map((v) => ({ value: v, text: v })),
+    plugins: ["remove_button"],
+    maxOptions: 500,
+    hideSelected: true,
+    placeholder: "Add featured activities…",
+    onChange: onEdit,
+  });
+  ts.setValue(chosen, true);
+  TS["conq_" + tier] = ts;
 }
 
 // --- Iron Banner => Trials off, reflected live in the UI ---------------
@@ -118,33 +184,29 @@ function syncTrials() {
 syncTrials();
 
 // --- read the form into the payload the server expects -----------------
-function weaponValue(id) {
-  const v = $(id).value.trim();
-  const hash = itemByName.get(v.toLowerCase());
-  return hash ? String(hash) : v;
-}
-
+// getValue() returns the option value: a hash string (weapons) or plain name (everything
+// else) for single-selects, and an array of names for the conquest multi-selects — the same
+// shapes the native-input form submitted, so _context_from_payload is unaffected.
 function readForm() {
   const conquests = {};
-  for (const tier of conquest_tiers)
-    conquests[tier] = conquestBoxes[tier].filter((b) => b.checked).map((b) => b.value);
+  for (const tier of conquest_tiers) conquests[tier] = TS["conq_" + tier].getValue();
   const at = $("resetAt").value;
   return {
     reset_ts: at ? Math.floor(Date.parse(at + "Z") / 1000) : draft.reset_ts,
-    gm_strike: $("gmStrike").value.trim(),
-    gm_weapon: weaponValue("gmWeapon"),
-    quickplay_weapon: weaponValue("quickplayWeapon"),
-    control_weapon: weaponValue("controlWeapon"),
-    zavala_weapon: weaponValue("zavalaWeapon"),
-    seasonal_raid: $("seasonalRaid").value.trim(),
-    seasonal_dungeon: $("seasonalDungeon").value.trim(),
-    rotator_raids: [$("rotRaid1").value, $("rotRaid2").value],
-    rotator_dungeons: [$("rotDun1").value, $("rotDun2").value],
-    pantheon_reprise: $("pantheonReprise").value,
-    pantheon_encore: $("pantheonEncore").value,
+    gm_strike: TS.gmStrike.getValue().trim(),
+    gm_weapon: TS.gmWeapon.getValue(),
+    quickplay_weapon: TS.quickplayWeapon.getValue(),
+    control_weapon: TS.controlWeapon.getValue(),
+    zavala_weapon: TS.zavalaWeapon.getValue(),
+    seasonal_raid: TS.seasonalRaid.getValue().trim(),
+    seasonal_dungeon: TS.seasonalDungeon.getValue().trim(),
+    rotator_raids: [TS.rotRaid1.getValue(), TS.rotRaid2.getValue()],
+    rotator_dungeons: [TS.rotDun1.getValue(), TS.rotDun2.getValue()],
+    pantheon_reprise: TS.pantheonReprise.getValue(),
+    pantheon_encore: TS.pantheonEncore.getValue(),
     crucible_1v6: $("crucible1v6").value.trim(),
-    crucible_3v3: $("crucible3v3").value,
-    crucible_6v6: $("crucible6v6").value,
+    crucible_3v3: TS.crucible3v3.getValue(),
+    crucible_6v6: TS.crucible6v6.getValue(),
     conquests,
     iron_banner: $("ironBanner").checked,
     trials_active: $("trialsActive").checked,
@@ -186,12 +248,10 @@ async function renderPreview() {
   }
 }
 
-// Any edit re-syncs the Trials gate and re-renders the preview.
+// Native inputs bubble "input"; Tom Select edits arrive via each instance's onChange.
 $("form").addEventListener("submit", (e) => e.preventDefault());
-$("form").addEventListener("input", () => {
-  syncTrials();
-  schedulePreview();
-});
+$("form").addEventListener("input", onEdit);
+$("refreshBtn").addEventListener("click", renderPreview);
 
 // --- save --------------------------------------------------------------
 async function save() {

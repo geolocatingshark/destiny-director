@@ -1,25 +1,44 @@
 /*
-  Weekly Reset Overview form styles. Layered on /static/shared.css (base reset + theme).
-  Deliberately minimal — a later step swaps the native weapon/conquest inputs for Tom
-  Select and polishes the layout. Served statically from /static/weekly_reset_form.css.
+  Weekly Reset Overview form styles. Layered on /static/shared.css (base reset + theme) and
+  /static/vendor/tom-select.min.css (loaded before this file, so the dark-theme overrides at
+  the bottom win). Served statically from /static/weekly_reset_form.css — no build step.
 */
-main { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
-#form { display: flex; flex-direction: column; gap: 1rem; }
 
-fieldset {
-  border: 1px solid #333; border-radius: 8px; padding: .6rem 1rem 1rem;
-  display: flex; flex-direction: column; gap: .3rem; margin: 0;
+/* This form is denser than the rotation editor, so it gets a wider page and, on desktop, a
+   sticky preview beside the form. shared.css centres the body at 880px; widen it here. */
+body { max-width: 1180px; }
+
+/* Form on the left, preview pinned on the right (desktop); stacked on narrow screens. */
+main.layout {
+  display: grid; grid-template-columns: 1fr; gap: 1.2rem;
+  align-items: start; margin-top: 1rem;
 }
-legend { font-weight: 600; padding: 0 .4rem; }
+@media (min-width: 1000px) {
+  main.layout { grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); }
+  .preview-col { position: sticky; top: 1rem; max-height: calc(100vh - 6rem); }
+  .preview-col #previewBox { overflow: auto; }
+}
 
-.field { display: flex; flex-direction: column; gap: .3rem; }
+#form { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+
+/* Each build_body section is a card. */
+fieldset {
+  border: 1px solid #333; border-radius: 8px; padding: .7rem 1rem 1rem;
+  display: flex; flex-direction: column; gap: .5rem; margin: 0;
+  background: #202329;
+}
+legend {
+  font-weight: 600; padding: 0 .45rem; color: #cfd3d6;
+  text-transform: uppercase; letter-spacing: .03em; font-size: .8rem;
+}
+
+.field { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
 .field > label { font-size: .85rem; color: #cfd3d6; }
 
 .row { display: flex; gap: .8rem; flex-wrap: wrap; }
 .row .field { flex: 1 1 14rem; }
 
-input[type="text"], input[type="url"], input[type="datetime-local"],
-select, textarea {
+input[type="text"], input[type="url"], input[type="datetime-local"], textarea {
   width: 100%; padding: .45rem .55rem; font: inherit;
   background: #24272e; color: #e6e6e6;
   border: 1px solid #3a3f47; border-radius: 6px;
@@ -32,10 +51,27 @@ textarea { min-height: 4.5rem; resize: vertical; }
 label.inline { flex-direction: row; align-items: center; gap: .4rem; }
 
 #conquests { display: flex; flex-direction: column; gap: .6rem; }
-#conquests fieldset { padding: .4rem .8rem .6rem; gap: .2rem; }
 
+/* --- preview pane --- */
+.preview-col { display: flex; flex-direction: column; gap: .5rem; }
+.preview-head { display: flex; align-items: center; gap: .6rem; }
+.preview-head h2 { font-size: 1.05rem; margin: 0; flex: 1 1 auto; }
+
+#previewBox {
+  white-space: pre-wrap; word-break: break-word;
+  background: #14161a; border: 1px solid #333; border-radius: 8px;
+  padding: 1rem; font: inherit;
+}
+
+#problems {
+  color: #ff7b72; margin: 0; padding: .5rem .5rem .5rem 1.6rem;
+  border: 1px solid #5a2a2a; border-radius: 8px; background: #2a1e1e;
+}
+#problems.hidden { display: none; }
+
+/* --- control row --- */
 .toolbar {
-  position: sticky; bottom: 0; z-index: 2;
+  position: sticky; bottom: 0; z-index: 20;
   display: flex; gap: .6rem; align-items: center;
   padding: .7rem 0; margin-top: 1rem;
   background: #1b1d22; border-top: 1px solid #333;
@@ -45,16 +81,44 @@ button {
   border: 1px solid #3a3f47; border-radius: 6px; background: #2e5bff; color: #fff;
 }
 button.secondary { background: #24272e; color: #e6e6e6; }
+button.tiny { padding: .25rem .6rem; font-size: .8rem; }
 .grow { flex: 1; }
 
 #status.ok { color: #7ee787; }
-#status.err { color: #ff7b72; }
+#status.err { color: #ff7b72; white-space: pre-wrap; }
 
-#problems { color: #ff7b72; margin: .4rem 0; padding-left: 1.2rem; }
-#problems.hidden { display: none; }
-
-#previewBox {
-  white-space: pre-wrap; word-break: break-word;
-  background: #14161a; border: 1px solid #333; border-radius: 8px;
-  padding: 1rem; font: inherit; overflow-x: auto;
+/* --- Tom Select dark theme (overrides the vendored light stylesheet) --- */
+.ts-wrapper { width: 100%; min-width: 0; }
+.ts-wrapper.single .ts-control, .ts-wrapper.multi .ts-control {
+  background: #24272e; color: #e6e6e6;
+  border: 1px solid #3a3f47; border-radius: 6px;
+  box-shadow: none; padding: .35rem .5rem;
 }
+.ts-control, .ts-control input, .ts-control input::placeholder { color: #e6e6e6; }
+.ts-control input::placeholder, .ts-control > .ts-placeholder { color: #8b9096; }
+.ts-wrapper.focus .ts-control, .ts-control.focus { border-color: #2e5bff; box-shadow: none; }
+.ts-wrapper.disabled .ts-control { opacity: .55; }
+
+.ts-dropdown {
+  background: #1f2229; color: #e6e6e6;
+  border: 1px solid #3a3f47; border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45); margin-top: .2rem; z-index: 30;
+}
+.ts-dropdown .option { padding: .4rem .55rem; }
+.ts-dropdown .active { background: #2a2f37; color: #fff; }
+.ts-dropdown .option.selected { color: #9fb4ff; }
+.ts-dropdown .no-results { color: #9aa0a6; padding: .4rem .55rem; }
+
+/* Multi-select chips. */
+.ts-wrapper.multi .ts-control > .item {
+  background: #2e5bff; color: #fff; border: 0; border-radius: 4px;
+  padding: .12rem .45rem;
+}
+.ts-wrapper.multi .ts-control > .item .remove {
+  border-left-color: rgba(255, 255, 255, .4); color: #fff;
+}
+.ts-wrapper.multi .ts-control > .item .remove:hover { background: rgba(255, 255, 255, .18); }
+
+/* clear_button plugin (single-selects). */
+.ts-wrapper .clear-button { color: #9aa0a6; opacity: .8; }
+.ts-wrapper .clear-button:hover { color: #e6e6e6; opacity: 1; }
