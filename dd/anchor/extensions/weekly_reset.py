@@ -23,7 +23,7 @@ mirrored it. This extension automates that authoring:
    carried-over curated bits, and persists a **draft** (the WeeklyResetContext) to the
    ``weekly_reset_draft`` :class:`~dd.common.schemas.RotationData` row.
 2. The team fills in the weapons/rotators/prose the API can't supply through an
-   owner-authenticated **web form** (``/weekly_reset edit_web`` mints the link; the
+   owner-authenticated **web form** (``/weekly_reset create`` mints the link; the
    routes and auth live at the bottom of this module), backed by the same
    data/render/publish core below.
 3. On publish the assembled post is crossposted to
@@ -1353,7 +1353,7 @@ async def mutate_draft(
 #
 # The Discord input UI is gone; input now flows through this form. Auth is an
 # HMAC-signed, bot-token-keyed session cookie (~2h, no store), minted by the owner-only
-# ``/weekly_reset edit_web`` command and traded for a cookie on first load — cloned from
+# ``/weekly_reset create`` command and traded for a cookie on first load — cloned from
 # ``RotationSessionManager``. Every state-changing route ALSO checks the request
 # ``Origin`` (defence-in-depth atop ``SameSite=Lax``). All security-relevant transforms
 # (weapon resolution, the Iron-Banner⇒Trials-off rule, link validation) run server-side
@@ -1364,7 +1364,7 @@ _FORM_HTML_PATH = (
 )
 _SESSION_TTL = dt.timedelta(hours=2)
 _SESSION_COOKIE = "weekly_reset_session"
-_EXPIRED_MSG = "This link has expired. Run /weekly_reset edit_web for a fresh one."
+_EXPIRED_MSG = "This link has expired. Run /weekly_reset create for a fresh one."
 
 #: The live bot, stashed by the StartedEvent listener so the ``/publish`` route can
 #: reach the REST client. A module global (not aiohttp app state) because the listener
@@ -1392,7 +1392,7 @@ class WeeklyResetSessionManager:
     A token is ``"<expiry_epoch>.<hex_hmac>"``; the HMAC (SHA-256, keyed by a secret
     derived from the anchor bot token) covers the expiry, so it survives process
     restarts and carries no server-side state. Minted by the owner-only
-    ``/weekly_reset edit_web`` command and multi-use for its whole ~2-hour life; tokens
+    ``/weekly_reset create`` command and multi-use for its whole ~2-hour life; tokens
     simply expire, nothing to revoke.
     """
 
@@ -1711,9 +1711,9 @@ weekly_reset_group = lb.Group("weekly_reset", "Weekly Reset Overview (owner only
 
 
 @weekly_reset_group.register
-class EditWeb(
+class Create(
     lb.SlashCommand,
-    name="edit_web",
+    name="create",
     description="Open the owner-only weekly-reset web form",
 ):
     @lb.invoke
@@ -1732,18 +1732,20 @@ class EditWeb(
 
         token = WeeklyResetSessionManager.mint()
         url = f"{cfg.public_base_url}/weekly_reset?token={token}"
-        # Ephemeral (owner-private) response, mirroring rotation_editor's mint command;
-        # the anchor bot is owner-only in its entirety, so this is only ever seen by the
-        # owner who ran it and keeps the token out of any shared channel.
-        await respond_cv2(
-            ctx,
-            cv2_notice(
-                f"[Open the weekly-reset form here]({url}) — it stays signed in for "
-                "about 2 hours. Edit, preview, save, publish and toggle the autopost "
-                "all from that page."
-            ),
-            ephemeral=True,
+        # Ephemeral (owner-private) response with a link button; the anchor bot is
+        # owner-only in its entirety, so this is only ever seen by the owner who ran it
+        # and keeps the token out of any shared channel.
+        container = cv2_notice(
+            "Open the weekly-reset form with the button below — it stays signed in for "
+            "about 2 hours. Edit, preview, save, publish and toggle the autopost all "
+            "from that page."
         )
+        row = h.impl.MessageActionRowBuilder()
+        row.add_component(
+            h.impl.LinkButtonBuilder(url=url, label="Open weekly-reset form")
+        )
+        container.add_component(row)
+        await respond_cv2(ctx, container, ephemeral=True)
 
 
 @loader.listener(h.StartedEvent)
