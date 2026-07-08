@@ -19,7 +19,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select, tuple_, update
 
-from dd.common import schemas
+from dd.common import cfg, schemas
 from dd.common.schemas import (
     MirroredChannel as _MirroredChannel,
     ServerStatistics,
@@ -417,11 +417,12 @@ async def test_success_batch_clears_failing_since(MirroredChannel):
 
 @pytest.mark.asyncio
 async def test_disable_respects_time_floor(MirroredChannel):
-    # Both mirrors are past the count gate, but only the one whose failing streak is
-    # older than the forgiveness window may be disabled. The chatty source that just
-    # started failing (recent streak) must survive — the canonical false-positive.
-    old_src, old_dest = 50, 51  # dead: failing for a long time
-    fresh_src, fresh_dest = 60, 61  # chatty: 3 quick failures during a brief blip
+    # Both mirrors are past the count gate and straddle the forgiveness boundary by just
+    # ±1h, so a wrong-unit / wrong-default regression (hours→minutes/days, or a changed
+    # cfg value) flips the result. Pins the boundary against the live cfg knob.
+    window = dt.timedelta(hours=cfg.mirror_disable_forgiveness_hours)
+    old_src, old_dest = 50, 51  # streak just OLDER than the window → dead
+    fresh_src, fresh_dest = 60, 61  # streak just YOUNGER than the window → survives
     await MirroredChannel.add_mirror(old_src, old_dest, 99, legacy=True)
     await MirroredChannel.add_mirror(fresh_src, fresh_dest, 99, legacy=True)
 
@@ -432,7 +433,7 @@ async def test_disable_respects_time_floor(MirroredChannel):
             .where(MirroredChannel.src_id == old_src)
             .values(
                 legacy_error_rate=3,
-                legacy_failing_since=now - dt.timedelta(hours=72),
+                legacy_failing_since=now - window - dt.timedelta(hours=1),
             )
         )
         await session.execute(
@@ -440,7 +441,7 @@ async def test_disable_respects_time_floor(MirroredChannel):
             .where(MirroredChannel.src_id == fresh_src)
             .values(
                 legacy_error_rate=3,
-                legacy_failing_since=now - dt.timedelta(minutes=5),
+                legacy_failing_since=now - window + dt.timedelta(hours=1),
             )
         )
 

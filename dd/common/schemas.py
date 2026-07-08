@@ -497,6 +497,7 @@ class MirroredChannel(Base):
         cls,
         threshold: int = 3,
         failing_since_before: dt.datetime | None = None,
+        *,
         session: AsyncSession = _UNSET,
     ) -> list[tuple[int, int]]:
         """Return mirrors that have failed past both the count and time gates.

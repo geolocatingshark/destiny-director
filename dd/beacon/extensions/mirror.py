@@ -504,11 +504,9 @@ async def _update_progress_loop(
 # the root DiscordLogHandler, used for mirror-health escalations.
 health_logger = logging.getLogger("dd.beacon.mirror.health")
 
-# Escalate auto-disabled mirror counts: critical past the greater of these, error
-# past the smaller pair, else just a console warning.
-_DISABLE_CRITICAL_FRACTION = 0.10
+# Escalate a global auto-disable sweep by its blast radius (count of mirrors disabled):
+# critical past the first, error past the second, else just a console warning.
 _DISABLE_CRITICAL_MIN = 10
-_DISABLE_ERROR_FRACTION = 0.05
 _DISABLE_ERROR_MIN = 5
 
 
@@ -811,28 +809,49 @@ async def _confirm_dead_dests(
     genuinely can't send there (or the channel/guild is gone). A PERMANENT failure where
     perms still look fine (e.g. a malformed-payload 50035, forum tag rules) is more
     likely our own bug than a dead channel — and would read fine across *every* dest, so
-    it must never mass-disable; it is surfaced to ``health_logger`` and left for a
-    human. UNKNOWN (undeterminable) verdicts also don't count.
+    it must never mass-disable; the whole non-confirmed set is surfaced in a single
+    ``health_logger`` warning and left for a human. UNKNOWN (undeterminable) verdicts,
+    and any probe that itself errors, also don't count.
+
+    The probes run concurrently and NEVER raise: a flaky ``fetch_channel`` (a 5xx /
+    rate-limit while checking a dead channel) must not abort the caller's post-run DB
+    persistence, so a probe error is treated as "not confirmed" (bias: don't disable).
     """
+    permanent = list(control.permanent_failed_targets)
+    if not permanent:
+        return []
+
+    verdicts = await aio.gather(
+        *(utils.confirm_dest_unsendable(bot, dest_id) for dest_id in permanent),
+        return_exceptions=True,
+    )
+
     dead: list[int] = []
-    for dest_id in control.permanent_failed_targets:
-        verdict = await utils.confirm_dest_unsendable(bot, dest_id)
+    not_confirmed: list[str] = []
+    for dest_id, verdict in zip(permanent, verdicts, strict=True):
         if verdict in (
             utils.DestVerdict.CONFIRMED_UNSENDABLE,
             utils.DestVerdict.CONFIRMED_GONE,
         ):
             dead.append(dest_id)
-        else:
-            failure = control.failures.get(dest_id)
-            ref = failure.reference_code if failure else "?"
-            health_logger.warning(
-                "Mirror dest %s (src %s) failed permanently but is not confirmed dead "
-                "(%s, ref %s) — not counting toward auto-disable.",
-                dest_id,
-                src_id,
-                verdict.name,
-                ref,
-            )
+            continue
+        failure = control.failures.get(dest_id)
+        ref = failure.reference_code if failure else "?"
+        reason = (
+            f"probe-error:{type(verdict).__name__}"
+            if isinstance(verdict, BaseException)
+            else verdict.name
+        )
+        not_confirmed.append(f"{dest_id} ({reason}, ref {ref})")
+
+    if not_confirmed:
+        health_logger.warning(
+            "%d mirror dest(s) of src %s failed permanently but are not confirmed dead "
+            "— not counting toward auto-disable: %s",
+            len(not_confirmed),
+            src_id,
+            ", ".join(not_confirmed),
+        )
     return dead
 
 
@@ -922,8 +941,14 @@ async def message_create_repeater_impl(
         # Only PERMANENT failures count toward the cross-run auto-disable, and only
         # those we can *confirm* are dead (perms genuinely missing / channel gone).
         # Transient-exhausted targets and perms-fine PERMANENT failures are left out of
-        # the failure batch entirely, so their error_rate is untouched.
-        confirmed_dead_dests = await _confirm_dead_dests(bot, control, channel.id)
+        # the failure batch entirely, so their error_rate is untouched. Skip the probe
+        # when auto-disable is off — the failure counters feed nothing else, and the
+        # probe does lock-held REST we shouldn't pay for in dry-run.
+        confirmed_dead_dests = (
+            await _confirm_dead_dests(bot, control, channel.id)
+            if cfg.disable_bad_channels
+            else []
+        )
 
         # Log successes, failures and message pairs to the db
         maybe_exceptions = await aio.gather(
@@ -962,29 +987,18 @@ async def message_create_repeater_impl(
         disabled_mirrors = ""
 
     if disabled_mirrors:
+        # ``disable_legacy_failing_mirrors`` sweeps *global* failure state, so this is
+        # the blast radius across all sources (not just this run's targets). Escalate on
+        # the raw count against absolute thresholds — a per-run fraction is meaningless
+        # for a global sweep and would hide a big cross-source event behind a tiny run.
         num_disabled = len(disabled_mirrors)
-        total = control.total_targets
-        # ``disable_legacy_failing_mirrors`` sweeps *global* failure state, so its
-        # result can include dests of other sources that crossed the threshold. Scope
-        # the escalation fraction to this run's source; the message still lists all.
-        num_disabled_this_run = sum(
-            1 for mirror in disabled_mirrors if mirror[0] == channel.id
-        )
         message = (
-            ("Disabled " if cfg.disable_bad_channels else "Would disable ")
-            + str(num_disabled)
-            + f" mirrors (of {total} targets this run): "
+            f"Disabled {num_disabled} mirror(s) (global auto-disable sweep): "
             + ", ".join([f"{mirror[0]}: {mirror[1]}" for mirror in disabled_mirrors])
         )
-        # Escalate by how big a share of this run's targets got disabled: critical
-        # past max(10%, 10), error past max(5%, 5), else just a console warning.
-        if num_disabled_this_run > max(
-            _DISABLE_CRITICAL_MIN, _DISABLE_CRITICAL_FRACTION * total
-        ):
+        if num_disabled > _DISABLE_CRITICAL_MIN:
             health_logger.critical(message)
-        elif num_disabled_this_run > max(
-            _DISABLE_ERROR_MIN, _DISABLE_ERROR_FRACTION * total
-        ):
+        elif num_disabled > _DISABLE_ERROR_MIN:
             health_logger.error(message)
         else:
             health_logger.warning(message)

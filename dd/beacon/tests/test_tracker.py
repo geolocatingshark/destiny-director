@@ -130,14 +130,17 @@ def test_permanent_failed_targets_empty_for_transient_only_run() -> None:
 
 
 def test_permanent_failed_targets_excludes_later_success() -> None:
-    # A permanent failure is never rescheduled, so it cannot later succeed; but guard
-    # the general invariant that a succeeded target never appears as permanent-failed.
+    # Force the (normally unreachable) state where a channel is BOTH permanently-failed
+    # and later completed, to pin that the property intersects with failed_targets
+    # (which excludes completed) rather than reading _permanently_failed alone —
+    # otherwise a recovered target would wrongly count toward disable.
     t = _tracker({10: None}, retry_threshold=3)
     t.report_scheduled(10)
-    t._apply_outcome(_fail(10, ErrorClass.TRANSIENT))  # noqa: SLF001
-    t.report_scheduled(10)
+    t._apply_outcome(_fail(10, ErrorClass.PERMANENT))  # noqa: SLF001
+    assert t.permanent_failed_targets == {10: None}  # counts while only-failed
     t._apply_outcome(KernelSuccess(channel_id=10, message_id=1))  # noqa: SLF001
-    assert t.permanent_failed_targets == {}
+    assert 10 in t._permanently_failed  # still flagged permanent...  # noqa: SLF001
+    assert t.permanent_failed_targets == {}  # ...but excluded once completed
 
 
 def test_cancel_flag_stops_scheduling() -> None:
