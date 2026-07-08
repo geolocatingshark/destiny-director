@@ -1854,9 +1854,9 @@ async def _handle_delete(request: aiohttp.web.Request) -> aiohttp.web.Response:
             {"error": "Bot is still starting — try again in a moment."}, status=503
         )
     # Delete the in-channel post and reset the draft to unposted, under the same lock
-    # the save/publish paths use. Deleting an already-crossposted message removes it
-    # from the announce channel but NOT the copies already mirrored to followers (a
-    # Discord limitation) — the button's confirm text warns about that when crossposted.
+    # the save/publish paths use. Deleting a crossposted message propagates the deletion
+    # to following channels (and beacon mirrors the delete), so the post is removed
+    # everywhere; the persisted draft data is kept so a later Save re-posts it.
     async with _draft_lock:
         meta = await load_meta()
         if meta.message_id:

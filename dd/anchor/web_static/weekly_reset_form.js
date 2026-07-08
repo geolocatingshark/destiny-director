@@ -308,8 +308,8 @@ $("saveBtn").addEventListener("click", async () => {
 $("deleteBtn").addEventListener("click", async () => {
   if (!posted) return;
   const msg = crossposted
-    ? "Delete the in-channel post? It has already been PUBLISHED (crossposted), so this removes it from the announce channel but NOT the copies already mirrored to follower servers. The draft is kept."
-    : "Delete the in-channel post? The draft is kept — a Save re-creates the post.";
+    ? "Delete the PUBLISHED weekly-reset post? This removes it from the channel and propagates the deletion to every follower (beacon mirrors the removal too). The draft data is kept — a Save re-posts it."
+    : "Delete the in-channel draft post? The draft data is kept — a Save re-creates it.";
   if (!confirm(msg)) return;
   setStatus("Deleting…", true);
   try {
