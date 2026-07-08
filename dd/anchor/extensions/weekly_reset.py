@@ -41,7 +41,6 @@ the web form.
 """
 
 import asyncio
-import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
@@ -1769,6 +1768,24 @@ async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response
     return aiohttp.web.Response(text=page, content_type="text/html")
 
 
+def _discord_error_note(exc: Exception) -> str:
+    """A short, user-facing reason for a failed in-channel post/edit/crosspost.
+
+    Discord rejects proxied/temporary image URLs (e.g. ``images-ext-*.discordapp.net``
+    or ``media.discordapp.net/external/…`` links copied from an embed/tweet) with an
+    "Invalid resource" 401 — the most common cause of a failed post here. Surface a
+    concrete hint for that; otherwise pass the trimmed Discord message through.
+    """
+    msg = str(getattr(exc, "message", "") or exc)
+    if "Invalid resource" in msg or "discordapp.net/external/" in msg:
+        return (
+            "Discord rejected the image URL — it looks like a Discord/social-media "
+            "proxy link. Paste the original direct image URL instead (e.g. the "
+            "https://pbs.twimg.com/… link, or a Discord attachment URL)."
+        )
+    return f"Discord rejected the post: {msg[:200]}"
+
+
 async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
     if not _authed(request):
         return _json_401()
@@ -1788,12 +1805,21 @@ async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
     # in-channel post reflects it), with any problems returned as advisory `warnings`.
     warnings = validate_post(ctx)
 
+    post_error = None
     async with _draft_lock:
         await save_draft(ctx)
         meta = await load_meta()
         meta.last_edited_ts = int(dt.datetime.now(tz=dt.UTC).timestamp())
         # Create-or-edit the uncrossposted in-channel post so it tracks the saved draft.
-        meta = await post_or_edit_unpublished(_bot, ctx, meta)
+        # If Discord rejects it (e.g. a bad image URL), keep the saved draft and report
+        # the reason as a warning instead of 500-ing — the user can fix and re-save.
+        try:
+            meta = await post_or_edit_unpublished(_bot, ctx, meta)
+        except Exception as exc:
+            logger.warning(
+                "weekly_reset: in-channel post update failed", exc_info=True
+            )
+            post_error = _discord_error_note(exc)
         await save_meta(meta)
         # Optionally persist this week's image as the carried-over default for future
         # weeks' drafts (build_draft_context seeds ctx.image_url from it). An empty
@@ -1802,12 +1828,14 @@ async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
             config = await load_config()
             config.default_image_url = ctx.image_url
             await save_config(config)
-    logger.info("weekly_reset: draft saved + posted (uncrossposted) via web form")
+    logger.info(
+        "weekly_reset: draft saved via web form (post ok=%s)", post_error is None
+    )
     return aiohttp.web.json_response(
         {
             "ok": True,
             "draft": ctx.to_dict(),
-            "warnings": warnings,
+            "warnings": [*warnings, post_error] if post_error else warnings,
             "posted": meta.message_id != 0,
             "crossposted": meta.crossposted,
         }
@@ -1859,6 +1887,11 @@ async def _handle_publish(request: aiohttp.web.Request) -> aiohttp.web.Response:
             return aiohttp.web.json_response(
                 {"problems": str(exc).split("; ")}, status=422
             )
+        except Exception as exc:  # Discord rejected the post/crosspost (e.g. bad image)
+            logger.warning("weekly_reset: publish failed", exc_info=True)
+            return aiohttp.web.json_response(
+                {"problems": [_discord_error_note(exc)]}, status=502
+            )
         await save_meta(meta)
     return aiohttp.web.json_response({"note": note})
 
@@ -1880,8 +1913,15 @@ async def _handle_delete(request: aiohttp.web.Request) -> aiohttp.web.Response:
         meta = await load_meta()
         if meta.message_id:
             channel_id = cfg.followables["weekly_reset"]
-            with contextlib.suppress(h.NotFoundError):
+            try:
                 await _bot.rest.delete_message(channel_id, meta.message_id)
+            except h.NotFoundError:
+                pass  # already gone — fall through and reset the meta
+            except Exception as exc:  # keep the meta so the post isn't orphaned
+                logger.warning("weekly_reset: delete failed", exc_info=True)
+                return aiohttp.web.json_response(
+                    {"ok": False, "error": _discord_error_note(exc)}, status=502
+                )
             meta.message_id = 0
             meta.crossposted = False
             meta.status = "draft"

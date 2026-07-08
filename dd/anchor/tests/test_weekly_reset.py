@@ -794,6 +794,23 @@ def test_render_post_html_renders_markdown_and_emoji() -> None:
     assert 'href="ftp' not in out
 
 
+def test_discord_error_note() -> None:
+    # Discord's "Invalid resource" (proxied image URL) -> the specific image hint.
+    proxy = wr._discord_error_note(
+        ValueError("Unauthorized 401: 'Invalid resource \"https://images-ext-1"
+                   ".discordapp.net/external/x\"'")
+    )
+    assert "proxy link" in proxy and "direct image URL" in proxy
+    # A media.discordapp.net/external/ link is flagged the same way.
+    assert "proxy link" in wr._discord_error_note(
+        Exception("media.discordapp.net/external/abc rejected")
+    )
+    # Anything else passes the (trimmed) Discord message through.
+    other = wr._discord_error_note(Exception("Some other Discord failure"))
+    assert other.startswith("Discord rejected the post:")
+    assert "Some other Discord failure" in other
+
+
 def test_render_post_html_bottom_image() -> None:
     emoji: dict = {}
     out = wr.render_post_html(
