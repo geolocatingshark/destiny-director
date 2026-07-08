@@ -755,49 +755,6 @@ async def weekly_reset_message_constructor(bot: CachedFetchBot) -> HMessage:
     return await format_weekly_reset(ctx, bot)
 
 
-def activity_record(ctx: WeeklyResetContext) -> dict[str, t.Any]:
-    """The activity choices for a published week, as a flat machine-parseable dict."""
-
-    def wname(weapon: WeaponRef | None) -> str | None:
-        return weapon.name if weapon else None
-
-    return {
-        "reset_ts": ctx.reset_ts,
-        "gm_strike": ctx.gm_strike or None,
-        "gm_weapon": wname(ctx.gm_weapon),
-        "quickplay_weapon": wname(ctx.quickplay_weapon),
-        "control_weapon": wname(ctx.control_weapon),
-        "zavala_weapon": wname(ctx.zavala_weapon),
-        "seasonal_raid": ctx.seasonal_raid or None,
-        "seasonal_dungeon": ctx.seasonal_dungeon or None,
-        "rotator_raids": [r for r in ctx.rotator_raids if r],
-        "rotator_dungeons": [d for d in ctx.rotator_dungeons if d],
-        "pantheon_reprise": ctx.pantheon_reprise or None,
-        "pantheon_encore": ctx.pantheon_encore or None,
-        "crucible_1v6": ctx.crucible_1v6 or None,
-        "crucible_3v3": ctx.crucible_3v3 or None,
-        "crucible_6v6": ctx.crucible_6v6 or None,
-        "conquests": {k: v for k, v in ctx.conquests.items() if v} or None,
-        "iron_banner": ctx.iron_banner,
-        "trials_active": ctx.trials_active,
-    }
-
-
-async def record_publish(bot: CachedFetchBot, ctx: WeeklyResetContext) -> None:
-    """Log the published activity choices to the records channel for later analysis."""
-    channel_id = cfg.weekly_reset_records_channel
-    if not channel_id:
-        return
-    record = json.dumps(activity_record(ctx))
-    try:
-        await bot.rest.create_message(
-            channel_id,
-            f"Weekly reset <t:{ctx.reset_ts}:D>\n```json\n{record}\n```",
-        )
-    except Exception:
-        logger.warning("weekly_reset: records post failed", exc_info=True)
-
-
 def validate_post(ctx: WeeklyResetContext) -> list[str]:
     """Problems that would make the post empty or break Components V2 limits."""
     problems: list[str] = []
@@ -881,7 +838,6 @@ async def publish_draft(
         raise ValueError("; ".join(problems))
     hmessage = await format_weekly_reset(ctx, bot)
     channel_id = cfg.followables["weekly_reset"]
-    initial_publish = not meta.published_message_id
     if meta.published_message_id:
         # Already published this week: edit the post in place so fixes reach followers
         # via beacon's edit reconciliation, no duplicate post.
@@ -897,9 +853,6 @@ async def publish_draft(
         note = "✅ Published and crossposted — beacon will mirror it out."
     meta.status = "published"
     await save_meta(meta)
-    # Log the activity choices once per week (first publish) for later analysis.
-    if initial_publish:
-        await record_publish(bot, ctx)
     return meta, note
 
 

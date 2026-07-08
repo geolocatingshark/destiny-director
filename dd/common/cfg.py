@@ -199,8 +199,6 @@ alerts_channel = _getenv("ALERTS_CHANNEL_ID", default=0)
 # post types may reuse it later) are auto-posted here for the team (bot owners) to
 # review/edit before publishing. 0/absent keeps those autoposts + commands dormant.
 drafts_channel = int(_getenv("DRAFTS_CHANNEL_ID", "0"))
-# Records the published weekly-reset activity choices for later analysis.
-weekly_reset_records_channel = int(_getenv("WEEKLY_RESET_RECORDS_CHANNEL_ID", "0"))
 
 
 # Discord constants

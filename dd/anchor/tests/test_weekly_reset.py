@@ -347,17 +347,6 @@ def test_seasonal_defaults() -> None:
     assert config.seasonal_dungeon == "Equilibrium"
 
 
-def test_activity_record_is_flat_and_parseable() -> None:
-    ctx = _full_ctx()
-    rec = wr.activity_record(ctx)
-    assert rec["reset_ts"] == 1783443600
-    assert rec["gm_weapon"] == "Null Composure"  # WeaponRef -> name
-    assert rec["rotator_raids"] == ["Crota's End", "Vault of Glass"]
-    assert rec["seasonal_raid"] == "The Desert Perpetual"
-    # every value must be JSON-serialisable
-    assert json.loads(json.dumps(rec)) == rec
-
-
 @pytest.mark.parametrize(
     ("defn", "type_name", "expected"),
     [
