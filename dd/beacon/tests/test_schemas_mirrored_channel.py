@@ -470,3 +470,54 @@ async def test_disable_skips_null_failing_since(MirroredChannel):
     assert disabled == []
     _, _, enabled = await _get_row(MirroredChannel, src, dest)
     assert enabled is True
+
+
+@pytest.mark.asyncio
+async def test_undo_auto_disable_no_cartesian_overmatch(MirroredChannel):
+    # Regression: undo_auto_disable_for_failure rebuilt its UPDATE WHERE as
+    # ``src_id IN (...) AND dest_id IN (...)`` from the disabled pairs, which matches a
+    # Cartesian product — so it also re-enabled off-diagonal rows that were
+    # disabled for some *other* reason but shared a src or dest. It must re-enable only
+    # rows actually disabled for failure since ``since``.
+    s1, s2 = 100, 101
+    d_a, d_b = 200, 201
+    guild_id = 1
+    for src, dest in ((s1, d_a), (s2, d_b), (s1, d_b), (s2, d_a)):
+        await MirroredChannel.add_mirror(src, dest, guild_id, legacy=True)
+
+    fail_stamp = dt.datetime(2024, 1, 1)
+    async with schemas.db_session() as session, session.begin():
+        # Diagonal: genuinely disabled *for failure*.
+        await session.execute(
+            update(MirroredChannel)
+            .where(
+                tuple_(MirroredChannel.src_id, MirroredChannel.dest_id).in_(
+                    [(s1, d_a), (s2, d_b)]
+                )
+            )
+            .values(enabled=False, legacy_disable_for_failure_on_date=fail_stamp)
+        )
+        # Off-diagonal: disabled, but NOT for failure (no stamp) — e.g. manually.
+        await session.execute(
+            update(MirroredChannel)
+            .where(
+                tuple_(MirroredChannel.src_id, MirroredChannel.dest_id).in_(
+                    [(s1, d_b), (s2, d_a)]
+                )
+            )
+            .values(enabled=False, legacy_disable_for_failure_on_date=None)
+        )
+
+    reenabled = await MirroredChannel.undo_auto_disable_for_failure(
+        since=dt.datetime(2023, 1, 1)
+    )
+    assert {tuple(row) for row in reenabled} == {(s1, d_a), (s2, d_b)}
+
+    async with schemas.db_session() as session, session.begin():
+        rows = await session.execute(
+            select(MirroredChannel.src_id, MirroredChannel.dest_id).where(
+                MirroredChannel.enabled
+            )
+        )
+    # Only the disabled-for-failure diagonal comes back; off-diagonal stays disabled.
+    assert {tuple(row) for row in rows.fetchall()} == {(s1, d_a), (s2, d_b)}

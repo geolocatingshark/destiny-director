@@ -622,15 +622,24 @@ class MirroredChannel(Base):
         )
         await session.execute(
             update(cls)
+            # Match the disabled rows by the SAME predicate the SELECT used. Rebuilding
+            # ``src_id IN (...) AND dest_id IN (...)`` from the pairs matches the
+            # Cartesian product of the two id sets, so it would also re-enable innocent
+            # rows that merely share a src or dest with a genuinely-disabled pair (or
+            # were disabled for some *other* reason). Clear the failing streak + disable
+            # stamp too, so the re-enabled row starts from a clean slate.
             .where(
                 and_(
-                    cls.src_id.in_([mirror[0] for mirror in mirrors_to_enable]),
-                    cls.dest_id.in_([mirror[1] for mirror in mirrors_to_enable]),
+                    ~cls.enabled,
+                    cls.legacy,
+                    cls.legacy_disable_for_failure_on_date >= since,
                 )
             )
             .values(
                 enabled=True,
                 legacy_error_rate=0,
+                legacy_failing_since=None,
+                legacy_disable_for_failure_on_date=None,
             )
         )
 
