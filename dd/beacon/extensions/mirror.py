@@ -801,6 +801,41 @@ async def message_create_repeater(
     )
 
 
+async def _confirm_dead_dests(
+    bot: CachedFetchBot, control: KernelWorkControl, src_id: int
+) -> list[int]:
+    """From this run's PERMANENT failures, return the dests we can *confirm* are dead.
+
+    A PERMANENT send failure is necessary but not sufficient to auto-disable: the perm
+    check (``utils.confirm_dest_unsendable``, a cache read — no send) must agree the bot
+    genuinely can't send there (or the channel/guild is gone). A PERMANENT failure where
+    perms still look fine (e.g. a malformed-payload 50035, forum tag rules) is more
+    likely our own bug than a dead channel — and would read fine across *every* dest, so
+    it must never mass-disable; it is surfaced to ``health_logger`` and left for a
+    human. UNKNOWN (undeterminable) verdicts also don't count.
+    """
+    dead: list[int] = []
+    for dest_id in control.permanent_failed_targets:
+        verdict = await utils.confirm_dest_unsendable(bot, dest_id)
+        if verdict in (
+            utils.DestVerdict.CONFIRMED_UNSENDABLE,
+            utils.DestVerdict.CONFIRMED_GONE,
+        ):
+            dead.append(dest_id)
+        else:
+            failure = control.failures.get(dest_id)
+            ref = failure.reference_code if failure else "?"
+            health_logger.warning(
+                "Mirror dest %s (src %s) failed permanently but is not confirmed dead "
+                "(%s, ref %s) — not counting toward auto-disable.",
+                dest_id,
+                src_id,
+                verdict.name,
+                ref,
+            )
+    return dead
+
+
 async def message_create_repeater_impl(
     msg: h.Message,
     bot: CachedFetchBot,
@@ -884,14 +919,16 @@ async def message_create_repeater_impl(
             control.total_targets / elapsed_secs if elapsed_secs else 0.0,
         )
 
+        # Only PERMANENT failures count toward the cross-run auto-disable, and only
+        # those we can *confirm* are dead (perms genuinely missing / channel gone).
+        # Transient-exhausted targets and perms-fine PERMANENT failures are left out of
+        # the failure batch entirely, so their error_rate is untouched.
+        confirmed_dead_dests = await _confirm_dead_dests(bot, control, channel.id)
+
         # Log successes, failures and message pairs to the db
         maybe_exceptions = await aio.gather(
-            # Only PERMANENT failures count toward the cross-run auto-disable.
-            # Transient-exhausted targets (a short 5xx/timeout outage) are left in
-            # neither batch, so their error_rate is untouched — see
-            # ``permanent_failed_targets``.
             MirroredChannel.log_legacy_mirror_failure_in_batch(
-                channel.id, list(control.permanent_failed_targets.keys())
+                channel.id, confirmed_dead_dests
             ),
             MirroredChannel.log_legacy_mirror_success_in_batch(
                 channel.id, list(control.successful_targets.keys())

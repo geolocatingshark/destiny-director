@@ -226,6 +226,12 @@ alert_escalation_debounce = 600
 # before a "majority of mirrors failing" critical alert fires.
 mirror_failure_ratio_threshold = 0.5
 mirror_failure_min_sample = 10
+# Cross-run auto-disable time gate (hours): a confirmed-failing legacy mirror must stay
+# failing at least this long — measured from the first confirmed failure in the streak
+# (legacy_failing_since) — before it is auto-disabled. Pairs with the count gate
+# (legacy_error_rate >= threshold) so a brief perm reshuffle on a chatty source can't
+# disable it on a handful of quick posts.
+mirror_disable_forgiveness_hours = 48
 # Mirror fan-out tuning. These are baked-in defaults (not env-backed) to keep the
 # env contract small; re-introduce env-backing if a per-deploy override is ever
 # needed. mirror_max_concurrency caps in-flight kernel coroutines; mirror_rate_per_sec

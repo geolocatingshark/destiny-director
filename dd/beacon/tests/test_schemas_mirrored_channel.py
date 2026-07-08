@@ -341,7 +341,8 @@ async def test_disable_failing_mirrors_no_cartesian_overmatch(MirroredChannel):
     await MirroredChannel.add_mirror(s1, d_b, guild_id, legacy=True)
     await MirroredChannel.add_mirror(s2, d_a, guild_id, legacy=True)
 
-    # Mark only the diagonal pairs as failing (error_rate >= threshold).
+    # Mark only the diagonal pairs as failing (error_rate >= threshold) with a failing
+    # streak old enough to clear the forgiveness window.
     async with schemas.db_session() as session, session.begin():
         await session.execute(
             update(MirroredChannel)
@@ -350,7 +351,7 @@ async def test_disable_failing_mirrors_no_cartesian_overmatch(MirroredChannel):
                     [(s1, d_a), (s2, d_b)]
                 )
             )
-            .values(legacy_error_rate=3)
+            .values(legacy_error_rate=3, legacy_failing_since=dt.datetime(2020, 1, 1))
         )
 
     disabled = await MirroredChannel.disable_legacy_failing_mirrors(threshold=3)
@@ -364,3 +365,108 @@ async def test_disable_failing_mirrors_no_cartesian_overmatch(MirroredChannel):
             )
         )
     assert {tuple(row) for row in rows.fetchall()} == {(s1, d_b), (s2, d_a)}
+
+
+async def _get_row(MirroredChannel, src_id, dest_id):
+    async with schemas.db_session() as session, session.begin():
+        row = await session.execute(
+            select(
+                MirroredChannel.legacy_error_rate,
+                MirroredChannel.legacy_failing_since,
+                MirroredChannel.enabled,
+            ).where(
+                (MirroredChannel.src_id == src_id)
+                & (MirroredChannel.dest_id == dest_id)
+            )
+        )
+    return row.first()
+
+
+@pytest.mark.asyncio
+async def test_failure_batch_stamps_failing_since_once(MirroredChannel):
+    # The first failure in a streak stamps legacy_failing_since; subsequent failures
+    # bump the count but COALESCE leaves the streak-start untouched.
+    src, dest = 30, 31
+    await MirroredChannel.add_mirror(src, dest, 99, legacy=True)
+
+    await MirroredChannel.log_legacy_mirror_failure_in_batch(src, [dest])
+    rate1, since1, _ = await _get_row(MirroredChannel, src, dest)
+    assert rate1 == 1
+    assert since1 is not None
+
+    await MirroredChannel.log_legacy_mirror_failure_in_batch(src, [dest])
+    rate2, since2, _ = await _get_row(MirroredChannel, src, dest)
+    assert rate2 == 2
+    assert since2 == since1  # streak-start unchanged
+
+
+@pytest.mark.asyncio
+async def test_success_batch_clears_failing_since(MirroredChannel):
+    src, dest = 40, 41
+    await MirroredChannel.add_mirror(src, dest, 99, legacy=True)
+
+    await MirroredChannel.log_legacy_mirror_failure_in_batch(src, [dest])
+    _, since, _ = await _get_row(MirroredChannel, src, dest)
+    assert since is not None
+
+    await MirroredChannel.log_legacy_mirror_success_in_batch(src, [dest])
+    rate, since_after, _ = await _get_row(MirroredChannel, src, dest)
+    assert rate == 0
+    assert since_after is None
+
+
+@pytest.mark.asyncio
+async def test_disable_respects_time_floor(MirroredChannel):
+    # Both mirrors are past the count gate, but only the one whose failing streak is
+    # older than the forgiveness window may be disabled. The chatty source that just
+    # started failing (recent streak) must survive — the canonical false-positive.
+    old_src, old_dest = 50, 51  # dead: failing for a long time
+    fresh_src, fresh_dest = 60, 61  # chatty: 3 quick failures during a brief blip
+    await MirroredChannel.add_mirror(old_src, old_dest, 99, legacy=True)
+    await MirroredChannel.add_mirror(fresh_src, fresh_dest, 99, legacy=True)
+
+    now = dt.datetime.now(tz=dt.UTC)
+    async with schemas.db_session() as session, session.begin():
+        await session.execute(
+            update(MirroredChannel)
+            .where(MirroredChannel.src_id == old_src)
+            .values(
+                legacy_error_rate=3,
+                legacy_failing_since=now - dt.timedelta(hours=72),
+            )
+        )
+        await session.execute(
+            update(MirroredChannel)
+            .where(MirroredChannel.src_id == fresh_src)
+            .values(
+                legacy_error_rate=3,
+                legacy_failing_since=now - dt.timedelta(minutes=5),
+            )
+        )
+
+    disabled = await MirroredChannel.disable_legacy_failing_mirrors(threshold=3)
+    assert {tuple(row) for row in disabled} == {(old_src, old_dest)}
+
+    _, _, old_enabled = await _get_row(MirroredChannel, old_src, old_dest)
+    _, _, fresh_enabled = await _get_row(MirroredChannel, fresh_src, fresh_dest)
+    assert old_enabled is False
+    assert fresh_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_disable_skips_null_failing_since(MirroredChannel):
+    # A row past the count gate but with no active streak (NULL failing_since) must not
+    # be disabled — the time gate has nothing to measure.
+    src, dest = 70, 71
+    await MirroredChannel.add_mirror(src, dest, 99, legacy=True)
+    async with schemas.db_session() as session, session.begin():
+        await session.execute(
+            update(MirroredChannel)
+            .where(MirroredChannel.src_id == src)
+            .values(legacy_error_rate=5, legacy_failing_since=None)
+        )
+
+    disabled = await MirroredChannel.disable_legacy_failing_mirrors(threshold=3)
+    assert disabled == []
+    _, _, enabled = await _get_row(MirroredChannel, src, dest)
+    assert enabled is True

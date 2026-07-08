@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+import enum
 import inspect
 import typing as t
 
@@ -196,6 +197,88 @@ async def compute_bot_perms(ctx: lb.Context) -> h.Permissions | None:
     be determined. Mirrors ``check_invoker_has_perms`` but for the bot's own member."""
     _, _, perms = await resolve_bot_perms(ctx)
     return perms
+
+
+class DestVerdict(enum.Enum):
+    """Whether the bot can *confirm* it cannot send to a destination channel.
+
+    Only ``CONFIRMED_*`` verdicts may count toward the cross-run mirror auto-disable;
+    ``SENDABLE`` and ``UNKNOWN`` must never count — the cost of wrongly disabling a
+    healthy destination (silent loss of service) far outweighs leaving a dead one
+    enabled (wasted API calls), so every ambiguity biases toward *not* disabling."""
+
+    SENDABLE = enum.auto()  # bot holds View Channel + Send Messages here
+    CONFIRMED_UNSENDABLE = enum.auto()  # computed perms lack View or Send
+    CONFIRMED_GONE = enum.auto()  # channel/guild gone, bot can't see it, or was kicked
+    UNKNOWN = enum.auto()  # couldn't determine — do NOT count toward disable
+
+
+# Minimal perms genuinely required to send. Deliberately just View + Send (computed on a
+# thread's parent): being *less* eager to confirm "unsendable" is the safe direction
+# given the cost asymmetry. A thread that also needs Send-Messages-in-Threads but reads
+# View + Send fine is reported SENDABLE (alerted, never auto-disabled) rather than
+# risking a false disable — see the deferred thread-perm nuance in the plan.
+_REQUIRED_SEND_PERMS = h.Permissions.VIEW_CHANNEL | h.Permissions.SEND_MESSAGES
+
+
+async def _fetch_channel_or_gone(
+    app: h.GatewayBot, channel_id: int
+) -> h.PartialChannel | DestVerdict:
+    """Cache-first channel fetch. Returns the channel, or ``CONFIRMED_GONE`` on a
+    403/404 (the channel is gone or the bot can't see it). REST is hit only on a cache
+    miss."""
+    channel = app.cache.get_guild_channel(channel_id)
+    if channel is not None:
+        return channel
+    try:
+        return await app.rest.fetch_channel(channel_id)
+    except (h.ForbiddenError, h.NotFoundError):
+        return DestVerdict.CONFIRMED_GONE
+
+
+async def confirm_dest_unsendable(app: h.GatewayBot, channel_id: int) -> DestVerdict:
+    """Classify whether the bot can send to ``channel_id`` — WITHOUT sending anything.
+
+    Computes the bot's effective channel permissions from the gateway cache (roles +
+    overwrites), the same way ``compute_bot_perms`` does for command channels, and maps
+    the result to a :class:`DestVerdict`. Gates the cross-run mirror auto-disable: a
+    genuinely dead destination (deleted / kicked / perms revoked) reads ``CONFIRMED_*``
+    regardless of how often we post to it, so the decision stops being hostage to post
+    cadence. Every ambiguity maps to ``UNKNOWN`` (which never counts)."""
+    me = app.get_me()
+    if me is None:
+        return DestVerdict.UNKNOWN
+
+    channel = await _fetch_channel_or_gone(app, channel_id)
+    if isinstance(channel, DestVerdict):
+        return channel
+    # A thread carries no overwrites of its own — resolve to the parent for perms.
+    if isinstance(channel, h.GuildThreadChannel):
+        if channel.parent_id is None:
+            return DestVerdict.UNKNOWN
+        channel = await _fetch_channel_or_gone(app, channel.parent_id)
+        if isinstance(channel, DestVerdict):
+            return channel
+    if not isinstance(channel, h.PermissibleGuildChannel):
+        return DestVerdict.UNKNOWN
+
+    member = app.cache.get_member(channel.guild_id, me.id)
+    if member is None:
+        try:
+            member = await app.rest.fetch_member(channel.guild_id, me.id)
+        except h.NotFoundError:
+            return DestVerdict.CONFIRMED_GONE  # bot is no longer in the guild
+        except h.ForbiddenError:
+            return DestVerdict.UNKNOWN
+
+    try:
+        perms = calculate_permissions(member, channel)
+    except CacheFailureError:
+        return DestVerdict.UNKNOWN
+
+    if perms & _REQUIRED_SEND_PERMS == _REQUIRED_SEND_PERMS:
+        return DestVerdict.SENDABLE
+    return DestVerdict.CONFIRMED_UNSENDABLE
 
 
 def filter_discord_autoembeds(msg: h.Message | HMessage) -> list[h.Embed]:
