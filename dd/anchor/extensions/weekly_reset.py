@@ -874,7 +874,9 @@ def _render_line(line: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
     return _render_inline(line, emoji_sub)
 
 
-def render_post_html(body: str, emoji_dict: dict[str, h.Emoji]) -> str:
+def render_post_html(
+    body: str, emoji_dict: dict[str, h.Emoji], image_url: str | None = None
+) -> str:
     """Render a ``build_body`` string (plus the ``-#`` FOOTER) to safe preview HTML.
 
     Mirrors what Discord renders for the published post: the same markdown subset,
@@ -886,6 +888,11 @@ def render_post_html(body: str, emoji_dict: dict[str, h.Emoji]) -> str:
     """
     emoji_sub = _html_emoji_substituter(emoji_dict)
     lines = [_render_line(line, emoji_sub) for line in body.split("\n")]
+    # Image sits below the body and above the footer — mirroring build_cv2's media
+    # gallery placement — so the preview shows it exactly where the post does.
+    if image_url and image_url.startswith(("http://", "https://")):
+        src = html.escape(image_url, quote=True)
+        lines += ["", f'<img class="post-image" src="{src}" alt="post image">']
     # Append the footer build_cv2 adds to the real post, for parity with the publish.
     lines += ["", _render_line(FOOTER, emoji_sub)]
     return "\n".join(lines)
@@ -1736,6 +1743,7 @@ async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response
 
     draft = await load_draft() or await build_draft_context()
     meta = await load_meta()
+    config = await load_config()
     bootstrap = {
         "draft": draft.to_dict(),
         "options": await _build_options(),
@@ -1744,6 +1752,9 @@ async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response
         ),
         "conquest_tiers": list(CONQUEST_TIERS),
         "reward_fields": [list(field) for field in _REWARD_FIELDS],
+        # The saved default image (if any), so the form can pre-check "use as default"
+        # when this week's image already is the default.
+        "default_image_url": config.default_image_url or "",
         # Whether an in-channel post already exists (drives the Delete-post button's
         # enabled state on load), and whether it has been crossposted (drives the
         # stronger delete-confirm wording).
@@ -1784,6 +1795,13 @@ async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
         # Create-or-edit the uncrossposted in-channel post so it tracks the saved draft.
         meta = await post_or_edit_unpublished(_bot, ctx, meta)
         await save_meta(meta)
+        # Optionally persist this week's image as the carried-over default for future
+        # weeks' drafts (build_draft_context seeds ctx.image_url from it). An empty
+        # image URL with the box ticked clears the default.
+        if payload.get("set_default_image"):
+            config = await load_config()
+            config.default_image_url = ctx.image_url
+            await save_config(config)
     logger.info("weekly_reset: draft saved + posted (uncrossposted) via web form")
     return aiohttp.web.json_response(
         {
@@ -1812,7 +1830,8 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
     # client's innerHTML sink. Emoji come from the short-TTL guild-emoji cache.
     emoji_dict = await _preview_emoji_dict()
     return aiohttp.web.Response(
-        text=render_post_html(build_body(ctx), emoji_dict), content_type="text/html"
+        text=render_post_html(build_body(ctx), emoji_dict, ctx.image_url),
+        content_type="text/html",
     )
 
 

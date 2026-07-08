@@ -792,6 +792,25 @@ def test_render_post_html_renders_markdown_and_emoji() -> None:
     # Non-http(s) link rejected: rendered as escaped text, never an <a>.
     assert "[bad](ftp://nope.example)" in out
     assert 'href="ftp' not in out
+
+
+def test_render_post_html_bottom_image() -> None:
+    emoji: dict = {}
+    out = wr.render_post_html(
+        "# Title", t.cast("dict[str, h.Emoji]", emoji), "https://ex.com/a.png?x=1&y"
+    )
+    # Image rendered at the bottom, above the footer, with the src escaped.
+    assert '<img class="post-image" src="https://ex.com/a.png?x=1&amp;y"' in out
+    # Image sits above the footer (which renders into an md-small span).
+    assert out.index("post-image") < out.index("md-small")
+    # No image URL -> no <img>.
+    assert "post-image" not in wr.render_post_html(
+        "# Title", t.cast("dict[str, h.Emoji]", emoji), None
+    )
+    # Non-http(s) image URL rejected.
+    assert "post-image" not in wr.render_post_html(
+        "# Title", t.cast("dict[str, h.Emoji]", emoji), "javascript:alert(1)"
+    )
     # Footer appended as small text.
     assert '<span class="md-small">via Destiny Director (Kyber)</span>' in out
     # ONLY the whitelisted tags are ever emitted.

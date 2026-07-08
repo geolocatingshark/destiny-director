@@ -119,6 +119,9 @@ $("updateUrl").value = (draft.update_link && draft.update_link.url) || "";
 $("eventsNarrative").value = draft.events_narrative || "";
 $("crucible1v6").value = draft.crucible_1v6 || "";
 $("imageUrl").value = draft.image_url || "";
+// Pre-check "use as default" when this week's image already is the saved default.
+$("imageDefault").checked =
+  !!BOOT.default_image_url && (draft.image_url || "") === BOOT.default_image_url;
 $("notesText").value = (draft.notes || []).join("\n");
 $("linksText").value = (draft.extra_links || [])
   .map((l) => `${l.label} | ${l.url}`)
@@ -213,6 +216,7 @@ function readForm() {
     update_label: $("updateLabel").value.trim(),
     update_url: $("updateUrl").value.trim(),
     image_url: $("imageUrl").value.trim(),
+    set_default_image: $("imageDefault").checked,
     events_narrative: $("eventsNarrative").value.trim(),
     notes_text: $("notesText").value,
     links_text: $("linksText").value,

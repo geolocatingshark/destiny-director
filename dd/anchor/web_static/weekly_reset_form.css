@@ -71,6 +71,10 @@ label.inline { flex-direction: row; align-items: center; gap: .4rem; }
 #previewBox .md-h1 { font-weight: 700; font-size: 1.3em; }
 #previewBox .md-small { color: #8b9096; font-size: .82em; }
 #previewBox a { color: #9fb4ff; }
+#previewBox .post-image {
+  display: block; max-width: 100%; height: auto;
+  border-radius: 8px; margin: .5rem 0;
+}
 
 #problems {
   color: #ff7b72; margin: 0; padding: .5rem .5rem .5rem 1.6rem;
