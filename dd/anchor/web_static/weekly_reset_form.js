@@ -18,6 +18,10 @@
 
 const BOOT = window.__BOOTSTRAP__;
 const { draft, options, conquest_tiers } = BOOT;
+// Mirror the post's CV2 accent colour as the preview's left bar (see #previewBox CSS).
+if (BOOT.accent_color) {
+  document.documentElement.style.setProperty("--accent", BOOT.accent_color);
+}
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, kids = []) => {
   const n = Object.assign(document.createElement(tag), props);

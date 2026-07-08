@@ -1754,6 +1754,8 @@ async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response
         # The saved default image (if any), so the form can pre-check "use as default"
         # when this week's image already is the default.
         "default_image_url": config.default_image_url or "",
+        # The CV2 container's accent colour, mirrored as the preview's left bar.
+        "accent_color": str(cfg.embed_default_color),
         # Whether an in-channel post already exists (drives the Delete-post button's
         # enabled state on load), and whether it has been crossposted (drives the
         # stronger delete-confirm wording).

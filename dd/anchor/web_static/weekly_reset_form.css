@@ -59,8 +59,10 @@ label.inline { flex-direction: row; align-items: center; gap: .4rem; }
 
 #previewBox {
   white-space: pre-wrap; word-break: break-word;
-  background: #14161a; border: 1px solid #333; border-radius: 8px;
-  padding: 1rem; font: inherit;
+  background: #14161a; border: 1px solid #333;
+  /* Mirror the CV2 container's left accent bar (colour set from the bootstrap). */
+  border-left: 4px solid var(--accent, #5865F2);
+  border-radius: 8px; padding: 1rem; font: inherit;
 }
 /* Rich-preview markup (render_post_html emits only these tags). Custom emoji render as
    inline images; the H1 and the -# footer get their Discord-like weight/size. */
