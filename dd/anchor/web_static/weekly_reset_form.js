@@ -241,8 +241,14 @@ async function renderPreview() {
   try {
     const res = await api("/weekly_reset/preview", readForm());
     const body = await res.text();
-    // Body is server-escaped plain text; innerHTML into the <pre> renders it literally.
-    $("previewBox").innerHTML = res.ok ? body : "Preview failed:\n" + body;
+    // On ok, the server returns SAFE HTML (render_post_html: escaped leaves, whitelisted
+    // tags, http(s)-validated URLs) — innerHTML renders emoji/markdown. On failure the
+    // body is an untrusted error string, so use textContent to keep it escaped.
+    if (res.ok) {
+      $("previewBox").innerHTML = body;
+    } else {
+      $("previewBox").textContent = "Preview failed:\n" + body;
+    }
   } catch (e) {
     $("previewBox").textContent = "Preview error: " + e;
   }
@@ -253,24 +259,71 @@ $("form").addEventListener("submit", (e) => e.preventDefault());
 $("form").addEventListener("input", onEdit);
 $("refreshBtn").addEventListener("click", renderPreview);
 
+// --- post/publish state (drives the Delete-post button) ----------------
+// `posted` = an in-channel post exists; `crossposted` = it's been published to followers.
+// Seeded from the GET bootstrap, flipped on by a successful Save (which creates the post)
+// and off by a successful Delete.
+let posted = !!BOOT.posted;
+let crossposted = !!BOOT.crossposted;
+function updateDeleteBtn() {
+  $("deleteBtn").disabled = !posted;
+}
+updateDeleteBtn();
+
 // --- save --------------------------------------------------------------
+// Saving now also creates-or-edits the uncrossposted in-channel post, so validation is
+// non-blocking: the server returns `warnings` (shown, advisory) instead of blocking
+// `problems`. Returns the response on success (draft saved + posted), else null.
 async function save() {
   const res = await api("/weekly_reset/save", readForm());
   const data = await res.json();
-  if (data.problems) {
-    showProblems(data.problems);
-    return false;
+  if (!res.ok) {
+    showProblems(data.error ? [data.error] : ["Save failed — try again."]);
+    return null;
   }
-  showProblems([]);
-  return true;
+  showProblems(data.warnings || []); // advisory only — the draft still saved + posted
+  posted = !!data.posted;
+  crossposted = !!data.crossposted;
+  updateDeleteBtn();
+  return data;
 }
 $("saveBtn").addEventListener("click", async () => {
   setStatus("Saving…", true);
   try {
-    const ok = await save();
-    setStatus(ok ? "Saved ✓ — draft stored." : "Not saved — see problems above.", ok);
+    const data = await save();
+    if (!data) return setStatus("Not saved — see problems above.", false);
+    const warned = (data.warnings || []).length;
+    setStatus(
+      warned
+        ? `Saved ✓ — posted, with ${warned} warning(s) below.`
+        : "Saved ✓ — draft posted (uncrossposted).",
+      true,
+    );
   } catch (e) {
     setStatus("Save error: " + e, false);
+  }
+});
+
+// --- delete post -------------------------------------------------------
+$("deleteBtn").addEventListener("click", async () => {
+  if (!posted) return;
+  const msg = crossposted
+    ? "Delete the in-channel post? It has already been PUBLISHED (crossposted), so this removes it from the announce channel but NOT the copies already mirrored to follower servers. The draft is kept."
+    : "Delete the in-channel post? The draft is kept — a Save re-creates the post.";
+  if (!confirm(msg)) return;
+  setStatus("Deleting…", true);
+  try {
+    const res = await api("/weekly_reset/delete", {});
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      return setStatus("Delete failed" + (data.error ? ": " + data.error : "."), false);
+    }
+    posted = false;
+    crossposted = false;
+    updateDeleteBtn();
+    setStatus("Post deleted — reset to draft.", true);
+  } catch (e) {
+    setStatus("Delete error: " + e, false);
   }
 });
 

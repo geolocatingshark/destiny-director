@@ -41,6 +41,7 @@ the web form.
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
@@ -63,8 +64,9 @@ from dd.hmessage import HMessage
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
 from ...common.components import cv2_error, cv2_notice, respond_cv2
+from ...common.utils import re_user_side_emoji
 from .. import utils, web
-from ..embeds import substitute_user_side_emoji
+from ..embeds import _kyber_emoji_dict, substitute_user_side_emoji
 from . import (
     bungie_api as api,
     portal_ops,
@@ -775,7 +777,122 @@ def validate_post(ctx: WeeklyResetContext) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Draft metadata (card message id, publish status, "needs attention" flags)
+# Rich HTML preview (web form)
+# ---------------------------------------------------------------------------
+#
+# ``render_post_html`` renders the EXACT markdown subset ``build_body`` emits into a
+# small, safe HTML fragment for the web form's live preview: every text leaf is escaped,
+# masked-link URLs are http(s)-validated, ``:emoji:`` tokens become <img> from the guild
+# emoji dict (unknown names fall back to escaped text), and ONLY the whitelisted tags
+# (strong / em / span / a / img) are ever emitted. The <pre> preview keeps newlines.
+
+#: One inline-markdown token. Ordered so ``***`` beats ``**`` beats ``*`` and the
+#: ``<t:…>`` timestamp beats the emoji rule (both can start with ``<``). The emoji arm
+#: reuses ``re_user_side_emoji`` verbatim; its inner capture groups are ignored — the
+#: matched span is re-substituted through the emoji substituter (which uses that regex).
+_INLINE_MD = re.compile(
+    r"(?P<bi>\*\*\*(?P<bi_inner>.+?)\*\*\*)"
+    r"|(?P<b>\*\*(?P<b_inner>.+?)\*\*)"
+    r"|(?P<i>\*(?P<i_inner>.+?)\*)"
+    r"|(?P<link>\[(?P<label>[^\]]+)\]\((?P<url>[^)\s]+)\))"
+    r"|(?P<ts><t:(?P<tsval>\d+):[A-Za-z]>)"
+    r"|(?P<emoji>" + re_user_side_emoji.pattern + r")"
+)
+
+
+def _format_reset_ts(unix: int) -> str:
+    """Render a ``<t:UNIX:f>`` instant as Discord's ``:f`` long-date short-time, in UTC.
+
+    Discord shows ``:f`` in the *viewer's* local zone; the preview can't know that, so
+    it renders in UTC with an explicit ``(UTC)`` note (e.g. "Jul 14, 2026 5:00 PM").
+    """
+    d = dt.datetime.fromtimestamp(unix, tz=dt.UTC)
+    hour12 = d.hour % 12 or 12
+    ampm = "AM" if d.hour < 12 else "PM"
+    return f"{d.strftime('%b')} {d.day}, {d.year} {hour12}:{d.minute:02d} {ampm} (UTC)"
+
+
+def _html_emoji_substituter(
+    emoji_dict: dict[str, h.Emoji],
+) -> t.Callable[[t.Any], str]:
+    """An ``re_user_side_emoji`` substituter emitting <img> (modeled on the CV2 one).
+
+    Emits ``<img class="emoji" src="{emoji.url}" alt=":name:">`` for a known guild
+    emoji, else the escaped ``:name:`` text. Every attribute value is escaped.
+    """
+
+    def func(match: t.Any) -> str:
+        name = str(match.group(2))
+        emoji = emoji_dict.get(name) or emoji_dict.get(name.lower())
+        if emoji is None:
+            return html.escape(match.group(0))
+        url = html.escape(str(getattr(emoji, "url", "")), quote=True)
+        alt = html.escape(name, quote=True)
+        return f'<img class="emoji" src="{url}" alt=":{alt}:">'
+
+    return func
+
+
+def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
+    """Render one line's inline markdown to safe HTML (escaping every text leaf)."""
+    out: list[str] = []
+    pos = 0
+    for m in _INLINE_MD.finditer(text):
+        if m.start() > pos:
+            out.append(html.escape(text[pos : m.start()]))
+        if m.group("bi") is not None:
+            out.append(f"<strong><em>{html.escape(m.group('bi_inner'))}</em></strong>")
+        elif m.group("b") is not None:
+            out.append(f"<strong>{html.escape(m.group('b_inner'))}</strong>")
+        elif m.group("i") is not None:
+            out.append(f"<em>{html.escape(m.group('i_inner'))}</em>")
+        elif m.group("link") is not None:
+            url = m.group("url")
+            if url.startswith(("http://", "https://")):
+                href = html.escape(url, quote=True)
+                # The label may itself carry markdown (e.g. "[**View…**](url)").
+                label = _render_inline(m.group("label"), emoji_sub)
+                out.append(f'<a href="{href}">{label}</a>')
+            else:  # non-http(s): not a real link — render the raw text, escaped.
+                out.append(html.escape(m.group("link")))
+        elif m.group("ts") is not None:
+            out.append(html.escape(_format_reset_ts(int(m.group("tsval")))))
+        else:  # emoji
+            out.append(re_user_side_emoji.sub(emoji_sub, m.group("emoji")))
+        pos = m.end()
+    if pos < len(text):
+        out.append(html.escape(text[pos:]))
+    return "".join(out)
+
+
+def _render_line(line: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
+    """Render one body line, handling the ``#`` H1 and ``-#`` small-text prefixes."""
+    if line.startswith("# "):
+        return f'<span class="md-h1">{_render_inline(line[2:], emoji_sub)}</span>'
+    if line.startswith("-# "):
+        return f'<span class="md-small">{_render_inline(line[3:], emoji_sub)}</span>'
+    return _render_inline(line, emoji_sub)
+
+
+def render_post_html(body: str, emoji_dict: dict[str, h.Emoji]) -> str:
+    """Render a ``build_body`` string (plus the ``-#`` FOOTER) to safe preview HTML.
+
+    Mirrors what Discord renders for the published post: the same markdown subset,
+    custom emoji as images, and the small-text footer ``build_cv2`` appends. Newlines
+    are preserved for the <pre> preview. Only whitelisted tags (strong / em / span / a /
+    img) are emitted; every text leaf is escaped and every URL is http(s)-validated, so
+    it is safe to drop into the form's ``innerHTML`` sink despite the owner-authored
+    input.
+    """
+    emoji_sub = _html_emoji_substituter(emoji_dict)
+    lines = [_render_line(line, emoji_sub) for line in body.split("\n")]
+    # Append the footer build_cv2 adds to the real post, for parity with the publish.
+    lines += ["", _render_line(FOOTER, emoji_sub)]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Draft metadata (post message id, publish status, "needs attention" flags)
 # ---------------------------------------------------------------------------
 
 META_SLUG = "weekly_reset_meta"
@@ -783,10 +900,12 @@ META_SLUG = "weekly_reset_meta"
 
 @dataclasses.dataclass
 class DraftMeta:
-    card_channel_id: int = 0
-    card_message_id: int = 0
-    status: str = "draft"  # "draft" | "published"
-    published_message_id: int = 0
+    #: Id of the single in-channel post in the weekly_reset followable; 0 = not posted.
+    message_id: int = 0
+    #: Whether that post has been crossposted (broadcast to followers via beacon).
+    crossposted: bool = False
+    #: "draft" (no post) | "posted" (uncrossposted) | "published" (crossposted).
+    status: str = "draft"
     last_edited_by: int = 0
     last_edited_ts: int = 0
     needs_attention: list[str] = dataclasses.field(default_factory=list)
@@ -798,11 +917,15 @@ class DraftMeta:
     def from_dict(cls, d: t.Mapping[str, t.Any] | None) -> "DraftMeta":
         if not d:
             return cls()
+        status = d.get("status", "draft")
+        # Back-compat: pre-lifecycle docs stored ``published_message_id`` (and no
+        # ``crossposted``). Read the old key into ``message_id`` and default
+        # ``crossposted`` from the legacy "published" status.
+        message_id = int(d.get("message_id", d.get("published_message_id", 0)) or 0)
         return cls(
-            card_channel_id=int(d.get("card_channel_id", 0)),
-            card_message_id=int(d.get("card_message_id", 0)),
-            status=d.get("status", "draft"),
-            published_message_id=int(d.get("published_message_id", 0)),
+            message_id=message_id,
+            crossposted=bool(d.get("crossposted", status == "published")),
+            status=status,
             last_edited_by=int(d.get("last_edited_by", 0)),
             last_edited_ts=int(d.get("last_edited_ts", 0)),
             needs_attention=list(d.get("needs_attention") or []),
@@ -822,37 +945,69 @@ async def save_meta(meta: DraftMeta) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def post_or_edit_unpublished(
+    bot: CachedFetchBot, ctx: WeeklyResetContext, meta: DraftMeta
+) -> DraftMeta:
+    """Create-or-update the *uncrossposted* in-channel post for the current draft.
+
+    The first call (``message_id == 0``) sends the assembled post to the
+    ``weekly_reset`` followable WITHOUT crossposting, so the team can see and iterate
+    it in Discord before it is broadcast. Later calls edit that message in place — this
+    works whether the post is still uncrossposted or already published (an edit to a
+    crossposted message re-mirrors via beacon). Returns the updated ``meta`` (the caller
+    persists it); never crossposts.
+    """
+    hmessage = await format_weekly_reset(ctx, bot)
+    channel_id = cfg.followables["weekly_reset"]
+    if meta.message_id == 0:
+        posted = await utils.send_message(bot, hmessage, channel_id, crosspost=False)
+        meta.message_id = posted.id
+        meta.status = "posted"
+    else:
+        await bot.rest.edit_message(
+            channel_id, meta.message_id, components=hmessage.components
+        )
+    return meta
+
+
 async def publish_draft(
     bot: CachedFetchBot, ctx: WeeklyResetContext, meta: DraftMeta
 ) -> tuple[DraftMeta, str]:
-    """Publish (or re-publish) ``ctx`` to the ``weekly_reset`` followable.
+    """Publish (crosspost) the existing in-channel post to the ``weekly_reset`` channel.
 
-    The first publish crossposts a fresh message and logs the activity choices; a
-    later publish edits the already-published message in place so beacon re-mirrors
-    the edit to every follower. Returns the updated ``meta`` and a short note. Raises
-    ``ValueError`` (joined ``validate_post`` problems) instead of publishing an
-    invalid post.
+    Publishing now means *crossposting the post the team has iterated on* (created by
+    :func:`post_or_edit_unpublished`), not sending a fresh message: the current draft is
+    first synced onto that message in place, then the message is crossposted so beacon
+    mirrors it to every follower. Crossposting is idempotent — a re-publish (or any
+    later save-driven edit) just re-mirrors the edit, no duplicate. Falls back to
+    post-then-crosspost when nothing has been posted yet (``message_id == 0``). Returns
+    the updated ``meta`` and a short note; raises ``ValueError`` (the joined
+    ``validate_post`` problems) instead of publishing an invalid post.
     """
     problems = validate_post(ctx)
     if problems:
         raise ValueError("; ".join(problems))
     hmessage = await format_weekly_reset(ctx, bot)
     channel_id = cfg.followables["weekly_reset"]
-    if meta.published_message_id:
-        # Already published this week: edit the post in place so fixes reach followers
-        # via beacon's edit reconciliation, no duplicate post.
+    was_crossposted = meta.crossposted
+    if meta.message_id:
+        # Sync the in-channel post to the current draft before broadcasting it.
         await bot.rest.edit_message(
-            channel_id,
-            meta.published_message_id,
-            components=hmessage.components,
+            channel_id, meta.message_id, components=hmessage.components
         )
-        note = "✏️ Updated the published post — beacon re-mirrors the edit."
     else:
-        posted = await utils.send_message(bot, hmessage, channel_id, crosspost=True)
-        meta.published_message_id = posted.id
-        note = "✅ Published and crossposted — beacon will mirror it out."
+        # No post yet (e.g. publish before any save): post it first, uncrossposted.
+        posted = await utils.send_message(bot, hmessage, channel_id, crosspost=False)
+        meta.message_id = posted.id
+    await utils.crosspost_message_with_retries(bot, channel_id, meta.message_id)
+    meta.crossposted = True
     meta.status = "published"
     await save_meta(meta)
+    note = (
+        "✏️ Updated the published post — beacon re-mirrors the edit."
+        if was_crossposted
+        else "✅ Published and crossposted — beacon will mirror it out."
+    )
     return meta, note
 
 
@@ -870,7 +1025,11 @@ _draft_lock = asyncio.Lock()
 
 
 async def run_reset_draft(bot: CachedFetchBot, *, ping_owners: bool) -> None:
-    """Build a fresh draft (API + config) and persist it as the new week's draft."""
+    """Build a fresh draft and post it as the new week's *uncrossposted* channel post.
+
+    A fresh ``DraftMeta`` (``message_id == 0``) means the post is created anew each
+    Tuesday, clearing last week's message id; publishing (the crosspost) stays manual.
+    """
     config = await load_config()
     ctx = await build_draft_context(config)
 
@@ -880,10 +1039,11 @@ async def run_reset_draft(bot: CachedFetchBot, *, ping_owners: bool) -> None:
             last_edited_ts=int(dt.datetime.now(tz=dt.UTC).timestamp()),
         )
         await save_draft(ctx)
+        meta = await post_or_edit_unpublished(bot, ctx, meta)
         await save_meta(meta)
 
     if ping_owners:
-        logger.info("weekly_reset: fresh draft built for the new reset week")
+        logger.info("weekly_reset: fresh draft posted (uncrossposted) for the new week")
         # TODO(step5): notify owners with the web draft link
 
 
@@ -1326,6 +1486,39 @@ _EXPIRED_MSG = "This link has expired. Run /weekly_reset create for a fresh one.
 #: StartedEvent fires, at which point ``/publish`` stops 503-ing.
 _bot: CachedFetchBot | None = None
 
+#: Short-lived cache of the guild emoji dict used to render the rich preview. The form
+#: POSTs on every ~400 ms keystroke, so a REST fetch per request would hammer Discord —
+#: cache the dict for a few minutes instead. Guarded by ``_bot is None`` (returns {}, so
+#: ``:emoji:`` tokens stay as escaped text until the bot is up).
+_EMOJI_CACHE_TTL = dt.timedelta(minutes=5)
+_emoji_cache: dict[str, h.Emoji] | None = None
+_emoji_cache_at: dt.datetime | None = None
+
+
+async def _preview_emoji_dict() -> dict[str, h.Emoji]:
+    """The Kyber guild emoji dict for the preview, cached with a short TTL.
+
+    Returns an empty dict (no emoji substitution) when the bot isn't up yet or the fetch
+    fails, so the preview degrades to escaped ``:name:`` text rather than erroring.
+    """
+    global _emoji_cache, _emoji_cache_at
+    if _bot is None:
+        return {}
+    now = dt.datetime.now(tz=dt.UTC)
+    if (
+        _emoji_cache is not None
+        and _emoji_cache_at is not None
+        and now - _emoji_cache_at < _EMOJI_CACHE_TTL
+    ):
+        return _emoji_cache
+    try:
+        _emoji_cache = await _kyber_emoji_dict(_bot)
+        _emoji_cache_at = now
+    except Exception:
+        logger.warning("weekly_reset: preview emoji fetch failed", exc_info=True)
+        return _emoji_cache or {}
+    return _emoji_cache
+
 
 def _signing_key() -> bytes:
     """Stable secret for signing session tokens, derived from the anchor bot token.
@@ -1542,6 +1735,7 @@ async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response
         return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
 
     draft = await load_draft() or await build_draft_context()
+    meta = await load_meta()
     bootstrap = {
         "draft": draft.to_dict(),
         "options": await _build_options(),
@@ -1550,6 +1744,11 @@ async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response
         ),
         "conquest_tiers": list(CONQUEST_TIERS),
         "reward_fields": [list(field) for field in _REWARD_FIELDS],
+        # Whether an in-channel post already exists (drives the Delete-post button's
+        # enabled state on load), and whether it has been crossposted (drives the
+        # stronger delete-confirm wording).
+        "posted": meta.message_id != 0,
+        "crossposted": meta.crossposted,
     }
     # Escape "<" so a "</script>" in the data can't break out of the inline <script>.
     bootstrap_js = json.dumps(bootstrap).replace("<", "\\u003c")
@@ -1564,24 +1763,37 @@ async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
         return _json_401()
     if not _origin_ok(request):
         return _json_403()
+    if _bot is None:
+        return aiohttp.web.json_response(
+            {"error": "Bot is still starting — try again in a moment."}, status=503
+        )
     try:
         payload = await request.json()
     except Exception:
         return aiohttp.web.json_response({"error": "Malformed body."}, status=400)
 
     ctx = await _context_from_payload(payload)
-    problems = validate_post(ctx)
-    if problems:
-        return aiohttp.web.json_response({"problems": problems}, status=422)
+    # Validation is now non-blocking: a WIP draft still saves AND posts (so the staging
+    # in-channel post reflects it), with any problems returned as advisory `warnings`.
+    warnings = validate_post(ctx)
 
     async with _draft_lock:
         await save_draft(ctx)
         meta = await load_meta()
-        meta.status = "draft"
         meta.last_edited_ts = int(dt.datetime.now(tz=dt.UTC).timestamp())
+        # Create-or-edit the uncrossposted in-channel post so it tracks the saved draft.
+        meta = await post_or_edit_unpublished(_bot, ctx, meta)
         await save_meta(meta)
-    logger.info("weekly_reset: draft saved via web form")
-    return aiohttp.web.json_response({"ok": True, "draft": ctx.to_dict()})
+    logger.info("weekly_reset: draft saved + posted (uncrossposted) via web form")
+    return aiohttp.web.json_response(
+        {
+            "ok": True,
+            "draft": ctx.to_dict(),
+            "warnings": warnings,
+            "posted": meta.message_id != 0,
+            "crossposted": meta.crossposted,
+        }
+    )
 
 
 async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -1594,10 +1806,13 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
     except Exception:
         return aiohttp.web.Response(status=400, text="Malformed body.")
     ctx = await _context_from_payload(payload)
-    # Plain-text body with :emoji: tokens un-substituted; html.escape so the <pre> shows
-    # the raw markdown (incl. "<t:…>") literally and nothing can inject markup.
+    # Rich preview: render the post's markdown subset to safe HTML (emoji as <img>,
+    # bold/italic/links/dates), matching what Discord shows for the published post. The
+    # renderer escapes every text leaf and validates URLs, so this is safe for the
+    # client's innerHTML sink. Emoji come from the short-TTL guild-emoji cache.
+    emoji_dict = await _preview_emoji_dict()
     return aiohttp.web.Response(
-        text=html.escape(build_body(ctx)), content_type="text/html"
+        text=render_post_html(build_body(ctx), emoji_dict), content_type="text/html"
     )
 
 
@@ -1629,6 +1844,32 @@ async def _handle_publish(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.json_response({"note": note})
 
 
+async def _handle_delete(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    if not _authed(request):
+        return _json_401()
+    if not _origin_ok(request):
+        return _json_403()
+    if _bot is None:
+        return aiohttp.web.json_response(
+            {"error": "Bot is still starting — try again in a moment."}, status=503
+        )
+    # Delete the in-channel post and reset the draft to unposted, under the same lock
+    # the save/publish paths use. Deleting an already-crossposted message removes it
+    # from the announce channel but NOT the copies already mirrored to followers (a
+    # Discord limitation) — the button's confirm text warns about that when crossposted.
+    async with _draft_lock:
+        meta = await load_meta()
+        if meta.message_id:
+            channel_id = cfg.followables["weekly_reset"]
+            with contextlib.suppress(h.NotFoundError):
+                await _bot.rest.delete_message(channel_id, meta.message_id)
+            meta.message_id = 0
+            meta.crossposted = False
+            meta.status = "draft"
+            await save_meta(meta)
+    return aiohttp.web.json_response({"ok": True})
+
+
 async def _handle_auto(request: aiohttp.web.Request) -> aiohttp.web.Response:
     if not _authed(request):
         return _json_401()
@@ -1649,6 +1890,7 @@ def register_weekly_reset_routes(app: aiohttp.web.Application) -> None:
     app.router.add_post("/weekly_reset/save", _handle_save)
     app.router.add_post("/weekly_reset/preview", _handle_preview)
     app.router.add_post("/weekly_reset/publish", _handle_publish)
+    app.router.add_post("/weekly_reset/delete", _handle_delete)
     app.router.add_post("/weekly_reset/auto", _handle_auto)
 
 
@@ -1705,7 +1947,7 @@ class Create(
 async def _schedule_weekly_reset(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
 ) -> None:
-    if not cfg.drafts_channel:
+    if not cfg.followables.get("weekly_reset"):
         return
 
     # Stash the live bot so the web form's /publish route can reach the REST client.
@@ -1726,6 +1968,7 @@ async def _schedule_weekly_reset(
 
 
 # The web form's routes are always registered (above); the slash command that mints the
-# link is gated on the drafts channel — the same gate that guards the autopost cron.
-if cfg.drafts_channel:
+# link is gated on the publish target (the weekly_reset followable) — the same gate that
+# guards the autopost cron and the StartedEvent listener.
+if cfg.followables.get("weekly_reset"):
     loader.command(weekly_reset_group)

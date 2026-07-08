@@ -23,6 +23,8 @@ Components V2 builder.
 
 import datetime as dt
 import json
+import re
+import types
 import typing as t
 
 import aiohttp.web
@@ -743,3 +745,290 @@ async def test_auto_toggle_round_trips() -> None:
     assert resp.status == 200
     assert json.loads(resp.text or "") == {"enabled": True}
     assert await wr.schemas.AutoPostSettings.get_weekly_reset_enabled() is True
+
+
+# --- rich HTML preview (render_post_html) -----------------------------------------
+
+
+class _StubEmoji:
+    """A stand-in for a guild ``KnownCustomEmoji`` — only ``.url`` is read."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+
+def test_render_post_html_renders_markdown_and_emoji() -> None:
+    emoji = {"Bungie": _StubEmoji("https://cdn.discordapp.com/emojis/1.png")}
+    body = "\n".join(
+        [
+            "# Weekly Reset Overview",
+            "Resets: <t:1784048400:f>",
+            "**UPDATES & EVENTS**",
+            ":Bungie: ┊ [Patch <notes>](https://example.com/n)",
+            ":unknown: plain",
+            "***See you starside!*** \U0001f4ab",
+            "A < B & C",
+            "[bad](ftp://nope.example)",
+        ]
+    )
+    out = wr.render_post_html(body, t.cast("dict[str, h.Emoji]", emoji))
+    # H1 span + bold header, custom emoji as <img>, masked link with escaped label.
+    assert '<span class="md-h1">Weekly Reset Overview</span>' in out
+    assert "<strong>UPDATES &amp; EVENTS</strong>" in out
+    assert (
+        '<img class="emoji" src="https://cdn.discordapp.com/emojis/1.png" '
+        'alt=":Bungie:">' in out
+    )
+    assert '<a href="https://example.com/n">Patch &lt;notes&gt;</a>' in out
+    # bold-italic sign-off, unicode emoji + separator pass through.
+    assert "<strong><em>See you starside!</em></strong> \U0001f4ab" in out
+    assert "┊" in out
+    # <t:…:f> -> formatted UTC date (Tuesday 17:00 UTC == 5:00 PM).
+    assert "Jul 14, 2026 5:00 PM (UTC)" in out
+    # A raw "<" in a text leaf is escaped (self-XSS-safe).
+    assert "A &lt; B &amp; C" in out
+    # Unknown emoji name -> escaped text, not an <img>.
+    assert ":unknown:" in out and 'alt=":unknown:"' not in out
+    # Non-http(s) link rejected: rendered as escaped text, never an <a>.
+    assert "[bad](ftp://nope.example)" in out
+    assert 'href="ftp' not in out
+    # Footer appended as small text.
+    assert '<span class="md-small">via Destiny Director (Kyber)</span>' in out
+    # ONLY the whitelisted tags are ever emitted.
+    tags = set(re.findall(r"</?([a-zA-Z]+)", out))
+    assert tags <= {"span", "strong", "em", "a", "img"}, tags
+
+
+def test_format_reset_ts_is_utc_long_short() -> None:
+    assert wr._format_reset_ts(1784048400) == "Jul 14, 2026 5:00 PM (UTC)"
+
+
+# --- DraftMeta lifecycle state ----------------------------------------------------
+
+
+def test_draft_meta_round_trip() -> None:
+    meta = wr.DraftMeta(
+        message_id=999, crossposted=True, status="published", last_edited_ts=5
+    )
+    assert wr.DraftMeta.from_dict(meta.to_dict()) == meta
+
+
+def test_draft_meta_back_compat_from_published_message_id() -> None:
+    # Pre-lifecycle docs stored published_message_id + status (and the now-dropped
+    # card_* fields); message_id reads the old key, crossposted defaults from status.
+    meta = wr.DraftMeta.from_dict(
+        {
+            "published_message_id": 42,
+            "status": "published",
+            "card_channel_id": 1,
+            "card_message_id": 2,
+        }
+    )
+    assert meta.message_id == 42
+    assert meta.crossposted is True
+    assert meta.status == "published"
+
+
+def test_draft_meta_back_compat_unpublished_defaults_not_crossposted() -> None:
+    meta = wr.DraftMeta.from_dict({"published_message_id": 0, "status": "draft"})
+    assert meta.message_id == 0 and meta.crossposted is False and meta.status == "draft"
+
+
+# --- lifecycle: post_or_edit_unpublished / publish_draft / delete (fake bot) -------
+
+
+class _FakeRest:
+    """Records the REST mutations the lifecycle helpers make; no live Discord."""
+
+    def __init__(self) -> None:
+        self.edited: list[tuple[t.Any, int]] = []
+        self.deleted: list[tuple[t.Any, int]] = []
+
+    async def edit_message(self, channel: t.Any, message: int, **kwargs: t.Any) -> None:
+        self.edited.append((channel, message))
+
+    async def delete_message(self, channel: t.Any, message: int) -> None:
+        self.deleted.append((channel, message))
+
+
+class _FakeBot:
+    def __init__(self) -> None:
+        self.rest = _FakeRest()
+
+
+def _bot(fake: _FakeBot) -> wr.CachedFetchBot:
+    """Cast a recording fake to the ``CachedFetchBot`` the lifecycle helpers expect."""
+    return t.cast(wr.CachedFetchBot, fake)
+
+
+@pytest.fixture
+def fake_publish_env(monkeypatch: pytest.MonkeyPatch):
+    """Stub the render + send/crosspost primitives so lifecycle branches are testable.
+
+    ``format_weekly_reset`` returns a dummy component bundle; ``send_message`` /
+    ``crosspost_message_with_retries`` record their calls instead of hitting Discord.
+    """
+    sent: list[dict[str, t.Any]] = []
+    crossposted: list[tuple[t.Any, int]] = []
+
+    async def fake_format(ctx: t.Any, bot: t.Any) -> t.Any:
+        return types.SimpleNamespace(components=["cv2"])
+
+    async def fake_send(
+        bot: t.Any,
+        msg_proto: t.Any,
+        channel_id: int,
+        crosspost: bool = True,
+        deduplicate: bool = False,
+    ) -> t.Any:
+        sent.append({"channel": channel_id, "crosspost": crosspost})
+        return types.SimpleNamespace(id=555)
+
+    async def fake_crosspost(bot: t.Any, channel: t.Any, message_id: int) -> None:
+        crossposted.append((channel, message_id))
+
+    monkeypatch.setattr(wr, "format_weekly_reset", fake_format)
+    monkeypatch.setattr(wr.utils, "send_message", fake_send)
+    monkeypatch.setattr(wr.utils, "crosspost_message_with_retries", fake_crosspost)
+    return types.SimpleNamespace(sent=sent, crossposted=crossposted)
+
+
+@pytest.mark.asyncio
+async def test_post_or_edit_unpublished_creates_when_no_post(fake_publish_env) -> None:
+    bot = _FakeBot()
+    meta = await wr.post_or_edit_unpublished(_bot(bot), _full_ctx(), wr.DraftMeta())
+    channel = wr.cfg.followables["weekly_reset"]
+    # First time: send uncrossposted; never edits; never crossposts.
+    assert fake_publish_env.sent == [{"channel": channel, "crosspost": False}]
+    assert not bot.rest.edited and fake_publish_env.crossposted == []
+    assert meta.message_id == 555 and meta.status == "posted"
+
+
+@pytest.mark.asyncio
+async def test_post_or_edit_unpublished_edits_when_posted(fake_publish_env) -> None:
+    bot = _FakeBot()
+    meta = await wr.post_or_edit_unpublished(
+        _bot(bot), _full_ctx(), wr.DraftMeta(message_id=42, status="posted")
+    )
+    channel = wr.cfg.followables["weekly_reset"]
+    # Already posted: edit in place, no new send, still no crosspost.
+    assert fake_publish_env.sent == []
+    assert bot.rest.edited == [(channel, 42)]
+    assert fake_publish_env.crossposted == []
+    assert meta.message_id == 42
+
+
+@pytest.mark.asyncio
+async def test_publish_draft_edits_then_crossposts_existing(fake_publish_env) -> None:
+    bot = _FakeBot()
+    meta = wr.DraftMeta(message_id=42, status="posted", crossposted=False)
+    out, note = await wr.publish_draft(_bot(bot), _full_ctx(), meta)
+    channel = wr.cfg.followables["weekly_reset"]
+    assert bot.rest.edited == [(channel, 42)] and fake_publish_env.sent == []
+    assert fake_publish_env.crossposted == [(channel, 42)]
+    assert out.crossposted is True and out.status == "published"
+    assert "Published and crossposted" in note
+
+
+@pytest.mark.asyncio
+async def test_publish_draft_posts_then_crossposts_when_absent(
+    fake_publish_env,
+) -> None:
+    bot = _FakeBot()
+    out, _note = await wr.publish_draft(_bot(bot), _full_ctx(), wr.DraftMeta())
+    channel = wr.cfg.followables["weekly_reset"]
+    # Fallback path: post uncrossposted first, then crosspost that new message id.
+    assert fake_publish_env.sent == [{"channel": channel, "crosspost": False}]
+    assert fake_publish_env.crossposted == [(channel, 555)]
+    assert out.message_id == 555 and out.crossposted is True
+
+
+@pytest.mark.asyncio
+async def test_publish_draft_reedit_is_idempotent(fake_publish_env) -> None:
+    bot = _FakeBot()
+    meta = wr.DraftMeta(message_id=42, status="published", crossposted=True)
+    _out, note = await wr.publish_draft(_bot(bot), _full_ctx(), meta)
+    channel = wr.cfg.followables["weekly_reset"]
+    # Re-publish: sync the edit + (idempotent) crosspost; note reads as an edit.
+    assert bot.rest.edited == [(channel, 42)]
+    assert fake_publish_env.crossposted == [(channel, 42)]
+    assert "Updated the published post" in note
+
+
+@pytest.mark.asyncio
+async def test_publish_draft_raises_and_touches_nothing_on_invalid(
+    fake_publish_env,
+) -> None:
+    bot = _FakeBot()
+    empty = wr.WeeklyResetContext(reset_ts=1)
+    with pytest.raises(ValueError):
+        await wr.publish_draft(_bot(bot), empty, wr.DraftMeta())
+    assert fake_publish_env.sent == [] and not bot.rest.edited
+    assert fake_publish_env.crossposted == []
+
+
+@pytest.mark.asyncio
+async def test_handle_save_posts_and_returns_warnings(
+    monkeypatch, fake_publish_env, stub_indexes
+) -> None:
+    bot = _FakeBot()
+    monkeypatch.setattr(wr, "_bot", bot)
+    await wr.save_meta(wr.DraftMeta())  # fresh: no post yet
+    # A near-empty draft trips validate_post, but saving still succeeds AND posts it —
+    # the problems come back as non-blocking warnings, not a 422.
+    resp = await wr._handle_save(
+        _req(cookies=_authed_cookies(), body={"reset_ts": 1783443600})
+    )
+    assert resp.status == 200
+    data = json.loads(resp.text or "")
+    assert data["ok"] is True and data["warnings"]
+    assert data["posted"] is True and data["crossposted"] is False
+    channel = wr.cfg.followables["weekly_reset"]
+    assert fake_publish_env.sent == [{"channel": channel, "crosspost": False}]
+    meta = await wr.load_meta()
+    assert meta.message_id == 555 and meta.status == "posted"
+
+
+@pytest.mark.asyncio
+async def test_handle_save_503_when_bot_unset(monkeypatch) -> None:
+    monkeypatch.setattr(wr, "_bot", None)
+    resp = await wr._handle_save(
+        _req(cookies=_authed_cookies(), body={"reset_ts": 1})
+    )
+    assert resp.status == 503
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_removes_post_and_resets(monkeypatch) -> None:
+    bot = _FakeBot()
+    monkeypatch.setattr(wr, "_bot", bot)
+    await wr.save_meta(
+        wr.DraftMeta(message_id=77, status="published", crossposted=True)
+    )
+    resp = await wr._handle_delete(_req(cookies=_authed_cookies()))
+    assert resp.status == 200 and json.loads(resp.text or "") == {"ok": True}
+    assert bot.rest.deleted == [(wr.cfg.followables["weekly_reset"], 77)]
+    meta = await wr.load_meta()
+    assert meta.message_id == 0 and meta.crossposted is False and meta.status == "draft"
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_noop_when_unposted(monkeypatch) -> None:
+    bot = _FakeBot()
+    monkeypatch.setattr(wr, "_bot", bot)
+    await wr.save_meta(wr.DraftMeta(message_id=0, status="draft"))
+    resp = await wr._handle_delete(_req(cookies=_authed_cookies()))
+    assert resp.status == 200 and json.loads(resp.text or "") == {"ok": True}
+    assert bot.rest.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_without_cookie_is_401() -> None:
+    assert (await wr._handle_delete(_req())).status == 401
+
+
+@pytest.mark.asyncio
+async def test_handle_delete_503_when_bot_unset(monkeypatch) -> None:
+    monkeypatch.setattr(wr, "_bot", None)
+    resp = await wr._handle_delete(_req(cookies=_authed_cookies()))
+    assert resp.status == 503
