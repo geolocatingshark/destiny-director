@@ -42,6 +42,21 @@ RUN set -eux; \
       | tar -xz -C /usr/local/bin railway; \
     railway --version
 
+# GitHub CLI (`gh`): install the release tarball directly, mirroring the Railway CLI
+# approach above. GitHub publishes linux arm64 + amd64 assets whose names match
+# `dpkg --print-architecture` verbatim, so no arch remapping is needed. Bump
+# GH_VERSION to upgrade.
+ARG GH_VERSION=2.96.0
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      arm64|amd64) : ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" \
+      | tar -xz -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${arch}/bin/gh"; \
+    gh --version
+
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY --from=atlas /atlas /usr/local/bin/atlas
 
@@ -60,9 +75,12 @@ RUN if ! getent group "${USER_GID}" >/dev/null; then \
 # VIRTUAL_ENV mirrors UV_PROJECT_ENVIRONMENT so ty/ruff/Zed toolchain detection find
 # the venv over SSH (they key off VIRTUAL_ENV, and this repo has no project-local .venv).
 # CLAUDE_CONFIG_DIR moves ~/.claude.json INTO the persisted .claude volume (below) so
-# Claude's onboarding/trust survives `make dev-up` rebuilds. HISTFILE points bash history
-# into the persisted .local/share volume. The entrypoint publishes all of these to SSH
-# sessions via ~/.ssh/environment (it dumps `env`), so no entrypoint edit is needed.
+# Claude's onboarding/trust survives `make dev-up` rebuilds. GH_CONFIG_DIR does the same
+# for `gh auth login` (gh writes hosts.yml/config.yml there — with no keyring in this slim
+# image it falls back to storing the token in that file), persisted via the dd-gh volume.
+# HISTFILE points bash history into the persisted .local/share volume. The entrypoint
+# publishes all of these to SSH sessions via ~/.ssh/environment (it dumps `env`), so no
+# entrypoint edit is needed.
 ENV TZ=Etc/UTC \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -70,6 +88,7 @@ ENV TZ=Etc/UTC \
     UV_PROJECT_ENVIRONMENT=/home/dev/venv \
     VIRTUAL_ENV=/home/dev/venv \
     CLAUDE_CONFIG_DIR=/home/dev/.claude \
+    GH_CONFIG_DIR=/home/dev/.config/gh \
     HISTFILE=/home/dev/.local/share/.bash_history
 
 USER ${USERNAME}
@@ -80,8 +99,8 @@ WORKDIR /workspace
 # otherwise uv/claude/railway can't write to them. .ssh-host holds the persisted
 # sshd host key (dd-ssh-host volume). .host-ssh needs no pre-create — it's a
 # directory bind mount that inherits the mounted .ssh dir's ownership.
-RUN mkdir -p /home/dev/.cache/uv /home/dev/.claude /home/dev/.railway /home/dev/.ssh-host \
-    /home/dev/.zed_server /home/dev/.local/share
+RUN mkdir -p /home/dev/.cache/uv /home/dev/.claude /home/dev/.railway /home/dev/.config/gh \
+    /home/dev/.ssh-host /home/dev/.zed_server /home/dev/.local/share
 
 # Pre-build the full dependency set (dev + speedups) into /home/dev/venv. The
 # editable project is added at container start once /workspace is mounted.

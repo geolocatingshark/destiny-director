@@ -5,7 +5,7 @@ Develop Destiny Director inside a long-lived Docker container on a Raspberry Pi 
 `docker exec` into the container → run `claude` / git / make. An in-container sshd
 (port 2222) additionally lets **Zed remote directly into `/workspace`** (see
 [Zed remote / SSH access](#zed-remote--ssh-access)). The container bakes the toolchain
-(uv + Node/Claude Code + Railway CLI + Atlas + make); the repo is bind-mounted, so edits
+(uv + Node/Claude Code + Railway CLI + GitHub CLI + Atlas + make); the repo is bind-mounted, so edits
 on the host clone and inside the container are the same files.
 
 Files: `Dockerfile.dev`, `docker-entrypoint.dev.sh`, `docker-compose.dev.yml`,
@@ -121,6 +121,24 @@ then run from inside the container.
 
 > **Prod deploys require explicit confirmation each time (see CLAUDE.md). Never deploy
 > prod on your own initiative.**
+
+## GitHub CLI
+
+`gh` is baked into the image (installed from the release tarball, same as the Railway CLI).
+`GH_CONFIG_DIR` points at `~/.config/gh`, a persistent `dd-gh` volume, so login survives
+rebuilds. Authenticate once with the device flow:
+
+```sh
+gh auth login   # choose GitHub.com → HTTPS → "Login with a web browser"; open the URL on
+                # your laptop, paste the one-time code back
+gh auth status  # verify
+```
+
+This slim image has no secret keyring, so `gh` stores the token in
+`~/.config/gh/hosts.yml` inside the volume. Once authenticated you can read code scanning
+alerts and other API data, e.g.
+`gh api repos/gsfernandes81/destiny-director/code-scanning/alerts`. (Alternative: set
+`GH_TOKEN` in `.env` to a PAT instead of running `gh auth login`.)
 
 ## MySQL / migrations (integration scope)
 
