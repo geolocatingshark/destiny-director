@@ -77,9 +77,7 @@ health_logger = logging.getLogger("dd.beacon.mirror.health")
 _FLUSH_MAX_BACKOFF = 60
 
 # Callback the gateway handlers / recovery use to spin up a progress card for a view.
-ProgressStarter = collections.abc.Callable[
-    ["RunView"], collections.abc.Awaitable[None]
-]
+ProgressStarter = collections.abc.Callable[["RunView"], collections.abc.Awaitable[None]]
 # Callback fired once per run on completion (flag failures, sweep auto-disable, alert).
 RunEndHook = collections.abc.Callable[["RunView"], collections.abc.Awaitable[None]]
 
@@ -294,6 +292,12 @@ class MirrorWorker:
         if self._wake is not None:
             self._wake.set()
 
+    @property
+    def in_progress_count(self) -> int:
+        """Number of runs with work still outstanding (not yet finalized) — used by the
+        controller's pre-restart mirror check."""
+        return sum(1 for view in self.run_views.values() if not view.finalized)
+
     # -- run-view registry -------------------------------------------------
 
     def register_view(self, view: RunView) -> None:
@@ -302,8 +306,11 @@ class MirrorWorker:
     def get_view(self, src_msg_id: int) -> RunView | None:
         return self.run_views.get(src_msg_id)
 
-    def evict(self, src_msg_id: int) -> None:
-        self.run_views.pop(src_msg_id, None)
+    def evict(self, view: RunView) -> None:
+        """Drop a finalized view — but only if it is still the registered one, so a
+        superseding edit that re-registered under the same src_msg_id is untouched."""
+        if self.run_views.get(view.src_msg_id) is view:
+            del self.run_views[view.src_msg_id]
 
     # -- claim loop --------------------------------------------------------
 
@@ -346,13 +353,9 @@ class MirrorWorker:
         groups: dict[int, list[ClaimedRow]] = defaultdict(list)
         for row in batch:
             groups[row.src_msg_id].append(row)
-        await aio.gather(
-            *(self._process_group(sem, rows) for rows in groups.values())
-        )
+        await aio.gather(*(self._process_group(sem, rows) for rows in groups.values()))
 
-    async def _process_group(
-        self, sem: aio.Semaphore, rows: list[ClaimedRow]
-    ) -> None:
+    async def _process_group(self, sem: aio.Semaphore, rows: list[ClaimedRow]) -> None:
         src_msg_id = rows[0].src_msg_id
         src_ch_id = rows[0].src_ch_id
         view = self.get_view(src_msg_id)
@@ -458,9 +461,7 @@ class MirrorWorker:
         err_class = classify_error(exc)
         attempts = row.attempts + 1
         is_send = row.dest_msg_id is None and not row.deleted
-        cap = (
-            cfg.mirror_send_max_attempts if is_send else cfg.mirror_edit_max_attempts
-        )
+        cap = cfg.mirror_send_max_attempts if is_send else cfg.mirror_edit_max_attempts
         if err_class is ErrorClass.PERMANENT or attempts >= cap:
             confirmed_dead = False
             if err_class is ErrorClass.PERMANENT and cfg.disable_bad_channels:

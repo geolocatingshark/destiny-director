@@ -193,8 +193,8 @@ async def test_mark_deleted_case_semantics():
             )
         )
 
-    affected = await MirrorDelivery.mark_deleted(940)
-    assert affected == 2
+    deletion_work = await MirrorDelivery.mark_deleted(940)
+    assert deletion_work == 1  # only 240 (delivered) needs a Discord delete
     # delivered → PENDING with delete-intent; never-delivered → CANCELLED.
     assert (await _row(940, 240))["state"] == DeliveryState.PENDING.value
     assert (await _row(940, 240))["deleted"] is True

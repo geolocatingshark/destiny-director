@@ -14,6 +14,7 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 
+import datetime as dt
 import logging
 import secrets
 import string
@@ -21,10 +22,10 @@ import string
 import hikari as h
 import lightbulb as lb
 
-from ...common import cfg
+from ...common import cfg, schemas
 from ...common.auth import owner_only
 from ...common.bot import CachedFetchBot
-from ...common.schemas import MirroredChannel
+from ...common.schemas import DeliveryState, MirrorDelivery, MirroredChannel
 from ...common.utils import guild_scope, parse_channel_ref
 
 # This whole extension only loads in a test environment, matching the lightbulb v2
@@ -337,13 +338,37 @@ class MirrorFailRateBump(
             return
 
         dest_ids = await MirroredChannel.fetch_dests(source_id)
-        for _ in range(self.times):
-            await MirroredChannel.add_confirmed_dead_strikes_in_batch(
-                source_id, dest_ids
-            )
+
+        # Insert synthetic terminal FAILED + confirmed-dead ledger rows across `times`
+        # distinct (fake, negative-so-they-never-collide-with-real-snowflakes) source
+        # messages, finished before the forgiveness window, so the derived streak query
+        # (MirroredChannel.disable_failing_mirrors) trips on the next run's sweep.
+        old = dt.datetime.now(tz=dt.UTC) - dt.timedelta(
+            hours=cfg.mirror_disable_forgiveness_hours + 1
+        )
+        base = -(secrets.randbits(48) + 1)
+        async with schemas.db_session() as session, session.begin():
+            for i in range(self.times):
+                fake_src_msg = base - i
+                for dest_id in dest_ids:
+                    session.add(
+                        MirrorDelivery(
+                            src_msg_id=fake_src_msg,
+                            dest_ch_id=dest_id,
+                            src_ch_id=source_id,
+                            desired_version=1,
+                            applied_version=1,
+                            deleted=False,
+                            state=DeliveryState.FAILED.value,
+                            attempts=cfg.mirror_send_max_attempts,
+                            confirmed_dead=True,
+                            finished_at=old,
+                            created_at=old,
+                        )
+                    )
 
         await ctx.respond(
-            f"Recorded {self.times} failures for {len(dest_ids)} targets of "
+            f"Recorded {self.times} synthetic failures for {len(dest_ids)} targets of "
             f"<#{source_id}>. With `DISABLE_BAD_CHANNELS=true`, the next mirror "
             "run will disable them and emit the disabled-count alert."
         )

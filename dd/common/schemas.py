@@ -151,13 +151,9 @@ class MirroredChannel(Base):
     legacy = Column("legacy", Boolean)
     enabled = Column("enabled", Boolean, default=True)
     role_mention_id = Column("role_mention_id", BigInteger, default=None)
-    legacy_disable_strikes = Column("legacy_disable_strikes", Integer, default=0)
-    # First-confirmed-failure timestamp for the current failing streak (cleared on any
-    # success). Pairs with ``legacy_disable_strikes`` as the auto-disable time gate: a
-    # confirmed-failing mirror must stay failing for the forgiveness window before it is
-    # disabled, so a brief perm reshuffle on a chatty source can't disable it on a few
-    # quick posts. Nullable — NULL means "not currently in a failing streak".
-    legacy_failing_since = Column("legacy_failing_since", DateTime, default=None)
+    # Auto-disable health is now *derived* from the mirror_delivery ledger (see
+    # :meth:`disable_failing_mirrors`) rather than hand-maintained strike columns. Only
+    # the disable timestamp survives, so an owner can undo a sweep by date.
     legacy_disable_for_failure_on_date = Column(
         "legacy_disable_for_failure_on_date", DateTime, default=None
     )
@@ -440,164 +436,6 @@ class MirroredChannel(Base):
 
     @classmethod
     @ensure_session(db_session)
-    async def clear_mirror_strikes_in_batch(
-        cls, src_id: int, dest_ids: list[int], session: AsyncSession = _UNSET
-    ) -> None:
-        """Clear the auto-disable strike state for a batch of legacy mirror pairs.
-
-        Called for destinations that just delivered successfully (a send or an edit):
-        resets ``legacy_disable_strikes`` to 0 and clears the failing streak
-        (``legacy_failing_since``), so a recovered destination is not later disabled on
-        stale state.
-        """
-        src_id = int(src_id)
-        dest_ids = [int(dest_id) for dest_id in dest_ids]
-        await session.execute(
-            update(cls)
-            .where(
-                and_(
-                    cls.src_id == src_id,
-                    cls.dest_id.in_(dest_ids),
-                    cls.enabled,
-                    cls.legacy,
-                )
-            )
-            .values(legacy_disable_strikes=0, legacy_failing_since=None)
-        )
-
-    @classmethod
-    @ensure_session(db_session)
-    async def add_confirmed_dead_strikes_in_batch(
-        cls,
-        src_id: int,
-        confirmed_dead_dest_ids: list[int],
-        session: AsyncSession = _UNSET,
-    ) -> None:
-        """Add an auto-disable strike to a batch of legacy mirror pairs.
-
-        PRECONDITION: pass only destinations already *confirmed dead* (perms genuinely
-        missing / channel or guild gone) — the perm check is done above the DB layer by
-        ``mirror._confirm_dead_dests`` (via ``utils.confirm_dest_unsendable``), the one
-        sanctioned caller. Do NOT pass raw ``failed_targets``: a transient blip or a
-        perms-fine PERMANENT failure (e.g. a malformed-payload 50035) must not earn a
-        strike, or auto-disable becomes hostage to post cadence again.
-
-        Increments ``legacy_disable_strikes`` by 1 and, if this starts a streak, stamps
-        ``legacy_failing_since`` (``COALESCE`` keeps an existing streak start).
-        """
-        src_id = int(src_id)
-        dest_ids = [int(dest_id) for dest_id in confirmed_dead_dest_ids]
-        await session.execute(
-            update(cls)
-            .where(
-                and_(
-                    cls.src_id == src_id,
-                    cls.dest_id.in_(dest_ids),
-                    cls.enabled,
-                    cls.legacy,
-                )
-            )
-            .values(
-                legacy_disable_strikes=cls.legacy_disable_strikes + 1,
-                legacy_failing_since=coalesce(
-                    cls.legacy_failing_since, dt.datetime.now(tz=dt.UTC)
-                ),
-            )
-        )
-
-    @classmethod
-    @ensure_session(db_session)
-    async def get_legacy_failing_mirrors(
-        cls,
-        threshold: int = 3,
-        failing_since_before: dt.datetime | None = None,
-        *,
-        session: AsyncSession = _UNSET,
-    ) -> list[tuple[int, int]]:
-        """Return mirrors that have failed past both the count and time gates.
-
-        A mirror qualifies only when its ``legacy_disable_strikes`` has reached
-        ``threshold`` **and** its failing streak (``legacy_failing_since``) began at or
-        before ``failing_since_before`` (default when ``None``: now minus
-        ``cfg.mirror_disable_forgiveness_hours``). The time gate protects frequent
-        sources: a chatty channel can hit the count in minutes during a brief perm
-        reshuffle, but won't clear the forgiveness window. A NULL
-        ``legacy_failing_since`` (no active streak) never qualifies.
-        """
-        if failing_since_before is None:
-            failing_since_before = dt.datetime.now(tz=dt.UTC) - dt.timedelta(
-                hours=cfg.mirror_disable_forgiveness_hours
-            )
-        disabled_mirrors = await session.execute(
-            select(cls.src_id, cls.dest_id).where(
-                and_(
-                    cls.enabled,
-                    cls.legacy,
-                    cls.legacy_disable_strikes >= threshold,
-                    cls.legacy_failing_since <= failing_since_before,
-                )
-            )
-        )
-        disabled_mirrors = disabled_mirrors if disabled_mirrors else []
-        disabled_mirrors = disabled_mirrors.fetchall()
-
-        return disabled_mirrors
-
-    @classmethod
-    @ensure_session(db_session)
-    async def disable_legacy_failing_mirrors(
-        cls,
-        threshold: int = 3,
-        session: AsyncSession = _UNSET,
-    ) -> list[tuple[int, int]]:
-        """Disable mirrors that have failed past both the count and time gates.
-
-        See :meth:`get_legacy_failing_mirrors` for the gates. Returns the disabled
-        mirrors.
-        """
-        # Resolve the time-gate cutoff ONCE and reuse it for both the SELECT and the
-        # UPDATE, so the two statements match exactly (a per-statement ``now()`` would
-        # drift between them).
-        failing_since_before = dt.datetime.now(tz=dt.UTC) - dt.timedelta(
-            hours=cfg.mirror_disable_forgiveness_hours
-        )
-        mirrors_to_disable = await cls.get_legacy_failing_mirrors(
-            threshold=threshold,
-            failing_since_before=failing_since_before,
-            session=session,
-        )
-        await session.execute(
-            update(cls)
-            # Match the failing rows by the SAME predicate the SELECT used. Rebuilding
-            # ``src_id IN (...) AND dest_id IN (...)`` from the pairs matches the
-            # Cartesian product of the two id sets, so it would also disable innocent
-            # ``(src, dest)`` rows (error_rate 0) that merely share a src or dest with a
-            # genuinely-failing pair.
-            .where(
-                and_(
-                    cls.enabled,
-                    cls.legacy,
-                    cls.legacy_disable_strikes >= threshold,
-                    cls.legacy_failing_since <= failing_since_before,
-                )
-            )
-            .values(
-                enabled=False,
-                legacy_disable_for_failure_on_date=dt.datetime.now(tz=dt.UTC),
-            )
-        )
-
-        # Note: We deliberately don't remove the src_id from the _all_srcs_cache
-        # since we don't know if there are other mirrors with the same src_id
-        # and clearing and refetching would be needlessly expensive
-        # Since mirrors are mostly designed as a one to many repeater of messages
-        # it is also unlikely that the last mirror with a given src_id will be
-        # removed.
-
-        return mirrors_to_disable
-
-    @classmethod
-    @ensure_session(db_session)
     async def get_legacy_mirrors_disabled_for_failure(
         cls, since: dt.datetime | None, session: AsyncSession = _UNSET
     ) -> list[tuple[int, int]]:
@@ -691,9 +529,9 @@ class MirroredChannel(Base):
     ) -> list[tuple[int, int]]:
         """Disable legacy mirror pairs whose recent delivery streak is confirmed-dead.
 
-        The ledger replacement for :meth:`disable_legacy_failing_mirrors`. Health is a
-        *derived* streak query over :class:`MirrorDelivery` rather than hand-maintained
-        strike columns:
+        The ledger replacement for the old strike-column sweep. Health is a *derived*
+        streak query over :class:`MirrorDelivery` rather than hand-maintained strike
+        columns:
 
         A ``(src_ch_id, dest_ch_id)`` pair qualifies when it has at least ``threshold``
         distinct source messages in terminal ``FAILED`` + ``confirmed_dead`` state whose
@@ -774,122 +612,6 @@ class MirroredChannel(Base):
         # disabled mirror may share a src with still-enabled ones, and clearing +
         # refetching on every disable would be needlessly expensive.
         return pairs
-
-
-class MirroredMessage(Base):
-    __tablename__ = "mirrored_message"
-    __mapper_args__ = {"eager_defaults": True}
-    dest_msg = Column("dest_msg", BigInteger, primary_key=True)
-    dest_channel = Column("dest_ch", BigInteger)
-    source_msg = Column("source_msg", BigInteger)
-    source_channel = Column("src_ch", BigInteger)
-    creation_datetime = Column(
-        "creation_datetime", DateTime, default=lambda: dt.datetime.now(tz=dt.UTC)
-    )
-
-    def __init__(
-        self,
-        dest_msg: int,
-        dest_channel: int,
-        source_msg: int,
-        source_channel: int,
-        creation_datetime: dt.datetime | None = None,
-    ):
-        super().__init__()
-        self.dest_msg = int(dest_msg)
-        self.dest_channel = int(dest_channel)
-        self.source_msg = int(source_msg)
-        self.source_channel = int(source_channel)
-        self.creation_datetime = creation_datetime or dt.datetime.now(tz=dt.UTC)
-
-    @classmethod
-    @ensure_session(db_session)
-    async def add_msg(
-        cls,
-        dest_msg: int,
-        dest_channel: int,
-        source_msg: int,
-        source_channel: int,
-        session: AsyncSession = _UNSET,
-    ) -> None:
-        """Create a session, begin it and add a message pair"""
-        dest_msg = int(dest_msg)
-        dest_channel = int(dest_channel)
-        source_msg = int(source_msg)
-        source_channel = int(source_channel)
-
-        await session.execute(
-            insert(cls).values(
-                dest_msg=dest_msg,
-                dest_channel=dest_channel,
-                source_msg=source_msg,
-                source_channel=source_channel,
-            )
-        )
-
-    @classmethod
-    @ensure_session(db_session)
-    async def add_msgs_in_batch(
-        cls,
-        dest_msgs: list[int],
-        dest_channels: list[int],
-        source_msg: int,
-        source_channel: int,
-        session: AsyncSession = _UNSET,
-    ) -> None:
-        """Create a session, begin it and add a message pair"""
-        dest_msgs = [int(dest_msg) for dest_msg in dest_msgs]
-        dest_channels = [int(dest_channel) for dest_channel in dest_channels]
-        source_msg = int(source_msg)
-        source_channel = int(source_channel)
-
-        await session.execute(
-            insert(cls).values(
-                [
-                    {
-                        "dest_msg": dest_msg,
-                        "dest_channel": dest_channel,
-                        "source_msg": source_msg,
-                        "source_channel": source_channel,
-                    }
-                    for dest_msg, dest_channel in zip(
-                        dest_msgs, dest_channels, strict=True
-                    )
-                ]
-            )
-        )
-
-    @classmethod
-    @ensure_session(db_session)
-    async def get_dest_msgs_and_channels(
-        cls,
-        source_msg: int,
-        session: AsyncSession = _UNSET,
-    ) -> list[tuple[int, int]]:
-        """Return dest message and channel ids from source message id"""
-        source_msg = int(source_msg)
-        dest_msgs = (
-            await session.execute(
-                select(cls.dest_msg, cls.dest_channel).where(
-                    cls.source_msg == source_msg
-                )
-            )
-        ).fetchall()
-        # Handle source_id not found
-        dest_msgs = [] if dest_msgs is None else dest_msgs
-        return dest_msgs
-
-    @classmethod
-    @ensure_session(db_session)
-    async def prune(
-        cls,
-        age: None | dt.timedelta = dt.timedelta(days=21),
-        session: AsyncSession = _UNSET,
-    ) -> None:
-        """Delete entries older than <age>"""
-        await session.execute(
-            delete(cls).where(dt.datetime.now(tz=dt.UTC) - age > cls.creation_datetime)
-        )
 
 
 def _utcnow() -> dt.datetime:
@@ -978,7 +700,7 @@ class ClaimedRow:
 class MirrorDelivery(Base):
     """Durable delivery ledger: one row per (source message, destination channel).
 
-    Subsumes :class:`MirroredMessage`. Stores *intent* (``desired_version`` /
+    Subsumes the old ``mirrored_message`` table. Stores *intent* (``desired_version`` /
     ``deleted``), never content — content is fetched fresh from Discord at delivery
     time. An edit bumps ``desired_version``; the convergence worker converges rows where
     ``applied_version < desired_version``.
@@ -1132,21 +854,32 @@ class MirrorDelivery(Base):
         *,
         session: AsyncSession = _UNSET,
     ) -> int:
-        """Flag every row for ``src_msg_id`` as delete-intent; return rows affected.
+        """Flag every row for ``src_msg_id`` as delete-intent; return the deletion-work
+        count (rows that actually need a Discord delete).
 
-        Never-delivered rows (``dest_msg_id`` NULL) go straight to CANCELLED (nothing to
-        delete Discord-side); delivered rows go to PENDING carrying the delete intent,
-        so the worker deletes their dest message. Already-CANCELLED rows are left alone.
+        Never-delivered rows (``dest_msg_id`` NULL) go straight to CANCELLED (nothing
+        to delete Discord-side); delivered rows go to PENDING carrying the delete
+        intent, so the worker deletes their dest message. Already-CANCELLED rows are
+        left alone. The returned count is the number of PENDING (delivered) rows — the
+        RunView total for the delete card; 0 means there is nothing to delete (not
+        mirrored, or nothing was ever delivered).
         """
         now = _utcnow()
-        result = await session.execute(
-            update(cls)
-            .where(
-                and_(
-                    cls.src_msg_id == int(src_msg_id),
-                    cls.state != DeliveryState.CANCELLED.value,
-                )
+        base = and_(
+            cls.src_msg_id == int(src_msg_id),
+            cls.state != DeliveryState.CANCELLED.value,
+        )
+        # Count the deletion-work rows (have a dest message) before flipping state.
+        deletion_work = (
+            await session.execute(
+                select(func.count())
+                .select_from(cls)
+                .where(and_(base, cls.dest_msg_id.is_not(None)))
             )
+        ).scalar_one()
+        await session.execute(
+            update(cls)
+            .where(base)
             .values(
                 deleted=True,
                 state=case(
@@ -1158,7 +891,7 @@ class MirrorDelivery(Base):
                 finished_at=None,
             )
         )
-        return result.rowcount or 0
+        return int(deletion_work)
 
     @classmethod
     @ensure_session(db_session)

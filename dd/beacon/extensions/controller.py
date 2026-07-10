@@ -29,13 +29,13 @@ import lightbulb as lb
 from ...common import cfg
 from ...common.controller import make_controller_group
 from ...common.utils import guild_scope
-from ..mirror_core import kernel_work_control_registry
+from ..mirror_worker import mirror_worker
 
 loader = lb.Loader()
 loader.command(
     make_controller_group(
         "beacon",
-        mirror_check=lambda: kernel_work_control_registry.in_progress_count,
+        mirror_check=lambda: mirror_worker.in_progress_count,
     ),
     guilds=guild_scope(*cfg.test_env, cfg.control_discord_server_id),
 )
