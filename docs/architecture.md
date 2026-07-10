@@ -8,9 +8,9 @@ section **before** adding a command, touching the DB layer, or building a messag
 
 Everything lives under `dd/`:
 
-- `dd.beacon` — the main bot. `__main__.py` boots it; `mirror_core.py`, `nav.py`
-  (paged-message system), `utils.py`, `help_details.py`, and **`extensions/`** (the
-  command modules).
+- `dd.beacon` — the main bot. `__main__.py` boots it; the **mirror subsystem**
+  (`mirror_worker.py` + `mirror_core.py`, see below), `nav.py` (paged-message system),
+  `utils.py`, `help_details.py`, and **`extensions/`** (the command modules).
 - `dd.anchor` — the "secondary" bot, but substantial: `__main__.py`, an aiohttp **web UI**
   (`web.py` + `web_static/`) for rotation editing, **OpenCV** image generation
   (`cv2_builder.py`, `cv2_nodes.py`, `cv2_raw.py`), `embeds.py`, `search_json.py`, and
@@ -118,6 +118,33 @@ For multi-page / navigable responses use the nav system rather than rolling your
 `NavPages` (a date-range-keyed page store), `NavigatorView` (the interactive view), and
 `make_navigator_command()` (builds a navigator-backed command). `Pages.from_channel(...)`
 pulls messages from a followable channel; see `template.py`.
+
+## Mirror subsystem — `dd/beacon/mirror_worker.py` + `mirror_core.py`
+
+The mirror subsystem fans one source-channel message out to N legacy destination
+channels (`legacy=True` rows in `mirrored_channel`; non-legacy rows are native Discord
+channel-follows, untouched by this). It is a **durable delivery ledger**, not in-memory
+orchestration:
+
+- **`mirror_delivery`** (`dd/common/schemas.py`) — one row per `(src_msg_id, dest_ch_id)`
+  carrying `desired_version` / `applied_version` / `state` / `deleted`. It stores
+  *intent*, never content — content is fetched fresh from Discord at delivery time. It
+  subsumes the old `mirrored_message` table.
+- **Gateway handlers** (`extensions/mirror.py`) do one transactional enqueue each —
+  `enqueue_send` (create), `bump_for_edit` (edit → bump `desired_version`), `mark_deleted`
+  (delete) — then register a `RunView` progress card and nudge the worker.
+- **The convergence worker** (`mirror_worker.py`, one `MirrorWorker` per process, started
+  from `StartedEvent`) claims due rows via `SELECT … FOR UPDATE SKIP LOCKED`
+  (biggest-server-first), converges each destination, and buffers outcomes; a dedicated
+  **flusher** writes them back. Retries are `due_at` backoffs in the ledger, not in-process
+  sleeps. On completion a run-end hook flags failures and runs the **derived** auto-disable
+  sweep (`MirroredChannel.disable_failing_mirrors` — a confirmed-dead streak query over the
+  ledger, replacing the old strike columns).
+- **`mirror_core.py`** is now just the pure survivors: `MirrorOperationType`, the global
+  token-bucket `RateLimiter`, and `RunView` (in-memory progress accounting).
+
+The pre-rewrite in-memory implementation is snapshotted on the `mirror-v1` branch; the
+rewrite's design + rationale lives in the `mirror-v2` commit history.
 
 ## Configuration — `dd/common/cfg.py`
 
