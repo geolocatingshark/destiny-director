@@ -1167,23 +1167,32 @@ class MirrorDelivery(Base):
         src_msg_id: int,
         *,
         session: AsyncSession = _UNSET,
-    ) -> int:
-        """Cancel not-yet-delivered rows for ``src_msg_id``; return rows affected.
+    ) -> list[int]:
+        """Cancel not-yet-delivered rows for ``src_msg_id``; return the cancelled dests.
 
-        Only PENDING, non-deleted rows are cancelled — in-flight (CLAIMED) Discord calls
-        drain and flush normally under the version guard. A racing delete's PENDING rows
-        (``deleted=1``) are left to converge.
+        Only PENDING, non-deleted rows are cancelled — in-flight (CLAIMED) Discord
+        calls drain and flush normally under the version guard. A racing delete's
+        PENDING rows (``deleted=1``) are left to converge. Returns the affected
+        ``dest_ch_id``s so the caller can mark them cancelled in the run view (drives
+        completion); an empty list means there was nothing to cancel.
         """
         now = _utcnow()
-        result = await session.execute(
+        where = and_(
+            cls.src_msg_id == int(src_msg_id),
+            cls.state == DeliveryState.PENDING.value,
+            ~cls.deleted,
+        )
+        dest_ids = [
+            int(d)
+            for (d,) in (
+                await session.execute(select(cls.dest_ch_id).where(where))
+            ).fetchall()
+        ]
+        if not dest_ids:
+            return []
+        await session.execute(
             update(cls)
-            .where(
-                and_(
-                    cls.src_msg_id == int(src_msg_id),
-                    cls.state == DeliveryState.PENDING.value,
-                    ~cls.deleted,
-                )
-            )
+            .where(where)
             .values(
                 state=DeliveryState.CANCELLED.value,
                 finished_at=now,
@@ -1191,7 +1200,7 @@ class MirrorDelivery(Base):
                 claimed_at=None,
             )
         )
-        return result.rowcount or 0
+        return dest_ids
 
     @classmethod
     @ensure_session(db_session)

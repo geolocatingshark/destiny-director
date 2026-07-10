@@ -218,8 +218,8 @@ async def test_cancel_pending_only_pending_undeleted():
             )
             .values(state=DeliveryState.DELIVERED.value)
         )
-    affected = await MirrorDelivery.cancel_pending(950)
-    assert affected == 1
+    cancelled = await MirrorDelivery.cancel_pending(950)
+    assert cancelled == [250]
     assert (await _row(950, 250))["state"] == DeliveryState.CANCELLED.value
     assert (await _row(950, 251))["state"] == DeliveryState.DELIVERED.value
 

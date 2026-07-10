@@ -42,7 +42,7 @@ import contextlib
 import time
 import typing as t
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from random import randint
 
@@ -527,6 +527,157 @@ class FailureGroup:
     count: int
     error_class: ErrorClass
     sample_message: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunFailure:
+    """One destination's failure as recorded in a :class:`RunView`.
+
+    Carries the classified reference code + a representative message (for the grouped
+    breakdown) and whether the perm probe *confirmed* the dest dead (only confirmed-dead
+    permanent failures feed the cross-run auto-disable).
+    """
+
+    reference_code: str
+    error_class: ErrorClass
+    sample_message: str
+    confirmed_dead: bool = False
+
+
+@dataclass
+class RunView:
+    """In-memory progress view for one ledger-backed mirror run (per source message).
+
+    The minimal survivor of the old ``KernelWorkTracker``: it holds *only* what the
+    progress UI and the run-end hook need, fed by outcome-recording calls from the
+    convergence worker (and the cancel command). Terminal-state accounting is by
+    destination-channel id (sets), so retries and races stay idempotent; the progress
+    counts are the set sizes.
+
+    ``total`` is the count of non-terminal rows at registration. A run is *complete*
+    once every dest reaches a terminal state (delivered / failed / cancelled) or the run
+    was superseded by an edit; ``finalized`` is set by the run-end hook once the disable
+    sweep + alerts have run, gating the progress card's final render.
+    """
+
+    op: MirrorOperationType
+    src_ch_id: int | None
+    src_msg_id: int
+    total: int
+    start_time: float  # perf_counter()
+    _delivered: set[int] = field(default_factory=set)
+    _failed: set[int] = field(default_factory=set)
+    _cancelled: set[int] = field(default_factory=set)
+    attempted_once: set[int] = field(default_factory=set)
+    failures: dict[int, RunFailure] = field(default_factory=dict)
+    cancel_requested: bool = False
+    superseded_by_edit: bool = False
+    disabled_count: int = 0
+    finalized: bool = False
+    _finalizing: bool = False
+
+    # -- recording ---------------------------------------------------------
+
+    def on_delivered(self, dest_ch_id: int) -> None:
+        """Record a converged (send/edit/delete) destination."""
+        self.attempted_once.add(dest_ch_id)
+        self._failed.discard(dest_ch_id)
+        self._cancelled.discard(dest_ch_id)
+        self.failures.pop(dest_ch_id, None)
+        self._delivered.add(dest_ch_id)
+
+    def on_transient(self, dest_ch_id: int) -> None:
+        """Record a retryable failure (attempted, not yet resolved → 'retrying')."""
+        self.attempted_once.add(dest_ch_id)
+
+    def on_failed(self, dest_ch_id: int, failure: RunFailure) -> None:
+        """Record a terminal (permanent / attempt-exhausted) failure."""
+        self.attempted_once.add(dest_ch_id)
+        self._cancelled.discard(dest_ch_id)
+        self.failures[dest_ch_id] = failure
+        self._failed.add(dest_ch_id)
+
+    def on_cancelled(self, dest_ch_id: int) -> None:
+        """Record a cancelled destination (short-circuited before any Discord call)."""
+        if dest_ch_id in self._delivered or dest_ch_id in self._failed:
+            return
+        self._cancelled.add(dest_ch_id)
+
+    # -- counts (progress UI) ---------------------------------------------
+
+    @property
+    def delivered(self) -> int:
+        return len(self._delivered)
+
+    @property
+    def failed(self) -> int:
+        return len(self._failed)
+
+    @property
+    def cancelled_count(self) -> int:
+        return len(self._cancelled)
+
+    @property
+    def retrying(self) -> int:
+        "Attempted at least once but not yet in a terminal state."
+        return len(
+            self.attempted_once - self._delivered - self._failed - self._cancelled
+        )
+
+    @property
+    def not_yet_tried(self) -> int:
+        "Destinations with no attempt yet (and not cancelled outright)."
+        return max(0, self.total - len(self.attempted_once | self._cancelled))
+
+    @property
+    def resolved(self) -> int:
+        "Destinations in a terminal state (drives completion)."
+        return self.delivered + self.failed + self.cancelled_count
+
+    @property
+    def throughput_resolved(self) -> int:
+        "Resolved excluding cancels — the rate/ETA denominator (matches the old UI)."
+        return self.delivered + self.failed
+
+    @property
+    def is_complete(self) -> bool:
+        return self.superseded_by_edit or self.resolved >= self.total
+
+    @property
+    def has_permanent(self) -> bool:
+        return any(
+            f.error_class is ErrorClass.PERMANENT for f in self.failures.values()
+        )
+
+    @property
+    def not_confirmed_dead(self) -> dict[int, RunFailure]:
+        """Permanent failures the perm probe did NOT confirm dead — surfaced in one
+        aggregated warning and left for a human (never auto-disabled)."""
+        return {
+            dest: f
+            for dest, f in self.failures.items()
+            if f.error_class is ErrorClass.PERMANENT and not f.confirmed_dead
+        }
+
+    @property
+    def failure_breakdown(self) -> list[FailureGroup]:
+        """Group failures by reference code, most-common first (verbatim port of the old
+        ``KernelWorkTracker.failure_breakdown``)."""
+        counts: Counter[str] = Counter(
+            failure.reference_code for failure in self.failures.values()
+        )
+        representative: dict[str, RunFailure] = {}
+        for failure in self.failures.values():
+            representative.setdefault(failure.reference_code, failure)
+        return [
+            FailureGroup(
+                reference_code=code,
+                count=count,
+                error_class=representative[code].error_class,
+                sample_message=representative[code].sample_message,
+            )
+            for code, count in counts.most_common()
+        ]
 
 
 class KernelWorkControl(KernelWorkTracker):
