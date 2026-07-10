@@ -17,14 +17,17 @@ from __future__ import annotations
 
 import asyncio as aio
 import datetime as dt
+import enum
 import logging
 import os
 import sys
 import typing as t
+from dataclasses import dataclass
 from typing import Self
 
 import regex as re
 from atlas_provider_sqlalchemy.ddl import print_ddl
+from sqlalchemy import Index, bindparam, case, literal, or_, tuple_
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import (
@@ -638,8 +641,8 @@ class MirroredChannel(Base):
             # ``src_id IN (...) AND dest_id IN (...)`` from the pairs matches the
             # Cartesian product of the two id sets, so it would also re-enable innocent
             # rows that merely share a src or dest with a genuinely-disabled pair (or
-            # were disabled for some *other* reason). Clear the failing streak + disable
-            # stamp too, so the re-enabled row starts from a clean slate.
+            # were disabled for some *other* reason). Clear the disable stamp too, so
+            # the re-enabled row starts from a clean slate.
             .where(
                 and_(
                     ~cls.enabled,
@@ -649,16 +652,128 @@ class MirroredChannel(Base):
             )
             .values(
                 enabled=True,
-                legacy_disable_strikes=0,
-                legacy_failing_since=None,
                 legacy_disable_for_failure_on_date=None,
             )
         )
+
+        # Neutralise the ledger evidence for the re-enabled pairs so the derived streak
+        # query (:meth:`disable_failing_mirrors`) doesn't immediately re-disable them:
+        # flip their terminal FAILED rows to CANCELLED (which counts as neither success
+        # nor failure) and clear confirmed_dead. Same transaction as the re-enable.
+        pairs = [(int(src_id), int(dest_id)) for src_id, dest_id in mirrors_to_enable]
+        if pairs:
+            await session.execute(
+                update(MirrorDelivery)
+                .where(
+                    and_(
+                        tuple_(MirrorDelivery.src_ch_id, MirrorDelivery.dest_ch_id).in_(
+                            pairs
+                        ),
+                        MirrorDelivery.state == DeliveryState.FAILED.value,
+                    )
+                )
+                .values(state=DeliveryState.CANCELLED.value, confirmed_dead=False)
+            )
 
         # Add reenabled mirrors to the cache
         cls._legacy_srcs_cache.update(set([src_id for src_id, _ in mirrors_to_enable]))
 
         return mirrors_to_enable
+
+    @classmethod
+    @ensure_session(db_session)
+    async def disable_failing_mirrors(
+        cls,
+        threshold: int = 3,
+        *,
+        now: dt.datetime | None = None,
+        session: AsyncSession = _UNSET,
+    ) -> list[tuple[int, int]]:
+        """Disable legacy mirror pairs whose recent delivery streak is confirmed-dead.
+
+        The ledger replacement for :meth:`disable_legacy_failing_mirrors`. Health is a
+        *derived* streak query over :class:`MirrorDelivery` rather than hand-maintained
+        strike columns:
+
+        A ``(src_ch_id, dest_ch_id)`` pair qualifies when it has at least ``threshold``
+        distinct source messages in terminal ``FAILED`` + ``confirmed_dead`` state whose
+        ``finished_at`` is *after* the pair's last ``DELIVERED`` success (so any success
+        resets the streak — including an edit that re-delivers a previously-FAILED row),
+        **and** the oldest such failure is older than the forgiveness window
+        (``cfg.mirror_disable_forgiveness_hours``). Granularity is per pair, so pairs
+        sharing a dest channel never cross-contaminate.
+        """
+        now = now or dt.datetime.now(tz=dt.UTC)
+        cutoff = now - dt.timedelta(hours=cfg.mirror_disable_forgiveness_hours)
+        md = MirrorDelivery
+
+        # Last successful delivery per pair (streak reset point).
+        last_ok = (
+            select(
+                md.src_ch_id.label("s"),
+                md.dest_ch_id.label("d"),
+                func.max(md.finished_at).label("last_ok"),
+            )
+            .where(md.state == DeliveryState.DELIVERED.value)
+            .group_by(md.src_ch_id, md.dest_ch_id)
+            .subquery()
+        )
+        failing = (
+            select(md.src_ch_id, md.dest_ch_id)
+            .join(
+                cls,
+                and_(
+                    cls.src_id == md.src_ch_id,
+                    cls.dest_id == md.dest_ch_id,
+                    cls.enabled,
+                    cls.legacy,
+                ),
+            )
+            .join(
+                last_ok,
+                and_(last_ok.c.s == md.src_ch_id, last_ok.c.d == md.dest_ch_id),
+                isouter=True,
+            )
+            .where(
+                and_(
+                    md.state == DeliveryState.FAILED.value,
+                    md.confirmed_dead,
+                    # Only failures with no later success for this pair count.
+                    or_(
+                        last_ok.c.last_ok.is_(None),
+                        md.finished_at > last_ok.c.last_ok,
+                    ),
+                )
+            )
+            .group_by(md.src_ch_id, md.dest_ch_id)
+            .having(
+                and_(
+                    func.count(func.distinct(md.src_msg_id)) >= threshold,
+                    func.min(md.finished_at) <= cutoff,
+                )
+            )
+        )
+        rows = (await session.execute(failing)).fetchall()
+        pairs = [(int(src_id), int(dest_id)) for src_id, dest_id in rows]
+        if not pairs:
+            return []
+
+        await session.execute(
+            update(cls)
+            .where(
+                and_(
+                    cls.enabled,
+                    cls.legacy,
+                    tuple_(cls.src_id, cls.dest_id).in_(pairs),
+                )
+            )
+            .values(enabled=False, legacy_disable_for_failure_on_date=now)
+        )
+
+        # Note: We deliberately don't remove the src_id from the _legacy_srcs_cache — a
+        # disabled mirror may share a src with still-enabled ones, and clearing +
+        # refetching on every disable would be needlessly expensive.
+        return pairs
 
 
 class MirroredMessage(Base):
@@ -774,6 +889,620 @@ class MirroredMessage(Base):
         """Delete entries older than <age>"""
         await session.execute(
             delete(cls).where(dt.datetime.now(tz=dt.UTC) - age > cls.creation_datetime)
+        )
+
+
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(tz=dt.UTC)
+
+
+def _insert_ignore(cls: type[Base]):
+    """Duplicate-PK-ignoring INSERT, portable across dialects.
+
+    MySQL ``INSERT IGNORE`` / SQLite ``INSERT OR IGNORE`` via a dialect-scoped
+    ``prefix_with`` (each prefix is emitted only for its dialect), so a duplicate
+    gateway event or a manual re-mirror of an already-enqueued message is a no-op
+    rather than a primary-key violation.
+    """
+    return (
+        insert(cls)
+        .prefix_with("IGNORE", dialect="mysql")
+        .prefix_with("OR IGNORE", dialect="sqlite")
+    )
+
+
+class DeliveryState(enum.StrEnum):
+    """Lifecycle state of a single ``mirror_delivery`` row."""
+
+    PENDING = "PENDING"  # needs work (applied < desired, or an unapplied delete)
+    CLAIMED = "CLAIMED"  # claimed by a worker (claimed_by/claimed_at set)
+    DELIVERED = "DELIVERED"  # converged (applied_version == desired_version)
+    FAILED = "FAILED"  # terminal; last_error_class is PERMANENT or exhausted TRANSIENT
+    CANCELLED = (
+        "CANCELLED"  # user cancel / delete-before-delivery / undo neutralisation
+    )
+
+
+class OutcomeKind(enum.Enum):
+    """Which write-back shape a :class:`DeliveryOutcome` takes in ``flush_outcomes``."""
+
+    SUCCESS = 1  # a send or edit succeeded
+    DELETE_SUCCESS = 2  # a dest message delete succeeded (or was already gone)
+    TRANSIENT = 3  # a retryable failure below the attempt cap
+    TERMINAL = 4  # a permanent or attempt-cap-exhausted failure
+    CANCELLED = 5  # short-circuited (cancel requested / nothing to do)
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryOutcome:
+    """One delivery attempt's result, produced by the worker, consumed by the flusher.
+
+    Defined here (in ``dd.common``) rather than in the beacon worker so the flusher can
+    type its input without ``dd.common`` importing ``dd.beacon`` (the dependency
+    direction is beacon → common, never the reverse). ``version`` is the
+    ``desired_version`` observed when the row was claimed; the flusher's CASE guard
+    compares it against the row's *current* ``desired_version`` so an edit/delete that
+    raced the in-flight attempt keeps the row converging instead of marking it terminal.
+    """
+
+    kind: OutcomeKind
+    src_msg_id: int
+    dest_ch_id: int
+    version: int
+    dest_msg_id: int | None = None
+    attempts: int = 0
+    due_at: dt.datetime | None = None
+    error_ref: str | None = None
+    error_class: str | None = None
+    error_msg: str | None = None
+    confirmed_dead: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedRow:
+    """Frozen snapshot of a claimed ``mirror_delivery`` row handed to the worker.
+
+    A plain dataclass (not a live ORM object) so the worker can process it after the
+    claim transaction closes without touching an expired/detached instance.
+    """
+
+    src_msg_id: int
+    dest_ch_id: int
+    src_ch_id: int
+    dest_msg_id: int | None
+    desired_version: int
+    deleted: bool
+    attempts: int
+
+
+class MirrorDelivery(Base):
+    """Durable delivery ledger: one row per (source message, destination channel).
+
+    Subsumes :class:`MirroredMessage`. Stores *intent* (``desired_version`` /
+    ``deleted``), never content — content is fetched fresh from Discord at delivery
+    time. An edit bumps ``desired_version``; the convergence worker converges rows where
+    ``applied_version < desired_version``.
+    """
+
+    __tablename__ = "mirror_delivery"
+    __mapper_args__ = {"eager_defaults": True}
+    __table_args__ = (
+        Index("ix_mirror_delivery_state_due", "state", "due_at"),  # claim scan
+        Index(
+            "ix_mirror_delivery_pair_state", "src_ch_id", "dest_ch_id", "state"
+        ),  # streak query
+        Index("ix_mirror_delivery_created_at", "created_at"),  # prune
+    )
+
+    src_msg_id = Column("src_msg_id", BigInteger, primary_key=True)
+    dest_ch_id = Column("dest_ch_id", BigInteger, primary_key=True)
+    src_ch_id = Column("src_ch_id", BigInteger, nullable=False)
+    # Denormalised for the claim-order JOIN against server_statistics.
+    dest_server_id = Column("dest_server_id", BigInteger, nullable=True)
+    dest_msg_id = Column(
+        "dest_msg_id", BigInteger, nullable=True
+    )  # NULL until delivered
+    desired_version = Column("desired_version", Integer, nullable=False, default=1)
+    applied_version = Column("applied_version", Integer, nullable=False, default=0)
+    deleted = Column("deleted", Boolean, nullable=False, default=False)
+    state = Column(
+        "state", String(16), nullable=False, default=DeliveryState.PENDING.value
+    )
+    attempts = Column("attempts", Integer, nullable=False, default=0)
+    due_at = Column("due_at", DateTime, nullable=False, default=_utcnow)
+    claimed_by = Column("claimed_by", String(64), nullable=True)
+    claimed_at = Column("claimed_at", DateTime, nullable=True)
+    last_error_ref = Column("last_error_ref", String(8), nullable=True)
+    last_error_class = Column("last_error_class", String(12), nullable=True)
+    last_error_msg = Column("last_error_msg", String(256), nullable=True)
+    confirmed_dead = Column("confirmed_dead", Boolean, nullable=False, default=False)
+    created_at = Column("created_at", DateTime, nullable=False, default=_utcnow)
+    finished_at = Column("finished_at", DateTime, nullable=True)
+
+    # Columns inserted by the enqueue INSERT…SELECT, in order (dest_msg_id + the claim/
+    # error/finished columns default to NULL).
+    _ENQUEUE_COLS = (
+        "src_msg_id",
+        "dest_ch_id",
+        "src_ch_id",
+        "dest_server_id",
+        "desired_version",
+        "applied_version",
+        "deleted",
+        "state",
+        "attempts",
+        "due_at",
+        "confirmed_dead",
+        "created_at",
+    )
+
+    @classmethod
+    def _enqueue_select(cls, src_ch_id: int, src_msg_id: int, now: dt.datetime):
+        """SELECT feeding the enqueue/reconcile INSERT — one candidate row per enabled
+        legacy dest of ``src_ch_id`` (excluding the source channel itself)."""
+        return select(
+            literal(int(src_msg_id)),
+            MirroredChannel.dest_id,
+            literal(int(src_ch_id)),
+            MirroredChannel.dest_server_id,
+            literal(1),  # desired_version
+            literal(0),  # applied_version
+            literal(False),  # deleted
+            literal(DeliveryState.PENDING.value),
+            literal(0),  # attempts
+            literal(now),  # due_at
+            literal(False),  # confirmed_dead
+            literal(now),  # created_at
+        ).where(
+            and_(
+                MirroredChannel.src_id == int(src_ch_id),
+                MirroredChannel.legacy,
+                MirroredChannel.enabled,
+                MirroredChannel.dest_id != int(src_ch_id),
+            )
+        )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def enqueue_send(
+        cls,
+        src_ch_id: int,
+        src_msg_id: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> int:
+        """Enqueue a fresh send fan-out for ``src_msg_id``; return rows inserted.
+
+        A single INSERT…SELECT (no read-then-write, no locks). INSERT-IGNORE makes a
+        duplicate gateway event or a manual re-mirror of an already-enqueued message a
+        no-op.
+        """
+        now = _utcnow()
+        result = await session.execute(
+            _insert_ignore(cls).from_select(
+                list(cls._ENQUEUE_COLS),
+                cls._enqueue_select(src_ch_id, src_msg_id, now),
+            )
+        )
+        return result.rowcount or 0
+
+    @classmethod
+    @ensure_session(db_session)
+    async def bump_for_edit(
+        cls,
+        src_ch_id: int,
+        src_msg_id: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> tuple[int, int]:
+        """Reconcile an edit: bump every non-deleted row's ``desired_version`` back to
+        PENDING, then insert rows for any dests added since the send.
+
+        Returns ``(bumped, inserted)`` rowcounts — both zero means this was not a
+        mirrored message. Rows for dests since removed from ``mirrored_channel`` keep
+        converging (they are bumped but not re-inserted), matching the old reconcile.
+        FAILED/CANCELLED rows are reset to PENDING too; rows with ``deleted=1`` are
+        never touched by an edit.
+        """
+        now = _utcnow()
+        bumped = await session.execute(
+            update(cls)
+            .where(and_(cls.src_msg_id == int(src_msg_id), ~cls.deleted))
+            .values(
+                desired_version=cls.desired_version + 1,
+                state=DeliveryState.PENDING.value,
+                attempts=0,
+                due_at=now,
+                finished_at=None,
+            )
+        )
+        inserted = await session.execute(
+            _insert_ignore(cls).from_select(
+                list(cls._ENQUEUE_COLS),
+                cls._enqueue_select(src_ch_id, src_msg_id, now),
+            )
+        )
+        return (bumped.rowcount or 0, inserted.rowcount or 0)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def mark_deleted(
+        cls,
+        src_msg_id: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> int:
+        """Flag every row for ``src_msg_id`` as delete-intent; return rows affected.
+
+        Never-delivered rows (``dest_msg_id`` NULL) go straight to CANCELLED (nothing to
+        delete Discord-side); delivered rows go to PENDING carrying the delete intent,
+        so the worker deletes their dest message. Already-CANCELLED rows are left alone.
+        """
+        now = _utcnow()
+        result = await session.execute(
+            update(cls)
+            .where(
+                and_(
+                    cls.src_msg_id == int(src_msg_id),
+                    cls.state != DeliveryState.CANCELLED.value,
+                )
+            )
+            .values(
+                deleted=True,
+                state=case(
+                    (cls.dest_msg_id.is_(None), DeliveryState.CANCELLED.value),
+                    else_=DeliveryState.PENDING.value,
+                ),
+                attempts=0,
+                due_at=now,
+                finished_at=None,
+            )
+        )
+        return result.rowcount or 0
+
+    @classmethod
+    @ensure_session(db_session)
+    async def cancel_pending(
+        cls,
+        src_msg_id: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> int:
+        """Cancel not-yet-delivered rows for ``src_msg_id``; return rows affected.
+
+        Only PENDING, non-deleted rows are cancelled — in-flight (CLAIMED) Discord calls
+        drain and flush normally under the version guard. A racing delete's PENDING rows
+        (``deleted=1``) are left to converge.
+        """
+        now = _utcnow()
+        result = await session.execute(
+            update(cls)
+            .where(
+                and_(
+                    cls.src_msg_id == int(src_msg_id),
+                    cls.state == DeliveryState.PENDING.value,
+                    ~cls.deleted,
+                )
+            )
+            .values(
+                state=DeliveryState.CANCELLED.value,
+                finished_at=now,
+                claimed_by=None,
+                claimed_at=None,
+            )
+        )
+        return result.rowcount or 0
+
+    @classmethod
+    @ensure_session(db_session)
+    async def claim_batch(
+        cls,
+        worker_id: str,
+        batch_size: int,
+        stale_cutoff: dt.datetime,
+        *,
+        now: dt.datetime | None = None,
+        session: AsyncSession = _UNSET,
+    ) -> list[ClaimedRow]:
+        """Atomically claim up to ``batch_size`` due rows, biggest-server-first.
+
+        Selects due PENDING rows (``due_at <= now``) and stale CLAIMED rows
+        (``claimed_at <= stale_cutoff`` — a worker that died mid-batch) with
+        ``FOR UPDATE SKIP LOCKED`` so concurrent workers claim disjoint sets, orders by
+        destination server population descending (unknown-population last, then
+        ``created_at``), marks them CLAIMED, and returns frozen snapshots.
+
+        On SQLite the dialect silently omits ``FOR UPDATE``; this runs unmodified there
+        (single process, no contention).
+        """
+        now = now or _utcnow()
+        rows = (
+            (
+                await session.execute(
+                    select(cls)
+                    .join(
+                        ServerStatistics,
+                        cls.dest_server_id == ServerStatistics.id,
+                        isouter=True,
+                    )
+                    .where(
+                        or_(
+                            and_(
+                                cls.state == DeliveryState.PENDING.value,
+                                cls.due_at <= now,
+                            ),
+                            and_(
+                                cls.state == DeliveryState.CLAIMED.value,
+                                cls.claimed_at <= stale_cutoff,
+                            ),
+                        )
+                    )
+                    .order_by(
+                        desc(coalesce(ServerStatistics.population, 10**12)),
+                        cls.created_at,
+                    )
+                    .limit(batch_size)
+                    .with_for_update(skip_locked=True, of=cls)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not rows:
+            return []
+        # Snapshot before the claim UPDATE (which may expire the ORM instances).
+        claimed = [
+            ClaimedRow(
+                src_msg_id=int(r.src_msg_id),
+                dest_ch_id=int(r.dest_ch_id),
+                src_ch_id=int(r.src_ch_id),
+                dest_msg_id=None if r.dest_msg_id is None else int(r.dest_msg_id),
+                desired_version=int(r.desired_version),
+                deleted=bool(r.deleted),
+                attempts=int(r.attempts),
+            )
+            for r in rows
+        ]
+        pairs = [(c.src_msg_id, c.dest_ch_id) for c in claimed]
+        await session.execute(
+            update(cls)
+            .where(tuple_(cls.src_msg_id, cls.dest_ch_id).in_(pairs))
+            .values(
+                state=DeliveryState.CLAIMED.value,
+                claimed_by=str(worker_id)[:64],
+                claimed_at=now,
+            )
+        )
+        return claimed
+
+    @classmethod
+    @ensure_session(db_session)
+    async def flush_outcomes(
+        cls,
+        outcomes: list[DeliveryOutcome],
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        """Write back a batch of delivery outcomes in one transaction.
+
+        One executemany per :class:`OutcomeKind`, each a static SQL shape whose
+        version/deleted guard is a CASE inside the VALUES — so one statement handles a
+        raced edit/delete without a per-row read. Invariant: a dest message id, once
+        created and observed, is *always* recorded (even when the guard sends the row
+        back to PENDING), so re-convergence edits instead of re-sending.
+        """
+        if not outcomes:
+            return
+        now = _utcnow()
+        by_kind: dict[OutcomeKind, list[DeliveryOutcome]] = {}
+        for o in outcomes:
+            by_kind.setdefault(o.kind, []).append(o)
+
+        # The version/deleted guard: the row's current desired_version still matches the
+        # version this attempt delivered AND no delete intent has landed.
+        guard = and_(
+            cls.desired_version == bindparam("b_version"),
+            ~cls.deleted,
+        )
+        pk = and_(
+            cls.src_msg_id == bindparam("b_src"),
+            cls.dest_ch_id == bindparam("b_dest"),
+        )
+
+        for kind, group in by_kind.items():
+            if kind is OutcomeKind.SUCCESS:
+                stmt = (
+                    update(cls.__table__)
+                    .where(pk)
+                    .values(
+                        dest_msg_id=bindparam("b_dest_msg"),
+                        applied_version=bindparam("b_version"),
+                        claimed_by=None,
+                        claimed_at=None,
+                        last_error_ref=None,
+                        last_error_class=None,
+                        last_error_msg=None,
+                        state=case(
+                            (guard, DeliveryState.DELIVERED.value),
+                            else_=DeliveryState.PENDING.value,
+                        ),
+                        finished_at=case((guard, now), else_=None),
+                    )
+                )
+                params = [
+                    {
+                        "b_src": o.src_msg_id,
+                        "b_dest": o.dest_ch_id,
+                        "b_dest_msg": o.dest_msg_id,
+                        "b_version": o.version,
+                    }
+                    for o in group
+                ]
+            elif kind is OutcomeKind.DELETE_SUCCESS:
+                stmt = (
+                    update(cls.__table__)
+                    .where(pk)
+                    .values(
+                        applied_version=bindparam("b_version"),
+                        claimed_by=None,
+                        claimed_at=None,
+                        last_error_ref=None,
+                        last_error_class=None,
+                        last_error_msg=None,
+                        state=DeliveryState.DELIVERED.value,
+                        finished_at=now,
+                    )
+                )
+                params = [
+                    {
+                        "b_src": o.src_msg_id,
+                        "b_dest": o.dest_ch_id,
+                        "b_version": o.version,
+                    }
+                    for o in group
+                ]
+            elif kind is OutcomeKind.TRANSIENT:
+                stmt = (
+                    update(cls.__table__)
+                    .where(pk)
+                    .values(
+                        attempts=bindparam("b_attempts"),
+                        due_at=bindparam("b_due_at"),
+                        state=DeliveryState.PENDING.value,
+                        claimed_by=None,
+                        claimed_at=None,
+                        last_error_ref=bindparam("b_ref"),
+                        last_error_class=bindparam("b_class"),
+                        last_error_msg=bindparam("b_msg"),
+                    )
+                )
+                params = [
+                    {
+                        "b_src": o.src_msg_id,
+                        "b_dest": o.dest_ch_id,
+                        "b_attempts": o.attempts,
+                        "b_due_at": o.due_at,
+                        "b_ref": o.error_ref,
+                        "b_class": o.error_class,
+                        "b_msg": o.error_msg,
+                    }
+                    for o in group
+                ]
+            elif kind is OutcomeKind.TERMINAL:
+                stmt = (
+                    update(cls.__table__)
+                    .where(pk)
+                    .values(
+                        attempts=bindparam("b_attempts"),
+                        claimed_by=None,
+                        claimed_at=None,
+                        last_error_ref=bindparam("b_ref"),
+                        last_error_class=bindparam("b_class"),
+                        last_error_msg=bindparam("b_msg"),
+                        confirmed_dead=bindparam("b_dead"),
+                        state=case(
+                            (guard, DeliveryState.FAILED.value),
+                            else_=DeliveryState.PENDING.value,
+                        ),
+                        finished_at=case((guard, now), else_=None),
+                    )
+                )
+                params = [
+                    {
+                        "b_src": o.src_msg_id,
+                        "b_dest": o.dest_ch_id,
+                        "b_version": o.version,
+                        "b_attempts": o.attempts,
+                        "b_ref": o.error_ref,
+                        "b_class": o.error_class,
+                        "b_msg": o.error_msg,
+                        "b_dead": o.confirmed_dead,
+                    }
+                    for o in group
+                ]
+            else:  # OutcomeKind.CANCELLED
+                stmt = (
+                    update(cls.__table__)
+                    .where(pk)
+                    .values(
+                        claimed_by=None,
+                        claimed_at=None,
+                        state=case(
+                            (guard, DeliveryState.CANCELLED.value),
+                            else_=DeliveryState.PENDING.value,
+                        ),
+                        finished_at=case((guard, now), else_=None),
+                    )
+                )
+                params = [
+                    {
+                        "b_src": o.src_msg_id,
+                        "b_dest": o.dest_ch_id,
+                        "b_version": o.version,
+                    }
+                    for o in group
+                ]
+            await session.execute(stmt, params)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def non_terminal_backlog(
+        cls,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> list[tuple[int, int, int, bool, bool]]:
+        """Per-source summary of non-terminal (PENDING/CLAIMED) rows, for recovery.
+
+        Returns ``(src_msg_id, src_ch_id, count, any_deleted, any_unsent)`` per source
+        message with work still to do, so the worker can register a synthetic recovery
+        RunView (op inferred from the flags) and total per source.
+        """
+        rows = (
+            await session.execute(
+                select(
+                    cls.src_msg_id,
+                    func.max(cls.src_ch_id),
+                    func.count(),
+                    func.max(case((cls.deleted, 1), else_=0)),
+                    func.max(case((cls.applied_version == 0, 1), else_=0)),
+                )
+                .where(
+                    cls.state.in_(
+                        [DeliveryState.PENDING.value, DeliveryState.CLAIMED.value]
+                    )
+                )
+                .group_by(cls.src_msg_id)
+            )
+        ).fetchall()
+        return [
+            (int(smi), int(sci), int(cnt), bool(any_del), bool(any_unsent))
+            for smi, sci, cnt, any_del, any_unsent in rows
+        ]
+
+    @classmethod
+    @ensure_session(db_session)
+    async def prune(
+        cls,
+        *,
+        now: dt.datetime | None = None,
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        """Prune old rows: non-terminal at 21 days, terminal FAILED at 90 days.
+
+        FAILED rows are the disable evidence for low-cadence sources, so they are kept
+        longer than everything else (owner retention decision).
+        """
+        now = now or _utcnow()
+        await session.execute(
+            delete(cls).where(
+                and_(
+                    cls.created_at < now - dt.timedelta(days=21),
+                    cls.state != DeliveryState.FAILED.value,
+                )
+            )
+        )
+        await session.execute(
+            delete(cls).where(cls.created_at < now - dt.timedelta(days=90))
         )
 
 

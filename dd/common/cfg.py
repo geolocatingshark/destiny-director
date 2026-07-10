@@ -242,6 +242,17 @@ mirror_max_concurrency = 8
 mirror_rate_per_sec = 30.0
 mirror_retry_min = 180
 mirror_retry_max = 300
+# Durable delivery-ledger worker knobs (mirror-v2). The convergence worker claims up
+# to mirror_claim_batch_size due rows per pass via FOR UPDATE SKIP LOCKED; a row left
+# CLAIMED longer than mirror_claim_stale_seconds (a worker that died mid-batch) is
+# reclaimable. mirror_poll_interval is the lazy backstop the worker sleeps when no
+# gateway nudge arrives. The per-op attempt caps preserve the old retry thresholds
+# (3 for an initial send, 2 for an edit/delete).
+mirror_claim_batch_size = 50
+mirror_claim_stale_seconds = 15 * 60
+mirror_poll_interval = 45
+mirror_send_max_attempts = 3
+mirror_edit_max_attempts = 2
 # Seconds an autopost announcer may stall (API offline / edit failing) before a
 # single critical alert fires for that run.
 announcer_offline_alert_after = 900
