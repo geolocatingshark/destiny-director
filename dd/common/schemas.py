@@ -1390,23 +1390,35 @@ class MirrorDelivery(Base):
         )
         # 21-day sweep of *superseded* successes: a DELIVERED row for which a strictly
         # newer DELIVERED exists for the same pair — the latest one stays as the anchor.
+        # Done as SELECT-the-pks then DELETE-by-pk (not one self-referencing DELETE):
+        # MySQL forbids referencing the delete target inside a subquery (error 1093),
+        # even though SQLite allows it, so the correlated EXISTS must live in a read.
         newer = aliased(cls)
-        await session.execute(
-            delete(cls).where(
-                and_(
-                    cls.created_at < cutoff_21,
-                    cls.state == DeliveryState.DELIVERED.value,
-                    exists().where(
-                        and_(
-                            newer.src_ch_id == cls.src_ch_id,
-                            newer.dest_ch_id == cls.dest_ch_id,
-                            newer.state == DeliveryState.DELIVERED.value,
-                            newer.finished_at > cls.finished_at,
-                        )
-                    ),
+        superseded = (
+            await session.execute(
+                select(cls.src_msg_id, cls.dest_ch_id).where(
+                    and_(
+                        cls.created_at < cutoff_21,
+                        cls.state == DeliveryState.DELIVERED.value,
+                        exists().where(
+                            and_(
+                                newer.src_ch_id == cls.src_ch_id,
+                                newer.dest_ch_id == cls.dest_ch_id,
+                                newer.state == DeliveryState.DELIVERED.value,
+                                newer.finished_at > cls.finished_at,
+                            )
+                        ),
+                    )
                 )
             )
-        )
+        ).fetchall()
+        pks = [(int(smi), int(dci)) for smi, dci in superseded]
+        for i in range(0, len(pks), 500):  # chunk to bound the IN-list / packet size
+            await session.execute(
+                delete(cls).where(
+                    tuple_(cls.src_msg_id, cls.dest_ch_id).in_(pks[i : i + 500])
+                )
+            )
         # 90-day backstop: everything, including the retained anchor + FAILED evidence.
         await session.execute(delete(cls).where(cls.created_at < cutoff_90))
 
