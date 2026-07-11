@@ -27,7 +27,7 @@ from typing import Self
 
 import regex as re
 from atlas_provider_sqlalchemy.ddl import print_ddl
-from sqlalchemy import Index, bindparam, case, literal, or_, tuple_
+from sqlalchemy import Index, bindparam, case, exists, literal, or_, tuple_
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import (
@@ -36,7 +36,13 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import Mapped, declarative_base, mapped_column, validates
+from sqlalchemy.orm import (
+    Mapped,
+    aliased,
+    declarative_base,
+    mapped_column,
+    validates,
+)
 from sqlalchemy.sql import insert, select, text, update
 from sqlalchemy.sql.expression import and_, delete, desc
 from sqlalchemy.sql.functions import coalesce, func
@@ -513,8 +519,14 @@ class MirroredChannel(Base):
                 .values(state=DeliveryState.CANCELLED.value, confirmed_dead=False)
             )
 
-        # Add reenabled mirrors to the cache
-        cls._legacy_srcs_cache.update(set([src_id for src_id, _ in mirrors_to_enable]))
+        # Add re-enabled mirrors to the cache — but ONLY if it has already been
+        # populated by a full fetch. Seeding an empty cache with just this handful of
+        # ids would make get_or_fetch_all_srcs (which treats a non-empty cache as
+        # authoritative) return only them and silently drop every other legacy source
+        # until restart. An empty cache is left empty so the next fetch reads all srcs
+        # (the re-enabled pairs included, since they are now ``enabled``).
+        if cls._legacy_srcs_cache:
+            cls._legacy_srcs_cache.update(src_id for src_id, _ in mirrors_to_enable)
 
         return mirrors_to_enable
 
@@ -712,7 +724,17 @@ class MirrorDelivery(Base):
         Index("ix_mirror_delivery_state_due", "state", "due_at"),  # claim scan
         Index(
             "ix_mirror_delivery_pair_state", "src_ch_id", "dest_ch_id", "state"
-        ),  # streak query
+        ),  # streak query (pair grouping)
+        # Covers both halves of the derived disable sweep: the per-pair
+        # MAX(finished_at) over DELIVERED (last-success anchor) and the FAILED streak
+        # scan — state-then-pair-then-finished_at, so neither needs a full-table scan.
+        Index(
+            "ix_mirror_delivery_state_pair_finished",
+            "state",
+            "src_ch_id",
+            "dest_ch_id",
+            "finished_at",
+        ),
         Index("ix_mirror_delivery_created_at", "created_at"),  # prune
     )
 
@@ -817,14 +839,24 @@ class MirrorDelivery(Base):
         *,
         session: AsyncSession = _UNSET,
     ) -> tuple[int, int]:
-        """Reconcile an edit: bump every non-deleted row's ``desired_version`` back to
-        PENDING, then insert rows for any dests added since the send.
+        """Reconcile an edit: bump every non-deleted row's ``desired_version`` and reset
+        its retry budget, then insert rows for any dests added since the send.
 
         Returns ``(bumped, inserted)`` rowcounts — both zero means this was not a
         mirrored message. Rows for dests since removed from ``mirrored_channel`` keep
         converging (they are bumped but not re-inserted), matching the old reconcile.
-        FAILED/CANCELLED rows are reset to PENDING too; rows with ``deleted=1`` are
-        never touched by an edit.
+        FAILED/CANCELLED/PENDING rows are (re)armed to PENDING; rows with ``deleted=1``
+        are never touched by an edit.
+
+        An in-flight **CLAIMED** row is left CLAIMED (only its ``desired_version`` /
+        retry budget are bumped): resetting it to PENDING here would let the claim loop
+        re-claim it before the in-flight send's SUCCESS outcome — which carries the new
+        ``dest_msg_id`` — has flushed, sending a duplicate message and orphaning the
+        first. Leaving it CLAIMED means the in-flight attempt finishes and its (now
+        version-mismatched) outcome records the ``dest_msg_id`` and drops the row to
+        PENDING, so the next claim *edits* the recorded message instead of re-sending.
+        ``claimed_at`` is deliberately not touched, so the stale-claim safety net still
+        recovers a genuinely dead worker.
         """
         now = _utcnow()
         bumped = await session.execute(
@@ -832,7 +864,10 @@ class MirrorDelivery(Base):
             .where(and_(cls.src_msg_id == int(src_msg_id), ~cls.deleted))
             .values(
                 desired_version=cls.desired_version + 1,
-                state=DeliveryState.PENDING.value,
+                state=case(
+                    (cls.state == DeliveryState.CLAIMED.value, cls.state),
+                    else_=DeliveryState.PENDING.value,
+                ),
                 attempts=0,
                 due_at=now,
                 finished_at=None,
@@ -958,41 +993,55 @@ class MirrorDelivery(Base):
         (single process, no contention).
         """
         now = now or _utcnow()
+        # A Core column select (not ``select(cls)``): the seven scalars below are copied
+        # straight into the frozen ClaimedRow, so full ORM-entity hydration (columns,
+        # identity-map registration, expire-on-flush bookkeeping) — repeated every claim
+        # pass — would be pure waste.
         rows = (
-            (
-                await session.execute(
-                    select(cls)
-                    .join(
-                        ServerStatistics,
-                        cls.dest_server_id == ServerStatistics.id,
-                        isouter=True,
-                    )
-                    .where(
-                        or_(
-                            and_(
-                                cls.state == DeliveryState.PENDING.value,
-                                cls.due_at <= now,
-                            ),
-                            and_(
-                                cls.state == DeliveryState.CLAIMED.value,
-                                cls.claimed_at <= stale_cutoff,
-                            ),
-                        )
-                    )
-                    .order_by(
-                        desc(coalesce(ServerStatistics.population, 10**12)),
-                        cls.created_at,
-                    )
-                    .limit(batch_size)
-                    .with_for_update(skip_locked=True, of=cls)
+            await session.execute(
+                select(
+                    cls.src_msg_id,
+                    cls.dest_ch_id,
+                    cls.src_ch_id,
+                    cls.dest_msg_id,
+                    cls.desired_version,
+                    cls.deleted,
+                    cls.attempts,
                 )
+                .join(
+                    ServerStatistics,
+                    cls.dest_server_id == ServerStatistics.id,
+                    isouter=True,
+                )
+                .where(
+                    or_(
+                        and_(
+                            cls.state == DeliveryState.PENDING.value,
+                            cls.due_at <= now,
+                        ),
+                        and_(
+                            cls.state == DeliveryState.CLAIMED.value,
+                            cls.claimed_at <= stale_cutoff,
+                        ),
+                    )
+                )
+                # Biggest-server-first. This orders on a joined, coalesced expression so
+                # MySQL filesorts the due set before LIMIT. Left as-is deliberately: the
+                # only sound removal is denormalising a priority snapshot onto every row
+                # (a schema column kept in sync with server population), whose staleness
+                # trade-off and migration surface outweigh a bounded ~batch-size sort of
+                # a set already narrowed by the (state, due_at) index. Revisit if the
+                # due backlog ever dwarfs the batch size.
+                .order_by(
+                    desc(coalesce(ServerStatistics.population, 10**12)),
+                    cls.created_at,
+                )
+                .limit(batch_size)
+                .with_for_update(skip_locked=True, of=cls.__table__)
             )
-            .scalars()
-            .all()
-        )
+        ).all()
         if not rows:
             return []
-        # Snapshot before the claim UPDATE (which may expire the ORM instances).
         claimed = [
             ClaimedRow(
                 src_msg_id=int(r.src_msg_id),
@@ -1041,10 +1090,23 @@ class MirrorDelivery(Base):
             by_kind.setdefault(o.kind, []).append(o)
 
         # The version/deleted guard: the row's current desired_version still matches the
-        # version this attempt delivered AND no delete intent has landed.
+        # version this attempt delivered AND no delete intent has landed. When it fails
+        # (a raced edit bumped the version, or a delete landed), the row is kept
+        # converging instead of being marked terminal, and — crucially — the racing
+        # writer's fresh state (e.g. bump_for_edit's ``attempts=0``) is preserved rather
+        # than clobbered by this stale outcome.
         guard = and_(
             cls.desired_version == bindparam("b_version"),
             ~cls.deleted,
+        )
+        # A CANCELLED outcome should latch even for a delete-intent row that had nothing
+        # to deliver (``deleted=1`` + never sent) — the ``~deleted`` half of ``guard``
+        # would send it back to PENDING forever, re-claimed and re-cancelled every poll.
+        # It must NOT latch when a real delete is still outstanding (a delivered message
+        # to remove) or an edit bumped the version.
+        cancel_guard = and_(
+            cls.desired_version == bindparam("b_version"),
+            or_(~cls.deleted, cls.dest_msg_id.is_(None)),
         )
         pk = and_(
             cls.src_msg_id == bindparam("b_src"),
@@ -1104,24 +1166,37 @@ class MirrorDelivery(Base):
                     for o in group
                 ]
             elif kind is OutcomeKind.TRANSIENT:
+                # State is PENDING either way (re-claimable); but the retry budget and
+                # backoff are guarded so a raced edit that already re-armed the row
+                # (attempts=0, due=now) is not clobbered by this stale outcome's
+                # exhausted count / far-future backoff.
                 stmt = (
                     update(cls.__table__)
                     .where(pk)
                     .values(
-                        attempts=bindparam("b_attempts"),
-                        due_at=bindparam("b_due_at"),
+                        attempts=case(
+                            (guard, bindparam("b_attempts")), else_=cls.attempts
+                        ),
+                        due_at=case((guard, bindparam("b_due_at")), else_=cls.due_at),
                         state=DeliveryState.PENDING.value,
                         claimed_by=None,
                         claimed_at=None,
-                        last_error_ref=bindparam("b_ref"),
-                        last_error_class=bindparam("b_class"),
-                        last_error_msg=bindparam("b_msg"),
+                        last_error_ref=case(
+                            (guard, bindparam("b_ref")), else_=cls.last_error_ref
+                        ),
+                        last_error_class=case(
+                            (guard, bindparam("b_class")), else_=cls.last_error_class
+                        ),
+                        last_error_msg=case(
+                            (guard, bindparam("b_msg")), else_=cls.last_error_msg
+                        ),
                     )
                 )
                 params = [
                     {
                         "b_src": o.src_msg_id,
                         "b_dest": o.dest_ch_id,
+                        "b_version": o.version,
                         "b_attempts": o.attempts,
                         "b_due_at": o.due_at,
                         "b_ref": o.error_ref,
@@ -1131,17 +1206,31 @@ class MirrorDelivery(Base):
                     for o in group
                 ]
             elif kind is OutcomeKind.TERMINAL:
+                # Every value is guarded: when a raced edit/delete bumped the version
+                # the row goes back to PENDING (not FAILED) AND keeps the racing
+                # writer's reset budget/error state, so the new version gets its full
+                # retry allowance instead of inheriting this attempt's exhausted count.
                 stmt = (
                     update(cls.__table__)
                     .where(pk)
                     .values(
-                        attempts=bindparam("b_attempts"),
+                        attempts=case(
+                            (guard, bindparam("b_attempts")), else_=cls.attempts
+                        ),
                         claimed_by=None,
                         claimed_at=None,
-                        last_error_ref=bindparam("b_ref"),
-                        last_error_class=bindparam("b_class"),
-                        last_error_msg=bindparam("b_msg"),
-                        confirmed_dead=bindparam("b_dead"),
+                        last_error_ref=case(
+                            (guard, bindparam("b_ref")), else_=cls.last_error_ref
+                        ),
+                        last_error_class=case(
+                            (guard, bindparam("b_class")), else_=cls.last_error_class
+                        ),
+                        last_error_msg=case(
+                            (guard, bindparam("b_msg")), else_=cls.last_error_msg
+                        ),
+                        confirmed_dead=case(
+                            (guard, bindparam("b_dead")), else_=cls.confirmed_dead
+                        ),
                         state=case(
                             (guard, DeliveryState.FAILED.value),
                             else_=DeliveryState.PENDING.value,
@@ -1170,10 +1259,10 @@ class MirrorDelivery(Base):
                         claimed_by=None,
                         claimed_at=None,
                         state=case(
-                            (guard, DeliveryState.CANCELLED.value),
+                            (cancel_guard, DeliveryState.CANCELLED.value),
                             else_=DeliveryState.PENDING.value,
                         ),
-                        finished_at=case((guard, now), else_=None),
+                        finished_at=case((cancel_guard, now), else_=None),
                     )
                 )
                 params = [
@@ -1184,6 +1273,13 @@ class MirrorDelivery(Base):
                     }
                     for o in group
                 ]
+            # One driver executemany per kind. asyncmy (PyMySQL lineage) only rewrites
+            # INSERT…VALUES into a single multi-row statement, so this UPDATE issues one
+            # round trip per row. Acceptable: it is a single transaction bounded by the
+            # claim batch size, and the version-guarded CASE columns make a hand-built
+            # bulk UPDATE (per-row CASE keyed on PK) materially more error-prone than
+            # the per-row cost is worth. Revisit with a temp-table/VALUES join if flush
+            # dominates a run's wall-clock.
             await session.execute(stmt, params)
 
     @classmethod
@@ -1223,29 +1319,96 @@ class MirrorDelivery(Base):
 
     @classmethod
     @ensure_session(db_session)
+    async def non_terminal_counts(
+        cls,
+        src_msg_ids: t.Collection[int],
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> dict[int, int]:
+        """Count non-terminal (PENDING/CLAIMED) rows per source message.
+
+        The ledger-authoritative completion signal for the worker's run-view reconcile:
+        a run is durably done exactly when this returns 0 for its ``src_msg_id`` (every
+        row DELIVERED / FAILED / CANCELLED, and — since an unflushed outcome leaves its
+        row CLAIMED — nothing still in-flight). A ``src_msg_id`` with no non-terminal
+        rows is simply absent from the result (callers treat missing as 0).
+        """
+        ids = [int(i) for i in src_msg_ids]
+        if not ids:
+            return {}
+        rows = (
+            await session.execute(
+                select(cls.src_msg_id, func.count())
+                .where(
+                    and_(
+                        cls.src_msg_id.in_(ids),
+                        cls.state.in_(
+                            [DeliveryState.PENDING.value, DeliveryState.CLAIMED.value]
+                        ),
+                    )
+                )
+                .group_by(cls.src_msg_id)
+            )
+        ).fetchall()
+        return {int(smi): int(cnt) for smi, cnt in rows}
+
+    @classmethod
+    @ensure_session(db_session)
     async def prune(
         cls,
         *,
         now: dt.datetime | None = None,
         session: AsyncSession = _UNSET,
     ) -> None:
-        """Prune old rows: non-terminal at 21 days, terminal FAILED at 90 days.
+        """Prune old rows: most at 21 days, the disable *evidence* at 90 days.
 
-        FAILED rows are the disable evidence for low-cadence sources, so they are kept
-        longer than everything else (owner retention decision).
+        FAILED rows are the confirmed-dead evidence the derived disable sweep counts, so
+        they are kept 90 days for low-cadence sources (owner retention decision). But
+        that evidence is only sound if the streak-reset anchor survives with it: the
+        disable query treats "no DELIVERED row after the failures" as "never recovered",
+        so pruning a recovered pair's success rows at 21 days while its old FAILED rows
+        linger would falsely re-disable a healthy mirror. So the **latest DELIVERED row
+        per pair** is retained on the same 90-day window as FAILED; only *superseded*
+        successes (a newer DELIVERED exists for the pair) and non-evidence states
+        (PENDING/CLAIMED/CANCELLED) are pruned at 21 days.
         """
         now = now or _utcnow()
+        cutoff_21 = now - dt.timedelta(days=21)
+        cutoff_90 = now - dt.timedelta(days=90)
+
+        # 21-day sweep of everything that is neither the FAILED evidence nor a DELIVERED
+        # success (those two are handled below).
         await session.execute(
             delete(cls).where(
                 and_(
-                    cls.created_at < now - dt.timedelta(days=21),
-                    cls.state != DeliveryState.FAILED.value,
+                    cls.created_at < cutoff_21,
+                    cls.state.notin_(
+                        [DeliveryState.FAILED.value, DeliveryState.DELIVERED.value]
+                    ),
                 )
             )
         )
+        # 21-day sweep of *superseded* successes: a DELIVERED row for which a strictly
+        # newer DELIVERED exists for the same pair — the latest one stays as the anchor.
+        newer = aliased(cls)
         await session.execute(
-            delete(cls).where(cls.created_at < now - dt.timedelta(days=90))
+            delete(cls).where(
+                and_(
+                    cls.created_at < cutoff_21,
+                    cls.state == DeliveryState.DELIVERED.value,
+                    exists().where(
+                        and_(
+                            newer.src_ch_id == cls.src_ch_id,
+                            newer.dest_ch_id == cls.dest_ch_id,
+                            newer.state == DeliveryState.DELIVERED.value,
+                            newer.finished_at > cls.finished_at,
+                        )
+                    ),
+                )
+            )
         )
+        # 90-day backstop: everything, including the retained anchor + FAILED evidence.
+        await session.execute(delete(cls).where(cls.created_at < cutoff_90))
 
 
 class ServerStatistics(Base):

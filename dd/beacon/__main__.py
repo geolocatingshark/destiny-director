@@ -36,6 +36,7 @@ from ..common.discord_logging import (
 )
 from ..common.extension_loader import load_extensions_strict
 from ..common.lifecycle import consume_exit_code
+from .mirror_worker import mirror_worker
 
 bot = ServerEmojiEnabledBot(
     token=cfg.discord_token_beacon,
@@ -81,6 +82,10 @@ async def on_start_install_logging(_event: h.StartedEvent):
 
 @bot.listen(h.StoppingEvent)
 async def on_stopping_event(_event: h.StoppingEvent):
+    # Drain the mirror worker *before* disposing the DB engine: stop() flushes any
+    # buffered delivery outcomes so observed dest_msg_ids are persisted (else a restart
+    # re-sends them), and the drain needs a live engine.
+    await mirror_worker.stop()
     await aclose_discord_logging()
     await schemas.db_engine.dispose()
 

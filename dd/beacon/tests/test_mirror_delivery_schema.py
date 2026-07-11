@@ -523,3 +523,191 @@ async def test_prune_retention_21d_and_90d():
     assert 700 not in states  # non-terminal 30d → gone
     assert states.get(701) == DeliveryState.FAILED.value  # FAILED 30d → kept
     assert 702 not in states  # FAILED 100d → gone
+
+
+async def test_prune_keeps_latest_delivered_anchor():
+    # S4: the streak-reset anchor (a pair's latest DELIVERED) must survive with the
+    # FAILED evidence, or a recovered-then-quiet pair gets falsely re-disabled once its
+    # success rows are pruned at 21d while old FAILED rows linger to 90d.
+    src, dest = 810, 720
+    await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
+    now = dt.datetime.now(tz=dt.UTC)
+    async with schemas.db_session() as session, session.begin():
+        # An older (superseded) success, the latest success, and a FAILED row — all
+        # older than the 21-day cutoff.
+        session.add_all(
+            [
+                MirrorDelivery(
+                    src_msg_id=-9001,
+                    dest_ch_id=dest,
+                    src_ch_id=src,
+                    state=DeliveryState.DELIVERED.value,
+                    finished_at=now - dt.timedelta(days=40),
+                    created_at=now - dt.timedelta(days=40),
+                ),
+                MirrorDelivery(
+                    src_msg_id=-9002,
+                    dest_ch_id=dest,
+                    src_ch_id=src,
+                    state=DeliveryState.DELIVERED.value,
+                    finished_at=now - dt.timedelta(days=30),
+                    created_at=now - dt.timedelta(days=30),
+                ),
+                MirrorDelivery(
+                    src_msg_id=-9003,
+                    dest_ch_id=dest,
+                    src_ch_id=src,
+                    state=DeliveryState.FAILED.value,
+                    finished_at=now - dt.timedelta(days=35),
+                    created_at=now - dt.timedelta(days=35),
+                ),
+            ]
+        )
+    await MirrorDelivery.prune(now=now)
+    async with schemas.db_session() as session, session.begin():
+        rows = (
+            await session.execute(
+                select(MirrorDelivery.src_msg_id, MirrorDelivery.state).where(
+                    MirrorDelivery.dest_ch_id == dest
+                )
+            )
+        ).fetchall()
+    kept = {int(smi): st for smi, st in rows}
+    assert -9001 not in kept  # superseded success pruned at 21d
+    assert kept.get(-9002) == DeliveryState.DELIVERED.value  # latest success = anchor
+    assert kept.get(-9003) == DeliveryState.FAILED.value  # evidence kept
+
+
+# -- flush guards: raced edit/delete must not clobber the racing writer's reset --------
+
+
+async def test_flush_cancelled_latches_for_deleted_never_delivered():
+    # S1: a CANCELLED outcome for a delete-intent row that never delivered must latch
+    # CANCELLED, not bounce back to PENDING forever (claim→cancel→PENDING livelock).
+    await _seed_one(1200, 680, deleted=True, dest_msg_id=None)
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                kind=OutcomeKind.CANCELLED,
+                src_msg_id=1200,
+                dest_ch_id=680,
+                version=1,
+            )
+        ]
+    )
+    assert (await _row(1200, 680))["state"] == DeliveryState.CANCELLED.value
+
+
+async def test_flush_terminal_after_edit_bump_preserves_reset_attempts():
+    # S3: when the version guard fails (edit re-armed the row to attempts=0), a stale
+    # TERMINAL outcome must not clobber attempts back to its exhausted count.
+    await _seed_one(1210, 690, desired_version=2, attempts=0)
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                kind=OutcomeKind.TERMINAL,
+                src_msg_id=1210,
+                dest_ch_id=690,
+                version=1,
+                attempts=3,
+                error_ref="DEAD03",
+                error_class="PERMANENT",
+                confirmed_dead=True,
+            )
+        ]
+    )
+    row = await _row(1210, 690)
+    assert row["state"] == DeliveryState.PENDING.value  # keep converging
+    assert row["attempts"] == 0  # reset budget preserved, not clobbered to 3
+    assert row["confirmed_dead"] is False  # stale dead flag not applied either
+
+
+async def test_flush_transient_after_edit_bump_preserves_reset_attempts():
+    # S3 (transient path): same guard — a stale transient must not push the re-armed
+    # row's attempts/backoff forward.
+    await _seed_one(1220, 695, desired_version=2, attempts=0)
+    far_future = dt.datetime.now(tz=dt.UTC) + dt.timedelta(minutes=5)
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                kind=OutcomeKind.TRANSIENT,
+                src_msg_id=1220,
+                dest_ch_id=695,
+                version=1,
+                attempts=2,
+                due_at=far_future,
+                error_ref="TMP01",
+                error_class="TRANSIENT",
+                error_msg="5xx",
+            )
+        ]
+    )
+    row = await _row(1220, 695)
+    assert row["state"] == DeliveryState.PENDING.value
+    assert row["attempts"] == 0  # not bumped to 2
+
+
+async def test_bump_for_edit_keeps_claimed_rows_claimed():
+    # S2: an in-flight CLAIMED row must stay CLAIMED (only its version/budget bumped) so
+    # it can't be re-claimed and re-sent before its outcome flushes → no duplicate send.
+    await _seed_one(1230, 698, state=DeliveryState.CLAIMED.value, claimed_by="w1")
+    bumped, _ = await MirrorDelivery.bump_for_edit(500, 1230)
+    assert bumped == 1
+    row = await _row(1230, 698)
+    assert row["state"] == DeliveryState.CLAIMED.value  # not reset to PENDING
+    assert row["desired_version"] == 2
+    assert row["attempts"] == 0
+
+
+# -- non_terminal_counts -----------------------------------------------------
+
+
+async def test_non_terminal_counts_only_pending_and_claimed():
+    src = 850
+    for dest in (730, 731, 732):
+        await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(src, 1300)  # 3 PENDING rows
+    async with schemas.db_session() as session, session.begin():
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(
+                    MirrorDelivery.src_msg_id == 1300, MirrorDelivery.dest_ch_id == 730
+                )
+            )
+            .values(state=DeliveryState.DELIVERED.value)
+        )
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(
+                    MirrorDelivery.src_msg_id == 1300, MirrorDelivery.dest_ch_id == 731
+                )
+            )
+            .values(state=DeliveryState.CLAIMED.value)
+        )
+    # 732 PENDING + 731 CLAIMED = 2 non-terminal; 730 DELIVERED excluded.
+    counts = await MirrorDelivery.non_terminal_counts([1300, 999_999])
+    assert counts == {1300: 2}  # a source with no non-terminal rows is simply absent
+
+
+async def test_undo_auto_disable_does_not_poison_empty_cache():
+    # S5: undo re-enabling a pair must not seed an empty srcs cache with only that id
+    # (which would make get_or_fetch_all_srcs drop every other legacy source).
+    src, dest = 860, 740
+    await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
+    # Also a second, unrelated legacy source that must remain discoverable.
+    await MirroredChannel.add_mirror(870, 741, 1, legacy=True)
+    now = dt.datetime.now(tz=dt.UTC)
+    async with schemas.db_session() as session, session.begin():
+        await session.execute(
+            update(MirroredChannel)
+            .where(and_(MirroredChannel.src_id == src, MirroredChannel.dest_id == dest))
+            .values(enabled=False, legacy_disable_for_failure_on_date=now)
+        )
+    MirroredChannel._legacy_srcs_cache.clear()  # simulate "no full fetch yet"
+    await MirroredChannel.undo_auto_disable_for_failure(
+        since=now - dt.timedelta(days=1)
+    )
+    # The cache was left empty (not poisoned), so a subsequent fetch sees BOTH sources.
+    assert await MirroredChannel.get_or_fetch_all_srcs() == {src, 870}

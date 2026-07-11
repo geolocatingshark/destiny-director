@@ -144,11 +144,16 @@ class RunView:
     total: int
     start_time: float  # perf_counter()
     _delivered: set[int] = field(default_factory=set)
-    _failed: set[int] = field(default_factory=set)
     _cancelled: set[int] = field(default_factory=set)
     attempted_once: set[int] = field(default_factory=set)
+    # The failed set is derived from ``failures.keys()`` — every recorder keeps the two
+    # in lock-step, so a separate set would just be redundant state to keep in sync.
     failures: dict[int, RunFailure] = field(default_factory=dict)
     cancel_requested: bool = False
+    # ``superseded`` — an edit or delete handed this run over to a successor, so its
+    # run-end reporting (alerts, disable sweep) is skipped and it finalizes immediately.
+    # ``superseded_by_edit`` is the display flavour (recycle vs. plain "superseded").
+    superseded: bool = False
     superseded_by_edit: bool = False
     disabled_count: int = 0
     finalized: bool = False
@@ -157,9 +162,12 @@ class RunView:
     # -- recording ---------------------------------------------------------
 
     def on_delivered(self, dest_ch_id: int) -> None:
-        """Record a converged (send/edit/delete) destination."""
+        """Record a converged (send/edit/delete) destination.
+
+        Idempotent under retries and clears any prior failure/cancel for the dest, so a
+        transient-then-success dest ends up counted only as delivered.
+        """
         self.attempted_once.add(dest_ch_id)
-        self._failed.discard(dest_ch_id)
         self._cancelled.discard(dest_ch_id)
         self.failures.pop(dest_ch_id, None)
         self._delivered.add(dest_ch_id)
@@ -173,11 +181,10 @@ class RunView:
         self.attempted_once.add(dest_ch_id)
         self._cancelled.discard(dest_ch_id)
         self.failures[dest_ch_id] = failure
-        self._failed.add(dest_ch_id)
 
     def on_cancelled(self, dest_ch_id: int) -> None:
         """Record a cancelled destination (short-circuited before any Discord call)."""
-        if dest_ch_id in self._delivered or dest_ch_id in self._failed:
+        if dest_ch_id in self._delivered or dest_ch_id in self.failures:
             return
         self._cancelled.add(dest_ch_id)
 
@@ -189,7 +196,7 @@ class RunView:
 
     @property
     def failed(self) -> int:
-        return len(self._failed)
+        return len(self.failures)
 
     @property
     def cancelled_count(self) -> int:
@@ -199,7 +206,10 @@ class RunView:
     def retrying(self) -> int:
         "Attempted at least once but not yet in a terminal state."
         return len(
-            self.attempted_once - self._delivered - self._failed - self._cancelled
+            self.attempted_once
+            - self._delivered
+            - self.failures.keys()
+            - self._cancelled
         )
 
     @property
@@ -219,7 +229,14 @@ class RunView:
 
     @property
     def is_complete(self) -> bool:
-        return self.superseded_by_edit or self.resolved >= self.total
+        """Best-effort in-memory completion, for the progress *display* only.
+
+        Authoritative finalization is ledger-driven (the worker reconciles a run against
+        its ``mirror_delivery`` rows): in-memory set accounting can momentarily read
+        complete while the ledger still has PENDING rows (e.g. an outcome the version
+        guard bounced back), so the worker must not finalize on this alone.
+        """
+        return self.superseded or self.superseded_by_edit or self.resolved >= self.total
 
     @property
     def has_permanent(self) -> bool:

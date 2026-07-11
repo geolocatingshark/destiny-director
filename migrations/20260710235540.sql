@@ -22,6 +22,7 @@ CREATE TABLE `mirror_delivery` (
   PRIMARY KEY (`src_msg_id`, `dest_ch_id`),
   INDEX `ix_mirror_delivery_state_due` (`state`, `due_at`),
   INDEX `ix_mirror_delivery_pair_state` (`src_ch_id`, `dest_ch_id`, `state`),
+  INDEX `ix_mirror_delivery_state_pair_finished` (`state`, `src_ch_id`, `dest_ch_id`, `finished_at`),
   INDEX `ix_mirror_delivery_created_at` (`created_at`)
 ) CHARSET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 -- Backfill from mirrored_message (DELIVERED, applied=desired=1). GROUP BY dedupes

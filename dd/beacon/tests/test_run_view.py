@@ -98,6 +98,25 @@ def test_supersede_completes_regardless():
     assert v.is_complete is True
 
 
+def test_generic_supersede_completes_regardless():
+    # A delete-supersede sets the general handover flag (no "by edit" display flavour).
+    v = _view(total=10)
+    v.on_delivered(1)
+    assert v.is_complete is False
+    v.superseded = True
+    assert v.is_complete is True
+
+
+def test_failed_count_derives_from_failures_dict():
+    # The failed set was removed; the count is derived from the failures dict, so the
+    # two can never disagree.
+    v = _view(total=2)
+    v.on_failed(10, _fail("AAA"))
+    assert v.failed == 1 and set(v.failures) == {10}
+    v.on_delivered(10)  # a retry succeeded → drops from both count and dict
+    assert v.failed == 0 and v.failures == {}
+
+
 def test_failure_breakdown_groups_by_ref_most_common_first():
     v = _view(total=5)
     v.on_failed(10, _fail("AAA", ErrorClass.PERMANENT))

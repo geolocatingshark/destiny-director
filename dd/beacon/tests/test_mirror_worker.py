@@ -33,7 +33,13 @@ from dd.beacon import mirror_worker as mw
 from dd.beacon.mirror_core import MirrorOperationType, RunView
 from dd.beacon.utils import DestVerdict
 from dd.common.bot import CachedFetchBot
-from dd.common.schemas import ClaimedRow, MirrorDelivery, MirroredChannel, OutcomeKind
+from dd.common.schemas import (
+    ClaimedRow,
+    DeliveryOutcome,
+    MirrorDelivery,
+    MirroredChannel,
+    OutcomeKind,
+)
 from dd.common.utils import ErrorClass
 
 pytestmark = pytest.mark.asyncio
@@ -72,7 +78,7 @@ def _worker(monkeypatch, *, fetch_message=None):
 
 
 def _stub_primitives(monkeypatch, *, send=None, edit=None, delete=None):
-    monkeypatch.setattr(mw, "_send_one", send or AsyncMock(return_value=7777))
+    monkeypatch.setattr(mw, "_send_one", send or AsyncMock(return_value=(7777, False)))
     monkeypatch.setattr(mw, "edit_one", edit or AsyncMock(return_value=0))
     monkeypatch.setattr(mw, "_delete_one", delete or AsyncMock(return_value=None))
 
@@ -85,7 +91,7 @@ def _kinds(w) -> dict[int, OutcomeKind]:
 
 
 async def test_op_selection_per_row_shape(monkeypatch):
-    send, edit, delete = AsyncMock(return_value=7777), AsyncMock(), AsyncMock()
+    send, edit, delete = AsyncMock(return_value=(7777, False)), AsyncMock(), AsyncMock()
     _stub_primitives(monkeypatch, send=send, edit=edit, delete=delete)
     w = _worker(monkeypatch)
     view = RunView(
@@ -220,7 +226,7 @@ async def test_probe_exception_is_not_confirmed_and_never_raises(monkeypatch):
 
 
 async def test_cancel_requested_short_circuits(monkeypatch):
-    send = AsyncMock(return_value=7777)
+    send = AsyncMock(return_value=(7777, False))
     _stub_primitives(monkeypatch, send=send)
     w = _worker(monkeypatch)
     view = RunView(
@@ -295,3 +301,117 @@ async def test_backlog_recovery_registers_views(monkeypatch):
     }
     assert w.run_views[1000].total == 3
     assert sorted(started) == [1000, 1001, 1002]
+
+
+# -- source caching (F1) & source-failure cap (W6) --------------------------
+
+
+async def test_source_fetched_once_across_batches(monkeypatch):
+    fetch = AsyncMock(return_value=_fake_msg())
+    _stub_primitives(monkeypatch)
+    w = _worker(monkeypatch, fetch_message=fetch)
+    # Two separate claim batches for the same source + version: the second is served
+    # from the per-(src, version) cache, so the source is fetched only once.
+    await w.process([_row(10)])
+    await w.process([_row(11)])
+    fetch.assert_awaited_once()
+
+
+async def test_source_refetched_on_version_bump(monkeypatch):
+    fetch = AsyncMock(return_value=_fake_msg())
+    _stub_primitives(monkeypatch)
+    w = _worker(monkeypatch, fetch_message=fetch)
+    await w.process([_row(10)])  # version 1
+    v2 = ClaimedRow(
+        src_msg_id=1,
+        dest_ch_id=11,
+        src_ch_id=5,
+        dest_msg_id=None,
+        desired_version=2,
+        deleted=False,
+        attempts=0,
+    )
+    await w.process([v2])  # version 2 → cache miss → fresh fetch
+    assert fetch.await_count == 2
+
+
+async def test_transient_source_fetch_terminalizes_at_cap(monkeypatch):
+    fetch = AsyncMock(side_effect=TimeoutError("5xx"))
+    _stub_primitives(monkeypatch)
+    monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.TRANSIENT)
+    w = _worker(monkeypatch, fetch_message=fetch)
+    # attempts already 2 → this (3rd) attempt hits the send cap → TERMINAL, and a
+    # source-fetch failure never confirms the *dest* dead (no auto-disable).
+    await w.process([_row(10, attempts=2)])
+    outcome = w._buffer[0]
+    assert outcome.kind is OutcomeKind.TERMINAL
+    assert outcome.confirmed_dead is False
+
+
+# -- ledger-driven reconcile & shutdown drain -------------------------------
+
+
+async def test_reconcile_finalizes_when_ledger_drained(monkeypatch):
+    ended: list[int] = []
+
+    async def hook(view):
+        ended.append(view.src_msg_id)
+
+    w = mw.MirrorWorker()
+    w._run_end_hook = hook
+    view = RunView(
+        op=MirrorOperationType.SEND,
+        src_ch_id=5,
+        src_msg_id=1,
+        total=3,
+        start_time=perf_counter(),
+    )
+    w.register_view(view)
+    # Ledger reports no non-terminal rows for this source → run is durably complete.
+    monkeypatch.setattr(
+        MirrorDelivery, "non_terminal_counts", AsyncMock(return_value={})
+    )
+    await w._reconcile_views()
+    # Let the spawned run-end task run.
+    await asyncio.sleep(0)
+    assert view._finalizing is True
+    assert ended == [1]
+
+
+async def test_reconcile_leaves_run_with_pending_rows_open(monkeypatch):
+    w = mw.MirrorWorker()
+    view = RunView(
+        op=MirrorOperationType.SEND,
+        src_ch_id=5,
+        src_msg_id=1,
+        total=3,
+        start_time=perf_counter(),
+    )
+    w.register_view(view)
+    monkeypatch.setattr(
+        MirrorDelivery, "non_terminal_counts", AsyncMock(return_value={1: 2})
+    )
+    await w._reconcile_views()
+    assert view._finalizing is False
+
+
+async def test_stop_drains_buffered_outcomes(monkeypatch):
+    flush = AsyncMock()
+    monkeypatch.setattr(MirrorDelivery, "flush_outcomes", flush)
+    w = mw.MirrorWorker()
+    w._buffer = [
+        DeliveryOutcome(kind=OutcomeKind.SUCCESS, src_msg_id=1, dest_ch_id=2, version=1)
+    ]
+    await w.stop()  # no loops running; must still flush the buffer
+    flush.assert_awaited_once()
+    assert w._buffer == []
+
+
+async def test_in_progress_count_reflects_unflushed_buffer():
+    w = mw.MirrorWorker()
+    assert w.in_progress_count == 0
+    w._buffer = [
+        DeliveryOutcome(kind=OutcomeKind.SUCCESS, src_msg_id=1, dest_ch_id=2, version=1)
+    ]
+    # Observed-but-not-durable dest ids → the controller must see it as in-progress.
+    assert w.in_progress_count == 1
