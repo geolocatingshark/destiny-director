@@ -21,6 +21,7 @@ import string
 
 import hikari as h
 import lightbulb as lb
+from sqlalchemy import and_, delete
 
 from ...common import cfg, schemas
 from ...common.auth import owner_only
@@ -348,6 +349,20 @@ class MirrorFailRateBump(
         )
         base = -(secrets.randbits(48) + 1)
         async with schemas.db_session() as session, session.begin():
+            # Remove any real DELIVERED "last success" rows for these pairs first: the
+            # disable query only counts failures *after* the pair's last success, so a
+            # recent successful mirror (near-certain when the drill targets healthy test
+            # channels) would otherwise mask every synthetic failure and the drill would
+            # silently no-op. A dead streak means simulating no recent success.
+            await session.execute(
+                delete(MirrorDelivery).where(
+                    and_(
+                        MirrorDelivery.src_ch_id == source_id,
+                        MirrorDelivery.dest_ch_id.in_(dest_ids),
+                        MirrorDelivery.state == DeliveryState.DELIVERED.value,
+                    )
+                )
+            )
             for i in range(self.times):
                 fake_src_msg = base - i
                 for dest_id in dest_ids:

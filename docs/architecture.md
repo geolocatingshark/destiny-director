@@ -137,9 +137,16 @@ orchestration:
   from `StartedEvent`) claims due rows via `SELECT … FOR UPDATE SKIP LOCKED`
   (biggest-server-first), converges each destination, and buffers outcomes; a dedicated
   **flusher** writes them back. Retries are `due_at` backoffs in the ledger, not in-process
-  sleeps. On completion a run-end hook flags failures and runs the **derived** auto-disable
-  sweep (`MirroredChannel.disable_failing_mirrors` — a confirmed-dead streak query over the
-  ledger, replacing the old strike columns).
+  sleeps. Each claim pass ends by **reconciling every active run view against the ledger**
+  (`non_terminal_counts`) — completion is authoritative from the ledger (no PENDING/CLAIMED
+  rows left), *not* from in-memory accounting, so a run finalizes correctly even when a
+  delete only cancelled rows or an edit briefly credited stale in-flight deliveries. On
+  completion a run-end hook flags failures and runs the **derived** auto-disable sweep
+  (`MirroredChannel.disable_failing_mirrors` — a confirmed-dead streak query over the
+  ledger, replacing the old strike columns). On shutdown (`StoppingEvent`) the worker
+  `stop()`s: it halts claiming and **drains the outcome buffer** before the DB engine is
+  disposed, so an observed `dest_msg_id` is always persisted rather than re-sent after a
+  restart.
 - **`mirror_core.py`** is now just the pure survivors: `MirrorOperationType`, the global
   token-bucket `RateLimiter`, and `RunView` (in-memory progress accounting).
 

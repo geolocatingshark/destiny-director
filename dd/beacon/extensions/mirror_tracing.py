@@ -23,15 +23,44 @@ module can replay edits and deletes to it.
 import asyncio as aio
 import logging
 from collections import defaultdict
+from types import TracebackType
+from typing import override
 
 import hikari as h
 import lightbulb as lb
 
 from ...common import cfg
 from ...common.schemas import MirroredChannel
-from .mirror import TimedSemaphore
 
 loader = lb.Loader()
+
+
+class TimedSemaphore(aio.Semaphore):
+    """Semaphore that allows no more than ``value`` acquisitions per ``period`` seconds.
+
+    Bounds this module's DB writes + API calls to stay well within Discord rate limits.
+    (The mirror fan-out itself uses the token-bucket rate limiter in ``mirror_core``,
+    not this; this lives here because tracing is its only user.)
+    """
+
+    def __init__(self, value: int = 30, period: int = 1):
+        super().__init__(value)
+        self.period = period
+
+    async def arelease(self) -> None:
+        """Delay release until the period has passed."""
+        await aio.sleep(self.period)
+        super().release()
+
+    @override
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self.arelease()
+
 
 # Tracing is non-critical, so keep the database loading and api
 # ratelimit consumption to a minimum
