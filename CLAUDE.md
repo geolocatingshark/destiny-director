@@ -105,6 +105,12 @@ DB layer, or building a message/embed, read it.** Quick orientation:
 - **Branches/remotes:** `dev` is the integration branch — feature/worktree branches merge
   there first. Two remotes: `origin` (gsfernandes81) and `shark` (geolocatingshark).
   Pushing to `shark/main` is a **prod deploy** — see the confirmation rule above.
+- **Name worktrees & branches descriptively.** A worktree branch must describe the
+  work (`mirror-auto-disable-gate`, `fix/bungie-oauth-refresh`), not carry an opaque
+  harness hash (`worktree-bridge-cse_01DZBPw5r3bqtJbbXQE4WgRQ`). If you land on a
+  hash-name branch, rename it before your first commit (`git branch -m <name>`) using
+  the conventional-commit scopes (`anchor`, `beacon`, `rotation`, …). Keep the name
+  as-is only if the worktree came from a pre-existing, already-descriptive branch.
 - **plans/:** Stores deferred plans. When a plan is executed completely, ALWAYS remove
   it from this directory. Prompt the user in case the plan was partially executed.
 
