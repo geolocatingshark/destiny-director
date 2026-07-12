@@ -87,6 +87,9 @@ class _NullCache:
     def get_guild(self, _id: int) -> None:
         return None
 
+    def get_member(self, _guild_id: int, _user_id: int) -> None:
+        return None  # forces confirm_dest_unsendable to fall back to rest.fetch_member
+
     def set_guild_channel(self, _channel: object) -> None:
         return None
 
@@ -100,9 +103,16 @@ class _RestBot:
     Backed by a REST client with no gateway/cache, so every fetch hits Discord.
     """
 
-    def __init__(self, rest: h.api.RESTClient) -> None:
+    def __init__(self, rest: h.api.RESTClient, me: h.OwnUser) -> None:
         self.rest = rest
         self.cache = _NullCache()
+        self._me = me
+
+    def get_me(self) -> h.OwnUser:
+        # GatewayBot.get_me() reads the gateway cache; a REST-only bot fetches it once
+        # at startup instead. confirm_dest_unsendable (the reachability probe) needs the
+        # bot's own id to resolve its member/permissions in a destination guild.
+        return self._me
 
     async def fetch_channel(self, channel_id: int) -> h.PartialChannel:
         return await self.rest.fetch_channel(channel_id)
@@ -175,6 +185,7 @@ async def mirror_env() -> AsyncIterator[_MirrorEnv]:
     try:
         async with rest_app.acquire(_TOKEN, token_type="Bot") as rest:
             await _sweep_test_channels(rest, guild_id)
+            me = await rest.fetch_my_user()  # for the REST-only bot's get_me()
 
             async def make_channel(name: str) -> h.GuildTextChannel:
                 channel = await rest.create_guild_text_channel(
@@ -186,7 +197,7 @@ async def mirror_env() -> AsyncIterator[_MirrorEnv]:
             try:
                 yield _MirrorEnv(
                     rest=rest,
-                    bot=t.cast(CachedFetchBot, _RestBot(rest)),
+                    bot=t.cast(CachedFetchBot, _RestBot(rest, me)),
                     guild_id=guild_id,
                     make_channel=make_channel,
                 )
