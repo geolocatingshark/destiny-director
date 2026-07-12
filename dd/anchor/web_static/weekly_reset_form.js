@@ -30,7 +30,7 @@ const el = (tag, props = {}, kids = []) => {
 };
 
 $("authNote").textContent =
-  "Signed in via Discord for this editing session (about 2 hours). Save writes straight to the draft.";
+  "Signed in via Discord (about 30 days). Save writes straight to the draft.";
 
 // Tom Select instances, keyed by element id (plus "conq_<tier>"), so readForm() can pull
 // their values with getValue().

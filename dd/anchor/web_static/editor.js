@@ -24,7 +24,7 @@ const el = (tag, props = {}, kids = []) => {
 
 document.getElementById("typeName").textContent = type;
 document.getElementById("authNote").textContent =
-  "Signed in via Discord for this editing session (about 2 hours). Changes save straight to the database.";
+  "Signed in via Discord (about 30 days). Changes save straight to the database.";
 
 // Each post type has its own bespoke form; drop the other type's markup so the
 // tab bar and collect() only ever see this type's fields.

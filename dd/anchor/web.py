@@ -68,6 +68,17 @@ async def start(port: int | None = None) -> None:
     for registrar in _route_registrars:
         registrar(app)
 
+    # Fail closed: the auth middleware (dd.anchor.extensions.web_auth) is this app's
+    # only security boundary — every feature module deleted its per-handler auth and
+    # relies on it being installed here. If no middleware registered (e.g. web_auth
+    # failed to import and load_extensions_strict skipped it), refuse to serve rather
+    # than expose the editor / weekly-reset form unauthenticated.
+    if not app.middlewares:
+        raise RuntimeError(
+            "Anchor web app has no middleware registered — refusing to start an "
+            "unauthenticated web surface (is the web_auth extension loading?)."
+        )
+
     # Serve the split editor assets (css/js) so pages can <link>/<script> them instead
     # of inlining. The /static/ prefix is distinct from every feature route (/rotation…,
     # OAuth callback), so it can't collide.

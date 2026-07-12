@@ -272,6 +272,19 @@ bungie_api_key = _getenv("BUNGIE_API_KEY", "")
 bungie_client_id = _getenv("BUNGIE_CLIENT_ID", "")
 bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET", "")
 
+# Discord OAuth for the anchor web UI (see dd/anchor/extensions/web_auth.py). All these
+# default to "" and are intentionally NOT part of import-time required-var validation:
+# they are only needed by the anchor web surface, so leaving them unset must not break
+# local dev or the beacon process. The client id is the bot's application id; the secret
+# comes from the Developer Portal's OAuth2 tab (NOT the bot token).
+discord_oauth_client_id = _getenv("DISCORD_OAUTH_CLIENT_ID", "")
+discord_oauth_client_secret = _getenv("DISCORD_OAUTH_CLIENT_SECRET", "")
+# Dev-only auth bypass: a Discord user id treated as an authenticated owner for the web
+# UI. Honored ONLY when TEST_ENV is set AND there is no public base URL (see the
+# middleware's triple gate), so it is inert on any internet-facing deploy — including
+# dev, which also sets TEST_ENV — even if this leaks into that config.
+dev_auth_user_id = _getenv("DEV_AUTH_USER_ID", "")
+
 
 port = _getenv("PORT", 8080)
 

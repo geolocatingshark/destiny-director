@@ -13,23 +13,20 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Cookie-authenticated web editor for the rotation JSON store (anchor).
+"""Web editor for the rotation JSON store (anchor).
 
-``/rotation edit`` mints a short-lived editor *session* and DMs the owner a link to
-``{public_base_url}/rotation?token=…``. Opening it trades the token for a session cookie
-and shows a homepage listing every rotation type (``ROTATION_SCHEMAS``); each links to
-``/rotation/edit?type=…`` where the owner edits the document with a friendly form,
-previews the rendered post, and saves — the server re-validates against the JSON schema
-on save. The session cookie authorises every page, preview and save for its ~2-hour
-life and is not burned on save (edit many rotations in one sitting).
+``/rotation edit`` links the owner to ``{public_base_url}/rotation``, a homepage listing
+every rotation type (``ROTATION_SCHEMAS``); each links to ``/rotation/edit?type=…`` so
+the owner edits the document with a friendly form, previews the rendered post, and saves
+— the server re-validates against the JSON schema on save. Authentication for every
+page, preview and save is handled centrally by the Discord-OAuth middleware in
+``web_auth.py`` (this module carries no auth code of its own).
 ``/rotation import_from_sheet`` does the one-shot gspread → DB import with a
 rendered-parity check, for the cutover.
 """
 
 import asyncio
 import datetime as dt
-import hashlib
-import hmac
 import html
 import json
 import logging
@@ -58,109 +55,9 @@ _EDITOR_HTML_PATH = (
 _HOME_HTML_PATH = (
     Path(__file__).resolve().parent.parent / "web_static" / "rotation_home.html"
 )
-_SESSION_TTL = dt.timedelta(hours=2)
-_SESSION_COOKIE = "rotation_session"
-_EXPIRED_MSG = "This link has expired. Run /rotation edit for a fresh one."
 # Days of rendered output the preview / parity check spans (covers a daily reset).
 _PREVIEW_DAYS = 4
 _PARITY_DAYS = 18
-
-
-# --- session manager --------------------------------------------------------------
-
-
-def _signing_key() -> bytes:
-    """A stable secret key for signing session tokens.
-
-    Derived from the anchor bot token — a secret that persists across restarts and never
-    leaves the server — so no new env var (and no Railway config) is needed. Deriving
-    (rather than using it raw) keeps the bot token itself out of the signing material.
-    """
-    return hashlib.sha256(
-        b"rotation-editor-session|" + cfg.discord_token_anchor.encode()
-    ).digest()
-
-
-class RotationSessionManager:
-    """Stateless, signed editor-session tokens (no server-side store).
-
-    A token is ``"<expiry_epoch>.<hex_hmac>"``, where the HMAC (SHA-256, keyed by a
-    secret derived from the anchor bot token) covers the expiry. Validation recomputes
-    the HMAC and checks the expiry — so a token stays valid across process restarts and
-    would work across replicas, unlike the previous in-memory store. Minted by the
-    owner-only ``/rotation edit`` command and carried in a cookie; it is multi-use for
-    its whole ~2-hour life (homepage, every editor page, previews, saves) and there
-    is nothing to revoke early — tokens simply expire, which matches the no-burn design.
-    """
-
-    @classmethod
-    def _sign(cls, expiry_epoch: int) -> str:
-        sig = hmac.new(
-            _signing_key(), str(expiry_epoch).encode(), hashlib.sha256
-        ).hexdigest()
-        return f"{expiry_epoch}.{sig}"
-
-    @classmethod
-    def mint(cls) -> str:
-        expiry = dt.datetime.now(dt.UTC) + _SESSION_TTL
-        return cls._sign(int(expiry.timestamp()))
-
-    @classmethod
-    def resolve(cls, token: str) -> bool:
-        """Whether ``token`` is a well-signed, unexpired session token."""
-        expiry_str, _, _sig = token.partition(".")
-        try:
-            expiry_epoch = int(expiry_str)
-            # Constant-time compare of the whole "<exp>.<sig>" against a fresh signature
-            # — rejects a tampered expiry or a bad signature. compare_digest raises
-            # TypeError on a non-ASCII token, so guard it too: a hostile cookie must
-            # fail closed (401), not 500 the route.
-            valid_sig = hmac.compare_digest(token, cls._sign(expiry_epoch))
-        except (ValueError, TypeError):
-            return False
-        if not valid_sig:
-            return False
-        return expiry_epoch > int(dt.datetime.now(dt.UTC).timestamp())
-
-
-# --- cookie / origin helpers ------------------------------------------------------
-
-
-def _session_from_request(request: aiohttp.web.Request) -> str:
-    return request.cookies.get(_SESSION_COOKIE, "")
-
-
-def _set_session_cookie(response: aiohttp.web.StreamResponse, token: str) -> None:
-    response.set_cookie(
-        _SESSION_COOKIE,
-        token,
-        max_age=int(_SESSION_TTL.total_seconds()),
-        httponly=True,
-        # Secure only when we're actually served over https (local http tunnels can't
-        # set a Secure cookie); Railway's public_base_url is https.
-        secure=cfg.public_base_url.startswith("https"),
-        # Lax, NOT Strict: the owner always arrives via a cross-site top-level click
-        # from Discord (and a same-origin redirect), and Strict cookies are withheld on
-        # any navigation whose redirect chain was initiated cross-site — which would
-        # 401 the homepage every time. Lax is sent on top-level GET navigations while
-        # still being withheld on cross-site POSTs (so CSRF is still covered, alongside
-        # the Origin check below).
-        samesite="Lax",
-        path="/rotation",
-    )
-
-
-def _origin_ok(request: aiohttp.web.Request) -> bool:
-    """Reject cross-site POSTs (defence-in-depth atop the SameSite=Lax cookie).
-
-    A browser sends ``Origin`` on state-changing fetches; if present it must match our
-    own origin. Absent (non-browser client, or an origin-less navigation) we defer to
-    SameSite. If no public origin is configured we can't compare, so we allow.
-    """
-    origin = request.headers.get("Origin")
-    if not origin or not cfg.public_base_url:
-        return True
-    return origin.rstrip("/") == cfg.public_base_url.rstrip("/")
 
 
 # --- document helpers -------------------------------------------------------------
@@ -303,28 +200,11 @@ def _render_home_html() -> str:
 
 
 async def _handle_home_get(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    # Entry: a fresh ?token=… from the slash command. Trade it for a session cookie and
-    # redirect to the bare homepage so the token doesn't linger in the URL / history.
-    entry_token = request.query.get("token", "")
-    if entry_token:
-        if not RotationSessionManager.resolve(entry_token):
-            return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
-        response = aiohttp.web.HTTPFound("/rotation")
-        # Issue a freshly minted token (not the request-supplied one): refreshes the
-        # TTL and keeps request input out of the Set-Cookie value.
-        _set_session_cookie(response, RotationSessionManager.mint())
-        return response
-
-    if not RotationSessionManager.resolve(_session_from_request(request)):
-        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
-
+    # Auth is enforced by the web_auth middleware; this just renders the homepage.
     return aiohttp.web.Response(text=_render_home_html(), content_type="text/html")
 
 
 async def _handle_edit_get(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    if not RotationSessionManager.resolve(_session_from_request(request)):
-        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
-
     post_type = request.query.get("type", "")
     if post_type not in rotation_schema.ROTATION_SCHEMAS:
         return aiohttp.web.Response(
@@ -350,10 +230,6 @@ async def _handle_edit_get(request: aiohttp.web.Request) -> aiohttp.web.Response
 
 
 async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    if not RotationSessionManager.resolve(_session_from_request(request)):
-        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
-    if not _origin_ok(request):
-        return aiohttp.web.Response(status=403, text="Cross-origin request refused.")
     try:
         payload = await request.json()
     except Exception:
@@ -378,10 +254,6 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 async def _handle_edit_post(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    if not RotationSessionManager.resolve(_session_from_request(request)):
-        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
-    if not _origin_ok(request):
-        return aiohttp.web.Response(status=403, text="Cross-origin request refused.")
     try:
         payload = await request.json()
     except Exception:
@@ -406,7 +278,6 @@ async def _handle_edit_post(request: aiohttp.web.Request) -> aiohttp.web.Respons
         return aiohttp.web.Response(status=400, text=f"Document is unusable:\n{e}")
 
     await schemas.RotationData.set_data(post_type, data)
-    # Session is NOT burned: the owner keeps editing other rotations / re-saving.
     logger.info("Rotation data for %s saved via web editor", post_type)
     return aiohttp.web.Response(text="Saved")
 
@@ -448,13 +319,12 @@ class Edit(
             )
             return
 
-        token = RotationSessionManager.mint()
-        url = f"{cfg.public_base_url}/rotation?token={token}"
+        url = f"{cfg.public_base_url}/rotation"
         await respond_cv2(
             ctx,
             cv2_notice(
-                f"[Open the rotation editor here]({url}) — it lists every rotation "
-                "and stays signed in for 2 hours."
+                f"[Open the rotation editor here]({url}) — it lists every rotation. "
+                "You'll sign in with Discord the first time."
             ),
             ephemeral=True,
         )
