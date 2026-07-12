@@ -584,10 +584,22 @@ _DISABLE_ERROR_MIN = 5
 _RUN_FAIL_CRITICAL_MIN = 10
 _RUN_FAIL_CRITICAL_RATIO = 0.10
 
+# Idempotent failure alerting. A source message can be converged by more than one run
+# over its lifetime (the initial send, then an edit that re-arms every row — the failed
+# ones included — and re-attempts them), and each run's card reads the *same* per-source
+# ledger state, so without this every run re-pages the same failures. Key the last-paged
+# blast radius per src_msg_id; a run whose (failed, total) matches the last page for
+# that source is not re-paged. A clean run (0 failed) clears the entry, so a later
+# *recurrence* of failures pages again. Bounded (FIFO-evicted) so it can't grow; a
+# source only re-pages spuriously after eviction (needs _DEDUP_CAP others between).
+_DEDUP_CAP = 2048
+_last_alerted_failure: dict[int, tuple[int, int]] = {}
+
 
 def _log_run_summary(view: RunView) -> None:
     """Log a one-line summary of a completed run; escalate to the alerts channel (ERROR,
-    or CRITICAL past the blast-radius threshold) if any target failed."""
+    or CRITICAL past the blast-radius threshold) the *first* time a given failure set is
+    seen for a source (see the dedup note above)."""
     counts = view.counts
     elapsed = perf_counter() - view.start_time
     logging.info(
@@ -602,20 +614,36 @@ def _log_run_summary(view: RunView) -> None:
         counts.total,
         counts.throughput_resolved / elapsed if elapsed else 0.0,
     )
-    if counts.failed:
-        critical_at = max(
-            _RUN_FAIL_CRITICAL_MIN,
-            math.ceil(_RUN_FAIL_CRITICAL_RATIO * counts.total),
-        )
-        level = logging.CRITICAL if counts.failed >= critical_at else logging.ERROR
-        health_logger.log(
-            level,
-            "Mirror %s for source %s finished with %d/%d target(s) failed.",
-            view.op.name.lower(),
-            view.src_ch_id,
-            counts.failed,
-            counts.total,
-        )
+    if not counts.failed:
+        # Fully resolved — reset the dedup so a later recurrence of failures re-pages.
+        _last_alerted_failure.pop(view.src_msg_id, None)
+        return
+
+    signature = (counts.failed, counts.total)
+    if _last_alerted_failure.get(view.src_msg_id) == signature:
+        # Same blast radius already paged for this source (e.g. an edit re-ran the same
+        # failed targets). The console info line above still records this run.
+        return
+    if (
+        view.src_msg_id not in _last_alerted_failure
+        and len(_last_alerted_failure) >= _DEDUP_CAP
+    ):
+        _last_alerted_failure.pop(next(iter(_last_alerted_failure)))
+    _last_alerted_failure[view.src_msg_id] = signature
+
+    critical_at = max(
+        _RUN_FAIL_CRITICAL_MIN,
+        math.ceil(_RUN_FAIL_CRITICAL_RATIO * counts.total),
+    )
+    level = logging.CRITICAL if counts.failed >= critical_at else logging.ERROR
+    health_logger.log(
+        level,
+        "Mirror %s for source %s finished with %d/%d target(s) failed.",
+        view.op.name.lower(),
+        view.src_ch_id,
+        counts.failed,
+        counts.total,
+    )
 
 
 @loader.task(

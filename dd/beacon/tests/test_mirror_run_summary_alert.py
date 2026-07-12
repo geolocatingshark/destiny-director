@@ -31,11 +31,24 @@ from dd.beacon.extensions import mirror
 from dd.beacon.mirror_core import MirrorOperationType, RunCounts, RunView
 
 
-def _view(delivered: int, failed: int, cancelled: int = 0) -> RunView:
+@pytest.fixture(autouse=True)
+def _reset_dedup() -> None:
+    # The failure-alert dedup is module-level state; keep tests independent.
+    mirror._last_alerted_failure.clear()
+
+
+def _view(
+    delivered: int,
+    failed: int,
+    cancelled: int = 0,
+    *,
+    src_msg_id: int = 99,
+    op: MirrorOperationType = MirrorOperationType.SEND,
+) -> RunView:
     view = RunView(
-        op=MirrorOperationType.SEND,
+        op=op,
         src_ch_id=1,
-        src_msg_id=99,
+        src_msg_id=src_msg_id,
         start_time=perf_counter(),
     )
     view.counts = RunCounts(delivered=delivered, failed=failed, cancelled=cancelled)
@@ -69,3 +82,55 @@ def test_run_summary_failure_escalation(
     else:
         health.log.assert_called_once()
         assert health.log.call_args.args[0] == expected_level
+
+
+def test_repeated_failure_set_for_a_source_pages_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The bug: a send run and an edit run for one source both observe the same 50/200
+    # failed (the edit re-arms and re-fails the same targets) and both paged. Now only
+    # the first pages; the re-run (a different op label, same source + blast radius) is
+    # deduped.
+    health = MagicMock()
+    monkeypatch.setattr(mirror, "health_logger", health)
+
+    mirror._log_run_summary(_view(150, 50, op=MirrorOperationType.SEND))
+    mirror._log_run_summary(_view(150, 50, op=MirrorOperationType.UPDATE))
+
+    health.log.assert_called_once()  # the update re-run did not re-page
+
+
+def test_different_sources_page_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    health = MagicMock()
+    monkeypatch.setattr(mirror, "health_logger", health)
+
+    mirror._log_run_summary(_view(150, 50, src_msg_id=1))
+    mirror._log_run_summary(_view(150, 50, src_msg_id=2))
+
+    assert health.log.call_count == 2  # shared failure set not deduped across sources
+
+
+def test_changed_blast_radius_repages(monkeypatch: pytest.MonkeyPatch) -> None:
+    health = MagicMock()
+    monkeypatch.setattr(mirror, "health_logger", health)
+
+    mirror._log_run_summary(_view(150, 50))  # 50/200 → page
+    mirror._log_run_summary(_view(140, 60))  # 60/200 → different radius → re-page
+
+    assert health.log.call_count == 2
+
+
+def test_clean_run_resets_dedup_so_a_recurrence_repages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    health = MagicMock()
+    monkeypatch.setattr(mirror, "health_logger", health)
+
+    mirror._log_run_summary(_view(150, 50))  # page
+    mirror._log_run_summary(_view(150, 50))  # deduped
+    mirror._log_run_summary(_view(200, 0))  # fully resolved → clears the dedup entry
+    mirror._log_run_summary(_view(150, 50))  # recurrence → pages again
+
+    assert health.log.call_count == 2
