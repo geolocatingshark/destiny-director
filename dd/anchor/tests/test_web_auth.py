@@ -18,6 +18,7 @@ OAuth login/callback/logout routes, all against fake requests and a mocked outbo
 ``aiohttp.ClientSession`` (no live server, no network — CI-safe)."""
 
 import datetime as dt
+import json
 import typing as t
 
 import aiohttp.web
@@ -27,6 +28,16 @@ from yarl import URL
 from dd.anchor.extensions import web_auth as auth
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _reset_owner_refresh(monkeypatch: pytest.MonkeyPatch):
+    """Reset the bounded owner-list refresh clock so tests don't leak cached state.
+
+    _is_owner force-refreshes on a cold clock, so starting each test with None keeps the
+    owner check deterministic regardless of test order.
+    """
+    monkeypatch.setattr(auth, "_owner_ids_refreshed_at", None)
 
 
 # --- fake request / handler harness -----------------------------------------------
@@ -63,12 +74,18 @@ async def _ok_handler(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 class _StubBot:
-    """A CachedFetchBot stand-in whose owner list is a fixed set of ids."""
+    """A CachedFetchBot stand-in whose owner list is a fixed set of ids.
+
+    Records the ``force_refresh`` value of each ``fetch_owner_ids`` call so the bounded
+    owner-list refresh (_is_owner) can be asserted.
+    """
 
     def __init__(self, owner_ids: list[int]) -> None:
         self._owner_ids = owner_ids
+        self.refresh_calls: list[bool] = []
 
-    async def fetch_owner_ids(self) -> list[int]:
+    async def fetch_owner_ids(self, *, force_refresh: bool = False) -> list[int]:
+        self.refresh_calls.append(force_refresh)
         return self._owner_ids
 
 
@@ -221,7 +238,7 @@ async def test_middleware_unauth_get_redirects_to_login(
     assert resp.headers["Location"] == "/auth/login?next=/rotation"
 
 
-async def test_middleware_unauth_post_is_401_not_redirect(
+async def test_middleware_unauth_post_is_401_json_not_redirect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(auth, "_bot", _StubBot([123]))
@@ -229,6 +246,11 @@ async def test_middleware_unauth_post_is_401_not_redirect(
         _req(path="/rotation/edit", method="POST"), _ok_handler
     )
     assert resp.status == 401
+    # JSON body (not text/plain) so the forms' `await res.json()` doesn't throw on a
+    # mid-edit session expiry — they read `data.error`.
+    assert resp.content_type == "application/json"
+    body = t.cast(aiohttp.web.Response, resp).text
+    assert json.loads(body or "")["error"]
 
 
 async def test_middleware_owner_cookie_runs_handler(
@@ -294,21 +316,95 @@ async def test_middleware_bot_unset_is_503(monkeypatch: pytest.MonkeyPatch) -> N
     assert resp.status == 503
 
 
-async def test_middleware_dev_bypass_double_gated(
+async def test_middleware_dev_bypass_triple_gated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(auth, "_bot", _StubBot([123]))
-    # Both gates on: an unauthenticated request passes as an owner.
+    # All three gates on (TEST_ENV + dev id + no public URL): unauth request passes.
     monkeypatch.setattr(auth.cfg, "test_env", (1000,))
     monkeypatch.setattr(auth.cfg, "dev_auth_user_id", "1000")
+    monkeypatch.setattr(auth.cfg, "public_base_url", "")
     resp = await auth._auth_middleware(_req(path="/rotation"), _ok_handler)
     assert resp.status == 200
-    # TEST_ENV unset -> bypass inert even with a dev id set; unauth GET redirects.
+    # A public base URL (the internet-facing dev/prod deploy) makes the bypass inert
+    # even with TEST_ENV + dev id set; the unauth GET redirects to login.
+    monkeypatch.setattr(auth.cfg, "public_base_url", "https://anchor.example")
+    resp = await auth._auth_middleware(
+        _req(path="/rotation", path_qs="/rotation"), _ok_handler
+    )
+    assert resp.status == 302
+    # TEST_ENV unset -> bypass inert even locally; unauth GET redirects.
+    monkeypatch.setattr(auth.cfg, "public_base_url", "")
     monkeypatch.setattr(auth.cfg, "test_env", ())
     resp = await auth._auth_middleware(
         _req(path="/rotation", path_qs="/rotation"), _ok_handler
     )
     assert resp.status == 302
+
+
+# --- allowlist + owner refresh + wiring -------------------------------------------
+
+
+async def test_is_allowlisted() -> None:
+    for public in (
+        "/auth/login",
+        "/auth/callback",
+        "/auth/logout",
+        "/static/app.js",
+        "/oauth/callback",
+    ):
+        assert auth._is_allowlisted(public), public
+    for gated in (
+        "/rotation",
+        "/rotation/edit",
+        "/weekly_reset",
+        "/weekly_reset/save",
+        "/oauth/callback-evil",  # exact match, not a prefix — must NOT be allowlisted
+        "/",
+    ):
+        assert not auth._is_allowlisted(gated), gated
+
+
+async def test_is_owner_refreshes_on_a_bounded_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub = _StubBot([123])
+    bot = t.cast(auth.CachedFetchBot, stub)
+    # Cold clock -> force-refresh the owner list.
+    assert await auth._is_owner(bot, 123) is True
+    assert stub.refresh_calls == [True]
+    # Within the interval -> served from cache, no force-refresh.
+    assert await auth._is_owner(bot, 999) is False
+    assert stub.refresh_calls == [True, False]
+    # Clock older than the interval -> force-refresh again (a removed owner drops out).
+    stale_at = (
+        dt.datetime.now(dt.UTC) - auth._OWNER_REFRESH_INTERVAL - dt.timedelta(seconds=1)
+    )
+    monkeypatch.setattr(auth, "_owner_ids_refreshed_at", stale_at)
+    assert await auth._is_owner(bot, 123) is True
+    assert stub.refresh_calls == [True, False, True]
+
+
+async def test_auth_middleware_installed_and_feature_routes_gated() -> None:
+    # End-to-end wiring: build the shared app from every registered contributor, proving
+    # (a) the auth middleware is actually installed and (b) the real feature routes are
+    # registered AND not allowlisted — the guarantee the deleted per-handler tests held.
+    from dd.anchor import web
+    from dd.anchor.extensions import rotation_editor, weekly_reset
+
+    app = aiohttp.web.Application()
+    for registrar in web._route_registrars:
+        registrar(app)
+
+    assert auth._auth_middleware in app.middlewares
+    # The feature modules contributed their routes at import (reference them so the
+    # imports aren't flagged unused).
+    assert rotation_editor.register_rotation_routes
+    assert weekly_reset.register_weekly_reset_routes
+    registered = {r.resource.canonical for r in app.router.routes() if r.resource}
+    for route in ("/rotation", "/rotation/edit", "/weekly_reset", "/weekly_reset/save"):
+        assert route in registered, route
+        assert not auth._is_allowlisted(route), route
 
 
 # --- /auth/login ------------------------------------------------------------------

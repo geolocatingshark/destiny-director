@@ -280,8 +280,9 @@ bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET", "")
 discord_oauth_client_id = _getenv("DISCORD_OAUTH_CLIENT_ID", "")
 discord_oauth_client_secret = _getenv("DISCORD_OAUTH_CLIENT_SECRET", "")
 # Dev-only auth bypass: a Discord user id treated as an authenticated owner for the web
-# UI. Honored ONLY when TEST_ENV is also set (see the middleware's double gate), so it
-# stays inert in prod even if this leaks into a prod config. Never set it on prod.
+# UI. Honored ONLY when TEST_ENV is set AND there is no public base URL (see the
+# middleware's triple gate), so it is inert on any internet-facing deploy — including
+# dev, which also sets TEST_ENV — even if this leaks into that config.
 dev_auth_user_id = _getenv("DEV_AUTH_USER_ID", "")
 
 

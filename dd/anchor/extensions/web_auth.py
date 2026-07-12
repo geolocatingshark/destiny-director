@@ -20,7 +20,8 @@ protected by one aiohttp middleware registered here. Instead of the old per-surf
 magic-link tokens — which only proved *someone received a link* — a visitor now proves a
 specific Discord identity via OAuth (``identify`` scope) and is admitted only if that id
 is a bot owner / team member (exactly ``CachedFetchBot.fetch_owner_ids()``). So
-authorization is re-derived from the live owner list on every request, not from
+authorization is re-derived from the owner list on every request — refreshed on a short
+interval (:func:`_is_owner`) so a removed owner loses access promptly — not from
 possession of a secret.
 
 Flow:
@@ -41,6 +42,7 @@ inert in prod even if the env var leaks into a prod config.
 """
 
 import datetime as dt
+import functools
 import hashlib
 import hmac
 import logging
@@ -64,13 +66,20 @@ loader = lb.Loader()
 # --- constants --------------------------------------------------------------------
 
 _SESSION_COOKIE = "dd_auth"
-# 30-day session. A long TTL is safe because the cookie only proves *identity*:
-# authorization is re-derived from the live owner list on every request (the middleware
-# calls fetch_owner_ids()), so removing someone from the owner/team list locks them out
-# immediately regardless of TTL. The TTL only governs how often an owner re-does the
+# 30-day session. A long TTL is safe because the cookie only proves *identity*, never
+# authorization: every request re-checks the id against the owner list (_is_owner),
+# which force-refreshes fetch_owner_ids() on a short interval — so removing someone from
+# the owner/team list revokes their access within _OWNER_REFRESH_INTERVAL regardless of
+# how long their cookie stays valid. The TTL only governs how often an owner re-does the
 # (near-instant) Discord redirect.
 _SESSION_TTL = dt.timedelta(days=30)
 _STATE_TTL = dt.timedelta(minutes=5)
+# How stale the cached owner list may get before the next auth check force-refreshes it.
+# CachedFetchBot.fetch_owner_ids() otherwise memoises for the whole process lifetime
+# (warmed once on StartedEvent), so without this a demoted owner would keep access until
+# the process restarts. Bounded so a removed owner loses access within this window while
+# the common case still serves from cache (one REST fetch_application per interval).
+_OWNER_REFRESH_INTERVAL = dt.timedelta(minutes=10)
 
 # The single callback path. The redirect_uri handed to Discord (at /auth/login and in
 # the token exchange) and registered in the Developer Portal must match EXACTLY —
@@ -96,17 +105,25 @@ _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: owner list. ``None`` until StartedEvent fires; the middleware 503s until then.
 _bot: CachedFetchBot | None = None
 
+#: When the owner list was last force-refreshed (see :func:`_is_owner`). ``None`` until
+#: the first auth check.
+_owner_ids_refreshed_at: dt.datetime | None = None
+
 
 # --- session cookie (stateless HMAC) ----------------------------------------------
 
 
+@functools.cache
 def _session_key() -> bytes:
     """Stable secret for signing session cookies, derived from the anchor bot token.
 
     A DISTINCT salt from the (now-removed) editor/weekly-reset session keys, and from
     other bot-token-derived secrets, so this cookie can only authenticate the web-auth
     surface. Deriving (not using the token raw) keeps the bot token out of the signing
-    material; no new env var is needed.
+    material; no new env var is needed. ``functools.cache`` computes the digest once
+    (the bot token is an import-time constant) instead of re-hashing on every ``_sign``
+    — and ``_sign`` runs on ``resolve_session``, i.e. once per request on the middleware
+    hot path.
     """
     return hashlib.sha256(
         b"anchor-web-auth-session|" + cfg.discord_token_anchor.encode()
@@ -278,11 +295,62 @@ def _config_error() -> aiohttp.web.Response | None:
 def _dev_bypass_active() -> bool:
     """Whether the dev auth bypass is in effect.
 
-    Double-gated: honored ONLY when ``TEST_ENV`` is set (``cfg.test_env`` truthy) AND a
-    ``DEV_AUTH_USER_ID`` is configured. The double gate guarantees it is inert in prod
-    even if ``DEV_AUTH_USER_ID`` leaks into a prod config.
+    Triple-gated, so it can only ever fire on a local dev box: honored ONLY when
+    ``TEST_ENV`` is set (``cfg.test_env`` truthy) AND a ``DEV_AUTH_USER_ID`` is set AND
+    there is no public base URL. The last gate matters because ``TEST_ENV`` is a
+    guild-scoping flag that is *also* set on the internet-facing dev deployment — where
+    ``public_base_url`` is non-empty (Railway injects ``RAILWAY_PUBLIC_DOMAIN``), so the
+    bypass stays inert there. Local dev without a tunnel has an empty
+    ``public_base_url`` — the only place the bypass is meant to run.
     """
-    return bool(cfg.test_env) and bool(cfg.dev_auth_user_id)
+    return (
+        bool(cfg.test_env)
+        and bool(cfg.dev_auth_user_id)
+        and not cfg.public_base_url
+    )
+
+
+def _is_allowlisted(path: str) -> bool:
+    """Whether ``path`` is exempt from auth (login flow, static, Bungie callback).
+
+    The single named home for the allowlist so the exact-vs-prefix intent (see
+    :data:`_ALLOWLIST_EXACT`) lives in one place, not an inline compound boolean.
+    """
+    return path in _ALLOWLIST_EXACT or path.startswith(_ALLOWLIST_PREFIXES)
+
+
+async def _is_owner(bot: CachedFetchBot, user_id: int) -> bool:
+    """Whether ``user_id`` is a current bot owner, on a bounded-freshness owner list.
+
+    Force-refreshes ``fetch_owner_ids()`` when the cached list is older than
+    :data:`_OWNER_REFRESH_INTERVAL`, so a removed owner loses access within that window
+    rather than only on process restart; otherwise serves from the cache.
+    """
+    global _owner_ids_refreshed_at
+    now = dt.datetime.now(dt.UTC)
+    stale = (
+        _owner_ids_refreshed_at is None
+        or now - _owner_ids_refreshed_at >= _OWNER_REFRESH_INTERVAL
+    )
+    owner_ids = await bot.fetch_owner_ids(force_refresh=stale)
+    if stale:
+        _owner_ids_refreshed_at = now
+    return user_id in owner_ids
+
+
+def _reject(
+    request: aiohttp.web.Request, status: int, message: str
+) -> aiohttp.web.Response:
+    """A rejection response: JSON for state-changing (XHR) callers, else plain text.
+
+    The feature forms POST via fetch() and read ``res.json()`` (weekly_reset_form.js
+    reads ``data.error``); a text/plain body would throw in their JSON parse and
+    dead-end the form with no re-auth path on session expiry. GET page loads get plain
+    text (an unauthenticated GET is redirected to login by the middleware instead).
+    """
+    if request.method in _UNSAFE_METHODS:
+        return aiohttp.web.json_response({"error": message}, status=status)
+    return aiohttp.web.Response(status=status, text=message)
 
 
 # --- route handlers ---------------------------------------------------------------
@@ -311,6 +379,18 @@ async def _handle_callback(request: aiohttp.web.Request) -> aiohttp.web.StreamRe
     if request.query.get("error"):
         return aiohttp.web.Response(status=403, text="Discord login was denied.")
 
+    # Check the things that don't depend on state BEFORE consuming it, so a misconfig
+    # (500) or a request in the startup window before the bot is stashed (503) doesn't
+    # burn the single-use state and force the owner to restart the whole login.
+    error = _config_error()
+    if error is not None:
+        return error
+    if _bot is None:
+        return aiohttp.web.Response(
+            status=503, text="Bot is still starting — try again in a moment."
+        )
+    bot = _bot
+
     # Single-use state consume is the CSRF defence and yields the server-held next path;
     # an unknown / expired / replayed state finds nothing.
     next_path = _AuthStateManager.consume(request.query.get("state", ""))
@@ -321,10 +401,6 @@ async def _handle_callback(request: aiohttp.web.Request) -> aiohttp.web.StreamRe
     code = request.query.get("code", "")
     if not code:
         return aiohttp.web.Response(status=400, text="Missing authorization code.")
-
-    error = _config_error()
-    if error is not None:
-        return error
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -350,7 +426,10 @@ async def _handle_callback(request: aiohttp.web.Request) -> aiohttp.web.StreamRe
                 USER_URL, headers={"Authorization": f"Bearer {access_token}"}
             ) as user_resp:
                 user_json = await user_resp.json()
-    except aiohttp.ClientError:
+    # ValueError covers json.JSONDecodeError (a malformed 200 body with a JSON
+    # content-type), which is NOT an aiohttp.ClientError; without it that would escape
+    # as an unhandled 500 instead of the deliberate 502.
+    except (aiohttp.ClientError, ValueError):
         logger.exception("Discord OAuth network error")
         return aiohttp.web.Response(
             status=502, text="Could not reach Discord — please try again."
@@ -364,11 +443,7 @@ async def _handle_callback(request: aiohttp.web.Request) -> aiohttp.web.StreamRe
             status=502, text="Could not read your Discord identity."
         )
 
-    if _bot is None:
-        return aiohttp.web.Response(
-            status=503, text="Bot is still starting — try again in a moment."
-        )
-    if user_id not in await _bot.fetch_owner_ids():
+    if not await _is_owner(bot, user_id):
         logger.info("Web login denied for non-owner Discord id %s", user_id)
         return aiohttp.web.Response(
             status=403, text="This account is not authorized to use this tool."
@@ -410,10 +485,10 @@ async def _auth_middleware(
     Centralizing here makes "authenticated owner" an invariant — any future route is
     protected automatically unless its prefix is explicitly allowlisted.
     """
-    if request.path in _ALLOWLIST_EXACT or request.path.startswith(_ALLOWLIST_PREFIXES):
+    if _is_allowlisted(request.path):
         return await handler(request)
 
-    # Dev bypass (double-gated): treat the request as an authenticated owner.
+    # Dev bypass (triple-gated; only ever active on a local dev box): treat as owner.
     if _dev_bypass_active():
         return await handler(request)
 
@@ -427,25 +502,23 @@ async def _auth_middleware(
             and cfg.public_base_url
             and origin.rstrip("/") != cfg.public_base_url.rstrip("/")
         ):
-            return aiohttp.web.Response(
-                status=403, text="Cross-origin request refused."
-            )
+            return _reject(request, 403, "Cross-origin request refused.")
 
     user_id = resolve_session(request.cookies.get(_SESSION_COOKIE, ""))
     if user_id is None:
-        # Never redirect a non-GET (a 302 on a POST loses the body); ask it to auth.
+        # Never redirect a non-GET (a 302 on a POST loses the body); ask it to re-auth.
         if request.method in ("GET", "HEAD"):
             login = URL("/auth/login").with_query(next=request.path_qs)
             return aiohttp.web.HTTPFound(str(login))
-        return aiohttp.web.Response(status=401, text="Authentication required.")
+        return _reject(
+            request, 401, "Your session has expired — reload the page to sign in again."
+        )
 
     if _bot is None:
-        return aiohttp.web.Response(
-            status=503, text="Bot is still starting — try again in a moment."
-        )
-    if user_id not in await _bot.fetch_owner_ids():
-        return aiohttp.web.Response(
-            status=403, text="This account is not authorized to use this tool."
+        return _reject(request, 503, "Bot is still starting — try again in a moment.")
+    if not await _is_owner(_bot, user_id):
+        return _reject(
+            request, 403, "This account is not authorized to use this tool."
         )
     return await handler(request)
 
