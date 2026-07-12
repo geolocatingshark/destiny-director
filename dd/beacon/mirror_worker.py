@@ -73,6 +73,12 @@ health_logger = logging.getLogger("dd.beacon.mirror.health")
 _MAX_BACKOFF = 60
 # Attempts a durable crosspost gets before it is given up on (best-effort).
 _CROSSPOST_MAX_ATTEMPTS = 3
+# How long stop() waits for the in-flight batch to drain (finish its pick→process→flush
+# iteration) before force-cancelling. One batch is bounded (<=pick_batch_size
+# rate-limited sends + one flush) and the DB is still live at shutdown, so this is
+# generous headroom; only a stuck flush (e.g. DB unreachable) hits it, and those rows
+# just recover on the next startup.
+_DRAIN_TIMEOUT_SECONDS = 20.0
 
 # Per-destination role-mention map (dest channel id -> optional role id to ping).
 _RoleMap = collections.abc.Mapping[int, int | None]
@@ -160,7 +166,8 @@ async def _send_one(
     ``is_news`` tells the caller a crosspost is warranted — recorded on the ledger as a
     durable ``crosspost_state = PENDING`` and done by a later pick, never inline.
     """
-    channel = await bot.fetch_channel(ch_id)
+    async with rate_limiter:
+        channel = await bot.fetch_channel(ch_id)
     if not isinstance(channel, h.TextableChannel):
         raise ValueError("Channel is not textable")
     async with rate_limiter:
@@ -242,16 +249,34 @@ class MirrorWorker:
         self._running = True
         self._main_task = aio.create_task(self._main_loop())
 
-    async def stop(self) -> None:
-        """Stop the loop. In-flight outcomes not yet flushed simply leave their rows
-        PENDING; the next startup re-picks and re-converges them (idempotent)."""
+    async def stop(self, *, drain_timeout: float = _DRAIN_TIMEOUT_SECONDS) -> None:
+        """Stop the loop, draining the in-flight batch first.
+
+        Clears ``_running`` and wakes the loop, then *awaits* it: the loop finishes its
+        current pick→process→flush iteration and exits on its own, so every send already
+        made this batch is flushed (its ``dest_msg_id`` recorded) and cannot re-send on
+        the next startup. Draining is bounded to one batch — ``_running`` is checked at
+        the top of the loop, so no *new* work is picked. Only if the drain exceeds
+        ``drain_timeout`` (e.g. the DB is unreachable so the flush cannot complete) is
+        the task force-cancelled, leaving its rows PENDING to be re-picked and
+        re-converged idempotently on restart (the accepted crash-dup window). A no-op
+        when never started; idempotent.
+        """
         self._running = False
         if self._wake is not None:
             self._wake.set()
-        if self._main_task is not None:
-            self._main_task.cancel()
+        task = self._main_task
+        if task is None:
+            return
+        try:
+            # Let the current iteration finish and the loop exit cleanly. wait_for
+            # cancels the task itself on timeout, so a stuck flush can't hang shutdown.
+            await aio.wait_for(task, timeout=drain_timeout)
+        except TimeoutError:
             with contextlib.suppress(aio.CancelledError):
-                await self._main_task
+                await task
+        finally:
+            self._main_task = None
 
     def nudge(self) -> None:
         """Wake the loop early (a gateway handler just enqueued work)."""
@@ -371,7 +396,8 @@ class MirrorWorker:
         if cached is not None and cached[0] == version:
             return cached[1], cached[2]
         bot = self._bot_or_raise()
-        msg = await bot.rest.fetch_message(src_ch_id, src_msg_id)
+        async with rate_limiter:
+            msg = await bot.rest.fetch_message(src_ch_id, src_msg_id)
         msg.embeds = utils.filter_discord_autoembeds(msg)
         role_map = await MirroredChannel.fetch_mirror_and_role_mention_id(src_ch_id)
         self._source_cache[src_msg_id] = (version, msg, role_map)

@@ -96,3 +96,25 @@ async def test_transient_error_retries_then_succeeds(
 
     assert bot.rest.fetch_message.await_count == 2  # retried after the transient error
     bot.wait_for.assert_not_awaited()  # already crossposted -> no wait
+
+
+async def test_transient_gives_up_at_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A sustained *transient* fetch failure must stop at the wait ceiling instead of
+    # retrying (and re-alerting) forever, like the crosspost wait_for's own timeout.
+    monkeypatch.setattr(mirror.aio, "sleep", AsyncMock())  # instant backoff
+    alert = AsyncMock()
+    monkeypatch.setattr(mirror, "discord_error_logger", alert)
+    # A fake clock that advances past the (tiny) ceiling so the deadline elapses after
+    # one transient retry rather than the test looping forever.
+    ticks = iter([0.0, 5.0, 10.0, 15.0])
+    monkeypatch.setattr(mirror, "perf_counter", lambda: next(ticks, 999.0))
+    monkeypatch.setattr(mirror, "_CROSSPOST_WAIT_CEILING_SECONDS", 10)
+
+    bot = _fake_bot(ConnectionError("boom"))  # always transient
+    await _run(bot)  # returns (gives up) instead of hanging
+
+    assert bot.rest.fetch_message.await_count == 1  # one attempt, then the ceiling hit
+    assert alert.await_count == 1  # one alert, not a flood
+    bot.wait_for.assert_not_awaited()  # never reached the publish wait

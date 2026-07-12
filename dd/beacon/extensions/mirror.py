@@ -29,6 +29,7 @@ import asyncio as aio
 import collections.abc
 import contextlib
 import logging
+import math
 import typing as t
 from random import randint
 from time import perf_counter
@@ -284,9 +285,11 @@ async def _cancel_run(view: RunView) -> None:
 # auto-mirror progress logger can still attach the cancel menu.
 _client: lb.Client | None = None
 
-# Strong references to the live card tasks (one per source message). ``asyncio`` only
-# holds a weak reference to a bare ``create_task`` result, so without this a loop could
-# be garbage-collected mid-run. A new event for a source replaces (and cancels) the old.
+# Strong references to the live card tasks (one per source message). Each task is the
+# whole card lifecycle — source resolution, first send and the update loop (see
+# _run_card). ``asyncio`` only holds a weak reference to a bare ``create_task`` result,
+# so without this a task could be garbage-collected mid-run. A new event for a source
+# atomically replaces (and cancels) the old, so only one is ever live per source.
 _cards: dict[int, aio.Task[None]] = {}
 
 # Strong reference to the one-shot post-restart backlog-recovery task (same weak-ref
@@ -377,79 +380,121 @@ async def start_progress_card(
     enable_cancellation: bool = False,
     client: lb.Client | None = None,
 ) -> None:
-    """Post the CV2 progress card and spawn the background update loop.
+    """Spawn the progress-card task, superseding any live card for this source.
 
-    One live card per source message: a new event for the same source cancels the prior
-    card (its message freezes) before this one takes over. Source links are resolved and
-    the cancel menu attached once, before the bounded send-retry loop.
+    One live card per source message. The supersede is atomic: this pops and cancels any
+    prior card and registers the new task with **no ``await`` in between**, so two
+    near-simultaneous starts for the same source can never both survive (the loser froze
+    the older card, then this one takes over). All the async work — resolving source
+    links, attaching the cancel menu, the bounded first-send retry and the update loop —
+    happens inside the spawned task (:func:`_run_card`), so this returns after
+    *scheduling* and the card posts from the task. Registering the task up front also
+    makes the whole card lifecycle — including the first-send retry — supersedable.
     """
-    # Supersede any live card for this source.
     old = _cards.pop(view.src_msg_id, None)
     if old is not None:
         old.cancel()
-
-    scl_fields = await _resolve_source_fields(bot, source_message, source_channel)
-    source_message_link, source_message_summary, source_channel_link, scn = scl_fields
-
-    def render(
-        *,
-        final: bool,
-        breakdown: _Breakdown | None = None,
-        _scl=source_channel_link,
-        _scn=scn,
-        _sml=source_message_link,
-        _sms=source_message_summary,
-    ) -> list[h.api.ComponentBuilder]:
-        return render_mirror_progress(
+    task = aio.create_task(
+        _run_card(
+            bot,
             view,
+            source_message=source_message,
+            source_channel=source_channel,
             title=title,
-            source_message_link=_sml,
-            source_message_summary=_sms,
-            source_channel_link=_scl,
-            source_channel_name=_scn,
-            final=final,
             enable_cancellation=enable_cancellation,
-            breakdown=breakdown,
+            client=client,
         )
-
-    cancel_client = client if isinstance(client, lb.Client) else _client
-    menu_handle: lbc.MenuHandle | None = None
-    if enable_cancellation and cancel_client is not None:
-        _menu, menu_handle = _build_cancel_menu(view, cancel_client, render)
-
-    log_message: h.Message | None = None
-    for attempt in range(1, _PROGRESS_LOGGER_MAX_TRIES + 1):
-        try:
-            log_channel = await bot.fetch_channel(cfg.log_channel)
-            if not isinstance(log_channel, h.TextableGuildChannel):
-                raise ValueError("Log channel must be a TextableGuildChannel")
-            log_message = await log_channel.send(
-                components=render(final=False),
-                flags=h.MessageFlag.IS_COMPONENTS_V2,
-            )
-            break
-        except Exception as e:
-            e.add_note("Failed to log mirror progress due to exception\n")
-            logging.exception(e)
-            if attempt >= _PROGRESS_LOGGER_MAX_TRIES:
-                logging.error(
-                    "Giving up on the mirror progress logger after %d attempts; "
-                    "the mirror itself will still run.",
-                    attempt,
-                )
-                if menu_handle is not None:
-                    menu_handle.stop_interacting()
-                return
-            await aio.sleep(min(60, 5 * (attempt + 1)))
-
-    assert log_message is not None
-    task = aio.create_task(_card_loop(log_message, view, render, menu_handle))
+    )
     _cards[view.src_msg_id] = task
     task.add_done_callback(
         lambda done, sid=view.src_msg_id: (
             _cards.pop(sid, None) if _cards.get(sid) is done else None
         )
     )
+
+
+async def _run_card(
+    bot: CachedFetchBot,
+    view: RunView,
+    *,
+    source_message: h.Message | None,
+    source_channel: h.GuildChannel | None,
+    title: str,
+    enable_cancellation: bool,
+    client: lb.Client | None,
+) -> None:
+    """Resolve source fields, post the first card (bounded retry), run the update loop.
+
+    Runs as the task registered in ``_cards``; a supersede cancels it. Because the
+    task's result is never awaited, every exception is contained here — cancellation
+    propagates, anything else is logged — and the cancel menu is released on exit.
+    """
+    menu_handle: lbc.MenuHandle | None = None
+    try:
+        scl_fields = await _resolve_source_fields(bot, source_message, source_channel)
+        source_message_link, source_message_summary, source_channel_link, scn = (
+            scl_fields
+        )
+
+        def render(
+            *,
+            final: bool,
+            breakdown: _Breakdown | None = None,
+            _scl=source_channel_link,
+            _scn=scn,
+            _sml=source_message_link,
+            _sms=source_message_summary,
+        ) -> list[h.api.ComponentBuilder]:
+            return render_mirror_progress(
+                view,
+                title=title,
+                source_message_link=_sml,
+                source_message_summary=_sms,
+                source_channel_link=_scl,
+                source_channel_name=_scn,
+                final=final,
+                enable_cancellation=enable_cancellation,
+                breakdown=breakdown,
+            )
+
+        cancel_client = client if isinstance(client, lb.Client) else _client
+        if enable_cancellation and cancel_client is not None:
+            _menu, menu_handle = _build_cancel_menu(view, cancel_client, render)
+
+        log_message: h.Message | None = None
+        for attempt in range(1, _PROGRESS_LOGGER_MAX_TRIES + 1):
+            try:
+                log_channel = await bot.fetch_channel(cfg.log_channel)
+                if not isinstance(log_channel, h.TextableGuildChannel):
+                    raise ValueError("Log channel must be a TextableGuildChannel")
+                log_message = await log_channel.send(
+                    components=render(final=False),
+                    flags=h.MessageFlag.IS_COMPONENTS_V2,
+                )
+                break
+            except aio.CancelledError:
+                raise
+            except Exception as e:
+                e.add_note("Failed to log mirror progress due to exception\n")
+                logging.exception(e)
+                if attempt >= _PROGRESS_LOGGER_MAX_TRIES:
+                    logging.error(
+                        "Giving up on the mirror progress logger after %d attempts; "
+                        "the mirror itself will still run.",
+                        attempt,
+                    )
+                    return
+                await aio.sleep(min(60, 5 * (attempt + 1)))
+
+        assert log_message is not None
+        await _card_loop(log_message, view, render, menu_handle)
+    except aio.CancelledError:
+        raise
+    except Exception:
+        logging.exception("mirror progress card for source %s failed", view.src_msg_id)
+    finally:
+        if menu_handle is not None:
+            menu_handle.stop_interacting()
 
 
 async def _card_loop(
@@ -521,9 +566,19 @@ health_logger = logging.getLogger("dd.beacon.mirror.health")
 _DISABLE_CRITICAL_MIN = 10
 _DISABLE_ERROR_MIN = 5
 
+# Escalate a completed run's failures by blast radius so a broad outage pages the owner
+# (health_logger only reaches the Discord alerts channel at ERROR/CRITICAL). Any failed
+# target is an ERROR; it becomes CRITICAL once the failure count reaches whichever is
+# LARGER of a flat floor or a share of the run's targets — so a handful of failures in a
+# huge fan-out, or a large fraction of a mid-size one, pages, while a stray failure only
+# errors.
+_RUN_FAIL_CRITICAL_MIN = 10
+_RUN_FAIL_CRITICAL_RATIO = 0.10
+
 
 def _log_run_summary(view: RunView) -> None:
-    """Log a one-line summary of a completed run (WARNING too if any target failed)."""
+    """Log a one-line summary of a completed run; escalate to the alerts channel (ERROR,
+    or CRITICAL past the blast-radius threshold) if any target failed."""
     counts = view.counts
     elapsed = perf_counter() - view.start_time
     logging.info(
@@ -539,7 +594,13 @@ def _log_run_summary(view: RunView) -> None:
         counts.throughput_resolved / elapsed if elapsed else 0.0,
     )
     if counts.failed:
-        health_logger.warning(
+        critical_at = max(
+            _RUN_FAIL_CRITICAL_MIN,
+            math.ceil(_RUN_FAIL_CRITICAL_RATIO * counts.total),
+        )
+        level = logging.CRITICAL if counts.failed >= critical_at else logging.ERROR
+        health_logger.log(
+            level,
             "Mirror %s for source %s finished with %d/%d target(s) failed.",
             view.op.name.lower(),
             view.src_ch_id,
@@ -700,14 +761,34 @@ def ignore_non_src_channels(func: collections.abc.Callable[..., t.Any]):
     return wrapped_func
 
 
+# Total time to wait for a source message to be published (crossposted) before giving up
+# and mirroring nothing. One ceiling governs BOTH the crosspost wait_for AND the
+# transient fetch-retry loop below — so the whole function can never run longer than
+# this, however the time splits between waiting for the publish and retrying a flaky
+# source fetch.
+_CROSSPOST_WAIT_CEILING_SECONDS = 12 * 60 * 60
+
+
 async def handle_waiting_for_crosspost(
     msg: h.Message,
     bot: CachedFetchBot,
     channel: h.TextableChannel,
     wait_for_crosspost: bool,
 ):
+    deadline = perf_counter() + _CROSSPOST_WAIT_CEILING_SECONDS
     backoff_timer = 30
     while True:
+        remaining = deadline - perf_counter()
+        if remaining <= 0:
+            # The 12h ceiling elapsed while retrying a flaky source fetch — give up
+            # rather than loop (and re-alert) forever, like the wait_for's own cap.
+            logging.warning(
+                "Giving up crosspost wait for message %s in channel %s after %dh.",
+                msg.id,
+                str(followable_name(id=channel.id)),
+                _CROSSPOST_WAIT_CEILING_SECONDS // 3600,
+            )
+            return
         try:
             channel_name_or_id = str(followable_name(id=channel.id))
             logging.info(
@@ -728,8 +809,8 @@ async def handle_waiting_for_crosspost(
                 )
                 await bot.wait_for(
                     h.MessageUpdateEvent,
-                    # Wait up to 12 hours for the source message to be crossposted.
-                    timeout=12 * 60 * 60,
+                    # Wait for the publish, but only up to the time left on the ceiling.
+                    timeout=remaining,
                     predicate=lambda e, msg=msg: bool(
                         e.message.id == msg.id
                         and e.message.flags
@@ -758,7 +839,8 @@ async def handle_waiting_for_crosspost(
                 )
                 return
             await discord_error_logger(e, operation="Mirror crosspost")
-            await aio.sleep(backoff_timer)
+            # Back off, but never past the ceiling (the top-of-loop check then returns).
+            await aio.sleep(min(backoff_timer, max(0.0, deadline - perf_counter())))
             backoff_timer = min(backoff_timer * 2, 600)
         else:
             break

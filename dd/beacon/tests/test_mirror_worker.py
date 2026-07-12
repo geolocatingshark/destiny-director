@@ -20,6 +20,7 @@ source fetch are stubbed; these pin op selection per row shape, one source fetch
 group + the per-version source cache, the transient/terminal decision (attempt caps,
 backoff), permanent source-fetch handling, and durable crosspost convergence."""
 
+import asyncio as aio
 import typing as t
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -296,3 +297,69 @@ async def test_process_mixes_delivery_and_crosspost(monkeypatch):
         10: OutcomeKind.SUCCESS,
         20: OutcomeKind.CROSSPOST_DONE,
     }
+
+
+# -- stop() draining ---------------------------------------------------------
+
+
+async def test_stop_drains_the_in_flight_batch(monkeypatch):
+    # stop() called mid-batch must let the current pick→process→flush finish, so an
+    # already-sent row is flushed (dest_msg_id recorded) and cannot re-send on restart.
+    w = _worker(monkeypatch)
+
+    picks = {"n": 0}
+
+    async def pick(_batch_size, **_kw):
+        picks["n"] += 1
+        return [_row(200)] if picks["n"] == 1 else []
+
+    monkeypatch.setattr(mw.MirrorDelivery, "pick_batch", pick)
+
+    processing = aio.Event()
+    flushed = aio.Event()
+
+    async def process(_batch):
+        processing.set()
+        await aio.sleep(0.05)  # simulate the in-flight Discord sends
+        return ["outcome"]
+
+    async def flush(outcomes):
+        assert outcomes == ["outcome"]
+        flushed.set()
+
+    monkeypatch.setattr(w, "_process", process)
+    monkeypatch.setattr(w, "_flush", flush)
+
+    await w.start(w._bot)
+    await processing.wait()  # we're mid-batch
+    await w.stop()  # should drain, not cancel
+
+    assert flushed.is_set()  # the in-flight batch was flushed before exit
+    assert w._main_task is None
+
+
+async def test_stop_force_cancels_when_drain_stalls(monkeypatch):
+    # If the drain can't finish in time (e.g. a stuck flush), stop() force-cancels
+    # rather than hanging shutdown; those rows just recover on the next startup.
+    w = _worker(monkeypatch)
+
+    async def pick(_batch_size, **_kw):
+        return [_row(200)]
+
+    monkeypatch.setattr(mw.MirrorDelivery, "pick_batch", pick)
+
+    entered = aio.Event()
+
+    async def process(_batch):
+        entered.set()
+        await aio.sleep(100)  # never completes within the drain window
+        return []
+
+    monkeypatch.setattr(w, "_process", process)
+    monkeypatch.setattr(w, "_flush", AsyncMock())
+
+    await w.start(w._bot)
+    await entered.wait()
+    await w.stop(drain_timeout=0.05)  # too short → force-cancel
+
+    assert w._main_task is None  # returned without hanging
