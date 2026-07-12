@@ -1,0 +1,51 @@
+<!doctype html>
+<!--
+  Anchor web control panel — a card per web page/tool. Served by
+  dd.anchor.extensions.control_panel; the GET handler substitutes the __CARDS__
+  placeholder comment in <main> with the server-rendered card grid (one card per
+  web.register_card(...) contribution, sorted for display). Auth is the shared OAuth
+  middleware (web_auth), same as every other page.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Control Panel — Destiny Director</title>
+    <link rel="stylesheet" href="/static/shared.css" />
+    <style>
+      /* Base/reset/theme lives in shared.css (linked above); only this page's own
+         styles are inlined here. */
+      main.cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: .8rem;
+        margin: 1rem 0;
+      }
+      a.card {
+        display: block;
+        border: 1px solid #3a3d44; border-radius: 8px; padding: .8rem 1rem;
+        text-decoration: none; color: inherit; background: #24262c;
+      }
+      a.card:hover { border-color: #2f81f7; }
+      a.card .title {
+        color: #2f81f7; font-size: 1.05rem; font-weight: 600;
+      }
+      a.card:hover .title { text-decoration: underline; }
+      a.card .desc { color: #9aa0a6; font-size: .85rem; margin-top: .25rem; }
+      p.empty { color: #9aa0a6; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Control Panel</h1>
+      <p class="muted">
+        Pick a tool below. You're signed in via Discord — no need to re-run a command
+        between visits.
+      </p>
+    </header>
+    <main class="cards">
+      <!--__CARDS__-->
+    </main>
+  </body>
+</html>

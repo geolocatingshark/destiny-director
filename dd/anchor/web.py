@@ -45,6 +45,24 @@ _route_registrars: list[t.Callable[[aiohttp.web.Application], None]] = []
 _runner: aiohttp.web.AppRunner | None = None
 
 
+class Card(t.NamedTuple):
+    """A homepage entry for one web page/tool.
+
+    ``href`` is a same-origin path (e.g. ``/rotation``); ``title``/``description`` are
+    dev-authored copy rendered (escaped) into the homepage card grid.
+    """
+
+    title: str
+    description: str
+    href: str
+
+
+# Homepage cards contributed by feature modules at import time (mirrors
+# _route_registrars). Read at request time by the homepage handler, so contribution
+# order is irrelevant — the homepage sorts for display.
+_cards: list[Card] = []
+
+
 def register_routes(
     registrar: t.Callable[[aiohttp.web.Application], None],
 ) -> None:
@@ -55,6 +73,21 @@ def register_routes(
     ``StartedEvent``.
     """
     _route_registrars.append(registrar)
+
+
+def register_card(card: Card) -> None:
+    """Contribute a card to the web homepage.
+
+    Call at import time alongside :func:`register_routes` so a feature page appears on
+    the homepage without the homepage module needing to know about it. Cards are read
+    (and sorted) at request time, so registration order does not matter.
+    """
+    _cards.append(card)
+
+
+def registered_cards() -> list[Card]:
+    """Return the contributed homepage cards (a copy; caller sorts for display)."""
+    return list(_cards)
 
 
 async def start(port: int | None = None) -> None:

@@ -291,6 +291,13 @@ def register_rotation_routes(app: aiohttp.web.Application) -> None:
 
 
 web.register_routes(register_rotation_routes)
+web.register_card(
+    web.Card(
+        "Rotation Editor",
+        "Edit rotation post data (Xûr, weekly rotations, …)",
+        "/rotation",
+    )
+)
 
 
 # --- slash commands ---------------------------------------------------------------

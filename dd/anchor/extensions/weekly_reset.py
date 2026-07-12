@@ -1819,6 +1819,13 @@ def register_weekly_reset_routes(app: aiohttp.web.Application) -> None:
 
 
 web.register_routes(register_weekly_reset_routes)
+web.register_card(
+    web.Card(
+        "Weekly Reset",
+        "Compose & publish the weekly-reset post",
+        "/weekly_reset",
+    )
+)
 
 
 # ---------------------------------------------------------------------------
