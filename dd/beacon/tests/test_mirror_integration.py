@@ -165,6 +165,19 @@ async def _delivered(src_msg_id: int) -> list[tuple[int, int]]:
     return [(int(m), int(c)) for m, c in rows]
 
 
+async def _states(src_msg_id: int) -> dict[int, str]:
+    """Per-dest ledger state for a source message."""
+    async with schemas.db_session() as session, session.begin():
+        rows = (
+            await session.execute(
+                select(MirrorDelivery.dest_ch_id, MirrorDelivery.state).where(
+                    MirrorDelivery.src_msg_id == src_msg_id
+                )
+            )
+        ).fetchall()
+    return {int(d): s for d, s in rows}
+
+
 async def _sweep_test_channels(rest: h.api.RESTClient, guild_id: int) -> None:
     """Delete every ``_PREFIX`` channel in the guild (leftovers from prior runs)."""
     for channel in await rest.fetch_guild_channels(guild_id):
@@ -474,3 +487,31 @@ async def test_graceful_stop_drains_without_duplicates(mirror_env: _MirrorEnv) -
     await _converge(mirror_env.bot)
     msgs_after = [m async for m in mirror_env.rest.fetch_messages(dest.id)]
     assert len(msgs_after) == 1
+
+
+async def test_partial_failure_delivers_good_and_terminalizes_bad(
+    mirror_env: _MirrorEnv,
+) -> None:
+    """A fan-out with one reachable and one broken dest (the shape behind the prod
+    failure alerts): the good dest gets the message and the broken one converges to
+    FAILED, without the failure blocking the good delivery."""
+    src = await mirror_env.make_channel("src-partial")
+    good = await mirror_env.make_channel("dst-good")
+    broken = await mirror_env.make_channel("dst-broken")
+    for dest in (good, broken):
+        await MirroredChannel.add_mirror(
+            src.id, dest.id, dest_server_id=mirror_env.guild_id, legacy=True
+        )
+    # Break one dest so its send permanently fails (deleted channel → NotFound).
+    await mirror_env.rest.delete_channel(broken.id)
+
+    posted = await _send(mirror_env, src, "partial fan-out")
+
+    delivered = {ch for _m, ch in await _delivered(posted.id)}
+    assert good.id in delivered  # the reachable dest still got it
+    assert broken.id not in delivered
+    states = await _states(posted.id)
+    assert states[good.id] == DeliveryState.DELIVERED.value
+    assert states[broken.id] == DeliveryState.FAILED.value  # terminal, not stuck
+    good_msgs = [m async for m in mirror_env.rest.fetch_messages(good.id)]
+    assert len(good_msgs) == 1
