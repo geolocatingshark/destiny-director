@@ -146,9 +146,7 @@ class OverflowAlert(
         container.add_text_display(description)
 
         channel = t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id))
-        await channel.send(
-            components=[container], flags=h.MessageFlag.IS_COMPONENTS_V2
-        )
+        await channel.send(components=[container], flags=h.MessageFlag.IS_COMPONENTS_V2)
         await ctx.respond(
             "Forced a CV2 overflow. In the owner **alerts channel** you should now see "
             "a clean 🚨 **CRITICAL** notice — *“CV2 overflow test autopost is N UTF-16 "

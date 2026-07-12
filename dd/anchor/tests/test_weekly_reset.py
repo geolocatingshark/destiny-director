@@ -797,8 +797,10 @@ def test_render_post_html_renders_markdown_and_emoji() -> None:
 def test_discord_error_note() -> None:
     # Discord's "Invalid resource" (proxied image URL) -> the specific image hint.
     proxy = wr._discord_error_note(
-        ValueError("Unauthorized 401: 'Invalid resource \"https://images-ext-1"
-                   ".discordapp.net/external/x\"'")
+        ValueError(
+            "Unauthorized 401: 'Invalid resource \"https://images-ext-1"
+            ".discordapp.net/external/x\"'"
+        )
     )
     assert "proxy link" in proxy and "direct image URL" in proxy
     # A media.discordapp.net/external/ link is flagged the same way.
@@ -1028,9 +1030,7 @@ async def test_handle_save_posts_and_returns_warnings(
 @pytest.mark.asyncio
 async def test_handle_save_503_when_bot_unset(monkeypatch) -> None:
     monkeypatch.setattr(wr, "_bot", None)
-    resp = await wr._handle_save(
-        _req(cookies=_authed_cookies(), body={"reset_ts": 1})
-    )
+    resp = await wr._handle_save(_req(cookies=_authed_cookies(), body={"reset_ts": 1}))
     assert resp.status == 503
 
 

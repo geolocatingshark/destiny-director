@@ -1820,9 +1820,7 @@ async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
         try:
             meta = await post_or_edit_unpublished(_bot, ctx, meta)
         except Exception as exc:
-            logger.warning(
-                "weekly_reset: in-channel post update failed", exc_info=True
-            )
+            logger.warning("weekly_reset: in-channel post update failed", exc_info=True)
             post_error = _discord_error_note(exc)
         await save_meta(meta)
         # Optionally persist this week's image as the carried-over default for future
