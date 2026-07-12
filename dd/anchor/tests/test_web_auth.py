@@ -523,3 +523,43 @@ async def test_logout_clears_cookie_and_redirects() -> None:
     # A deletion cookie is emitted (empty value / expired).
     morsel = resp.cookies[auth._SESSION_COOKIE]
     assert morsel.value == ""
+
+
+async def test_logout_same_origin_post_clears_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.cfg, "public_base_url", "https://anchor.example")
+    resp = await auth._handle_logout(
+        _req(method="POST", headers={"Origin": "https://anchor.example"})
+    )
+    assert resp.status == 302
+    assert resp.cookies[auth._SESSION_COOKIE].value == ""
+
+
+async def test_logout_cross_origin_post_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Forced-logout CSRF defence: a cross-site POST can't clear the owner's session.
+    monkeypatch.setattr(auth.cfg, "public_base_url", "https://anchor.example")
+    resp = await auth._handle_logout(
+        _req(method="POST", headers={"Origin": "https://evil.example"})
+    )
+    assert resp.status == 403
+    assert auth._SESSION_COOKIE not in resp.cookies
+
+
+async def test_logout_is_post_only() -> None:
+    # A GET /auth/logout would be triggerable cross-site (<img>/link/prefetch); it is
+    # registered for POST only so that vector is gone.
+    from dd.anchor import web
+
+    app = aiohttp.web.Application()
+    for registrar in web._route_registrars:
+        registrar(app)
+    methods = {
+        r.method
+        for r in app.router.routes()
+        if r.resource and r.resource.canonical == "/auth/logout"
+    }
+    assert "POST" in methods
+    assert "GET" not in methods

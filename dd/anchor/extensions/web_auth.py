@@ -353,6 +353,21 @@ def _reject(
     return aiohttp.web.Response(status=status, text=message)
 
 
+def _origin_ok(request: aiohttp.web.Request) -> bool:
+    """Whether a state-changing request's ``Origin`` matches ours (CSRF defence).
+
+    Belt-and-suspenders atop ``SameSite=Lax``: a browser sends ``Origin`` on cross-site
+    POSTs, so a mismatch is a forged request. Absent ``Origin`` (or no configured base
+    URL) we can't compare, so we allow and defer to SameSite. Shared by the middleware
+    and the logout handler (which is allowlisted, so the middleware's check doesn't run
+    for it yet it still mutates session state).
+    """
+    origin = request.headers.get("Origin")
+    if not origin or not cfg.public_base_url:
+        return True
+    return origin.rstrip("/") == cfg.public_base_url.rstrip("/")
+
+
 # --- route handlers ---------------------------------------------------------------
 
 
@@ -457,7 +472,16 @@ async def _handle_callback(request: aiohttp.web.Request) -> aiohttp.web.StreamRe
 
 
 async def _handle_logout(request: aiohttp.web.Request) -> aiohttp.web.StreamResponse:
-    """Clear the session cookie and bounce to the login route."""
+    """Clear the session cookie and bounce to the login route.
+
+    POST-only and origin-checked so a cross-site page can't force-logout the owner: a
+    ``GET`` variant would be triggerable by ``<img>``/link/prefetch, and because logout
+    is allowlisted the middleware's own CSRF check doesn't run for it — so it re-checks
+    the Origin here. The gap was only an annoyance (a forced re-login), but closing it
+    keeps every mutating route uniformly origin-gated.
+    """
+    if not _origin_ok(request):
+        return _reject(request, 403, "Cross-origin request refused.")
     response = aiohttp.web.HTTPFound("/auth/login")
     clear_session_cookie(response)
     return response
@@ -467,9 +491,9 @@ def register_auth_routes(app: aiohttp.web.Application) -> None:
     """Add the auth routes to the shared persistent app."""
     app.router.add_get("/auth/login", _handle_login)
     app.router.add_get(_CALLBACK_PATH, _handle_callback)
-    # Logout accepts POST (the natural state-changing verb) and GET (a plain link).
+    # Logout is POST-only (a GET could be triggered cross-site by <img>/link/prefetch →
+    # forced logout) and additionally origin-checked in the handler.
     app.router.add_post("/auth/logout", _handle_logout)
-    app.router.add_get("/auth/logout", _handle_logout)
 
 
 # --- enforcement middleware -------------------------------------------------------
@@ -492,17 +516,10 @@ async def _auth_middleware(
     if _dev_bypass_active():
         return await handler(request)
 
-    # Origin defence for state-changing requests (belt-and-suspenders atop SameSite):
-    # if the browser sent an Origin and we know our own, they must match. The Discord
-    # callback is a GET, so this never touches the login flow.
-    if request.method in _UNSAFE_METHODS:
-        origin = request.headers.get("Origin")
-        if (
-            origin
-            and cfg.public_base_url
-            and origin.rstrip("/") != cfg.public_base_url.rstrip("/")
-        ):
-            return _reject(request, 403, "Cross-origin request refused.")
+    # Origin defence for state-changing requests (belt-and-suspenders atop SameSite).
+    # The Discord callback is a GET, so this never touches the login flow.
+    if request.method in _UNSAFE_METHODS and not _origin_ok(request):
+        return _reject(request, 403, "Cross-origin request refused.")
 
     user_id = resolve_session(request.cookies.get(_SESSION_COOKIE, ""))
     if user_id is None:
