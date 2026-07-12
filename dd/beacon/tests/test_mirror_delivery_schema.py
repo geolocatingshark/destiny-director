@@ -150,8 +150,8 @@ async def test_bump_for_edit_bumps_version_and_revives_terminal():
             .values(state=DeliveryState.FAILED.value)
         )
 
-    bumped, inserted = await MirrorDelivery.bump_for_edit(src, 920)
-    assert (bumped, inserted) == (2, 0)
+    bumped, inserted, had_baseline = await MirrorDelivery.bump_for_edit(src, 920)
+    assert (bumped, inserted, had_baseline) == (2, 0, True)
     for dest in (220, 221):
         row = await _row(920, dest)
         assert row["state"] == DeliveryState.PENDING.value
@@ -186,30 +186,38 @@ async def test_bump_for_edit_leaves_deleted_rows_untouched_and_inserts_new_dest(
 
     # A dest added *after* the original send is picked up by the reconcile insert.
     await MirroredChannel.add_mirror(src, 232, 3, legacy=True)
-    bumped, inserted = await MirrorDelivery.bump_for_edit(src, 930)
+    bumped, inserted, had_baseline = await MirrorDelivery.bump_for_edit(src, 930)
     # 230 (non-deleted) bumped; 231 (deleted) left untouched; 232 freshly inserted.
-    assert bumped == 1
-    assert inserted == 1
+    assert (bumped, inserted, had_baseline) == (1, 1, True)
     assert (await _row(930, 230))["desired_version"] == 2
     assert (await _row(930, 231))["deleted"] is True
     assert (await _row(930, 231))["desired_version"] == 1  # untouched
     assert (await _row(930, 232))["state"] == DeliveryState.PENDING.value
 
 
-async def test_bump_for_edit_is_a_no_op_before_first_delivery():
-    # The publish/crosspost transition Discord reports as a MessageUpdateEvent reaches
-    # bump_for_edit with the message enqueued but not delivered anywhere yet (no row has
-    # a dest_msg_id). It must be a true no-op: no version bump, no phantom fan-out — the
-    # create handler owns the send, and the worker delivers the current content.
+async def test_bump_for_edit_before_first_delivery_bumps_version_without_baseline():
+    # An edit landing after enqueue/pick but before the first delivery flush (no row has
+    # a dest_msg_id yet). The version MUST still bump so the worker's per-version source
+    # cache refetches the edited content (else the whole fan-out ships stale pre-edit
+    # content). But had_delivered_baseline is False, so the handler shows no update card
+    # and inserts no fresh fan-out — which is also exactly the publish-transition state,
+    # so a publish never surfaces a phantom "update".
     src = 135
     await MirroredChannel.add_mirror(src, 235, 1, legacy=True)
     await MirrorDelivery.enqueue_send(src, 935)
 
-    bumped, inserted = await MirrorDelivery.bump_for_edit(src, 935)
-    assert (bumped, inserted) == (0, 0)
+    bumped, inserted, had_baseline = await MirrorDelivery.bump_for_edit(src, 935)
+    assert (bumped, inserted, had_baseline) == (1, 0, False)
     row = await _row(935, 235)
-    assert row["desired_version"] == 1  # not bumped
+    assert row["desired_version"] == 2  # refreshed so the send fetches edited content
     assert row["state"] == DeliveryState.PENDING.value
+
+
+async def test_bump_for_edit_not_enqueued_is_a_true_no_op():
+    # No rows at all (not mirrored, or the update handler beat the create handler on a
+    # publish event): nothing bumped, no fan-out inserted, no baseline.
+    assert await MirrorDelivery.bump_for_edit(145, 945) == (0, 0, False)
+    assert await _states(945) == {}
 
 
 # -- mark_deleted ------------------------------------------------------------
@@ -238,6 +246,44 @@ async def test_mark_deleted_case_semantics():
     assert (await _row(940, 240))["state"] == DeliveryState.PENDING.value
     assert (await _row(940, 240))["deleted"] is True
     assert (await _row(940, 241))["state"] == DeliveryState.CANCELLED.value
+
+
+async def test_mark_deleted_still_deletes_cancelled_row_with_live_dest_msg():
+    # A CANCELLED row can still carry a live dest_msg_id (e.g. an update run cancelled
+    # after the original send). Deleting the source must still remove that dest message;
+    # skipping all CANCELLED rows would orphan it forever.
+    src = 145
+    for dest in (245, 246):
+        await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(src, 945)
+    async with schemas.db_session() as session, session.begin():
+        # 245: delivered then cancelled — holds a live dest message.
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(MirrorDelivery.src_msg_id == 945, MirrorDelivery.dest_ch_id == 245)
+            )
+            .values(
+                state=DeliveryState.CANCELLED.value, dest_msg_id=4242, applied_version=1
+            )
+        )
+        # 246: cancelled, never delivered — nothing to delete.
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(MirrorDelivery.src_msg_id == 945, MirrorDelivery.dest_ch_id == 246)
+            )
+            .values(state=DeliveryState.CANCELLED.value)
+        )
+
+    deletion_work = await MirrorDelivery.mark_deleted(945)
+    assert deletion_work == 1  # only 245 (cancelled but delivered) needs a delete
+    row245 = await _row(945, 245)
+    assert row245["state"] == DeliveryState.PENDING.value  # re-armed for the delete
+    assert row245["deleted"] is True
+    # 246 stays a no-op CANCELLED (nothing to delete Discord-side).
+    assert (await _row(945, 246))["state"] == DeliveryState.CANCELLED.value
+    assert (await _row(945, 246))["deleted"] is False
 
 
 # -- cancel_pending ----------------------------------------------------------
@@ -394,6 +440,86 @@ async def test_flush_success_news_marks_crosspost_pending():
     row = await _row(1005, 605)
     assert row["state"] == DeliveryState.DELIVERED.value
     assert row["crosspost_state"] == CrosspostState.PENDING.value
+
+
+async def test_flush_edit_preserves_a_still_pending_crosspost():
+    # A news send landed (DELIVERED, crosspost_state=PENDING) but the deferred crosspost
+    # has not run yet; a source edit re-arms and re-delivers the row. The edit's SUCCESS
+    # (crosspost_pending=False) must NOT downgrade the still-PENDING crosspost, else the
+    # announcement is edited but silently never published to followers.
+    await _seed_one(
+        1007,
+        607,
+        state=DeliveryState.DELIVERED.value,
+        crosspost_state=CrosspostState.PENDING.value,
+        dest_msg_id=7007,
+        applied_version=1,
+    )
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                kind=OutcomeKind.SUCCESS,
+                src_msg_id=1007,
+                dest_ch_id=607,
+                version=1,  # guard passes
+                dest_msg_id=7007,
+                crosspost_pending=False,  # an edit, not a fresh news send
+            )
+        ]
+    )
+    row = await _row(1007, 607)
+    assert row["state"] == DeliveryState.DELIVERED.value
+    assert row["crosspost_state"] == CrosspostState.PENDING.value  # preserved
+
+
+async def test_flush_news_send_records_crosspost_even_when_version_guard_fails():
+    # A fresh news send is in flight when an edit bumps desired_version → its SUCCESS is
+    # stamped with the stale version and the guard fails. The publish intent (news-ness
+    # is version-independent) must still be recorded so the crosspost is not lost.
+    await _seed_one(1008, 608, desired_version=2)
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                kind=OutcomeKind.SUCCESS,
+                src_msg_id=1008,
+                dest_ch_id=608,
+                version=1,  # guard fails (row is at v2)
+                dest_msg_id=8008,
+                crosspost_pending=True,  # news send
+            )
+        ]
+    )
+    row = await _row(1008, 608)
+    assert row["state"] == DeliveryState.PENDING.value  # re-converge the edit
+    assert row["dest_msg_id"] == 8008  # recorded → next pick edits
+    assert row["crosspost_state"] == CrosspostState.PENDING.value  # publish not lost
+
+
+async def test_flush_delete_success_resolves_pending_crosspost():
+    # Deleting a news dest whose crosspost was still PENDING must resolve the sub-state
+    # so pick_batch stops re-selecting the (gone) row to crosspost a deleted message.
+    await _seed_one(
+        1009,
+        609,
+        state=DeliveryState.PENDING.value,
+        crosspost_state=CrosspostState.PENDING.value,
+        dest_msg_id=9009,
+        deleted=True,
+        applied_version=1,
+    )
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                kind=OutcomeKind.DELETE_SUCCESS,
+                src_msg_id=1009,
+                dest_ch_id=609,
+                version=1,
+            )
+        ]
+    )
+    row = await _row(1009, 609)
+    assert row["state"] == DeliveryState.DELIVERED.value
+    assert row["crosspost_state"] == CrosspostState.DONE.value  # no longer re-picked
 
 
 async def test_flush_success_after_edit_bump_returns_pending_but_records_dest_msg():

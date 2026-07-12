@@ -289,6 +289,10 @@ _client: lb.Client | None = None
 # be garbage-collected mid-run. A new event for a source replaces (and cancels) the old.
 _cards: dict[int, aio.Task[None]] = {}
 
+# Strong reference to the one-shot post-restart backlog-recovery task (same weak-ref
+# hazard as ``_cards``); kept alive for the task's lifetime.
+_backlog_recovery_task: aio.Task[None] | None = None
+
 
 def _build_cancel_menu(
     view: RunView,
@@ -622,8 +626,11 @@ async def _start_mirror_worker(
     bot = t.cast(CachedFetchBot, _event.app)
     await mirror_worker.start(bot)
     # Post a recovery card for any source with leftover work, so a post-restart backlog
-    # is visible — as a background task so a slow card send can't stall startup.
-    aio.create_task(_recover_backlog_cards(bot, client))
+    # is visible — as a background task so a slow card send can't stall startup. Keep a
+    # strong reference (asyncio only holds a weak one; see ``_cards``) so the coroutine
+    # can't be garbage-collected while it awaits its DB query / card sends.
+    global _backlog_recovery_task
+    _backlog_recovery_task = aio.create_task(_recover_backlog_cards(bot, client))
 
 
 async def _recover_backlog_cards(bot: CachedFetchBot, client: lb.Client) -> None:
@@ -896,17 +903,21 @@ async def message_update_repeater(
 async def message_update_repeater_impl(
     msg: h.Message, bot: CachedFetchBot, client: lb.Client | None = None
 ):
-    # Reconcile the edit: bump every non-deleted row at the new version and insert rows
-    # for any dests added since the send. One transaction, no locks; retried on a
-    # transient DB blip so the edit isn't silently lost.
+    # Reconcile the edit: bump every non-deleted row at the new version (and, once the
+    # message has been delivered somewhere, insert rows for any dests added since the
+    # send). One transaction, no locks; retried on a transient DB blip so the edit isn't
+    # silently lost.
     result = await _ledger_write_with_retry(
         "edit", lambda: MirrorDelivery.bump_for_edit(msg.channel_id, msg.id)
     )
     if result is None:
         return
-    bumped, inserted = result
-    if bumped + inserted == 0:
-        # Not a mirrored message.
+    _bumped, _inserted, had_delivered_baseline = result
+    if not had_delivered_baseline:
+        # Either not a mirrored message, or the edit landed before first delivery — the
+        # version bump (if any) folds it into the still-pending send, which fetches the
+        # source's live content at delivery time. No separate update run/card, and (the
+        # publish transition being exactly this pre-delivery state) no phantom card.
         return
 
     view = RunView(

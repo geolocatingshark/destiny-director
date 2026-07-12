@@ -848,25 +848,31 @@ class MirrorDelivery(Base):
         src_msg_id: int,
         *,
         session: AsyncSession = _UNSET,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, bool]:
         """Reconcile an edit: bump every non-deleted row's ``desired_version`` and reset
-        its retry budget, then insert rows for any dests added since the send.
+        its retry budget, then (only for an already-delivered message) insert rows for
+        any dests added since the send.
 
-        Returns ``(bumped, inserted)`` rowcounts — both zero means there was nothing to
-        reconcile (not a mirrored message, or not delivered anywhere yet). Rows for
-        dests since removed from ``mirrored_channel`` keep converging (they are bumped
-        but not re-inserted). FAILED/CANCELLED/PENDING rows are (re)armed to PENDING;
-        rows with ``deleted=1`` are never touched by an edit.
+        Returns ``(bumped, inserted, had_delivered_baseline)``. ``bumped + inserted``
+        == 0 means this is not an enqueued message at all (nothing to do). ``bumped``
+        covers every non-deleted row so a **pre-delivery** edit still refreshes the
+        version the worker fetches its *current* content at — the send fetches source
+        content at delivery time (see ``mirror_worker``), but a version that never moves
+        lets the
+        per-``(src_msg_id, version)`` source cache serve stale pre-edit content to the
+        whole fan-out, silently losing the edit. Rows for dests since removed from
+        ``mirrored_channel`` keep converging (bumped, not re-inserted).
+        FAILED/CANCELLED/PENDING rows are (re)armed to PENDING; ``deleted=1`` rows are
+        never touched.
 
-        Only reconciles a source that has already been **delivered** somewhere — a row
-        carries a ``dest_msg_id`` once its send landed. Before first delivery the send
-        fetches the source's *current* content at delivery time (see
-        ``mirror_worker``), so an edit has nothing to reconcile; and the
-        publish/crosspost transition Discord also reports as a ``MessageUpdateEvent``
-        must never insert a fresh fan-out here — that would race the create handler's
-        send and surface a phantom "update" for a message whose only change was being
-        published. Gating on a delivered baseline makes both a true no-op regardless of
-        gateway event ordering.
+        ``had_delivered_baseline`` is True iff a row already carries a ``dest_msg_id``
+        (the message landed somewhere). The caller shows an *update* progress card and
+        fresh-fans-out to newly added dests only then; before first delivery the edit is
+        folded silently into the pending send. This is also why the publish/crosspost
+        transition Discord reports as a ``MessageUpdateEvent`` never surfaces a phantom
+        "update": at that instant nothing has been delivered, so no card is shown and no
+        fresh fan-out is inserted here (which would otherwise race the create handler's
+        send) — regardless of gateway event ordering.
 
         A row that is in-flight *right now* is re-armed to PENDING here too, but the one
         worker flushes the current batch's outcomes before it picks again, so it can't
@@ -876,21 +882,6 @@ class MirrorDelivery(Base):
         recorded message instead of re-sending it. No duplicate, no orphan, no lease.
         """
         now = _utcnow()
-        delivered_baseline = (
-            await session.execute(
-                select(func.count())
-                .select_from(cls)
-                .where(
-                    and_(
-                        cls.src_msg_id == int(src_msg_id),
-                        cls.dest_msg_id.is_not(None),
-                        ~cls.deleted,
-                    )
-                )
-            )
-        ).scalar_one()
-        if not delivered_baseline:
-            return (0, 0)
         bumped = await session.execute(
             update(cls)
             .where(and_(cls.src_msg_id == int(src_msg_id), ~cls.deleted))
@@ -902,13 +893,36 @@ class MirrorDelivery(Base):
                 finished_at=None,
             )
         )
-        inserted = await session.execute(
-            _insert_ignore(cls).from_select(
-                list(cls._ENQUEUE_COLS),
-                cls._enqueue_select(src_ch_id, src_msg_id, now),
-            )
+        bumped_rows = bumped.rowcount or 0
+        if not bumped_rows:
+            # Not an enqueued message (or only deleted rows) — nothing to reconcile, and
+            # crucially no fresh fan-out inserted (that is the create handler's job).
+            return (0, 0, False)
+        had_delivered_baseline = bool(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(cls)
+                    .where(
+                        and_(
+                            cls.src_msg_id == int(src_msg_id),
+                            cls.dest_msg_id.is_not(None),
+                            ~cls.deleted,
+                        )
+                    )
+                )
+            ).scalar_one()
         )
-        return (bumped.rowcount or 0, inserted.rowcount or 0)
+        inserted_rows = 0
+        if had_delivered_baseline:
+            inserted = await session.execute(
+                _insert_ignore(cls).from_select(
+                    list(cls._ENQUEUE_COLS),
+                    cls._enqueue_select(src_ch_id, src_msg_id, now),
+                )
+            )
+            inserted_rows = inserted.rowcount or 0
+        return (bumped_rows, inserted_rows, had_delivered_baseline)
 
     @classmethod
     @ensure_session(db_session)
@@ -923,15 +937,22 @@ class MirrorDelivery(Base):
 
         Never-delivered rows (``dest_msg_id`` NULL) go straight to CANCELLED (nothing
         to delete Discord-side); delivered rows go to PENDING carrying the delete
-        intent, so the worker deletes their dest message. Already-CANCELLED rows are
-        left alone. The returned count is the number of PENDING (delivered) rows — the
-        RunView total for the delete card; 0 means there is nothing to delete (not
-        mirrored, or nothing was ever delivered).
+        intent, so the worker deletes their dest message. A CANCELLED row is left alone
+        ONLY when it never delivered — a CANCELLED row that still carries a
+        ``dest_msg_id`` (e.g. an update run cancelled after the original send, or a
+        delivered row cancelled by a permanent source-fetch failure) holds a live
+        Discord message and must still be deleted, else it is orphaned forever. The
+        returned count is the number of PENDING (delivered) rows — the RunView total for
+        the delete card; 0 means there is nothing to delete (not mirrored, or nothing
+        was ever delivered).
         """
         now = _utcnow()
         base = and_(
             cls.src_msg_id == int(src_msg_id),
-            cls.state != DeliveryState.CANCELLED.value,
+            or_(
+                cls.state != DeliveryState.CANCELLED.value,
+                cls.dest_msg_id.is_not(None),
+            ),
         )
         # Count the deletion-work rows (have a dest message) before flipping state.
         deletion_work = (
@@ -967,14 +988,14 @@ class MirrorDelivery(Base):
     ) -> list[int]:
         """Cancel not-yet-delivered rows for ``src_msg_id``; return the cancelled dests.
 
-        Only PENDING, non-deleted rows are cancelled. A row in-flight *right now*
-        is also PENDING, so it may be flipped here — but the worker's in-memory
-        ``cancel_requested`` flag short-circuits it before the Discord call, and a row
-        that had already been sent simply converges to DELIVERED under the version guard
-        (cancel lost the race; the message is out and stays recorded). A racing delete's
-        PENDING rows (``deleted=1``) are left to converge. Returns the affected
-        ``dest_ch_id``s so the caller can mark them cancelled in the run view; an empty
-        list means there was nothing to cancel.
+        Only PENDING, non-deleted rows are cancelled. This stops every row the worker
+        has not yet *picked*. A row already picked into the current batch is delivered
+        anyway (the worker has no in-memory cancel check) and, once sent, converges to
+        DELIVERED under the version guard — cancel lost the race, the message is out
+        and stays recorded. So cancel is best-effort against the at-most-one in-flight
+        batch. A racing delete's PENDING rows (``deleted=1``) are left to converge.
+        Returns the affected ``dest_ch_id``s so the caller can mark them cancelled in
+        the run view; an empty list means there was nothing to cancel.
         """
         now = _utcnow()
         where = and_(
@@ -1056,8 +1077,10 @@ class MirrorDelivery(Base):
                         ),
                     )
                 )
-                # Biggest-server-first, unknown-population last, then oldest first. A
-                # bounded ~batch-size filesort over a set already narrowed by the
+                # Biggest-server-first, then oldest first. An unknown population (no
+                # server_statistics row) coalesces to 10**12 so it sorts optimistically
+                # among the largest, matching the fetch_dests convention. A bounded
+                # ~batch-size filesort over a set already narrowed by the
                 # (state, due_at) index — cheap at our volumes.
                 .order_by(
                     desc(coalesce(ServerStatistics.population, 10**12)),
@@ -1130,10 +1153,15 @@ class MirrorDelivery(Base):
 
         for kind, group in by_kind.items():
             if kind is OutcomeKind.SUCCESS:
-                # ``b_crosspost`` is PENDING only for a fresh send to a news channel;
-                # set (guarded) so an edit/delete race can't strand a crosspost. It is
-                # NOT_APPLICABLE for a plain send/edit, which harmlessly leaves the sub-
-                # state at its NOT_APPLICABLE default.
+                # ``b_crosspost`` is PENDING only for a fresh send to a news channel.
+                # News-ness is version-independent and crossposting is idempotent, so
+                # arm the sub-state PENDING whenever this outcome is a news send — even
+                # when the version guard fails (a raced edit bumped the version), so the
+                # publish intent survives that race. For any other success (an edit, or
+                # a plain non-news send) PRESERVE the existing sub-state rather than
+                # writing NOT_APPLICABLE: an edit landing between a news send and its
+                # deferred crosspost carries crosspost_pending=False and would otherwise
+                # downgrade a still-PENDING crosspost, silently dropping the publish.
                 stmt = (
                     update(cls.__table__)
                     .where(pk)
@@ -1148,7 +1176,11 @@ class MirrorDelivery(Base):
                         last_error_class=None,
                         last_error_msg=None,
                         crosspost_state=case(
-                            (guard, bindparam("b_crosspost")),
+                            (
+                                bindparam("b_crosspost")
+                                == CrosspostState.PENDING.value,
+                                CrosspostState.PENDING.value,
+                            ),
                             else_=cls.crosspost_state,
                         ),
                         state=case(
@@ -1182,6 +1214,11 @@ class MirrorDelivery(Base):
                         last_error_class=None,
                         last_error_msg=None,
                         state=DeliveryState.DELIVERED.value,
+                        # Resolve any still-PENDING crosspost: the dest message is gone,
+                        # so leaving it PENDING would keep pick_batch re-selecting this
+                        # row to crosspost a deleted message (3 failing attempts + a
+                        # health alert each) before giving up.
+                        crosspost_state=CrosspostState.DONE.value,
                         finished_at=now,
                     )
                 )

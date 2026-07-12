@@ -82,9 +82,11 @@ async def on_start_install_logging(_event: h.StartedEvent):
 
 @bot.listen(h.StoppingEvent)
 async def on_stopping_event(_event: h.StoppingEvent):
-    # Drain the mirror worker *before* disposing the DB engine: stop() flushes any
-    # buffered delivery outcomes so observed dest_msg_ids are persisted (else a restart
-    # re-sends them), and the drain needs a live engine.
+    # Stop the mirror worker *before* disposing the DB engine (its in-flight flush needs
+    # a live engine). stop() cancels the loop rather than draining: any outcome not yet
+    # flushed leaves its row PENDING and is re-picked and re-converged idempotently on
+    # the next startup (at most re-sending the small in-flight window — the accepted
+    # crash-dup window; see MirrorWorker.stop).
     await mirror_worker.stop()
     await aclose_discord_logging()
     await schemas.db_engine.dispose()
