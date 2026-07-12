@@ -123,35 +123,44 @@ pulls messages from a followable channel; see `template.py`.
 
 The mirror subsystem fans one source-channel message out to N legacy destination
 channels (`legacy=True` rows in `mirrored_channel`; non-legacy rows are native Discord
-channel-follows, untouched by this). It is a **durable delivery ledger**, not in-memory
-orchestration:
+channel-follows, untouched by this). It is a **durable delivery ledger** driven by a
+single worker (there is only ever one process — the ceiling is Discord's global ~50
+req/s, so concurrency is small):
 
 - **`mirror_delivery`** (`dd/common/schemas.py`) — one row per `(src_msg_id, dest_ch_id)`
-  carrying `desired_version` / `applied_version` / `state` / `deleted`. It stores
-  *intent*, never content — content is fetched fresh from Discord at delivery time. It
-  subsumes the old `mirrored_message` table.
+  carrying `desired_version` / `applied_version` / `state` / `deleted` / `crosspost_state`.
+  It stores *intent*, never content — content is fetched fresh from Discord at delivery
+  time. States are `PENDING / DELIVERED / FAILED / CANCELLED`; there is **no CLAIMED
+  state** — a row being worked right now is tracked only in the one worker's memory, so a
+  crash just leaves it PENDING for the next pick.
 - **Gateway handlers** (`extensions/mirror.py`) do one transactional enqueue each —
   `enqueue_send` (create), `bump_for_edit` (edit → bump `desired_version`), `mark_deleted`
-  (delete) — then register a `RunView` progress card and nudge the worker.
-- **The convergence worker** (`mirror_worker.py`, one `MirrorWorker` per process, started
-  from `StartedEvent`) claims due rows via `SELECT … FOR UPDATE SKIP LOCKED`
-  (biggest-server-first), converges each destination, and buffers outcomes; a dedicated
-  **flusher** writes them back. Retries are `due_at` backoffs in the ledger, not in-process
-  sleeps. Each claim pass ends by **reconciling every active run view against the ledger**
-  (`non_terminal_counts`) — completion is authoritative from the ledger (no PENDING/CLAIMED
-  rows left), *not* from in-memory accounting, so a run finalizes correctly even when a
-  delete only cancelled rows or an edit briefly credited stale in-flight deliveries. On
-  completion a run-end hook flags failures and runs the **derived** auto-disable sweep
-  (`MirroredChannel.disable_failing_mirrors` — a confirmed-dead streak query over the
-  ledger, replacing the old strike columns). On shutdown (`StoppingEvent`) the worker
-  `stop()`s: it halts claiming and **drains the outcome buffer** before the DB engine is
-  disposed, so an observed `dest_msg_id` is always persisted rather than re-sent after a
-  restart.
-- **`mirror_core.py`** is now just the pure survivors: `MirrorOperationType`, the global
-  token-bucket `RateLimiter`, and `RunView` (in-memory progress accounting).
+  (delete) — then start a progress card and nudge the worker.
+- **The worker** (`mirror_worker.py`, one `MirrorWorker` per process, started from
+  `StartedEvent`) runs a single **pick → process → flush** loop: it `pick_batch`es due
+  rows (biggest-server-first, no lease/lock), converges each destination under a
+  concurrency semaphore + a global token-bucket `RateLimiter`, and `flush_outcomes`
+  writes every result back **before the next pick** — that ordering is what makes a row
+  safe to re-pick after a crash without duplicating a send. Retries are `due_at` backoffs
+  in the ledger, not in-process sleeps. A fresh send to a Discord announcement (news)
+  channel is recorded `crosspost_state = PENDING` and crossposted durably by a later pick
+  (idempotent — "already crossposted" counts as success), so a crash between send and
+  crosspost never drops the publish.
+- **Progress cards** re-render from a cheap ledger `GROUP BY state` count
+  (`state_counts`) until the run drains (no `PENDING` rows left) — the ledger is the
+  single source of truth for progress, so there is no in-memory accounting to drift.
+- **Auto-disable is off the hot path.** A separate low-load task (`reachability_sweep`)
+  probes each enabled legacy destination's reachability + send perms
+  (`utils.confirm_dest_unsendable`; `SEND_MESSAGES` for channels, `SEND_MESSAGES_IN_THREADS`
+  for threads) and disables a pair only once it has stayed continuously unreachable past
+  `cfg.mirror_unreachable_grace_hours` (tracked by `mirrored_channel.unreachable_since`).
+  No failure counting. `prune` keeps ledger rows for `cfg.mirror_retention_days` (bar the
+  latest DELIVERED message per destination channel, kept indefinitely as an anchor).
+- **`mirror_core.py`** holds the pure survivors: `MirrorOperationType`, the global
+  token-bucket `RateLimiter`, and `RunView` / `RunCounts` (progress card display state).
 
-The pre-rewrite in-memory implementation is snapshotted on the `mirror-v1` branch; the
-rewrite's design + rationale lives in the `mirror-v2` commit history.
+The pre-rewrite in-memory implementation is snapshotted on `mirror-v1`; the durable-ledger
+rewrite on `mirror-v2`.
 
 ## Configuration — `dd/common/cfg.py`
 

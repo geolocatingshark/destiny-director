@@ -15,9 +15,10 @@
 
 """Integration tests for the durable delivery ledger (:class:`MirrorDelivery`).
 
-Exercises the transactional gateway handlers (enqueue/bump/delete/cancel), the claim
-scan (ordering, gating, stale reclaim), the write-back flusher (every outcome kind incl.
-the version/deleted guard) and prune retention — on the default SQLite backend."""
+Exercises the transactional gateway handlers (enqueue/bump/delete/cancel), the pick scan
+(ordering, due gate, crosspost pickup), the write-back flusher (every outcome kind incl.
+the version/deleted guard and durable crosspost), the count helpers and prune —
+on the default SQLite backend."""
 
 import datetime as dt
 
@@ -27,7 +28,7 @@ from sqlalchemy import and_, select, update
 
 from dd.common import schemas
 from dd.common.schemas import (
-    ClaimedRow,
+    CrosspostState,
     DeliveryOutcome,
     DeliveryState,
     MirrorDelivery,
@@ -63,14 +64,14 @@ async def _row(src_msg_id: int, dest_ch_id: int) -> dict:
         return {
             "dest_msg_id": r.dest_msg_id,
             "src_ch_id": r.src_ch_id,
-            "dest_server_id": r.dest_server_id,
             "desired_version": r.desired_version,
             "applied_version": r.applied_version,
             "deleted": bool(r.deleted),
             "state": r.state,
+            "crosspost_state": r.crosspost_state,
             "attempts": r.attempts,
-            "confirmed_dead": bool(r.confirmed_dead),
             "finished_at": r.finished_at,
+            "due_at": r.due_at,
             "last_error_ref": r.last_error_ref,
         }
 
@@ -101,8 +102,9 @@ async def test_enqueue_inserts_only_enabled_legacy_dests_minus_source():
     inserted = await MirrorDelivery.enqueue_send(src, 900)
     assert inserted == 2
     assert set(await _states(900)) == {200, 201}
-    # dest_server_id was denormalised from the mirror row for claim ordering.
-    assert (await _row(900, 200))["dest_server_id"] == 1
+    row = await _row(900, 200)
+    assert row["state"] == DeliveryState.PENDING.value
+    assert row["crosspost_state"] == CrosspostState.NOT_APPLICABLE.value
 
 
 async def test_enqueue_is_idempotent():
@@ -111,8 +113,7 @@ async def test_enqueue_is_idempotent():
     assert await MirrorDelivery.enqueue_send(src, 910) == 1
     # A duplicate gateway event / manual re-mirror inserts nothing (INSERT-IGNORE).
     assert await MirrorDelivery.enqueue_send(src, 910) == 0
-    states = await _states(910)
-    assert states == {210: DeliveryState.PENDING.value}
+    assert await _states(910) == {210: DeliveryState.PENDING.value}
 
 
 async def test_enqueue_non_mirrored_source_inserts_nothing():
@@ -143,7 +144,7 @@ async def test_bump_for_edit_bumps_version_and_revives_terminal():
             .where(
                 and_(MirrorDelivery.src_msg_id == 920, MirrorDelivery.dest_ch_id == 221)
             )
-            .values(state=DeliveryState.FAILED.value, confirmed_dead=True)
+            .values(state=DeliveryState.FAILED.value)
         )
 
     bumped, inserted = await MirrorDelivery.bump_for_edit(src, 920)
@@ -159,9 +160,7 @@ async def test_bump_for_edit_leaves_deleted_rows_untouched_and_inserts_new_dest(
     src = 130
     await MirroredChannel.add_mirror(src, 230, 1, legacy=True)
     await MirrorDelivery.enqueue_send(src, 930)
-    await MirrorDelivery.mark_deleted(
-        930
-    )  # 230 → PENDING deleted (no dest yet → CANCELLED)
+    await MirrorDelivery.mark_deleted(930)  # 230 never delivered → CANCELLED
 
     # A dest added *after* the original send is picked up by the reconcile insert.
     await MirroredChannel.add_mirror(src, 231, 2, legacy=True)
@@ -224,15 +223,10 @@ async def test_cancel_pending_only_pending_undeleted():
     assert (await _row(950, 251))["state"] == DeliveryState.DELIVERED.value
 
 
-# -- claim_batch -------------------------------------------------------------
+# -- pick_batch --------------------------------------------------------------
 
 
-async def _enqueue_with_pop(src, src_msg, dest, guild, pop):
-    await MirroredChannel.add_mirror(src, dest, guild, legacy=True)
-    await ServerStatistics.add_server(guild, pop) if pop is not None else None
-
-
-async def test_claim_orders_by_population_then_created_at():
+async def test_pick_orders_by_population_then_created_at():
     src = 160
     await MirroredChannel.add_mirror(src, 260, 1, legacy=True)
     await MirroredChannel.add_mirror(src, 261, 2, legacy=True)
@@ -242,17 +236,15 @@ async def test_claim_orders_by_population_then_created_at():
     await MirrorDelivery.enqueue_send(src, 960)
 
     now = dt.datetime.now(tz=dt.UTC)
-    stale = now - dt.timedelta(hours=1)
-    claimed = await MirrorDelivery.claim_batch("w1", 10, stale, now=now)
-    order = [c.dest_ch_id for c in claimed]
+    picked = await MirrorDelivery.pick_batch(10, now=now)
+    order = [c.dest_ch_id for c in picked]
     # Unknown population (262) coalesces to the max sentinel → first; then 50, then 5.
     assert order == [262, 261, 260]
-    assert all(isinstance(c, ClaimedRow) for c in claimed)
-    # All are now CLAIMED.
-    assert set((await _states(960)).values()) == {DeliveryState.CLAIMED.value}
+    # Picking does not mutate state (no lease).
+    assert set((await _states(960)).values()) == {DeliveryState.PENDING.value}
 
 
-async def test_claim_respects_due_at_gate():
+async def test_pick_respects_due_at_gate():
     src = 170
     await MirroredChannel.add_mirror(src, 270, 1, legacy=True)
     await MirrorDelivery.enqueue_send(src, 970)
@@ -264,35 +256,45 @@ async def test_claim_respects_due_at_gate():
             .where(MirrorDelivery.src_msg_id == 970)
             .values(due_at=now + dt.timedelta(minutes=10))
         )
-    assert await MirrorDelivery.claim_batch("w1", 10, now, now=now) == []
-    # Once due, it claims.
+    assert await MirrorDelivery.pick_batch(10, now=now) == []
+    # Once due, it is picked.
     later = now + dt.timedelta(minutes=11)
-    claimed = await MirrorDelivery.claim_batch("w1", 10, later, now=later)
-    assert [c.dest_ch_id for c in claimed] == [270]
+    picked = await MirrorDelivery.pick_batch(10, now=later)
+    assert [c.dest_ch_id for c in picked] == [270]
 
 
-async def test_claim_reclaims_stale():
-    src = 180
-    await MirroredChannel.add_mirror(src, 280, 1, legacy=True)
-    await MirrorDelivery.enqueue_send(src, 980)
+async def test_pick_includes_crosspost_pending_but_not_done():
+    src = 175
+    for dest in (275, 276):
+        await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(src, 975)
     now = dt.datetime.now(tz=dt.UTC)
-    # Mark it CLAIMED with an old claimed_at.
     async with schemas.db_session() as session, session.begin():
+        # 275: delivered, crosspost still PENDING → should be picked (to crosspost).
         await session.execute(
             update(MirrorDelivery)
-            .where(MirrorDelivery.src_msg_id == 980)
+            .where(
+                and_(MirrorDelivery.src_msg_id == 975, MirrorDelivery.dest_ch_id == 275)
+            )
             .values(
-                state=DeliveryState.CLAIMED.value,
-                claimed_by="dead",
-                claimed_at=now - dt.timedelta(hours=1),
+                state=DeliveryState.DELIVERED.value,
+                crosspost_state=CrosspostState.PENDING.value,
             )
         )
-    # A stale_cutoff newer than claimed_at reclaims it.
-    claimed = await MirrorDelivery.claim_batch(
-        "w2", 10, now - dt.timedelta(minutes=30), now=now
-    )
-    assert [c.dest_ch_id for c in claimed] == [280]
-    assert (await _row(980, 280))["state"] == DeliveryState.CLAIMED.value
+        # 276: delivered, crosspost DONE → no work left, not picked.
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(MirrorDelivery.src_msg_id == 975, MirrorDelivery.dest_ch_id == 276)
+            )
+            .values(
+                state=DeliveryState.DELIVERED.value,
+                crosspost_state=CrosspostState.DONE.value,
+            )
+        )
+    picked = {c.dest_ch_id: c for c in await MirrorDelivery.pick_batch(10, now=now)}
+    assert set(picked) == {275}
+    assert picked[275].crosspost_state == CrosspostState.PENDING.value
 
 
 # -- flush_outcomes ----------------------------------------------------------
@@ -335,9 +337,28 @@ async def test_flush_success_delivers_and_records_dest_msg():
     assert row["finished_at"] is not None
 
 
+async def test_flush_success_news_marks_crosspost_pending():
+    await _seed_one(1005, 605)
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                kind=OutcomeKind.SUCCESS,
+                src_msg_id=1005,
+                dest_ch_id=605,
+                version=1,
+                dest_msg_id=7000,
+                crosspost_pending=True,
+            )
+        ]
+    )
+    row = await _row(1005, 605)
+    assert row["state"] == DeliveryState.DELIVERED.value
+    assert row["crosspost_state"] == CrosspostState.PENDING.value
+
+
 async def test_flush_success_after_edit_bump_returns_pending_but_records_dest_msg():
-    # Invariant 3: a dest msg id, once observed, is always recorded — even when the
-    # version guard fails (edit bumped desired_version mid-flight).
+    # A dest msg id, once observed, is always recorded — even when the version guard
+    # fails (edit bumped desired_version mid-flight).
     await _seed_one(1010, 610, desired_version=2)
     await MirrorDelivery.flush_outcomes(
         [
@@ -415,7 +436,7 @@ async def test_flush_transient_backs_off():
     assert row["last_error_ref"] == "ABC123"
 
 
-async def test_flush_terminal_marks_failed_and_records_confirmed_dead():
+async def test_flush_terminal_marks_failed():
     await _seed_one(1050, 650)
     await MirrorDelivery.flush_outcomes(
         [
@@ -428,13 +449,12 @@ async def test_flush_terminal_marks_failed_and_records_confirmed_dead():
                 error_ref="DEAD01",
                 error_class="PERMANENT",
                 error_msg="forbidden",
-                confirmed_dead=True,
             )
         ]
     )
     row = await _row(1050, 650)
     assert row["state"] == DeliveryState.FAILED.value
-    assert row["confirmed_dead"] is True
+    assert row["last_error_ref"] == "DEAD01"
     assert row["finished_at"] is not None
 
 
@@ -450,7 +470,6 @@ async def test_flush_terminal_after_edit_bump_keeps_converging():
                 attempts=3,
                 error_ref="DEAD02",
                 error_class="PERMANENT",
-                confirmed_dead=True,
             )
         ]
     )
@@ -473,16 +492,180 @@ async def test_flush_cancelled_guarded():
     assert (await _row(1070, 670))["state"] == DeliveryState.CANCELLED.value
 
 
+async def test_flush_crosspost_done_and_retry():
+    await _seed_one(1080, 680, state=DeliveryState.DELIVERED.value)
+    # DONE latches the sub-state terminal.
+    await MirrorDelivery.flush_outcomes(
+        [DeliveryOutcome(OutcomeKind.CROSSPOST_DONE, 1080, 680, 1)]
+    )
+    assert (await _row(1080, 680))["crosspost_state"] == CrosspostState.DONE.value
+
+    await _seed_one(1081, 681, state=DeliveryState.DELIVERED.value)
+    due = dt.datetime.now(tz=dt.UTC) + dt.timedelta(minutes=4)
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                OutcomeKind.CROSSPOST_RETRY, 1081, 681, 1, attempts=1, due_at=due
+            )
+        ]
+    )
+    row = await _row(1081, 681)
+    assert row["crosspost_state"] == CrosspostState.PENDING.value
+    assert row["attempts"] == 1
+
+
+# -- flush guards: a raced edit must not clobber the racing writer's reset ------
+
+
+async def test_flush_cancelled_latches_for_deleted_never_delivered():
+    # A CANCELLED outcome for a delete-intent row that never delivered must latch
+    # CANCELLED, not bounce back to PENDING forever (pick→cancel→PENDING livelock).
+    await _seed_one(1200, 685, deleted=True, dest_msg_id=None)
+    await MirrorDelivery.flush_outcomes(
+        [DeliveryOutcome(OutcomeKind.CANCELLED, 1200, 685, 1)]
+    )
+    assert (await _row(1200, 685))["state"] == DeliveryState.CANCELLED.value
+
+
+async def test_flush_terminal_after_edit_bump_preserves_reset_attempts():
+    # When the version guard fails (edit re-armed the row to attempts=0), a stale
+    # TERMINAL outcome must not clobber attempts back to its exhausted count.
+    await _seed_one(1210, 690, desired_version=2, attempts=0)
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                kind=OutcomeKind.TERMINAL,
+                src_msg_id=1210,
+                dest_ch_id=690,
+                version=1,
+                attempts=3,
+                error_ref="DEAD03",
+                error_class="PERMANENT",
+            )
+        ]
+    )
+    row = await _row(1210, 690)
+    assert row["state"] == DeliveryState.PENDING.value  # keep converging
+    assert row["attempts"] == 0  # reset budget preserved, not clobbered to 3
+
+
+async def test_flush_transient_after_edit_bump_preserves_reset_attempts():
+    await _seed_one(1220, 695, desired_version=2, attempts=0)
+    far_future = dt.datetime.now(tz=dt.UTC) + dt.timedelta(minutes=5)
+    await MirrorDelivery.flush_outcomes(
+        [
+            DeliveryOutcome(
+                kind=OutcomeKind.TRANSIENT,
+                src_msg_id=1220,
+                dest_ch_id=695,
+                version=1,
+                attempts=2,
+                due_at=far_future,
+                error_ref="TMP01",
+                error_class="TRANSIENT",
+                error_msg="5xx",
+            )
+        ]
+    )
+    row = await _row(1220, 695)
+    assert row["state"] == DeliveryState.PENDING.value
+    assert row["attempts"] == 0  # not bumped to 2
+
+
+# -- count helpers -----------------------------------------------------------
+
+
+async def test_non_terminal_counts_only_pending():
+    src = 850
+    for dest in (730, 731, 732):
+        await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(src, 1300)  # 3 PENDING rows
+    async with schemas.db_session() as session, session.begin():
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(
+                    MirrorDelivery.src_msg_id == 1300, MirrorDelivery.dest_ch_id == 730
+                )
+            )
+            .values(state=DeliveryState.DELIVERED.value)
+        )
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(
+                    MirrorDelivery.src_msg_id == 1300, MirrorDelivery.dest_ch_id == 731
+                )
+            )
+            .values(state=DeliveryState.FAILED.value)
+        )
+    # 732 PENDING = 1 non-terminal; 730 DELIVERED + 731 FAILED excluded.
+    counts = await MirrorDelivery.non_terminal_counts([1300, 999_999])
+    assert counts == {1300: 1}  # a source with no non-terminal rows is simply absent
+
+
+async def test_state_counts_and_outstanding_count():
+    src = 855
+    for dest in (735, 736, 737):
+        await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(src, 1310)
+    async with schemas.db_session() as session, session.begin():
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(
+                    MirrorDelivery.src_msg_id == 1310, MirrorDelivery.dest_ch_id == 735
+                )
+            )
+            .values(state=DeliveryState.DELIVERED.value)
+        )
+    counts = await MirrorDelivery.state_counts(1310)
+    assert counts == {
+        DeliveryState.DELIVERED.value: 1,
+        DeliveryState.PENDING.value: 2,
+    }
+    assert await MirrorDelivery.outstanding_count() == 2
+
+
+async def test_failure_breakdown_groups_by_ref():
+    src = 858
+    for dest in (738, 739, 742):
+        await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(src, 1320)
+    async with schemas.db_session() as session, session.begin():
+        for dest, ref in ((738, "AAA"), (739, "AAA"), (742, "BBB")):
+            await session.execute(
+                update(MirrorDelivery)
+                .where(
+                    and_(
+                        MirrorDelivery.src_msg_id == 1320,
+                        MirrorDelivery.dest_ch_id == dest,
+                    )
+                )
+                .values(
+                    state=DeliveryState.FAILED.value,
+                    last_error_ref=ref,
+                    last_error_class="PERMANENT",
+                    last_error_msg="boom",
+                )
+            )
+    breakdown = await MirrorDelivery.failure_breakdown(1320)
+    assert [(ref, count) for ref, _cls, count, _msg in breakdown] == [
+        ("AAA", 2),
+        ("BBB", 1),
+    ]
+
+
 # -- prune -------------------------------------------------------------------
 
 
-async def test_prune_retention_21d_and_90d():
-    for dest in (700, 701, 702):
+async def test_prune_removes_old_non_delivered():
+    for dest in (700, 701):
         await MirroredChannel.add_mirror(800, dest, 1, legacy=True)
     await MirrorDelivery.enqueue_send(800, 1100)
     now = dt.datetime.now(tz=dt.UTC)
     async with schemas.db_session() as session, session.begin():
-        # 700: PENDING, 30 days old → pruned at 21d.
+        # 700: PENDING, 20 days old → pruned (> 14d, non-delivered).
         await session.execute(
             update(MirrorDelivery)
             .where(
@@ -490,9 +673,9 @@ async def test_prune_retention_21d_and_90d():
                     MirrorDelivery.src_msg_id == 1100, MirrorDelivery.dest_ch_id == 700
                 )
             )
-            .values(created_at=now - dt.timedelta(days=30))
+            .values(created_at=now - dt.timedelta(days=20))
         )
-        # 701: FAILED, 30 days old → kept (terminal evidence), pruned only at 90d.
+        # 701: FAILED, 20 days old → pruned too (no longer disable evidence).
         await session.execute(
             update(MirrorDelivery)
             .where(
@@ -501,40 +684,20 @@ async def test_prune_retention_21d_and_90d():
                 )
             )
             .values(
-                created_at=now - dt.timedelta(days=30),
-                state=DeliveryState.FAILED.value,
-            )
-        )
-        # 702: FAILED, 100 days old → pruned at 90d.
-        await session.execute(
-            update(MirrorDelivery)
-            .where(
-                and_(
-                    MirrorDelivery.src_msg_id == 1100, MirrorDelivery.dest_ch_id == 702
-                )
-            )
-            .values(
-                created_at=now - dt.timedelta(days=100),
+                created_at=now - dt.timedelta(days=20),
                 state=DeliveryState.FAILED.value,
             )
         )
     await MirrorDelivery.prune(now=now)
-    states = await _states(1100)
-    assert 700 not in states  # non-terminal 30d → gone
-    assert states.get(701) == DeliveryState.FAILED.value  # FAILED 30d → kept
-    assert 702 not in states  # FAILED 100d → gone
+    assert await _states(1100) == {}
 
 
-async def test_prune_keeps_latest_delivered_anchor():
-    # S4: the streak-reset anchor (a pair's latest DELIVERED) must survive with the
-    # FAILED evidence, or a recovered-then-quiet pair gets falsely re-disabled once its
-    # success rows are pruned at 21d while old FAILED rows linger to 90d.
+async def test_prune_keeps_latest_delivered_anchor_per_channel():
+    # The most-recent DELIVERED per destination channel survives indefinitely; older
+    # superseded successes and non-delivered rows past the window are pruned.
     src, dest = 810, 720
-    await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
     now = dt.datetime.now(tz=dt.UTC)
     async with schemas.db_session() as session, session.begin():
-        # An older (superseded) success, the latest success, and a FAILED row — all
-        # older than the 21-day cutoff.
         session.add_all(
             [
                 MirrorDelivery(
@@ -573,127 +736,52 @@ async def test_prune_keeps_latest_delivered_anchor():
             )
         ).fetchall()
     kept = {int(smi): st for smi, st in rows}
-    assert -9001 not in kept  # superseded success pruned at 21d
+    assert -9001 not in kept  # superseded success pruned
     assert kept.get(-9002) == DeliveryState.DELIVERED.value  # latest success = anchor
-    assert kept.get(-9003) == DeliveryState.FAILED.value  # evidence kept
+    assert -9003 not in kept  # old FAILED no longer retained
 
 
-# -- flush guards: raced edit/delete must not clobber the racing writer's reset --------
-
-
-async def test_flush_cancelled_latches_for_deleted_never_delivered():
-    # S1: a CANCELLED outcome for a delete-intent row that never delivered must latch
-    # CANCELLED, not bounce back to PENDING forever (claim→cancel→PENDING livelock).
-    await _seed_one(1200, 680, deleted=True, dest_msg_id=None)
-    await MirrorDelivery.flush_outcomes(
-        [
-            DeliveryOutcome(
-                kind=OutcomeKind.CANCELLED,
-                src_msg_id=1200,
-                dest_ch_id=680,
-                version=1,
-            )
-        ]
-    )
-    assert (await _row(1200, 680))["state"] == DeliveryState.CANCELLED.value
-
-
-async def test_flush_terminal_after_edit_bump_preserves_reset_attempts():
-    # S3: when the version guard fails (edit re-armed the row to attempts=0), a stale
-    # TERMINAL outcome must not clobber attempts back to its exhausted count.
-    await _seed_one(1210, 690, desired_version=2, attempts=0)
-    await MirrorDelivery.flush_outcomes(
-        [
-            DeliveryOutcome(
-                kind=OutcomeKind.TERMINAL,
-                src_msg_id=1210,
-                dest_ch_id=690,
-                version=1,
-                attempts=3,
-                error_ref="DEAD03",
-                error_class="PERMANENT",
-                confirmed_dead=True,
-            )
-        ]
-    )
-    row = await _row(1210, 690)
-    assert row["state"] == DeliveryState.PENDING.value  # keep converging
-    assert row["attempts"] == 0  # reset budget preserved, not clobbered to 3
-    assert row["confirmed_dead"] is False  # stale dead flag not applied either
-
-
-async def test_flush_transient_after_edit_bump_preserves_reset_attempts():
-    # S3 (transient path): same guard — a stale transient must not push the re-armed
-    # row's attempts/backoff forward.
-    await _seed_one(1220, 695, desired_version=2, attempts=0)
-    far_future = dt.datetime.now(tz=dt.UTC) + dt.timedelta(minutes=5)
-    await MirrorDelivery.flush_outcomes(
-        [
-            DeliveryOutcome(
-                kind=OutcomeKind.TRANSIENT,
-                src_msg_id=1220,
-                dest_ch_id=695,
-                version=1,
-                attempts=2,
-                due_at=far_future,
-                error_ref="TMP01",
-                error_class="TRANSIENT",
-                error_msg="5xx",
-            )
-        ]
-    )
-    row = await _row(1220, 695)
-    assert row["state"] == DeliveryState.PENDING.value
-    assert row["attempts"] == 0  # not bumped to 2
-
-
-async def test_bump_for_edit_keeps_claimed_rows_claimed():
-    # S2: an in-flight CLAIMED row must stay CLAIMED (only its version/budget bumped) so
-    # it can't be re-claimed and re-sent before its outcome flushes → no duplicate send.
-    await _seed_one(1230, 698, state=DeliveryState.CLAIMED.value, claimed_by="w1")
-    bumped, _ = await MirrorDelivery.bump_for_edit(500, 1230)
-    assert bumped == 1
-    row = await _row(1230, 698)
-    assert row["state"] == DeliveryState.CLAIMED.value  # not reset to PENDING
-    assert row["desired_version"] == 2
-    assert row["attempts"] == 0
-
-
-# -- non_terminal_counts -----------------------------------------------------
-
-
-async def test_non_terminal_counts_only_pending_and_claimed():
-    src = 850
-    for dest in (730, 731, 732):
-        await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
-    await MirrorDelivery.enqueue_send(src, 1300)  # 3 PENDING rows
+async def test_prune_keeps_all_rows_within_window():
+    # Every row inside the 14-day window is kept, including a non-latest delivered one
+    # (a channel can hold a second, user-related announcement we may still edit).
+    src, dest = 815, 725
+    now = dt.datetime.now(tz=dt.UTC)
     async with schemas.db_session() as session, session.begin():
-        await session.execute(
-            update(MirrorDelivery)
-            .where(
-                and_(
-                    MirrorDelivery.src_msg_id == 1300, MirrorDelivery.dest_ch_id == 730
+        session.add_all(
+            [
+                MirrorDelivery(
+                    src_msg_id=-8001,
+                    dest_ch_id=dest,
+                    src_ch_id=src,
+                    state=DeliveryState.DELIVERED.value,
+                    finished_at=now - dt.timedelta(days=5),
+                    created_at=now - dt.timedelta(days=5),
+                ),
+                MirrorDelivery(
+                    src_msg_id=-8002,
+                    dest_ch_id=dest,
+                    src_ch_id=src,
+                    state=DeliveryState.DELIVERED.value,
+                    finished_at=now - dt.timedelta(days=3),
+                    created_at=now - dt.timedelta(days=3),
+                ),
+            ]
+        )
+    await MirrorDelivery.prune(now=now)
+    async with schemas.db_session() as session, session.begin():
+        rows = (
+            await session.execute(
+                select(MirrorDelivery.src_msg_id).where(
+                    MirrorDelivery.dest_ch_id == dest
                 )
             )
-            .values(state=DeliveryState.DELIVERED.value)
-        )
-        await session.execute(
-            update(MirrorDelivery)
-            .where(
-                and_(
-                    MirrorDelivery.src_msg_id == 1300, MirrorDelivery.dest_ch_id == 731
-                )
-            )
-            .values(state=DeliveryState.CLAIMED.value)
-        )
-    # 732 PENDING + 731 CLAIMED = 2 non-terminal; 730 DELIVERED excluded.
-    counts = await MirrorDelivery.non_terminal_counts([1300, 999_999])
-    assert counts == {1300: 2}  # a source with no non-terminal rows is simply absent
+        ).fetchall()
+    assert {int(r[0]) for r in rows} == {-8001, -8002}
 
 
 async def test_undo_auto_disable_does_not_poison_empty_cache():
-    # S5: undo re-enabling a pair must not seed an empty srcs cache with only that id
-    # (which would make get_or_fetch_all_srcs drop every other legacy source).
+    # Undo re-enabling a pair must not seed an empty srcs cache with only that id (which
+    # would make get_or_fetch_all_srcs drop every other legacy source).
     src, dest = 860, 740
     await MirroredChannel.add_mirror(src, dest, 1, legacy=True)
     # Also a second, unrelated legacy source that must remain discoverable.

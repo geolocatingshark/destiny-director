@@ -13,14 +13,16 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Mirror subsystem gateway surface: thin enqueue handlers, the progress UI, and the
-admin commands, layered over the durable ``mirror_delivery`` ledger.
+"""Mirror subsystem gateway surface: thin enqueue handlers, the progress UI, admin
+commands, and the reachability/auto-disable sweep, layered over the ``mirror_delivery``
+ledger.
 
-The Discord fan-out itself lives in :mod:`dd.beacon.mirror_worker` (the convergence
-worker). This module's listeners do one transactional enqueue each (send/edit/delete),
-register a :class:`RunView`, post a Components V2 progress card, and nudge the worker.
-The worker records outcomes back into the view and fires :func:`_run_end_hook` on
-completion (failure-ratio alert, auto-disable sweep, run summary).
+The Discord fan-out itself lives in :mod:`dd.beacon.mirror_worker`. This module's
+listeners do one transactional enqueue each (send/edit/delete), start a Components V2
+progress card that re-renders from a cheap ledger count until the run drains, and nudge
+the worker. A separate low-load task sweeps destination reachability + send perms and
+disables mirrors that stay unreachable past a grace window — the delivery hot path does
+no perm-probing.
 """
 
 import asyncio as aio
@@ -52,7 +54,7 @@ from ...common.utils import (
     parse_channel_ref,
 )
 from .. import utils
-from ..mirror_core import MirrorOperationType, RunView
+from ..mirror_core import MirrorOperationType, RunCounts, RunView
 from ..mirror_worker import mirror_worker
 
 loader = lb.Loader()
@@ -67,6 +69,9 @@ _CANCEL_CUSTOM_ID_PREFIX = "dd_mirror_cancel"
 
 # How long the cancel-button menu stays live (matches the old miru 7-hour window).
 _CANCEL_MENU_TIMEOUT = 60 * 60 * 7
+
+# Bounded transient-retry budget for a gateway handler's single ledger write.
+_HANDLER_DB_MAX_TRIES = 5
 
 
 def _get_message_summary(msg: h.Message, default: str = "Link") -> str:
@@ -106,51 +111,48 @@ def _get_message_summary(msg: h.Message, default: str = "Link") -> str:
 _PROGRESS_UPDATE_INTERVAL = 5
 # Max distinct reference codes listed in the failure breakdown of the progress UI.
 _PROGRESS_MAX_BREAKDOWN = 5
+# Best-effort card send: cap the attempts and give up rather than loop.
+_PROGRESS_LOGGER_MAX_TRIES = 5
+# Consecutive failed card *edits* after which the update loop gives up (e.g. the card
+# was deleted, or perms lost) — so it can't log a traceback every ~60s forever.
+_PROGRESS_UPDATE_MAX_FAILS = 5
+# Hard cap on a card's lifetime, so a run that somehow never drains can't leave a task
+# polling forever.
+_CARD_MAX_LIFETIME = 7 * 60 * 60
+
+# A grouped failure line: (reference_code, error_class_name, count, sample_message).
+_Breakdown = list[tuple[str, str, int, str]]
 
 
 def _status_footer(view: RunView, *, final: bool) -> str:
     if not final:
-        # ``cancel_requested`` is set the moment cancel fires, while in-flight workers
-        # are still draining — surface that distinct state. An edit that supersedes an
-        # in-flight fan-out reads as a handover, not a plain cancel.
-        if view.cancel_requested:
-            return (
-                "♻️ Superseding with edit…"
-                if view.superseded_by_edit
-                else "🛑 Cancelling…"
-            )
         return "⏳ In progress"
-    if view.superseded_by_edit:
-        base = "♻️ Superseded by edit"
-    elif view.superseded:
-        base = "🗑️ Superseded by delete"
-    elif view.cancel_requested:
+    counts = view.counts
+    if counts.delivered == 0 and counts.cancelled > 0:
         base = "❌ Cancelled"
     else:
         base = "✅ Completed"
-    return base + (" with errors" if view.failed else "")
+    return base + (" with errors" if counts.failed else "")
 
 
 def _progress_bar(view: RunView, width: int = 12) -> str:
-    """A single stacked bar of the run's state (done / retrying / failed / left).
+    """A single stacked bar of the run's state (done / failed / left).
 
-    Segment widths are proportional to ``total``; blanks absorb both rounding and
-    in-flight targets so the bar never overflows. The trailing percentage is the
-    *resolved* fraction (delivered + failed) — targets in a terminal state;
-    retrying/remaining are still pending.
+    Segment widths are proportional to ``total``; blanks absorb rounding, still-pending
+    and cancelled targets so the bar never overflows. The trailing percentage is the
+    *resolved* fraction (delivered + failed + cancelled).
     """
-    total = view.total or 1
-    done = view.delivered
-    retry = view.retrying
-    fail = view.failed
+    counts = view.counts
+    total = counts.total or 1
+    done = counts.delivered
+    fail = counts.failed
 
     seg_done = round(done / total * width)
-    seg_retry = min(round(retry / total * width), width - seg_done)
-    seg_fail = min(round(fail / total * width), width - seg_done - seg_retry)
-    seg_blank = width - seg_done - seg_retry - seg_fail
+    seg_fail = min(round(fail / total * width), width - seg_done)
+    seg_blank = width - seg_done - seg_fail
 
-    bar = "🟩" * seg_done + "🟨" * seg_retry + "🟥" * seg_fail + "⬜" * seg_blank
-    pct = round((done + fail) / total * 100)
+    bar = "🟩" * seg_done + "🟥" * seg_fail + "⬜" * seg_blank
+    pct = round(counts.resolved / total * 100)
     return f"{bar}  {pct}%"
 
 
@@ -161,11 +163,11 @@ def _throughput_line(view: RunView, elapsed_secs: float) -> str | None:
     before then) so early renders stay uncluttered. Once every target is resolved the
     ETA is dropped and only the throughput remains.
     """
-    resolved = view.throughput_resolved
+    resolved = view.counts.throughput_resolved
     if elapsed_secs <= 0 or resolved == 0:
         return None
     rate = resolved / elapsed_secs
-    remaining = view.total - resolved
+    remaining = view.counts.total - view.counts.resolved
     if remaining <= 0:
         return f"Throughput: {rate:.1f} channels/sec"
     return (
@@ -184,13 +186,16 @@ def render_mirror_progress(
     source_channel_name: str,
     final: bool,
     enable_cancellation: bool,
+    breakdown: _Breakdown | None = None,
 ) -> list[h.api.ComponentBuilder]:
     """Render the mirror progress as a Components V2 container.
 
-    Re-rendered from scratch on each update. The cancel action row is included only when
-    ``enable_cancellation`` and work is still in progress; its ``custom_id`` is
-    namespaced by ``src_msg_id`` so two concurrent progress messages never cross-fire.
+    Re-rendered from scratch on each update off the run's latest :class:`RunCounts`. The
+    cancel action row is included only when ``enable_cancellation`` and work is still in
+    progress; its ``custom_id`` is namespaced by ``src_msg_id`` so two concurrent
+    progress messages never cross-fire.
     """
+    counts = view.counts
     elapsed_secs = perf_counter() - view.start_time
     elapsed = format_duration(elapsed_secs)
 
@@ -205,6 +210,7 @@ def render_mirror_progress(
         else source_channel_name
     )
 
+    remaining = max(0, counts.total - counts.resolved)
     sections = [
         f"## {title}",
         f"**Source message:** {source_message_field}\n"
@@ -213,11 +219,11 @@ def render_mirror_progress(
         # up and the colour squares stay distinct instead of being squashed together.
         "```\n"
         f"{_progress_bar(view)}\n"
-        f"🟩 {'Completed':<9} {view.delivered}\n"
-        f"🟨 {'Retrying':<9} {view.retrying}\n"
-        f"🟥 {'Failed':<9} {view.failed}\n"
-        f"⬜ {'Remaining':<9} {view.not_yet_tried}\n"
-        "```",
+        f"🟩 {'Completed':<9} {counts.delivered}\n"
+        f"🟥 {'Failed':<9} {counts.failed}\n"
+        f"⬜ {'Remaining':<9} {remaining}\n"
+        + (f"🚫 {'Cancelled':<9} {counts.cancelled}\n" if counts.cancelled else "")
+        + "```",
         f"Time taken: {elapsed}",
     ]
 
@@ -225,32 +231,25 @@ def render_mirror_progress(
     if throughput:
         sections[-1] += "\n" + throughput
 
-    breakdown = view.failure_breakdown
     if breakdown:
         lines = [
-            f"`{group.reference_code}` ×{group.count} "
-            f"({group.error_class.name.lower()})"
-            for group in breakdown[:_PROGRESS_MAX_BREAKDOWN]
+            f"`{ref}` ×{count} ({err_class.lower()})"
+            for ref, err_class, count, _sample in breakdown[:_PROGRESS_MAX_BREAKDOWN]
         ]
         if len(breakdown) > _PROGRESS_MAX_BREAKDOWN:
             lines.append(f"…and {len(breakdown) - _PROGRESS_MAX_BREAKDOWN} more")
         sections.append("**Failure breakdown**\n" + "\n".join(lines))
 
-    # NEW: how many mirrors the run-end sweep disabled (only on the final render, and
-    # only when something was actually disabled).
-    if final and view.disabled_count:
-        sections.append(f"Disabled channels: {view.disabled_count}")
-
     sections.append(_status_footer(view, final=final))
 
     container = build_container(
         sections,
-        accent_color=cfg.embed_error_color if view.failed else cfg.embed_default_color,
+        accent_color=cfg.embed_error_color
+        if counts.failed
+        else cfg.embed_default_color,
     )
 
-    # Drop the cancel button once a cancel has been requested or the run is finished, so
-    # it can't be pressed twice / after completion.
-    if enable_cancellation and not final and not view.cancel_requested:
+    if enable_cancellation and not final:
         container.add_action_row(
             [
                 h.impl.InteractiveButtonBuilder(
@@ -268,43 +267,35 @@ def _cancel_custom_id(source_message_id: int) -> str:
     return f"{_CANCEL_CUSTOM_ID_PREFIX}:{source_message_id}"
 
 
-def _record_cancellation(view: RunView, cancelled_dests: list[int]) -> None:
-    """Reflect a ledger cancel on the run view: set the requested flag (so claimed-but-
-    unstarted rows short-circuit in the worker) and count the cancelled dests.
-
-    Finalization is left to the worker's ledger reconcile — in-flight Discord calls
-    still drain and flush first — with ``maybe_finalize`` as the fast path for a run
-    that had no in-flight work to wait on.
-    """
-    view.cancel_requested = True
-    for dest in cancelled_dests:
-        view.on_cancelled(dest)
-    mirror_worker.maybe_finalize(view)
-
-
 async def _cancel_run(view: RunView) -> None:
-    """Cancel a run's not-yet-delivered destinations and drive completion.
+    """Cancel a run's not-yet-delivered destinations and nudge the worker.
 
     The single cancel path shared by the progress-card button and the ``/mirror_cancel``
-    command: cancel PENDING rows in the ledger, reflect them on the view, and nudge the
-    worker.
+    command: cancel PENDING rows in the ledger (the card's next count refresh reflects
+    them) and wake the worker so it stops picking them.
     """
-    cancelled = await MirrorDelivery.cancel_pending(view.src_msg_id)
-    _record_cancellation(view, cancelled)
+    await MirrorDelivery.cancel_pending(view.src_msg_id)
     mirror_worker.nudge()
+
+
+# The wrapped message listeners (@ignore_non_src_channels / @utils.ignore_own_user)
+# strip lightbulb's DI, so a ``client: lb.Client = lb.di.INJECTED`` param on them never
+# resolves. Capture the real client once at startup via an unwrapped listener so the
+# auto-mirror progress logger can still attach the cancel menu.
+_client: lb.Client | None = None
+
+# Strong references to the live card tasks (one per source message). ``asyncio`` only
+# holds a weak reference to a bare ``create_task`` result, so without this a loop could
+# be garbage-collected mid-run. A new event for a source replaces (and cancels) the old.
+_cards: dict[int, aio.Task[None]] = {}
 
 
 def _build_cancel_menu(
     view: RunView,
     client: lb.Client,
-    render: collections.abc.Callable[[bool], list[h.api.ComponentBuilder]],
+    render: collections.abc.Callable[..., list[h.api.ComponentBuilder]],
 ) -> tuple[lbc.Menu, lbc.MenuHandle]:
-    """Build + attach a background lightbulb Menu that routes the cancel button.
-
-    Mirrors the ``Paginator`` pattern: the menu exists purely as the custom-id ->
-    callback router; the visually-identical button is rendered inside the CV2 container
-    by :func:`render_mirror_progress`.
-    """
+    """Build + attach a background lightbulb Menu that routes the cancel button."""
     menu = lbc.Menu()
 
     async def on_cancel(mctx: lbc.MenuContext) -> None:
@@ -314,25 +305,13 @@ def _build_cancel_menu(
                 "You are not allowed to cancel this mirror.", ephemeral=True
             )
             return
-        # Refuse if this card's run is no longer the live one for its source message: an
-        # edit/delete may have superseded it (a new run registered under the same
-        # src_msg_id, sharing this custom_id). Acting here would cancel the
-        # *successor's* rows in the ledger while recording the cancel on this stale view
-        # — wedging the successor's run. Let the live card's own button handle it.
-        if mirror_worker.get_view(view.src_msg_id) is not view or view.finalized:
-            await mctx.respond(
-                "This mirror run is no longer active (it was superseded or already "
-                "finished).",
-                ephemeral=True,
-            )
-            return
         await _cancel_run(view)
-        # Re-render immediately (the button drops out now that cancel_requested is set)
-        # to acknowledge the interaction; the background loop keeps updating.
+        # Re-render immediately (the button drops out now the run is cancelling) to
+        # acknowledge the interaction; the card loop keeps updating from the ledger.
         await mctx.respond(
             edit=True,
             flags=h.MessageFlag.IS_COMPONENTS_V2,
-            components=render(False),
+            components=render(final=False),
         )
 
     menu.add_interactive_button(
@@ -343,27 +322,6 @@ def _build_cancel_menu(
     )
     handle = menu.attach_persistent(client, timeout=_CANCEL_MENU_TIMEOUT)
     return menu, handle
-
-
-# The wrapped message listeners (@ignore_non_src_channels / @utils.ignore_own_user)
-# strip lightbulb's DI, so a ``client: lb.Client = lb.di.INJECTED`` param on them never
-# resolves. Capture the real client once at startup via an unwrapped listener so the
-# auto-mirror progress logger can still attach the cancel menu.
-_client: lb.Client | None = None
-
-
-# Progress logging is best-effort; cap the attempts and give up rather than loop.
-_PROGRESS_LOGGER_MAX_TRIES = 5
-# Consecutive failed card *edits* after which the update loop gives up (e.g. the card
-# was deleted, or perms lost) — so it can't log a traceback every ~60s for the whole
-# process lifetime while leaking the view + menu.
-_PROGRESS_UPDATE_MAX_FAILS = 5
-
-# Strong references to the background update-loop tasks. ``asyncio`` only holds a weak
-# reference to a bare ``create_task`` result, so without this a loop could be
-# garbage-collected mid-run (freezing the card and leaking its view/menu). Discarded via
-# a done-callback when the loop exits.
-_progress_tasks: set[aio.Task[None]] = set()
 
 
 async def _resolve_source_fields(
@@ -405,7 +363,7 @@ async def _resolve_source_fields(
     )
 
 
-async def start_progress_logger(
+async def start_progress_card(
     bot: CachedFetchBot,
     view: RunView,
     *,
@@ -415,19 +373,24 @@ async def start_progress_logger(
     enable_cancellation: bool = False,
     client: lb.Client | None = None,
 ) -> None:
-    """Post the CV2 progress message and spawn the background update loop.
+    """Post the CV2 progress card and spawn the background update loop.
 
-    Source links are resolved once and the cancel menu attached once — both *before* the
-    bounded send-retry loop, so a transient log-channel failure can't leak a stack of
-    persistent menus sharing one custom_id. The spawned update-loop task is kept in
-    :data:`_progress_tasks` so it can't be GC'd mid-run.
+    One live card per source message: a new event for the same source cancels the prior
+    card (its message freezes) before this one takes over. Source links are resolved and
+    the cancel menu attached once, before the bounded send-retry loop.
     """
+    # Supersede any live card for this source.
+    old = _cards.pop(view.src_msg_id, None)
+    if old is not None:
+        old.cancel()
+
     scl_fields = await _resolve_source_fields(bot, source_message, source_channel)
     source_message_link, source_message_summary, source_channel_link, scn = scl_fields
 
     def render(
-        final: bool,
         *,
+        final: bool,
+        breakdown: _Breakdown | None = None,
         _scl=source_channel_link,
         _scn=scn,
         _sml=source_message_link,
@@ -442,10 +405,9 @@ async def start_progress_logger(
             source_channel_name=_scn,
             final=final,
             enable_cancellation=enable_cancellation,
+            breakdown=breakdown,
         )
 
-    # The threaded client may be the unresolved DI Marker (wrapped listeners) or None
-    # (direct calls); fall back to the captured real client. Attached once, here.
     cancel_client = client if isinstance(client, lb.Client) else _client
     menu_handle: lbc.MenuHandle | None = None
     if enable_cancellation and cancel_client is not None:
@@ -458,7 +420,7 @@ async def start_progress_logger(
             if not isinstance(log_channel, h.TextableGuildChannel):
                 raise ValueError("Log channel must be a TextableGuildChannel")
             log_message = await log_channel.send(
-                components=render(view.finalized),
+                components=render(final=False),
                 flags=h.MessageFlag.IS_COMPONENTS_V2,
             )
             break
@@ -471,174 +433,94 @@ async def start_progress_logger(
                     "the mirror itself will still run.",
                     attempt,
                 )
-                # Don't leak the menu we already attached.
                 if menu_handle is not None:
                     menu_handle.stop_interacting()
                 return
             await aio.sleep(min(60, 5 * (attempt + 1)))
 
     assert log_message is not None
-    task = aio.create_task(
-        _update_progress_loop(log_message, view, render, menu_handle)
+    task = aio.create_task(_card_loop(log_message, view, render, menu_handle))
+    _cards[view.src_msg_id] = task
+    task.add_done_callback(
+        lambda done, sid=view.src_msg_id: (
+            _cards.pop(sid, None) if _cards.get(sid) is done else None
+        )
     )
-    _progress_tasks.add(task)
-    task.add_done_callback(_progress_tasks.discard)
 
 
-async def _update_progress_loop(
+async def _card_loop(
     log_message: h.Message,
     view: RunView,
-    render: collections.abc.Callable[[bool], list[h.api.ComponentBuilder]],
+    render: collections.abc.Callable[..., list[h.api.ComponentBuilder]],
     menu_handle: "lbc.MenuHandle | None",
 ) -> None:
-    """Re-render the progress container every few seconds until the run is finalized.
+    """Re-render the progress card every few seconds until the run drains.
 
-    ``finalized`` (not merely ``is_complete``) gates the final render, so the run-end
-    hook has run and ``disabled_count`` is populated before the card freezes. On the
-    final update — or after :data:`_PROGRESS_UPDATE_MAX_FAILS` consecutive edit failures
-    (a deleted card / lost perms) — it drops the cancel button, stops the menu handle,
-    and evicts the view instead of retrying forever.
+    Progress is read straight from the ledger (``state_counts``) — the single source of
+    truth — so there is no accounting to drift. The run is complete once it has
+    rows and none are still PENDING; a hard lifetime cap stops a stuck run from polling
+    forever. On completion the run-summary line is logged.
     """
     fails = 0
-    while True:
-        final_update = view.finalized
-        try:
-            await log_message.edit(
-                components=render(final_update),
-                flags=h.MessageFlag.IS_COMPONENTS_V2,
-            )
-        except Exception as e:
-            fails += 1
-            if fails >= _PROGRESS_UPDATE_MAX_FAILS:
-                logging.error(
-                    "Giving up on the mirror progress card for source %s after %d "
-                    "failed updates; the mirror itself is unaffected.",
-                    view.src_msg_id,
-                    fails,
+    started = perf_counter()
+    try:
+        while True:
+            with contextlib.suppress(Exception):
+                view.counts = RunCounts.from_state_counts(
+                    await MirrorDelivery.state_counts(view.src_msg_id)
                 )
+            complete = view.counts.total > 0 and view.counts.is_complete
+            final = complete or (perf_counter() - started > _CARD_MAX_LIFETIME)
+
+            breakdown: _Breakdown = []
+            if view.counts.failed:
+                with contextlib.suppress(Exception):
+                    breakdown = await MirrorDelivery.failure_breakdown(view.src_msg_id)
+
+            try:
+                await log_message.edit(
+                    components=render(final=final, breakdown=breakdown),
+                    flags=h.MessageFlag.IS_COMPONENTS_V2,
+                )
+            except Exception as e:
+                fails += 1
+                if fails >= _PROGRESS_UPDATE_MAX_FAILS:
+                    logging.error(
+                        "Giving up on the mirror progress card for source %s after %d "
+                        "failed updates; the mirror itself is unaffected.",
+                        view.src_msg_id,
+                        fails,
+                    )
+                    break
+                e.add_note("Failed to log mirror progress due to exception\n")
+                logging.exception(e)
+                await aio.sleep(min(60, 5 * fails))
+                continue
+
+            if final:
+                if complete:
+                    _log_run_summary(view)
                 break
-            e.add_note("Failed to log mirror progress due to exception\n")
-            logging.exception(e)
-            await aio.sleep(min(60, 5 * fails))
-            continue
-
-        if final_update:
-            break
-        fails = 0
-        await aio.sleep(_PROGRESS_UPDATE_INTERVAL)
-
-    if menu_handle is not None:
-        menu_handle.stop_interacting()
-    mirror_worker.evict(view)
+            fails = 0
+            await aio.sleep(_PROGRESS_UPDATE_INTERVAL)
+    finally:
+        if menu_handle is not None:
+            menu_handle.stop_interacting()
 
 
 # Logger whose records surface to the Discord alerts channel (ERROR/CRITICAL) via the
 # root DiscordLogHandler, used for mirror-health escalations.
 health_logger = logging.getLogger("dd.beacon.mirror.health")
 
-# Escalate a global auto-disable sweep by its blast radius (count of mirrors disabled):
-# critical past the first, error past the second, else just a console warning.
+# Escalate a reachability-sweep disable by its blast radius (count of mirrors disabled):
+# critical past the first threshold, error past the second, else just a console warning.
 _DISABLE_CRITICAL_MIN = 10
 _DISABLE_ERROR_MIN = 5
 
 
-def _failure_summary(view: RunView) -> str:
-    """One-line-per-code summary of a run's failures for an alert message."""
-    return "; ".join(
-        f"{group.reference_code} ×{group.count} "
-        f"({group.error_class.name.lower()}): {group.sample_message}"
-        for group in view.failure_breakdown
-    )
-
-
-def flag_mirror_failure_ratio(view: RunView) -> None:
-    """Emit one aggregated alert per run summarising its failures.
-
-    - CRITICAL when a majority of a sufficiently-large run failed (pings owners via the
-      Discord handler), enriched with the per-reference-code breakdown.
-    - else ERROR when there were any permanent failures (surfaced without paging).
-    - else nothing (transient blips that the retries absorbed).
-    """
-    total = view.total
-    failed = view.failed
-    if not failed:
-        return
-
-    summary = _failure_summary(view)
-    majority_fail = (
-        total >= int(cfg.mirror_failure_min_sample)
-        and failed / total >= cfg.mirror_failure_ratio_threshold
-    )
-
-    if majority_fail:
-        health_logger.critical(
-            "Majority of mirrors failing: %d/%d %s targets failed for source %s — %s",
-            failed,
-            total,
-            view.op.name.lower(),
-            view.src_ch_id,
-            summary,
-        )
-    elif view.has_permanent:
-        health_logger.error(
-            "%d/%d %s mirror targets failed (permanent) for source %s — %s",
-            failed,
-            total,
-            view.op.name.lower(),
-            view.src_ch_id,
-            summary,
-        )
-
-
-async def _run_end_hook(view: RunView) -> None:
-    """Fire once per run on completion (from the worker): failure-ratio alert, the
-    aggregated not-confirmed-dead warning, the auto-disable sweep (SEND/UPDATE only)
-    with count-escalated alert, and the run-summary log line. Sets ``disabled_count`` so
-    the final progress render can show it.
-
-    A superseded run is a handover — its successor run does the reporting, so we skip.
-    """
-    if view.superseded_by_edit:
-        return
-
-    flag_mirror_failure_ratio(view)
-
-    not_confirmed = view.not_confirmed_dead
-    if not_confirmed:
-        health_logger.warning(
-            "%d mirror dest(s) of src %s failed permanently but are not confirmed dead "
-            "— not counting toward auto-disable: %s",
-            len(not_confirmed),
-            view.src_ch_id,
-            ", ".join(
-                f"{dest} (ref {failure.reference_code})"
-                for dest, failure in not_confirmed.items()
-            ),
-        )
-
-    if cfg.disable_bad_channels and view.op in (
-        MirrorOperationType.SEND,
-        MirrorOperationType.UPDATE,
-    ):
-        try:
-            disabled = await MirroredChannel.disable_failing_mirrors()
-        except Exception:
-            logging.exception("Auto-disable sweep failed")
-            disabled = []
-        view.disabled_count = len(disabled)
-        if disabled:
-            num_disabled = len(disabled)
-            message = (
-                f"Disabled {num_disabled} mirror(s) (auto-disable sweep): "
-                + ", ".join(f"{src}: {dest}" for src, dest in disabled)
-            )
-            if num_disabled > _DISABLE_CRITICAL_MIN:
-                health_logger.critical(message)
-            elif num_disabled > _DISABLE_ERROR_MIN:
-                health_logger.error(message)
-            else:
-                health_logger.warning(message)
-
+def _log_run_summary(view: RunView) -> None:
+    """Log a one-line summary of a completed run (WARNING too if any target failed)."""
+    counts = view.counts
     elapsed = perf_counter() - view.start_time
     logging.info(
         "Mirror %s for source %s done in %s — %d ok, %d failed, %d cancelled / %d "
@@ -646,30 +528,89 @@ async def _run_end_hook(view: RunView) -> None:
         view.op.name.lower(),
         view.src_ch_id,
         format_duration(elapsed),
-        view.delivered,
-        view.failed,
-        view.cancelled_count,
-        view.total,
-        view.throughput_resolved / elapsed if elapsed else 0.0,
+        counts.delivered,
+        counts.failed,
+        counts.cancelled,
+        counts.total,
+        counts.throughput_resolved / elapsed if elapsed else 0.0,
     )
-
-
-def _make_recovery_starter(
-    bot: CachedFetchBot, client: lb.Client | None
-) -> collections.abc.Callable[[RunView], collections.abc.Awaitable[None]]:
-    """Progress-card starter passed to the worker for post-restart backlog recovery."""
-
-    async def starter(view: RunView) -> None:
-        enable = view.op in (MirrorOperationType.SEND, MirrorOperationType.UPDATE)
-        await start_progress_logger(
-            bot,
-            view,
-            title="Mirror recovery progress",
-            enable_cancellation=enable,
-            client=client,
+    if counts.failed:
+        health_logger.warning(
+            "Mirror %s for source %s finished with %d/%d target(s) failed.",
+            view.op.name.lower(),
+            view.src_ch_id,
+            counts.failed,
+            counts.total,
         )
 
-    return starter
+
+@loader.task(
+    lb.uniformtrigger(hours=cfg.mirror_reachability_sweep_hours, wait_first=True),
+    max_failures=-1,
+)
+async def reachability_sweep(bot: CachedFetchBot = lb.di.INJECTED):
+    """Probe every enabled legacy destination for reachability + send perms and disable
+    the ones unreachable past the grace window.
+
+    A low-load background job (not the hot path): the perm check is cache-first,
+    and a pair is disabled only after it has stayed confirmed-unreachable for
+    ``cfg.mirror_unreachable_grace_hours``, so a transient blip never disables a mirror.
+    """
+    if not cfg.disable_bad_channels:
+        return
+    await aio.sleep(randint(30, 300))
+
+    try:
+        candidates = await MirroredChannel.fetch_reachability_candidates()
+    except Exception as e:
+        e.add_note("Fetching mirror reachability candidates failed")
+        await discord_error_logger(e, operation="Mirror reachability sweep")
+        return
+    if not candidates:
+        return
+
+    sem = aio.Semaphore(8)
+
+    async def probe(
+        pair: tuple[int, int],
+    ) -> tuple[tuple[int, int], utils.DestVerdict]:
+        async with sem:
+            try:
+                verdict = await utils.confirm_dest_unsendable(bot, pair[1])
+            except Exception:
+                verdict = utils.DestVerdict.UNKNOWN
+        return pair, verdict
+
+    results = await aio.gather(*(probe(pair) for pair in candidates))
+    reachable = [pair for pair, v in results if v is utils.DestVerdict.SENDABLE]
+    unreachable = [
+        pair
+        for pair, v in results
+        if v
+        in (utils.DestVerdict.CONFIRMED_UNSENDABLE, utils.DestVerdict.CONFIRMED_GONE)
+    ]
+
+    try:
+        disabled = await MirroredChannel.apply_reachability_sweep(
+            reachable, unreachable
+        )
+    except Exception as e:
+        e.add_note("Applying the mirror reachability sweep failed")
+        await discord_error_logger(e, operation="Mirror reachability sweep")
+        return
+
+    if disabled:
+        num = len(disabled)
+        message = (
+            f"Disabled {num} unreachable mirror(s) (reachability sweep): "
+            + ", ".join(f"{src}: {dest}" for src, dest in disabled)
+        )
+        if num > _DISABLE_CRITICAL_MIN:
+            health_logger.critical(message)
+        elif num > _DISABLE_ERROR_MIN:
+            health_logger.error(message)
+        else:
+            health_logger.warning(message)
 
 
 @loader.listener(h.StartedEvent)
@@ -679,11 +620,51 @@ async def _start_mirror_worker(
     global _client
     _client = client
     bot = t.cast(CachedFetchBot, _event.app)
-    await mirror_worker.start(
-        bot,
-        progress_starter=_make_recovery_starter(bot, client),
-        run_end_hook=_run_end_hook,
-    )
+    await mirror_worker.start(bot)
+    # Post a recovery card for any source with leftover work, so a post-restart backlog
+    # is visible — as a background task so a slow card send can't stall startup.
+    aio.create_task(_recover_backlog_cards(bot, client))
+
+
+async def _recover_backlog_cards(bot: CachedFetchBot, client: lb.Client) -> None:
+    """Register a recovery progress card per source message with non-terminal rows."""
+    try:
+        backlog = await MirrorDelivery.non_terminal_backlog()
+    except Exception:
+        logging.exception("mirror backlog recovery query failed")
+        return
+    for src_msg_id, src_ch_id, _count, any_deleted, any_unsent in backlog:
+        op = (
+            MirrorOperationType.DELETE
+            if any_deleted
+            else MirrorOperationType.SEND
+            if any_unsent
+            else MirrorOperationType.UPDATE
+        )
+        view = RunView(
+            op=op,
+            src_ch_id=src_ch_id,
+            src_msg_id=src_msg_id,
+            start_time=perf_counter(),
+        )
+        enable = op in (MirrorOperationType.SEND, MirrorOperationType.UPDATE)
+        try:
+            await start_progress_card(
+                bot,
+                view,
+                title="Mirror recovery progress",
+                enable_cancellation=enable,
+                client=client,
+            )
+        except Exception:
+            logging.exception(
+                "failed to start recovery progress card for %s", src_msg_id
+            )
+    if backlog:
+        logging.info(
+            "Mirror backlog recovery: %d source message(s) with pending work.",
+            len(backlog),
+        )
 
 
 def ignore_non_src_channels(func: collections.abc.Callable[..., t.Any]):
@@ -776,37 +757,15 @@ async def handle_waiting_for_crosspost(
             break
 
 
-@loader.listener(h.MessageCreateEvent)
-@ignore_non_src_channels
-@utils.ignore_own_user
-async def message_create_repeater(
-    event: h.MessageCreateEvent, client: lb.Client = lb.di.INJECTED
-):
-    cached_bot = t.cast(CachedFetchBot, event.app)
-    await message_create_repeater_impl(
-        event.message,
-        cached_bot,
-        t.cast(
-            h.TextableChannel,
-            await cached_bot.fetch_channel(event.message.channel_id),
-        ),
-        client=client,
-    )
-
-
-_HANDLER_DB_MAX_TRIES = 5
-
-
 async def _ledger_write_with_retry[T](
     what: str, op: collections.abc.Callable[[], collections.abc.Awaitable[T]]
 ) -> T | None:
     """Run a gateway handler's single ledger write with bounded transient retries.
 
-    The old per-event repeaters retried their DB work behind a backoff loop; the new
-    thin handlers do one write, so without this a momentary DB blip at event time would
-    silently drop that edit/delete forever (nothing durable recorded, the gateway event
-    gone). Retries transient failures with capped backoff, gives up (alerts + returns
-    ``None``) on a permanent error or once the cap is hit.
+    The thin handlers do one write, so without this a momentary DB blip at event time
+    would silently drop that send/edit/delete forever (nothing durable recorded, the
+    gateway event gone). Retries transient failures with capped backoff; gives up
+    (alerts + returns ``None``) on a permanent error or once the cap is hit.
     """
     backoff = 5
     for attempt in range(1, _HANDLER_DB_MAX_TRIES + 1):
@@ -827,6 +786,24 @@ async def _ledger_write_with_retry[T](
             await aio.sleep(backoff)
             backoff = min(backoff * 2, 600)
     return None
+
+
+@loader.listener(h.MessageCreateEvent)
+@ignore_non_src_channels
+@utils.ignore_own_user
+async def message_create_repeater(
+    event: h.MessageCreateEvent, client: lb.Client = lb.di.INJECTED
+):
+    cached_bot = t.cast(CachedFetchBot, event.app)
+    await message_create_repeater_impl(
+        event.message,
+        cached_bot,
+        t.cast(
+            h.TextableChannel,
+            await cached_bot.fetch_channel(event.message.channel_id),
+        ),
+        client=client,
+    )
 
 
 async def message_create_repeater_impl(
@@ -857,16 +834,14 @@ async def message_create_repeater_impl(
         op=MirrorOperationType.SEND,
         src_ch_id=channel.id,
         src_msg_id=msg.id,
-        total=inserted,
         start_time=perf_counter(),
     )
-    mirror_worker.register_view(view)
 
     # Refetch so the progress card's summary reflects any edit near the crosspost.
     with contextlib.suppress(Exception):
         msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
 
-    await start_progress_logger(
+    await start_progress_card(
         bot,
         view,
         source_message=msg,
@@ -895,17 +870,14 @@ async def message_update_repeater(
     event: h.MessageUpdateEvent, client: lb.Client = lb.di.INJECTED
 ):
     # Skip non-content updates (publishes/crossposts, embed unfurls, flag changes). The
-    # ledger reconcile edits existing dests AND fresh-sends to any added since, so a
-    # publish update arriving before the create handler enqueued would have nothing to
-    # bump. Gating on a real edit keeps reconcile-on-edit convergence while making
-    # publishes a no-op here. The manual /mirror_update command bypasses this.
+    # reconcile edits existing dests AND fresh-sends to any added since, so a publish
+    # update arriving before the create handler enqueued would have nothing to do.
     if not is_content_edit(event.message):
         return
 
-    # Ignore edits to messages that haven't been crossposted (published) yet — V2
-    # behaviour. Until publish, the create handler is still waiting to mirror the
-    # message, so an edit has nothing to update and acting now would race that pending
-    # send.
+    # Ignore edits to messages that haven't been crossposted (published) yet: until
+    # publish, the create handler is still waiting to mirror the message, so an edit has
+    # nothing to update and acting now would race that pending send.
     flags = event.message.flags
     if not isinstance(flags, h.MessageFlag) or h.MessageFlag.CROSSPOSTED not in flags:
         return
@@ -929,32 +901,21 @@ async def message_update_repeater_impl(
     if result is None:
         return
     bumped, inserted = result
-    total = bumped + inserted
-    if total == 0:
+    if bumped + inserted == 0:
         # Not a mirrored message.
         return
-
-    # Supersede any live view for this source (its progress card renders "Superseded by
-    # edit" and finalizes); the fresh view takes over the same src_msg_id key.
-    old_view = mirror_worker.get_view(msg.id)
-    if old_view is not None and not old_view.finalized:
-        old_view.superseded = True
-        old_view.superseded_by_edit = True
-        mirror_worker.maybe_finalize(old_view)
 
     view = RunView(
         op=MirrorOperationType.UPDATE,
         src_ch_id=msg.channel_id,
         src_msg_id=msg.id,
-        total=total,
         start_time=perf_counter(),
     )
-    mirror_worker.register_view(view)
 
     with contextlib.suppress(Exception):
         msg = await bot.rest.fetch_message(msg.channel_id, msg.id)
 
-    await start_progress_logger(
+    await start_progress_card(
         bot,
         view,
         source_message=msg,
@@ -986,31 +947,18 @@ async def message_delete_repeater_impl(
     if deletion_work is None:
         return
 
-    # Hand over any live send/update run for this source: its rows are now delete-intent
-    # or cancelled, so it must never keep rendering "in progress". Superseding + nudging
-    # finalizes it (via the ledger reconcile even when there is no delete work to show a
-    # card for), instead of orphaning it as a card that edits Discord every few seconds
-    # forever and pins the controller's pre-restart mirror check.
-    old_view = mirror_worker.get_view(msg_id)
-    if old_view is not None and not old_view.finalized:
-        old_view.superseded = True
-        mirror_worker.maybe_finalize(old_view)
-
+    mirror_worker.nudge()
     if not deletion_work:
         # Not mirrored, or nothing was ever delivered → nothing to delete Discord-side.
-        mirror_worker.nudge()
         return
 
     view = RunView(
         op=MirrorOperationType.DELETE,
         src_ch_id=None,
         src_msg_id=msg_id,
-        total=deletion_work,
         start_time=perf_counter(),
     )
-    mirror_worker.register_view(view)
-
-    await start_progress_logger(
+    await start_progress_card(
         bot,
         view,
         source_message=msg,
@@ -1300,26 +1248,13 @@ class MirrorCancel(
     @lb.invoke
     async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
         message: h.Message = self.target
-        view = mirror_worker.get_view(message.id)
-        if view is not None and view.op is MirrorOperationType.DELETE:
+        cancelled = await MirrorDelivery.cancel_pending(message.id)
+        if not cancelled:
             await ctx.respond(
-                "Can only cancel mirror sends and updates; this message has a delete "
-                "in progress.",
+                "This message does not have any sends/updates in progress to cancel.",
                 ephemeral=True,
             )
             return
-
-        cancelled = await MirrorDelivery.cancel_pending(message.id)
-        if not cancelled and view is None:
-            await ctx.respond(
-                "This message does not have any operations in progress.", ephemeral=True
-            )
-            return
-
-        # Same view-side bookkeeping as the progress-card button's _cancel_run (shared
-        # via _record_cancellation), but keyed off the command's target message.
-        if view is not None:
-            _record_cancellation(view, cancelled)
         mirror_worker.nudge()
         await ctx.respond("Cancelled mirror", ephemeral=True)
 

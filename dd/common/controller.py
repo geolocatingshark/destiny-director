@@ -63,10 +63,10 @@ async def _run_lifecycle(
     exit_code: int,
     action: str,
     verb: str,
-    mirror_check: t.Callable[[], int] | None,
+    mirror_check: t.Callable[[], t.Awaitable[int]] | None,
 ) -> None:
     """Stop/restart the bot; warn + require a DANGER override if mirrors are live."""
-    n = mirror_check() if mirror_check is not None else 0
+    n = await mirror_check() if mirror_check is not None else 0
     if n == 0:
         await respond_cv2(ctx, cv2_notice(f"Bot is {action} now."), ephemeral=True)
         await lifecycle.request_shutdown(bot, exit_code)
@@ -150,7 +150,7 @@ async def _run_lifecycle(
 def make_controller_group(
     bot_name: str,
     *,
-    mirror_check: t.Callable[[], int] | None = None,
+    mirror_check: t.Callable[[], t.Awaitable[int]] | None = None,
     show_followables: bool = False,
 ) -> lb.Group:
     """Build a fresh bot-administration group named after ``bot_name``.
@@ -230,7 +230,7 @@ def make_controller_group(
 
             if mirror_check is not None:
                 lines.append("\n**Mirror status**")
-                lines.append(f"- Operations in progress: {mirror_check()}")
+                lines.append(f"- Operations in progress: {await mirror_check()}")
                 followed = [(n, c) for n, c in cfg.followables.items() if c]
                 counts = await asyncio.gather(
                     *(

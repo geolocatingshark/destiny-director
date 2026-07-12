@@ -21,12 +21,12 @@ import string
 
 import hikari as h
 import lightbulb as lb
-from sqlalchemy import and_, delete
+from sqlalchemy import and_, update
 
 from ...common import cfg, schemas
 from ...common.auth import owner_only
 from ...common.bot import CachedFetchBot
-from ...common.schemas import DeliveryState, MirrorDelivery, MirroredChannel
+from ...common.schemas import MirroredChannel
 from ...common.utils import guild_scope, parse_channel_ref
 
 # This whole extension only loads in a test environment, matching the lightbulb v2
@@ -311,22 +311,16 @@ class MirrorDelete(
 
 
 @mirror_group.register
-class MirrorFailRateBump(
+class MirrorSimulateUnreachable(
     lb.SlashCommand,
-    name="fail_rate_bump",
-    description="Bump legacy failure counts so the next run trips the disable alert",
+    name="simulate_unreachable",
+    description="Backdate a source's targets past the grace and run the disable sweep",
     hooks=[owner_only],
 ):
     # A string (not lb.channel) so a source in another server can be given — the
     # slash-command channel picker only lists channels in the invoking guild.
     source = lb.string(
-        "source", "Source channel whose mirror targets to fail (link, mention, or id)"
-    )
-    times = lb.integer(
-        "times",
-        "How many failures to record (disable threshold is 3)",
-        default=3,
-        min_value=1,
+        "source", "Source channel whose mirror targets to disable (link/mention/id)"
     )
 
     @lb.invoke
@@ -339,53 +333,33 @@ class MirrorFailRateBump(
             return
 
         dest_ids = await MirroredChannel.fetch_dests(source_id)
+        pairs = [(source_id, dest_id) for dest_id in dest_ids]
+        if not pairs:
+            await ctx.respond(f"<#{source_id}> has no enabled legacy mirror targets.")
+            return
 
-        # Insert synthetic terminal FAILED + confirmed-dead ledger rows across `times`
-        # distinct (fake, negative-so-they-never-collide-with-real-snowflakes) source
-        # messages, finished before the forgiveness window, so the derived streak query
-        # (MirroredChannel.disable_failing_mirrors) trips on the next run's sweep.
+        # Backdate unreachable_since past the grace window, then run the sweep's disable
+        # step treating every target as confirmed-unreachable — the same path the real
+        # reachability sweep takes, without waiting for a genuinely broken channel.
         old = dt.datetime.now(tz=dt.UTC) - dt.timedelta(
-            hours=cfg.mirror_disable_forgiveness_hours + 1
+            hours=cfg.mirror_unreachable_grace_hours + 1
         )
-        base = -(secrets.randbits(48) + 1)
         async with schemas.db_session() as session, session.begin():
-            # Remove any real DELIVERED "last success" rows for these pairs first: the
-            # disable query only counts failures *after* the pair's last success, so a
-            # recent successful mirror (near-certain when the drill targets healthy test
-            # channels) would otherwise mask every synthetic failure and the drill would
-            # silently no-op. A dead streak means simulating no recent success.
             await session.execute(
-                delete(MirrorDelivery).where(
+                update(MirroredChannel)
+                .where(
                     and_(
-                        MirrorDelivery.src_ch_id == source_id,
-                        MirrorDelivery.dest_ch_id.in_(dest_ids),
-                        MirrorDelivery.state == DeliveryState.DELIVERED.value,
+                        MirroredChannel.src_id == source_id,
+                        MirroredChannel.dest_id.in_(dest_ids),
                     )
                 )
+                .values(unreachable_since=old)
             )
-            for i in range(self.times):
-                fake_src_msg = base - i
-                for dest_id in dest_ids:
-                    session.add(
-                        MirrorDelivery(
-                            src_msg_id=fake_src_msg,
-                            dest_ch_id=dest_id,
-                            src_ch_id=source_id,
-                            desired_version=1,
-                            applied_version=1,
-                            deleted=False,
-                            state=DeliveryState.FAILED.value,
-                            attempts=cfg.mirror_send_max_attempts,
-                            confirmed_dead=True,
-                            finished_at=old,
-                            created_at=old,
-                        )
-                    )
+        disabled = await MirroredChannel.apply_reachability_sweep([], pairs)
 
         await ctx.respond(
-            f"Recorded {self.times} synthetic failures for {len(dest_ids)} targets of "
-            f"<#{source_id}>. With `DISABLE_BAD_CHANNELS=true`, the next mirror "
-            "run will disable them and emit the disabled-count alert."
+            f"Simulated {len(pairs)} unreachable target(s) for <#{source_id}>; "
+            f"the reachability sweep disabled {len(disabled)}."
         )
 
 

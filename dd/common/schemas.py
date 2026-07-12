@@ -157,9 +157,12 @@ class MirroredChannel(Base):
     legacy = Column("legacy", Boolean)
     enabled = Column("enabled", Boolean, default=True)
     role_mention_id = Column("role_mention_id", BigInteger, default=None)
-    # Auto-disable health is now *derived* from the mirror_delivery ledger (see
-    # :meth:`disable_failing_mirrors`) rather than hand-maintained strike columns. Only
-    # the disable timestamp survives, so an owner can undo a sweep by date.
+    # Auto-disable is driven by a separate low-load reachability sweep, not the delivery
+    # hot path: ``unreachable_since`` is stamped when a probe first finds a destination
+    # unreachable / lacking send perms, cleared the moment it is reachable again; once
+    # it has stayed unreachable past the grace window the pair is disabled and the date
+    # below is stamped so an owner can undo a sweep by date.
+    unreachable_since = Column("unreachable_since", DateTime, default=None)
     legacy_disable_for_failure_on_date = Column(
         "legacy_disable_for_failure_on_date", DateTime, default=None
     )
@@ -485,8 +488,9 @@ class MirroredChannel(Base):
             # ``src_id IN (...) AND dest_id IN (...)`` from the pairs matches the
             # Cartesian product of the two id sets, so it would also re-enable innocent
             # rows that merely share a src or dest with a genuinely-disabled pair (or
-            # were disabled for some *other* reason). Clear the disable stamp too, so
-            # the re-enabled row starts from a clean slate.
+            # were disabled for some *other* reason). Clear the disable stamp and the
+            # unreachable clock too, so the re-enabled row starts clean (the
+            # reachability sweep re-stamps it only if it is still unreachable).
             .where(
                 and_(
                     ~cls.enabled,
@@ -497,27 +501,9 @@ class MirroredChannel(Base):
             .values(
                 enabled=True,
                 legacy_disable_for_failure_on_date=None,
+                unreachable_since=None,
             )
         )
-
-        # Neutralise the ledger evidence for the re-enabled pairs so the derived streak
-        # query (:meth:`disable_failing_mirrors`) doesn't immediately re-disable them:
-        # flip their terminal FAILED rows to CANCELLED (which counts as neither success
-        # nor failure) and clear confirmed_dead. Same transaction as the re-enable.
-        pairs = [(int(src_id), int(dest_id)) for src_id, dest_id in mirrors_to_enable]
-        if pairs:
-            await session.execute(
-                update(MirrorDelivery)
-                .where(
-                    and_(
-                        tuple_(MirrorDelivery.src_ch_id, MirrorDelivery.dest_ch_id).in_(
-                            pairs
-                        ),
-                        MirrorDelivery.state == DeliveryState.FAILED.value,
-                    )
-                )
-                .values(state=DeliveryState.CANCELLED.value, confirmed_dead=False)
-            )
 
         # Add re-enabled mirrors to the cache — but ONLY if it has already been
         # populated by a full fetch. Seeding an empty cache with just this handful of
@@ -532,79 +518,83 @@ class MirroredChannel(Base):
 
     @classmethod
     @ensure_session(db_session)
-    async def disable_failing_mirrors(
+    async def fetch_reachability_candidates(
         cls,
-        threshold: int = 3,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> list[tuple[int, int]]:
+        """Enabled legacy ``(src_id, dest_id)`` pairs for the reachability sweep."""
+        rows = (
+            await session.execute(
+                select(cls.src_id, cls.dest_id).where(and_(cls.enabled, cls.legacy))
+            )
+        ).fetchall()
+        return [(int(src_id), int(dest_id)) for src_id, dest_id in rows]
+
+    @classmethod
+    @ensure_session(db_session)
+    async def apply_reachability_sweep(
+        cls,
+        reachable: t.Collection[tuple[int, int]],
+        unreachable: t.Collection[tuple[int, int]],
         *,
         now: dt.datetime | None = None,
         session: AsyncSession = _UNSET,
     ) -> list[tuple[int, int]]:
-        """Disable legacy mirror pairs whose recent delivery streak is confirmed-dead.
+        """Record a reachability pass and disable pairs unreachable past the grace.
 
-        The ledger replacement for the old strike-column sweep. Health is a *derived*
-        streak query over :class:`MirrorDelivery` rather than hand-maintained strike
-        columns:
-
-        A ``(src_ch_id, dest_ch_id)`` pair qualifies when it has at least ``threshold``
-        distinct source messages in terminal ``FAILED`` + ``confirmed_dead`` state whose
-        ``finished_at`` is *after* the pair's last ``DELIVERED`` success (so any success
-        resets the streak — including an edit that re-delivers a previously-FAILED row),
-        **and** the oldest such failure is older than the forgiveness window
-        (``cfg.mirror_disable_forgiveness_hours``). Granularity is per pair, so pairs
-        sharing a dest channel never cross-contaminate.
+        ``reachable`` pairs have ``unreachable_since`` cleared (a recovered destination
+        resets the clock). ``unreachable`` pairs get ``unreachable_since`` stamped only
+        when unset, so the grace measures *continuous* unreachability rather than the
+        latest probe. A pair is disabled only when it is **confirmed unreachable this
+        sweep** AND its ``unreachable_since`` is older than
+        ``cfg.mirror_unreachable_grace_hours`` — so a merely ambiguous (UNKNOWN) probe
+        never disables a mirror. Disabled pairs are stamped so an owner can undo them.
+        Returns the disabled pairs.
         """
-        now = now or dt.datetime.now(tz=dt.UTC)
-        cutoff = now - dt.timedelta(hours=cfg.mirror_disable_forgiveness_hours)
-        md = MirrorDelivery
+        now = now or _utcnow()
+        reachable = [(int(s), int(d)) for s, d in reachable]
+        unreachable = [(int(s), int(d)) for s, d in unreachable]
 
-        # Last successful delivery per pair (streak reset point).
-        last_ok = (
-            select(
-                md.src_ch_id.label("s"),
-                md.dest_ch_id.label("d"),
-                func.max(md.finished_at).label("last_ok"),
+        if reachable:
+            await session.execute(
+                update(cls)
+                .where(
+                    and_(
+                        tuple_(cls.src_id, cls.dest_id).in_(reachable),
+                        cls.unreachable_since.is_not(None),
+                    )
+                )
+                .values(unreachable_since=None)
             )
-            .where(md.state == DeliveryState.DELIVERED.value)
-            .group_by(md.src_ch_id, md.dest_ch_id)
-            .subquery()
-        )
-        failing = (
-            select(md.src_ch_id, md.dest_ch_id)
-            .join(
-                cls,
-                and_(
-                    cls.src_id == md.src_ch_id,
-                    cls.dest_id == md.dest_ch_id,
-                    cls.enabled,
-                    cls.legacy,
-                ),
-            )
-            .join(
-                last_ok,
-                and_(last_ok.c.s == md.src_ch_id, last_ok.c.d == md.dest_ch_id),
-                isouter=True,
-            )
+        if not unreachable:
+            return []
+        await session.execute(
+            update(cls)
             .where(
                 and_(
-                    md.state == DeliveryState.FAILED.value,
-                    md.confirmed_dead,
-                    # Only failures with no later success for this pair count.
-                    or_(
-                        last_ok.c.last_ok.is_(None),
-                        md.finished_at > last_ok.c.last_ok,
-                    ),
+                    tuple_(cls.src_id, cls.dest_id).in_(unreachable),
+                    cls.unreachable_since.is_(None),
                 )
             )
-            .group_by(md.src_ch_id, md.dest_ch_id)
-            .having(
-                and_(
-                    func.count(func.distinct(md.src_msg_id)) >= threshold,
-                    func.min(md.finished_at) <= cutoff,
-                )
-            )
+            .values(unreachable_since=now)
         )
-        rows = (await session.execute(failing)).fetchall()
-        pairs = [(int(src_id), int(dest_id)) for src_id, dest_id in rows]
+
+        cutoff = now - dt.timedelta(hours=cfg.mirror_unreachable_grace_hours)
+        stale = (
+            await session.execute(
+                select(cls.src_id, cls.dest_id).where(
+                    and_(
+                        cls.enabled,
+                        cls.legacy,
+                        tuple_(cls.src_id, cls.dest_id).in_(unreachable),
+                        cls.unreachable_since.is_not(None),
+                        cls.unreachable_since <= cutoff,
+                    )
+                )
+            )
+        ).fetchall()
+        pairs = [(int(src_id), int(dest_id)) for src_id, dest_id in stale]
         if not pairs:
             return []
 
@@ -620,9 +610,9 @@ class MirroredChannel(Base):
             .values(enabled=False, legacy_disable_for_failure_on_date=now)
         )
 
-        # Note: We deliberately don't remove the src_id from the _legacy_srcs_cache — a
-        # disabled mirror may share a src with still-enabled ones, and clearing +
-        # refetching on every disable would be needlessly expensive.
+        # Note: we deliberately don't remove the src_id from _legacy_srcs_cache — a
+        # disabled pair may share a src with enabled ones, and its dest is filtered
+        # by ``enabled`` at fetch time anyway.
         return pairs
 
 
@@ -646,15 +636,36 @@ def _insert_ignore(cls: type[Base]):
 
 
 class DeliveryState(enum.StrEnum):
-    """Lifecycle state of a single ``mirror_delivery`` row."""
+    """Lifecycle state of a single ``mirror_delivery`` row.
+
+    Single-worker model: there is no CLAIMED state. The one worker picks a batch,
+    delivers it, and flushes every outcome *before* it picks again, so a row is never
+    handed out twice in normal operation. A crash mid-batch simply leaves the row
+    PENDING for the next pick to re-do — re-sending at most once (the accepted small
+    crash-duplicate window).
+    """
 
     PENDING = "PENDING"  # needs work (applied < desired, or an unapplied delete)
-    CLAIMED = "CLAIMED"  # claimed by a worker (claimed_by/claimed_at set)
     DELIVERED = "DELIVERED"  # converged (applied_version == desired_version)
     FAILED = "FAILED"  # terminal; last_error_class is PERMANENT or exhausted TRANSIENT
     CANCELLED = (
         "CANCELLED"  # user cancel / delete-before-delivery / undo neutralisation
     )
+
+
+class CrosspostState(enum.StrEnum):
+    """Durable crosspost sub-state of a ``mirror_delivery`` row, apart from ``state``.
+
+    A row delivered to a Discord announcement (news) channel becomes ``DELIVERED`` with
+    ``crosspost_state = PENDING``; a later pick crossposts it (idempotent — Discord's
+    "already crossposted" counts as success) and sets ``DONE``. Non-news destinations
+    are ``NOT_APPLICABLE`` and never picked for crosspost. A run does not
+    wait on crosspost — it is durable background work.
+    """
+
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    PENDING = "PENDING"
+    DONE = "DONE"
 
 
 class OutcomeKind(enum.Enum):
@@ -665,6 +676,10 @@ class OutcomeKind(enum.Enum):
     TRANSIENT = 3  # a retryable failure below the attempt cap
     TERMINAL = 4  # a permanent or attempt-cap-exhausted failure
     CANCELLED = 5  # short-circuited (cancel requested / nothing to do)
+    CROSSPOST_DONE = (
+        6  # crosspost succeeded (or was given up on) — crosspost_state DONE
+    )
+    CROSSPOST_RETRY = 7  # crosspost hit a retryable failure — back off, stay PENDING
 
 
 @dataclass(frozen=True, slots=True)
@@ -674,7 +689,7 @@ class DeliveryOutcome:
     Defined here (in ``dd.common``) rather than in the beacon worker so the flusher can
     type its input without ``dd.common`` importing ``dd.beacon`` (the dependency
     direction is beacon → common, never the reverse). ``version`` is the
-    ``desired_version`` observed when the row was claimed; the flusher's CASE guard
+    ``desired_version`` observed when the row was picked; the flusher's CASE guard
     compares it against the row's *current* ``desired_version`` so an edit/delete that
     raced the in-flight attempt keeps the row converging instead of marking it terminal.
     """
@@ -689,15 +704,19 @@ class DeliveryOutcome:
     error_ref: str | None = None
     error_class: str | None = None
     error_msg: str | None = None
-    confirmed_dead: bool = False
+    # A fresh send to a news channel warrants a crosspost — the flusher records
+    # ``crosspost_state = PENDING`` so a later pick converges it durably.
+    crosspost_pending: bool = False
 
 
 @dataclass(frozen=True, slots=True)
-class ClaimedRow:
-    """Frozen snapshot of a claimed ``mirror_delivery`` row handed to the worker.
+class PickedRow:
+    """Frozen snapshot of a picked ``mirror_delivery`` row handed to the worker.
 
     A plain dataclass (not a live ORM object) so the worker can process it after the
-    claim transaction closes without touching an expired/detached instance.
+    pick transaction closes without touching an expired/detached instance. ``state`` +
+    ``crosspost_state`` tell the worker whether this pick is a delivery (state PENDING)
+    or a durable crosspost (state DELIVERED, crosspost_state PENDING).
     """
 
     src_msg_id: int
@@ -707,12 +726,14 @@ class ClaimedRow:
     desired_version: int
     deleted: bool
     attempts: int
+    state: str
+    crosspost_state: str
 
 
 class MirrorDelivery(Base):
     """Durable delivery ledger: one row per (source message, destination channel).
 
-    Subsumes the old ``mirrored_message`` table. Stores *intent* (``desired_version`` /
+    Stores *intent* (``desired_version`` /
     ``deleted``), never content — content is fetched fresh from Discord at delivery
     time. An edit bumps ``desired_version``; the convergence worker converges rows where
     ``applied_version < desired_version``.
@@ -721,28 +742,16 @@ class MirrorDelivery(Base):
     __tablename__ = "mirror_delivery"
     __mapper_args__ = {"eager_defaults": True}
     __table_args__ = (
-        Index("ix_mirror_delivery_state_due", "state", "due_at"),  # claim scan
-        Index(
-            "ix_mirror_delivery_pair_state", "src_ch_id", "dest_ch_id", "state"
-        ),  # streak query (pair grouping)
-        # Covers both halves of the derived disable sweep: the per-pair
-        # MAX(finished_at) over DELIVERED (last-success anchor) and the FAILED streak
-        # scan — state-then-pair-then-finished_at, so neither needs a full-table scan.
-        Index(
-            "ix_mirror_delivery_state_pair_finished",
-            "state",
-            "src_ch_id",
-            "dest_ch_id",
-            "finished_at",
-        ),
+        Index("ix_mirror_delivery_state_due", "state", "due_at"),  # delivery pick scan
+        # Crosspost pick scan: the (rare, short-lived) DELIVERED rows awaiting a durable
+        # crosspost, found without touching the far larger DELIVERED-DONE population.
+        Index("ix_mirror_delivery_crosspost_due", "crosspost_state", "due_at"),
         Index("ix_mirror_delivery_created_at", "created_at"),  # prune
     )
 
     src_msg_id = Column("src_msg_id", BigInteger, primary_key=True)
     dest_ch_id = Column("dest_ch_id", BigInteger, primary_key=True)
     src_ch_id = Column("src_ch_id", BigInteger, nullable=False)
-    # Denormalised for the claim-order JOIN against server_statistics.
-    dest_server_id = Column("dest_server_id", BigInteger, nullable=True)
     dest_msg_id = Column(
         "dest_msg_id", BigInteger, nullable=True
     )  # NULL until delivered
@@ -752,31 +761,33 @@ class MirrorDelivery(Base):
     state = Column(
         "state", String(16), nullable=False, default=DeliveryState.PENDING.value
     )
+    crosspost_state = Column(
+        "crosspost_state",
+        String(16),
+        nullable=False,
+        default=CrosspostState.NOT_APPLICABLE.value,
+    )
     attempts = Column("attempts", Integer, nullable=False, default=0)
     due_at = Column("due_at", DateTime, nullable=False, default=_utcnow)
-    claimed_by = Column("claimed_by", String(64), nullable=True)
-    claimed_at = Column("claimed_at", DateTime, nullable=True)
     last_error_ref = Column("last_error_ref", String(8), nullable=True)
     last_error_class = Column("last_error_class", String(12), nullable=True)
     last_error_msg = Column("last_error_msg", String(256), nullable=True)
-    confirmed_dead = Column("confirmed_dead", Boolean, nullable=False, default=False)
     created_at = Column("created_at", DateTime, nullable=False, default=_utcnow)
     finished_at = Column("finished_at", DateTime, nullable=True)
 
-    # Columns inserted by the enqueue INSERT…SELECT, in order (dest_msg_id + the claim/
+    # Columns inserted by the enqueue INSERT…SELECT, in order (dest_msg_id + the
     # error/finished columns default to NULL).
     _ENQUEUE_COLS = (
         "src_msg_id",
         "dest_ch_id",
         "src_ch_id",
-        "dest_server_id",
         "desired_version",
         "applied_version",
         "deleted",
         "state",
+        "crosspost_state",
         "attempts",
         "due_at",
-        "confirmed_dead",
         "created_at",
     )
 
@@ -788,14 +799,13 @@ class MirrorDelivery(Base):
             literal(int(src_msg_id)),
             MirroredChannel.dest_id,
             literal(int(src_ch_id)),
-            MirroredChannel.dest_server_id,
             literal(1),  # desired_version
             literal(0),  # applied_version
             literal(False),  # deleted
-            literal(DeliveryState.PENDING.value),
+            literal(DeliveryState.PENDING.value),  # state
+            literal(CrosspostState.NOT_APPLICABLE.value),  # crosspost_state
             literal(0),  # attempts
             literal(now),  # due_at
-            literal(False),  # confirmed_dead
             literal(now),  # created_at
         ).where(
             and_(
@@ -844,19 +854,16 @@ class MirrorDelivery(Base):
 
         Returns ``(bumped, inserted)`` rowcounts — both zero means this was not a
         mirrored message. Rows for dests since removed from ``mirrored_channel`` keep
-        converging (they are bumped but not re-inserted), matching the old reconcile.
+        converging (they are bumped but not re-inserted).
         FAILED/CANCELLED/PENDING rows are (re)armed to PENDING; rows with ``deleted=1``
         are never touched by an edit.
 
-        An in-flight **CLAIMED** row is left CLAIMED (only its ``desired_version`` /
-        retry budget are bumped): resetting it to PENDING here would let the claim loop
-        re-claim it before the in-flight send's SUCCESS outcome — which carries the new
-        ``dest_msg_id`` — has flushed, sending a duplicate message and orphaning the
-        first. Leaving it CLAIMED means the in-flight attempt finishes and its (now
-        version-mismatched) outcome records the ``dest_msg_id`` and drops the row to
-        PENDING, so the next claim *edits* the recorded message instead of re-sending.
-        ``claimed_at`` is deliberately not touched, so the stale-claim safety net still
-        recovers a genuinely dead worker.
+        A row that is in-flight *right now* is re-armed to PENDING here too, but the one
+        worker flushes the current batch's outcomes before it picks again, so it can't
+        re-pick the row mid-flight. That in-flight outcome (stamped with the pre-bump
+        version) loses the flusher's version guard and bounces the row back to PENDING
+        while recording any created ``dest_msg_id`` — so the next pick *edits* the
+        recorded message instead of re-sending it. No duplicate, no orphan, no lease.
         """
         now = _utcnow()
         bumped = await session.execute(
@@ -864,10 +871,7 @@ class MirrorDelivery(Base):
             .where(and_(cls.src_msg_id == int(src_msg_id), ~cls.deleted))
             .values(
                 desired_version=cls.desired_version + 1,
-                state=case(
-                    (cls.state == DeliveryState.CLAIMED.value, cls.state),
-                    else_=DeliveryState.PENDING.value,
-                ),
+                state=DeliveryState.PENDING.value,
                 attempts=0,
                 due_at=now,
                 finished_at=None,
@@ -938,11 +942,14 @@ class MirrorDelivery(Base):
     ) -> list[int]:
         """Cancel not-yet-delivered rows for ``src_msg_id``; return the cancelled dests.
 
-        Only PENDING, non-deleted rows are cancelled — in-flight (CLAIMED) Discord
-        calls drain and flush normally under the version guard. A racing delete's
+        Only PENDING, non-deleted rows are cancelled. A row in-flight *right now*
+        is also PENDING, so it may be flipped here — but the worker's in-memory
+        ``cancel_requested`` flag short-circuits it before the Discord call, and a row
+        that had already been sent simply converges to DELIVERED under the version guard
+        (cancel lost the race; the message is out and stays recorded). A racing delete's
         PENDING rows (``deleted=1``) are left to converge. Returns the affected
-        ``dest_ch_id``s so the caller can mark them cancelled in the run view (drives
-        completion); an empty list means there was nothing to cancel.
+        ``dest_ch_id``s so the caller can mark them cancelled in the run view; an empty
+        list means there was nothing to cancel.
         """
         now = _utcnow()
         where = and_(
@@ -964,39 +971,31 @@ class MirrorDelivery(Base):
             .values(
                 state=DeliveryState.CANCELLED.value,
                 finished_at=now,
-                claimed_by=None,
-                claimed_at=None,
             )
         )
         return dest_ids
 
     @classmethod
     @ensure_session(db_session)
-    async def claim_batch(
+    async def pick_batch(
         cls,
-        worker_id: str,
         batch_size: int,
-        stale_cutoff: dt.datetime,
         *,
         now: dt.datetime | None = None,
         session: AsyncSession = _UNSET,
-    ) -> list[ClaimedRow]:
-        """Atomically claim up to ``batch_size`` due rows, biggest-server-first.
+    ) -> list[PickedRow]:
+        """Return up to ``batch_size`` due rows needing work, biggest-server-first.
 
-        Selects due PENDING rows (``due_at <= now``) and stale CLAIMED rows
-        (``claimed_at <= stale_cutoff`` — a worker that died mid-batch) with
-        ``FOR UPDATE SKIP LOCKED`` so concurrent workers claim disjoint sets, orders by
-        destination server population descending (unknown-population last, then
-        ``created_at``), marks them CLAIMED, and returns frozen snapshots.
-
-        On SQLite the dialect silently omits ``FOR UPDATE``; this runs unmodified there
-        (single process, no contention).
+        A row needs work when ``due_at <= now`` and it is either a PENDING delivery
+        (send / edit / delete) or a DELIVERED row still awaiting a durable crosspost
+        (``crosspost_state = PENDING``). No lease, no ``FOR UPDATE``, no state mutation:
+        the single worker picks, processes the whole batch, and flushes every outcome
+        *before* it picks again, so a row is never handed out twice (a retry is bounced
+        to a future ``due_at``; a crosspost is marked DONE). Biggest-server-first order
+        comes from a two-hop join to ``server_statistics`` via ``mirrored_channel``
+        (``dest_server_id`` no longer lives on the ledger).
         """
         now = now or _utcnow()
-        # A Core column select (not ``select(cls)``): the seven scalars below are copied
-        # straight into the frozen ClaimedRow, so full ORM-entity hydration (columns,
-        # identity-map registration, expire-on-flush bookkeeping) — repeated every claim
-        # pass — would be pure waste.
         rows = (
             await session.execute(
                 select(
@@ -1007,43 +1006,43 @@ class MirrorDelivery(Base):
                     cls.desired_version,
                     cls.deleted,
                     cls.attempts,
+                    cls.state,
+                    cls.crosspost_state,
+                )
+                .join(
+                    MirroredChannel,
+                    and_(
+                        MirroredChannel.src_id == cls.src_ch_id,
+                        MirroredChannel.dest_id == cls.dest_ch_id,
+                    ),
+                    isouter=True,
                 )
                 .join(
                     ServerStatistics,
-                    cls.dest_server_id == ServerStatistics.id,
+                    MirroredChannel.dest_server_id == ServerStatistics.id,
                     isouter=True,
                 )
                 .where(
-                    or_(
-                        and_(
+                    and_(
+                        cls.due_at <= now,
+                        or_(
                             cls.state == DeliveryState.PENDING.value,
-                            cls.due_at <= now,
-                        ),
-                        and_(
-                            cls.state == DeliveryState.CLAIMED.value,
-                            cls.claimed_at <= stale_cutoff,
+                            cls.crosspost_state == CrosspostState.PENDING.value,
                         ),
                     )
                 )
-                # Biggest-server-first. This orders on a joined, coalesced expression so
-                # MySQL filesorts the due set before LIMIT. Left as-is deliberately: the
-                # only sound removal is denormalising a priority snapshot onto every row
-                # (a schema column kept in sync with server population), whose staleness
-                # trade-off and migration surface outweigh a bounded ~batch-size sort of
-                # a set already narrowed by the (state, due_at) index. Revisit if the
-                # due backlog ever dwarfs the batch size.
+                # Biggest-server-first, unknown-population last, then oldest first. A
+                # bounded ~batch-size filesort over a set already narrowed by the
+                # (state, due_at) index — cheap at our volumes.
                 .order_by(
                     desc(coalesce(ServerStatistics.population, 10**12)),
                     cls.created_at,
                 )
                 .limit(batch_size)
-                .with_for_update(skip_locked=True, of=cls.__table__)
             )
         ).all()
-        if not rows:
-            return []
-        claimed = [
-            ClaimedRow(
+        return [
+            PickedRow(
                 src_msg_id=int(r.src_msg_id),
                 dest_ch_id=int(r.dest_ch_id),
                 src_ch_id=int(r.src_ch_id),
@@ -1051,20 +1050,11 @@ class MirrorDelivery(Base):
                 desired_version=int(r.desired_version),
                 deleted=bool(r.deleted),
                 attempts=int(r.attempts),
+                state=str(r.state),
+                crosspost_state=str(r.crosspost_state),
             )
             for r in rows
         ]
-        pairs = [(c.src_msg_id, c.dest_ch_id) for c in claimed]
-        await session.execute(
-            update(cls)
-            .where(tuple_(cls.src_msg_id, cls.dest_ch_id).in_(pairs))
-            .values(
-                state=DeliveryState.CLAIMED.value,
-                claimed_by=str(worker_id)[:64],
-                claimed_at=now,
-            )
-        )
-        return claimed
 
     @classmethod
     @ensure_session(db_session)
@@ -1115,17 +1105,27 @@ class MirrorDelivery(Base):
 
         for kind, group in by_kind.items():
             if kind is OutcomeKind.SUCCESS:
+                # ``b_crosspost`` is PENDING only for a fresh send to a news channel;
+                # set (guarded) so an edit/delete race can't strand a crosspost. It is
+                # NOT_APPLICABLE for a plain send/edit, which harmlessly leaves the sub-
+                # state at its NOT_APPLICABLE default.
                 stmt = (
                     update(cls.__table__)
                     .where(pk)
                     .values(
                         dest_msg_id=bindparam("b_dest_msg"),
                         applied_version=bindparam("b_version"),
-                        claimed_by=None,
-                        claimed_at=None,
+                        # Reset the retry budget on success so a following durable
+                        # crosspost gets a clean attempt count (guarded so a raced
+                        # edit/delete keeps its own freshly-reset budget instead).
+                        attempts=case((guard, 0), else_=cls.attempts),
                         last_error_ref=None,
                         last_error_class=None,
                         last_error_msg=None,
+                        crosspost_state=case(
+                            (guard, bindparam("b_crosspost")),
+                            else_=cls.crosspost_state,
+                        ),
                         state=case(
                             (guard, DeliveryState.DELIVERED.value),
                             else_=DeliveryState.PENDING.value,
@@ -1139,6 +1139,11 @@ class MirrorDelivery(Base):
                         "b_dest": o.dest_ch_id,
                         "b_dest_msg": o.dest_msg_id,
                         "b_version": o.version,
+                        "b_crosspost": (
+                            CrosspostState.PENDING.value
+                            if o.crosspost_pending
+                            else CrosspostState.NOT_APPLICABLE.value
+                        ),
                     }
                     for o in group
                 ]
@@ -1148,8 +1153,6 @@ class MirrorDelivery(Base):
                     .where(pk)
                     .values(
                         applied_version=bindparam("b_version"),
-                        claimed_by=None,
-                        claimed_at=None,
                         last_error_ref=None,
                         last_error_class=None,
                         last_error_msg=None,
@@ -1166,7 +1169,7 @@ class MirrorDelivery(Base):
                     for o in group
                 ]
             elif kind is OutcomeKind.TRANSIENT:
-                # State is PENDING either way (re-claimable); but the retry budget and
+                # State is PENDING either way (re-pickable); but the retry budget and
                 # backoff are guarded so a raced edit that already re-armed the row
                 # (attempts=0, due=now) is not clobbered by this stale outcome's
                 # exhausted count / far-future backoff.
@@ -1179,8 +1182,6 @@ class MirrorDelivery(Base):
                         ),
                         due_at=case((guard, bindparam("b_due_at")), else_=cls.due_at),
                         state=DeliveryState.PENDING.value,
-                        claimed_by=None,
-                        claimed_at=None,
                         last_error_ref=case(
                             (guard, bindparam("b_ref")), else_=cls.last_error_ref
                         ),
@@ -1217,8 +1218,6 @@ class MirrorDelivery(Base):
                         attempts=case(
                             (guard, bindparam("b_attempts")), else_=cls.attempts
                         ),
-                        claimed_by=None,
-                        claimed_at=None,
                         last_error_ref=case(
                             (guard, bindparam("b_ref")), else_=cls.last_error_ref
                         ),
@@ -1227,9 +1226,6 @@ class MirrorDelivery(Base):
                         ),
                         last_error_msg=case(
                             (guard, bindparam("b_msg")), else_=cls.last_error_msg
-                        ),
-                        confirmed_dead=case(
-                            (guard, bindparam("b_dead")), else_=cls.confirmed_dead
                         ),
                         state=case(
                             (guard, DeliveryState.FAILED.value),
@@ -1247,7 +1243,38 @@ class MirrorDelivery(Base):
                         "b_ref": o.error_ref,
                         "b_class": o.error_class,
                         "b_msg": o.error_msg,
-                        "b_dead": o.confirmed_dead,
+                    }
+                    for o in group
+                ]
+            elif kind is OutcomeKind.CROSSPOST_DONE:
+                # Idempotent terminal for the crosspost sub-state; unguarded (a raced
+                # edit does not un-crosspost a message that is already out).
+                stmt = (
+                    update(cls.__table__)
+                    .where(pk)
+                    .values(crosspost_state=CrosspostState.DONE.value)
+                )
+                params = [
+                    {"b_src": o.src_msg_id, "b_dest": o.dest_ch_id} for o in group
+                ]
+            elif kind is OutcomeKind.CROSSPOST_RETRY:
+                # Back off a transient crosspost failure; stay PENDING so a later pick
+                # retries. Reuses ``attempts``/``due_at`` (free once delivered).
+                stmt = (
+                    update(cls.__table__)
+                    .where(pk)
+                    .values(
+                        attempts=bindparam("b_attempts"),
+                        due_at=bindparam("b_due_at"),
+                        crosspost_state=CrosspostState.PENDING.value,
+                    )
+                )
+                params = [
+                    {
+                        "b_src": o.src_msg_id,
+                        "b_dest": o.dest_ch_id,
+                        "b_attempts": o.attempts,
+                        "b_due_at": o.due_at,
                     }
                     for o in group
                 ]
@@ -1256,8 +1283,6 @@ class MirrorDelivery(Base):
                     update(cls.__table__)
                     .where(pk)
                     .values(
-                        claimed_by=None,
-                        claimed_at=None,
                         state=case(
                             (cancel_guard, DeliveryState.CANCELLED.value),
                             else_=DeliveryState.PENDING.value,
@@ -1276,7 +1301,7 @@ class MirrorDelivery(Base):
             # One driver executemany per kind. asyncmy (PyMySQL lineage) only rewrites
             # INSERT…VALUES into a single multi-row statement, so this UPDATE issues one
             # round trip per row. Acceptable: it is a single transaction bounded by the
-            # claim batch size, and the version-guarded CASE columns make a hand-built
+            # pick batch size, and the version-guarded CASE columns make a hand-built
             # bulk UPDATE (per-row CASE keyed on PK) materially more error-prone than
             # the per-row cost is worth. Revisit with a temp-table/VALUES join if flush
             # dominates a run's wall-clock.
@@ -1289,7 +1314,7 @@ class MirrorDelivery(Base):
         *,
         session: AsyncSession = _UNSET,
     ) -> list[tuple[int, int, int, bool, bool]]:
-        """Per-source summary of non-terminal (PENDING/CLAIMED) rows, for recovery.
+        """Per-source summary of non-terminal (PENDING) rows, for recovery.
 
         Returns ``(src_msg_id, src_ch_id, count, any_deleted, any_unsent)`` per source
         message with work still to do, so the worker can register a synthetic recovery
@@ -1304,11 +1329,7 @@ class MirrorDelivery(Base):
                     func.max(case((cls.deleted, 1), else_=0)),
                     func.max(case((cls.applied_version == 0, 1), else_=0)),
                 )
-                .where(
-                    cls.state.in_(
-                        [DeliveryState.PENDING.value, DeliveryState.CLAIMED.value]
-                    )
-                )
+                .where(cls.state == DeliveryState.PENDING.value)
                 .group_by(cls.src_msg_id)
             )
         ).fetchall()
@@ -1325,13 +1346,13 @@ class MirrorDelivery(Base):
         *,
         session: AsyncSession = _UNSET,
     ) -> dict[int, int]:
-        """Count non-terminal (PENDING/CLAIMED) rows per source message.
+        """Count non-terminal (PENDING) rows per source message.
 
-        The ledger-authoritative completion signal for the worker's run-view reconcile:
-        a run is durably done exactly when this returns 0 for its ``src_msg_id`` (every
-        row DELIVERED / FAILED / CANCELLED, and — since an unflushed outcome leaves its
-        row CLAIMED — nothing still in-flight). A ``src_msg_id`` with no non-terminal
-        rows is simply absent from the result (callers treat missing as 0).
+        The ledger-authoritative completion signal: a run is durably done exactly when
+        this returns 0 for its ``src_msg_id`` (all rows DELIVERED/FAILED/CANCELLED).
+        Crosspost is background work and does not hold a run open, so a DELIVERED
+        row still awaiting crosspost is *not* counted here. A ``src_msg_id`` with no
+        non-terminal rows is simply absent from the result (callers treat missing as 0).
         """
         ids = [int(i) for i in src_msg_ids]
         if not ids:
@@ -1342,9 +1363,7 @@ class MirrorDelivery(Base):
                 .where(
                     and_(
                         cls.src_msg_id.in_(ids),
-                        cls.state.in_(
-                            [DeliveryState.PENDING.value, DeliveryState.CLAIMED.value]
-                        ),
+                        cls.state == DeliveryState.PENDING.value,
                     )
                 )
                 .group_by(cls.src_msg_id)
@@ -1354,55 +1373,126 @@ class MirrorDelivery(Base):
 
     @classmethod
     @ensure_session(db_session)
+    async def state_counts(
+        cls,
+        src_msg_id: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> dict[str, int]:
+        """Per-``state`` row counts for one source message — the progress card's data.
+
+        The card renders straight off this cheap ``GROUP BY state`` count, so there is a
+        single source of truth for run progress (the ledger) instead of an in-memory
+        accounting that can drift from it.
+        """
+        rows = (
+            await session.execute(
+                select(cls.state, func.count())
+                .where(cls.src_msg_id == int(src_msg_id))
+                .group_by(cls.state)
+            )
+        ).fetchall()
+        return {str(state): int(count) for state, count in rows}
+
+    @classmethod
+    @ensure_session(db_session)
+    async def outstanding_count(
+        cls,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> int:
+        """Total PENDING rows across all runs — the pre-restart 'work in progress' gate.
+
+        A restart mid-fan-out is safe (leftover PENDING rows are re-picked on startup),
+        but this still surfaces outstanding work so an owner can choose to wait.
+        """
+        return int(
+            (
+                await session.execute(
+                    select(func.count()).where(cls.state == DeliveryState.PENDING.value)
+                )
+            ).scalar_one()
+        )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def failure_breakdown(
+        cls,
+        src_msg_id: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> list[tuple[str, str, int, str]]:
+        """FAILED rows for one source, grouped by error reference for the progress card.
+
+        Returns ``(reference_code, error_class, count, sample_message)`` per distinct
+        error, most-common first.
+        """
+        rows = (
+            await session.execute(
+                select(
+                    cls.last_error_ref,
+                    func.max(cls.last_error_class),
+                    func.count(),
+                    func.max(cls.last_error_msg),
+                )
+                .where(
+                    and_(
+                        cls.src_msg_id == int(src_msg_id),
+                        cls.state == DeliveryState.FAILED.value,
+                    )
+                )
+                .group_by(cls.last_error_ref)
+                .order_by(desc(func.count()))
+            )
+        ).fetchall()
+        return [
+            (str(ref or ""), str(cls_ or ""), int(count), str(msg or ""))
+            for ref, cls_, count, msg in rows
+        ]
+
+    @classmethod
+    @ensure_session(db_session)
     async def prune(
         cls,
         *,
         now: dt.datetime | None = None,
         session: AsyncSession = _UNSET,
     ) -> None:
-        """Prune old rows: most at 21 days, the disable *evidence* at 90 days.
+        """Prune rows older than the retention window, keeping a per-channel anchor.
 
-        FAILED rows are the confirmed-dead evidence the derived disable sweep counts, so
-        they are kept 90 days for low-cadence sources (owner retention decision). But
-        that evidence is only sound if the streak-reset anchor survives with it: the
-        disable query treats "no DELIVERED row after the failures" as "never recovered",
-        so pruning a recovered pair's success rows at 21 days while its old FAILED rows
-        linger would falsely re-disable a healthy mirror. So the **latest DELIVERED row
-        per pair** is retained on the same 90-day window as FAILED; only *superseded*
-        successes (a newer DELIVERED exists for the pair) and non-evidence states
-        (PENDING/CLAIMED/CANCELLED) are pruned at 21 days.
+        We never edit or delete a mirrored message older than ``mirror_retention_days``,
+        so everything past that window is pruned — *except* the single most-recent
+        DELIVERED message per destination channel, which is kept indefinitely as a
+        cautious record (so we always know the last thing mirrored to a channel). Every
+        row within the window is kept, including a non-latest one (a channel can hold a
+        second, user-related announcement we may still need to touch).
         """
         now = now or _utcnow()
-        cutoff_21 = now - dt.timedelta(days=21)
-        cutoff_90 = now - dt.timedelta(days=90)
+        cutoff = now - dt.timedelta(days=cfg.mirror_retention_days)
 
-        # 21-day sweep of everything that is neither the FAILED evidence nor a DELIVERED
-        # success (those two are handled below).
+        # Old, non-DELIVERED rows are never anchors — prune them outright.
         await session.execute(
             delete(cls).where(
                 and_(
-                    cls.created_at < cutoff_21,
-                    cls.state.notin_(
-                        [DeliveryState.FAILED.value, DeliveryState.DELIVERED.value]
-                    ),
+                    cls.created_at < cutoff,
+                    cls.state != DeliveryState.DELIVERED.value,
                 )
             )
         )
-        # 21-day sweep of *superseded* successes: a DELIVERED row for which a strictly
-        # newer DELIVERED exists for the same pair — the latest one stays as the anchor.
-        # Done as SELECT-the-pks then DELETE-by-pk (not one self-referencing DELETE):
-        # MySQL forbids referencing the delete target inside a subquery (error 1093),
-        # even though SQLite allows it, so the correlated EXISTS must live in a read.
+        # Old DELIVERED rows: prune those superseded by a newer DELIVERED in the
+        # SAME destination channel — the single latest per channel stays as the anchor.
+        # SELECT-the-pks then DELETE-by-pk (not one self-referencing DELETE): MySQL
+        # forbids referencing the delete target inside a subquery (error 1093), even
+        # though SQLite allows it, so the correlated EXISTS must live in a read.
         newer = aliased(cls)
         superseded = (
             await session.execute(
                 select(cls.src_msg_id, cls.dest_ch_id).where(
                     and_(
-                        cls.created_at < cutoff_21,
+                        cls.created_at < cutoff,
                         cls.state == DeliveryState.DELIVERED.value,
                         exists().where(
                             and_(
-                                newer.src_ch_id == cls.src_ch_id,
                                 newer.dest_ch_id == cls.dest_ch_id,
                                 newer.state == DeliveryState.DELIVERED.value,
                                 newer.finished_at > cls.finished_at,
@@ -1419,8 +1509,6 @@ class MirrorDelivery(Base):
                     tuple_(cls.src_msg_id, cls.dest_ch_id).in_(pks[i : i + 500])
                 )
             )
-        # 90-day backstop: everything, including the retained anchor + FAILED evidence.
-        await session.execute(delete(cls).where(cls.created_at < cutoff_90))
 
 
 class ServerStatistics(Base):

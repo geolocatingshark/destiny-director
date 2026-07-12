@@ -15,14 +15,12 @@
 
 """Unit tests for the mirror convergence worker's delivery path (no DB, no real bot).
 
-The Discord primitives (_send_one / edit_one / _delete_one) and the source fetch are
-stubbed; these pin op selection per row shape, one source fetch per group, the
-transient/terminal decision (attempt caps, backoff), the PERMANENT→probe→confirmed_dead
-gate, cancel short-circuiting, permanent source-fetch handling, and backlog recovery."""
+The Discord primitives (_send_one / edit_one / _delete_one / _crosspost_one) and the
+source fetch are stubbed; these pin op selection per row shape, one source fetch per
+group + the per-version source cache, the transient/terminal decision (attempt caps,
+backoff), permanent source-fetch handling, and durable crosspost convergence."""
 
-import asyncio
 import typing as t
-from time import perf_counter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -30,30 +28,50 @@ import hikari as h
 import pytest
 
 from dd.beacon import mirror_worker as mw
-from dd.beacon.mirror_core import MirrorOperationType, RunView
-from dd.beacon.utils import DestVerdict
 from dd.common.bot import CachedFetchBot
 from dd.common.schemas import (
-    ClaimedRow,
-    DeliveryOutcome,
-    MirrorDelivery,
+    CrosspostState,
+    DeliveryState,
     MirroredChannel,
     OutcomeKind,
+    PickedRow,
 )
 from dd.common.utils import ErrorClass
 
 pytestmark = pytest.mark.asyncio
 
 
-def _row(dest_ch_id, *, dest_msg_id=None, deleted=False, attempts=0, src_msg_id=1):
-    return ClaimedRow(
+def _row(
+    dest_ch_id,
+    *,
+    dest_msg_id=None,
+    deleted=False,
+    attempts=0,
+    src_msg_id=1,
+    desired_version=1,
+    state=DeliveryState.PENDING.value,
+    crosspost_state=CrosspostState.NOT_APPLICABLE.value,
+):
+    return PickedRow(
         src_msg_id=src_msg_id,
         dest_ch_id=dest_ch_id,
         src_ch_id=5,
         dest_msg_id=dest_msg_id,
-        desired_version=1,
+        desired_version=desired_version,
         deleted=deleted,
         attempts=attempts,
+        state=state,
+        crosspost_state=crosspost_state,
+    )
+
+
+def _crosspost_pick(dest_ch_id, *, dest_msg_id=999, attempts=0):
+    return _row(
+        dest_ch_id,
+        dest_msg_id=dest_msg_id,
+        attempts=attempts,
+        state=DeliveryState.DELIVERED.value,
+        crosspost_state=CrosspostState.PENDING.value,
     )
 
 
@@ -64,8 +82,7 @@ def _fake_msg():
 
 
 def _worker(monkeypatch, *, fetch_message=None):
-    """A worker with a stub bot + stubbed role-map DB read; the primitives are stubbed
-    per test."""
+    """A worker with a stub bot + stubbed role-map DB read (primitives stubbed)."""
     fetch = fetch_message or AsyncMock(return_value=_fake_msg())
     bot = SimpleNamespace(rest=SimpleNamespace(fetch_message=fetch))
     monkeypatch.setattr(
@@ -73,18 +90,18 @@ def _worker(monkeypatch, *, fetch_message=None):
     )
     w = mw.MirrorWorker()
     w._bot = t.cast(CachedFetchBot, bot)
-    w._buffer_event = asyncio.Event()
     return w
 
 
-def _stub_primitives(monkeypatch, *, send=None, edit=None, delete=None):
+def _stub_primitives(monkeypatch, *, send=None, edit=None, delete=None, crosspost=None):
     monkeypatch.setattr(mw, "_send_one", send or AsyncMock(return_value=(7777, False)))
     monkeypatch.setattr(mw, "edit_one", edit or AsyncMock(return_value=0))
     monkeypatch.setattr(mw, "_delete_one", delete or AsyncMock(return_value=None))
+    monkeypatch.setattr(mw, "_crosspost_one", crosspost or AsyncMock(return_value=None))
 
 
-def _kinds(w) -> dict[int, OutcomeKind]:
-    return {o.dest_ch_id: o.kind for o in w._buffer}
+def _kinds(outcomes) -> dict[int, OutcomeKind]:
+    return {o.dest_ch_id: o.kind for o in outcomes}
 
 
 # -- op selection ------------------------------------------------------------
@@ -94,41 +111,32 @@ async def test_op_selection_per_row_shape(monkeypatch):
     send, edit, delete = AsyncMock(return_value=(7777, False)), AsyncMock(), AsyncMock()
     _stub_primitives(monkeypatch, send=send, edit=edit, delete=delete)
     w = _worker(monkeypatch)
-    view = RunView(
-        op=MirrorOperationType.UPDATE,
-        src_ch_id=5,
-        src_msg_id=1,
-        total=4,
-        start_time=perf_counter(),
-    )
-    w.register_view(view)
     batch = [
         _row(10),  # no dest, not deleted → send
         _row(11, dest_msg_id=111),  # has dest, not deleted → edit
         _row(12, dest_msg_id=112, deleted=True),  # has dest, deleted → delete
         _row(13, deleted=True),  # deleted, no dest → cancelled (nothing to delete)
     ]
-    await w.process(batch)
+    outcomes = await w._process(batch)
     send.assert_awaited_once()
     edit.assert_awaited_once()
     delete.assert_awaited_once()
-    assert _kinds(w) == {
+    assert _kinds(outcomes) == {
         10: OutcomeKind.SUCCESS,
         11: OutcomeKind.SUCCESS,
         12: OutcomeKind.DELETE_SUCCESS,
         13: OutcomeKind.CANCELLED,
     }
-    # The freshly-sent dest records its new id (invariant 3).
-    sent = next(o for o in w._buffer if o.dest_ch_id == 10)
+    # The freshly-sent dest records its new id (a dest id once observed is always kept).
+    sent = next(o for o in outcomes if o.dest_ch_id == 10)
     assert sent.dest_msg_id == 7777
-    assert view.delivered == 3  # send + edit + delete converge; 13 cancelled
 
 
 async def test_one_source_fetch_per_group(monkeypatch):
     fetch = AsyncMock(return_value=_fake_msg())
     _stub_primitives(monkeypatch)
     w = _worker(monkeypatch, fetch_message=fetch)
-    await w.process([_row(10), _row(11), _row(12)])  # same src_msg_id
+    await w._process([_row(10), _row(11), _row(12)])  # same src_msg_id
     fetch.assert_awaited_once()
 
 
@@ -136,7 +144,7 @@ async def test_all_deleted_group_skips_source_fetch(monkeypatch):
     fetch = AsyncMock(return_value=_fake_msg())
     _stub_primitives(monkeypatch)
     w = _worker(monkeypatch, fetch_message=fetch)
-    await w.process([_row(10, dest_msg_id=100, deleted=True)])
+    await w._process([_row(10, dest_msg_id=100, deleted=True)])
     fetch.assert_not_awaited()
 
 
@@ -148,20 +156,10 @@ async def test_transient_failure_backs_off(monkeypatch):
     _stub_primitives(monkeypatch, send=send)
     monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.TRANSIENT)
     w = _worker(monkeypatch)
-    view = RunView(
-        op=MirrorOperationType.SEND,
-        src_ch_id=5,
-        src_msg_id=1,
-        total=1,
-        start_time=perf_counter(),
-    )
-    w.register_view(view)
-    await w.process([_row(10)])
-    (outcome,) = w._buffer
+    (outcome,) = await w._process([_row(10)])
     assert outcome.kind is OutcomeKind.TRANSIENT
     assert outcome.attempts == 1
     assert outcome.due_at is not None  # scheduled for a later retry
-    assert view.retrying == 1
 
 
 async def test_send_attempt_cap_is_three(monkeypatch):
@@ -169,8 +167,8 @@ async def test_send_attempt_cap_is_three(monkeypatch):
     monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.TRANSIENT)
     w = _worker(monkeypatch)
     # attempts already 2 → this attempt is the 3rd (== send cap) → terminal.
-    await w.process([_row(10, attempts=2)])
-    assert w._buffer[0].kind is OutcomeKind.TERMINAL
+    (outcome,) = await w._process([_row(10, attempts=2)])
+    assert outcome.kind is OutcomeKind.TERMINAL
 
 
 async def test_edit_attempt_cap_is_two(monkeypatch):
@@ -178,70 +176,20 @@ async def test_edit_attempt_cap_is_two(monkeypatch):
     monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.TRANSIENT)
     w = _worker(monkeypatch)
     # An edit (dest_msg_id set) with attempts 1 → 2nd attempt (== edit cap) → terminal.
-    await w.process([_row(10, dest_msg_id=100, attempts=1)])
-    assert w._buffer[0].kind is OutcomeKind.TERMINAL
-
-
-async def test_permanent_probes_and_confirms_dead(monkeypatch):
-    _stub_primitives(monkeypatch, send=AsyncMock(side_effect=RuntimeError("perm")))
-    monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.PERMANENT)
-    monkeypatch.setattr(mw.cfg, "disable_bad_channels", True)
-    monkeypatch.setattr(
-        mw.utils,
-        "confirm_dest_unsendable",
-        AsyncMock(return_value=DestVerdict.CONFIRMED_GONE),
-    )
-    w = _worker(monkeypatch)
-    view = RunView(
-        op=MirrorOperationType.SEND,
-        src_ch_id=5,
-        src_msg_id=1,
-        total=1,
-        start_time=perf_counter(),
-    )
-    w.register_view(view)
-    await w.process([_row(10)])
-    outcome = w._buffer[0]
+    (outcome,) = await w._process([_row(10, dest_msg_id=100, attempts=1)])
     assert outcome.kind is OutcomeKind.TERMINAL
-    assert outcome.confirmed_dead is True
-    assert view.failures[10].confirmed_dead is True
 
 
-async def test_probe_exception_is_not_confirmed_and_never_raises(monkeypatch):
+async def test_permanent_failure_is_terminal(monkeypatch):
     _stub_primitives(monkeypatch, send=AsyncMock(side_effect=RuntimeError("perm")))
     monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.PERMANENT)
-    monkeypatch.setattr(mw.cfg, "disable_bad_channels", True)
-    monkeypatch.setattr(
-        mw.utils,
-        "confirm_dest_unsendable",
-        AsyncMock(side_effect=RuntimeError("probe 5xx")),
-    )
     w = _worker(monkeypatch)
-    await w.process([_row(10)])  # must not raise
-    assert w._buffer[0].kind is OutcomeKind.TERMINAL
-    assert w._buffer[0].confirmed_dead is False
+    (outcome,) = await w._process([_row(10)])
+    assert outcome.kind is OutcomeKind.TERMINAL
+    assert outcome.error_class == ErrorClass.PERMANENT.name
 
 
-# -- cancellation & source failure ------------------------------------------
-
-
-async def test_cancel_requested_short_circuits(monkeypatch):
-    send = AsyncMock(return_value=(7777, False))
-    _stub_primitives(monkeypatch, send=send)
-    w = _worker(monkeypatch)
-    view = RunView(
-        op=MirrorOperationType.SEND,
-        src_ch_id=5,
-        src_msg_id=1,
-        total=1,
-        start_time=perf_counter(),
-    )
-    view.cancel_requested = True
-    w.register_view(view)
-    await w.process([_row(10)])
-    send.assert_not_awaited()  # never touched Discord
-    assert w._buffer[0].kind is OutcomeKind.CANCELLED
-    assert view.cancelled_count == 1
+# -- source failure ----------------------------------------------------------
 
 
 async def test_permanent_source_fetch_cancels_group(monkeypatch):
@@ -250,18 +198,9 @@ async def test_permanent_source_fetch_cancels_group(monkeypatch):
     _stub_primitives(monkeypatch, send=send)
     monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.PERMANENT)
     w = _worker(monkeypatch, fetch_message=fetch)
-    view = RunView(
-        op=MirrorOperationType.SEND,
-        src_ch_id=5,
-        src_msg_id=1,
-        total=2,
-        start_time=perf_counter(),
-    )
-    w.register_view(view)
-    await w.process([_row(10), _row(11)])
+    outcomes = await w._process([_row(10), _row(11)])
     send.assert_not_awaited()
-    assert _kinds(w) == {10: OutcomeKind.CANCELLED, 11: OutcomeKind.CANCELLED}
-    assert view.cancelled_count == 2
+    assert _kinds(outcomes) == {10: OutcomeKind.CANCELLED, 11: OutcomeKind.CANCELLED}
 
 
 async def test_transient_source_fetch_backs_off_group(monkeypatch):
@@ -269,70 +208,8 @@ async def test_transient_source_fetch_backs_off_group(monkeypatch):
     _stub_primitives(monkeypatch)
     monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.TRANSIENT)
     w = _worker(monkeypatch, fetch_message=fetch)
-    await w.process([_row(10), _row(11)])
-    assert _kinds(w) == {10: OutcomeKind.TRANSIENT, 11: OutcomeKind.TRANSIENT}
-
-
-# -- backlog recovery --------------------------------------------------------
-
-
-async def test_backlog_recovery_registers_views(monkeypatch):
-    backlog = [
-        (1000, 5, 3, False, True),  # any_unsent → SEND
-        (1001, 6, 2, False, False),  # neither → UPDATE
-        (1002, 7, 1, True, False),  # any_deleted → DELETE
-    ]
-    monkeypatch.setattr(
-        MirrorDelivery, "non_terminal_backlog", AsyncMock(return_value=backlog)
-    )
-    started: list[int] = []
-
-    async def starter(view):
-        started.append(view.src_msg_id)
-
-    w = mw.MirrorWorker()
-    w._progress_starter = starter
-    await w._recover_backlog()
-    ops = {smi: w.run_views[smi].op for smi in (1000, 1001, 1002)}
-    assert ops == {
-        1000: MirrorOperationType.SEND,
-        1001: MirrorOperationType.UPDATE,
-        1002: MirrorOperationType.DELETE,
-    }
-    assert w.run_views[1000].total == 3
-    assert sorted(started) == [1000, 1001, 1002]
-
-
-# -- source caching (F1) & source-failure cap (W6) --------------------------
-
-
-async def test_source_fetched_once_across_batches(monkeypatch):
-    fetch = AsyncMock(return_value=_fake_msg())
-    _stub_primitives(monkeypatch)
-    w = _worker(monkeypatch, fetch_message=fetch)
-    # Two separate claim batches for the same source + version: the second is served
-    # from the per-(src, version) cache, so the source is fetched only once.
-    await w.process([_row(10)])
-    await w.process([_row(11)])
-    fetch.assert_awaited_once()
-
-
-async def test_source_refetched_on_version_bump(monkeypatch):
-    fetch = AsyncMock(return_value=_fake_msg())
-    _stub_primitives(monkeypatch)
-    w = _worker(monkeypatch, fetch_message=fetch)
-    await w.process([_row(10)])  # version 1
-    v2 = ClaimedRow(
-        src_msg_id=1,
-        dest_ch_id=11,
-        src_ch_id=5,
-        dest_msg_id=None,
-        desired_version=2,
-        deleted=False,
-        attempts=0,
-    )
-    await w.process([v2])  # version 2 → cache miss → fresh fetch
-    assert fetch.await_count == 2
+    outcomes = await w._process([_row(10), _row(11)])
+    assert _kinds(outcomes) == {10: OutcomeKind.TRANSIENT, 11: OutcomeKind.TRANSIENT}
 
 
 async def test_transient_source_fetch_terminalizes_at_cap(monkeypatch):
@@ -340,78 +217,82 @@ async def test_transient_source_fetch_terminalizes_at_cap(monkeypatch):
     _stub_primitives(monkeypatch)
     monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.TRANSIENT)
     w = _worker(monkeypatch, fetch_message=fetch)
-    # attempts already 2 → this (3rd) attempt hits the send cap → TERMINAL, and a
-    # source-fetch failure never confirms the *dest* dead (no auto-disable).
-    await w.process([_row(10, attempts=2)])
-    outcome = w._buffer[0]
+    # attempts already 2 → this (3rd) attempt hits the send cap → TERMINAL.
+    (outcome,) = await w._process([_row(10, attempts=2)])
     assert outcome.kind is OutcomeKind.TERMINAL
-    assert outcome.confirmed_dead is False
 
 
-# -- ledger-driven reconcile & shutdown drain -------------------------------
+# -- source caching ----------------------------------------------------------
 
 
-async def test_reconcile_finalizes_when_ledger_drained(monkeypatch):
-    ended: list[int] = []
+async def test_source_fetched_once_across_batches(monkeypatch):
+    fetch = AsyncMock(return_value=_fake_msg())
+    _stub_primitives(monkeypatch)
+    w = _worker(monkeypatch, fetch_message=fetch)
+    # Two pick batches for the same source + version: the second is served from the
+    # per-(src, version) cache, so the source is fetched only once.
+    await w._process([_row(10)])
+    await w._process([_row(11)])
+    fetch.assert_awaited_once()
 
-    async def hook(view):
-        ended.append(view.src_msg_id)
 
-    w = mw.MirrorWorker()
-    w._run_end_hook = hook
-    view = RunView(
-        op=MirrorOperationType.SEND,
-        src_ch_id=5,
-        src_msg_id=1,
-        total=3,
-        start_time=perf_counter(),
+async def test_source_refetched_on_version_bump(monkeypatch):
+    fetch = AsyncMock(return_value=_fake_msg())
+    _stub_primitives(monkeypatch)
+    w = _worker(monkeypatch, fetch_message=fetch)
+    await w._process([_row(10)])  # version 1
+    await w._process([_row(11, desired_version=2)])  # version 2 → cache miss → refetch
+    assert fetch.await_count == 2
+
+
+# -- durable crosspost -------------------------------------------------------
+
+
+async def test_fresh_news_send_marks_crosspost_pending(monkeypatch):
+    # _send_one reporting is_news=True stamps crosspost_pending on the SUCCESS outcome.
+    _stub_primitives(monkeypatch, send=AsyncMock(return_value=(7777, True)))
+    w = _worker(monkeypatch)
+    (outcome,) = await w._process([_row(10)])
+    assert outcome.kind is OutcomeKind.SUCCESS
+    assert outcome.crosspost_pending is True
+
+
+async def test_crosspost_pick_success_is_done(monkeypatch):
+    crosspost = AsyncMock(return_value=None)
+    _stub_primitives(monkeypatch, crosspost=crosspost)
+    w = _worker(monkeypatch)
+    (outcome,) = await w._process([_crosspost_pick(10)])
+    crosspost.assert_awaited_once()
+    assert outcome.kind is OutcomeKind.CROSSPOST_DONE
+
+
+async def test_crosspost_pick_transient_retries(monkeypatch):
+    _stub_primitives(monkeypatch, crosspost=AsyncMock(side_effect=TimeoutError("5xx")))
+    monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.TRANSIENT)
+    w = _worker(monkeypatch)
+    (outcome,) = await w._process([_crosspost_pick(10, attempts=0)])
+    assert outcome.kind is OutcomeKind.CROSSPOST_RETRY
+    assert outcome.due_at is not None
+
+
+async def test_crosspost_pick_gives_up_at_cap(monkeypatch):
+    _stub_primitives(monkeypatch, crosspost=AsyncMock(side_effect=TimeoutError("5xx")))
+    monkeypatch.setattr(mw, "classify_error", lambda e: ErrorClass.TRANSIENT)
+    w = _worker(monkeypatch)
+    # attempts already at the cap-1 → this attempt exhausts it → DONE (best-effort).
+    (outcome,) = await w._process(
+        [_crosspost_pick(10, attempts=mw._CROSSPOST_MAX_ATTEMPTS - 1)]
     )
-    w.register_view(view)
-    # Ledger reports no non-terminal rows for this source → run is durably complete.
-    monkeypatch.setattr(
-        MirrorDelivery, "non_terminal_counts", AsyncMock(return_value={})
-    )
-    await w._reconcile_views()
-    # Let the spawned run-end task run.
-    await asyncio.sleep(0)
-    assert view._finalizing is True
-    assert ended == [1]
+    assert outcome.kind is OutcomeKind.CROSSPOST_DONE
 
 
-async def test_reconcile_leaves_run_with_pending_rows_open(monkeypatch):
-    w = mw.MirrorWorker()
-    view = RunView(
-        op=MirrorOperationType.SEND,
-        src_ch_id=5,
-        src_msg_id=1,
-        total=3,
-        start_time=perf_counter(),
-    )
-    w.register_view(view)
-    monkeypatch.setattr(
-        MirrorDelivery, "non_terminal_counts", AsyncMock(return_value={1: 2})
-    )
-    await w._reconcile_views()
-    assert view._finalizing is False
-
-
-async def test_stop_drains_buffered_outcomes(monkeypatch):
-    flush = AsyncMock()
-    monkeypatch.setattr(MirrorDelivery, "flush_outcomes", flush)
-    w = mw.MirrorWorker()
-    w._buffer = [
-        DeliveryOutcome(kind=OutcomeKind.SUCCESS, src_msg_id=1, dest_ch_id=2, version=1)
-    ]
-    await w.stop()  # no loops running; must still flush the buffer
-    flush.assert_awaited_once()
-    assert w._buffer == []
-
-
-async def test_in_progress_count_reflects_unflushed_buffer():
-    w = mw.MirrorWorker()
-    assert w.in_progress_count == 0
-    w._buffer = [
-        DeliveryOutcome(kind=OutcomeKind.SUCCESS, src_msg_id=1, dest_ch_id=2, version=1)
-    ]
-    # Observed-but-not-durable dest ids → the controller must see it as in-progress.
-    assert w.in_progress_count == 1
+async def test_process_mixes_delivery_and_crosspost(monkeypatch):
+    send = AsyncMock(return_value=(7777, False))
+    crosspost = AsyncMock(return_value=None)
+    _stub_primitives(monkeypatch, send=send, crosspost=crosspost)
+    w = _worker(monkeypatch)
+    outcomes = await w._process([_row(10), _crosspost_pick(20)])
+    assert _kinds(outcomes) == {
+        10: OutcomeKind.SUCCESS,
+        20: OutcomeKind.CROSSPOST_DONE,
+    }

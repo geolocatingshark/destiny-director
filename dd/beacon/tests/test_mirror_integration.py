@@ -18,7 +18,7 @@
 These drive the real ``message_*_repeater_impl`` enqueue handlers plus the convergence
 worker over Discord's REST API against the dedicated ``dd-test-env`` guild — no gateway
 connection is used. Each handler only *enqueues* into the ``mirror_delivery`` ledger;
-the :func:`_converge` helper then runs the worker's claim → process → flush cycle to
+the :func:`_converge` helper then runs the worker's pick → process → flush cycle to
 completion (as the live worker loop would) and the assertions read the ledger's
 converged state.
 
@@ -32,7 +32,6 @@ never runs them; use ``make test-integration``. The bot token is reused from
 ``DISCORD_TOKEN_BEACON`` and the guild from ``TEST_ENV``.
 """
 
-import asyncio as aio
 import contextlib
 import datetime as dt
 import os
@@ -44,7 +43,10 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import and_, select
 
-from dd.beacon import mirror_worker as mw
+from dd.beacon import (
+    mirror_worker as mw,
+    utils,
+)
 from dd.beacon.extensions import mirror
 from dd.common import cfg, schemas
 from dd.common.bot import CachedFetchBot
@@ -118,25 +120,19 @@ class _MirrorEnv(t.NamedTuple):
 
 
 async def _converge(bot: CachedFetchBot) -> None:
-    """Run the worker's claim → process → flush cycle until no due rows remain.
+    """Run the worker's pick → process → flush cycle until no due rows remain.
 
-    Stands in for the live worker loop: drives the module-singleton worker (which the
-    handlers registered views on) over the SQLite ledger until it drains. Bounded so a
-    stuck row can't hang the suite.
+    Stands in for the live worker loop: drives the module-singleton worker over the
+    SQLite ledger until it drains. Bounded so a stuck row can't hang the suite.
     """
     mw.mirror_worker._bot = bot
-    if mw.mirror_worker._buffer_event is None:
-        mw.mirror_worker._buffer_event = aio.Event()
     for _ in range(50):
         now = dt.datetime.now(tz=dt.UTC)
-        batch = await MirrorDelivery.claim_batch(
-            "test", 100, now - dt.timedelta(hours=1), now=now
-        )
+        batch = await MirrorDelivery.pick_batch(100, now=now)
         if not batch:
             break
-        await mw.mirror_worker.process(batch)
-        await mw.mirror_worker._flush_once()
-    await mw.mirror_worker._flush_once()
+        outcomes = await mw.mirror_worker._process(batch)
+        await MirrorDelivery.flush_outcomes(outcomes)
 
 
 async def _delivered(src_msg_id: int) -> list[tuple[int, int]]:
@@ -206,7 +202,7 @@ def _silence_progress(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop(*_args: object, **_kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr(mirror, "start_progress_logger", _noop)
+    monkeypatch.setattr(mirror, "start_progress_card", _noop)
 
 
 @pytest_asyncio.fixture(loop_scope="module", autouse=True)
@@ -214,7 +210,6 @@ async def _fresh_db() -> AsyncIterator[None]:
     """Reset the (SQLite, from conftest) schema between tests for hermetic rows."""
     await schemas.destroy_all()
     await schemas.create_all()
-    mw.mirror_worker.run_views.clear()
     yield
 
 
@@ -266,8 +261,8 @@ async def test_send_update_delete_lifecycle(mirror_env: _MirrorEnv) -> None:
 async def test_failing_dest_is_disabled(
     mirror_env: _MirrorEnv, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A broken dest with a confirmed-dead streak is auto-disabled while a healthy one
-    keeps delivering."""
+    """A destination that probes unreachable past the grace window is auto-disabled by
+    the reachability sweep, while a healthy one keeps delivering."""
     monkeypatch.setattr(cfg, "disable_bad_channels", True)
 
     src = await mirror_env.make_channel("src-fail")
@@ -278,41 +273,39 @@ async def test_failing_dest_is_disabled(
             src.id, dest.id, dest_server_id=mirror_env.guild_id, legacy=True
         )
 
-    # "Break" the dest: delete the channel but keep its (enabled) mirror row. Pre-seed a
-    # confirmed-dead FAILED streak (3 distinct source messages, older than the window)
-    # so the derived disable sweep trips.
-    await mirror_env.rest.delete_channel(broken.id)
-    old = dt.datetime.now(tz=dt.UTC) - dt.timedelta(
-        hours=cfg.mirror_disable_forgiveness_hours + 1
-    )
-    async with schemas.db_session() as session, session.begin():
-        for i in range(3):
-            session.add(
-                MirrorDelivery(
-                    src_msg_id=-(1000 + i),
-                    dest_ch_id=broken.id,
-                    src_ch_id=src.id,
-                    desired_version=1,
-                    applied_version=1,
-                    deleted=False,
-                    state=DeliveryState.FAILED.value,
-                    attempts=cfg.mirror_send_max_attempts,
-                    confirmed_dead=True,
-                    finished_at=old,
-                    created_at=old,
-                )
-            )
-
+    # The healthy dest still gets the message.
     posted = await _send(mirror_env, src, "partial send")
-
-    # The healthy dest still got the message...
     pairs = await _delivered(posted.id)
-    assert {ch for _msg, ch in pairs} == {good.id}
-    mirrored = await mirror_env.rest.fetch_message(good.id, pairs[0][0])
-    assert mirrored.content == "partial send"
+    assert good.id in {ch for _msg, ch in pairs}
 
-    # ...and the disable sweep (run at run-end) disables the broken dest's mirror row.
-    await MirroredChannel.disable_failing_mirrors()
+    # "Break" the dest: delete the channel so a live perm probe confirms it gone.
+    await mirror_env.rest.delete_channel(broken.id)
+
+    # Run the reachability sweep's logic against the live bot: probe every candidate,
+    # classify, then apply. The first sweep stamps the broken pair's clock; a later
+    # sweep past the grace window disables it. The good pair never gets stamped.
+    candidates = await MirroredChannel.fetch_reachability_candidates()
+    reachable: list[tuple[int, int]] = []
+    unreachable: list[tuple[int, int]] = []
+    for pair in candidates:
+        verdict = await utils.confirm_dest_unsendable(mirror_env.bot, pair[1])
+        if verdict in (
+            utils.DestVerdict.CONFIRMED_UNSENDABLE,
+            utils.DestVerdict.CONFIRMED_GONE,
+        ):
+            unreachable.append(pair)
+        elif verdict is utils.DestVerdict.SENDABLE:
+            reachable.append(pair)
+    assert (src.id, broken.id) in unreachable
+
+    now1 = dt.datetime.now(tz=dt.UTC)
+    await MirroredChannel.apply_reachability_sweep(reachable, unreachable, now=now1)
+    now2 = now1 + dt.timedelta(hours=cfg.mirror_unreachable_grace_hours + 1)
+    disabled = await MirroredChannel.apply_reachability_sweep(
+        reachable, unreachable, now=now2
+    )
+    assert (src.id, broken.id) in disabled
+
     enabled_dests = await MirroredChannel.fetch_dests(src.id)
     assert good.id in enabled_dests
     assert broken.id not in enabled_dests

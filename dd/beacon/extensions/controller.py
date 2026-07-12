@@ -35,7 +35,7 @@ loader = lb.Loader()
 loader.command(
     make_controller_group(
         "beacon",
-        mirror_check=lambda: mirror_worker.in_progress_count,
+        mirror_check=mirror_worker.outstanding_count,
     ),
     guilds=guild_scope(*cfg.test_env, cfg.control_discord_server_id),
 )
