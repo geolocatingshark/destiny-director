@@ -793,6 +793,39 @@ async def test_state_counts_and_outstanding_count():
     assert await MirrorDelivery.outstanding_count() == 2
 
 
+async def test_sources_needing_source_content():
+    # Only a source with a PENDING non-deleted delivery row still needs its content
+    # fetched; a fully-delivered, delete-only or crosspost-only source does not.
+    srcs = (1400, 1401, 1402, 1403)
+    for i, src in enumerate(srcs):
+        await MirroredChannel.add_mirror(src, 800 + i, 1, legacy=True)
+        await MirrorDelivery.enqueue_send(src, src)  # src_msg_id == src
+    async with schemas.db_session() as session, session.begin():
+        # 1400 stays PENDING (needs content). Resolve the others three ways:
+        await session.execute(  # 1401 fully delivered
+            update(MirrorDelivery)
+            .where(MirrorDelivery.src_msg_id == 1401)
+            .values(state=DeliveryState.DELIVERED.value)
+        )
+        await session.execute(  # 1402 PENDING but delete-intent (no content needed)
+            update(MirrorDelivery)
+            .where(MirrorDelivery.src_msg_id == 1402)
+            .values(deleted=True)
+        )
+        await session.execute(  # 1403 delivered, only a crosspost pending
+            update(MirrorDelivery)
+            .where(MirrorDelivery.src_msg_id == 1403)
+            .values(
+                state=DeliveryState.DELIVERED.value,
+                crosspost_state=CrosspostState.PENDING.value,
+            )
+        )
+
+    needing = await MirrorDelivery.sources_needing_source_content([*srcs, 9999])
+    assert needing == {1400}
+    assert await MirrorDelivery.sources_needing_source_content([]) == set()
+
+
 async def test_failure_breakdown_groups_by_ref():
     src = 858
     for dest in (738, 739, 742):

@@ -1458,6 +1458,35 @@ class MirrorDelivery(Base):
 
     @classmethod
     @ensure_session(db_session)
+    async def sources_needing_source_content(
+        cls,
+        src_msg_ids: t.Collection[int],
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> set[int]:
+        """Of ``src_msg_ids``, those with a PENDING non-deleted delivery row still open.
+
+        Only such rows need the source message's *content* fetched at delivery time (a
+        crosspost or delete doesn't), so the worker can drop the rest from its per-
+        source content cache — their fan-out has resolved. A subset of the input.
+        """
+        if not src_msg_ids:
+            return set()
+        rows = await session.execute(
+            select(cls.src_msg_id)
+            .where(
+                and_(
+                    cls.src_msg_id.in_([int(s) for s in src_msg_ids]),
+                    cls.state == DeliveryState.PENDING.value,
+                    ~cls.deleted,
+                )
+            )
+            .distinct()
+        )
+        return {int(s) for (s,) in rows}
+
+    @classmethod
+    @ensure_session(db_session)
     async def outstanding_count(
         cls,
         *,

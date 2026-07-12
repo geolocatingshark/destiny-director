@@ -737,23 +737,29 @@ async def _recover_backlog_cards(bot: CachedFetchBot, client: lb.Client) -> None
 
 def ignore_non_src_channels(func: collections.abc.Callable[..., t.Any]):
     async def wrapped_func(event: h.MessageEvent):
-        msg = None
         if isinstance(event, (h.MessageCreateEvent, h.MessageUpdateEvent)):
             msg = event.message
+            if msg is None:
+                return
+            channel_id, guild_id = msg.channel_id, msg.guild_id
         elif isinstance(event, h.MessageDeleteEvent):
-            msg = event.old_message
-
-        if msg is None:
+            # A delete carries channel_id/guild_id on the event itself, so an uncached
+            # source message (old_message is None) is still propagated — mark_deleted
+            # keys on message_id alone and needs no cached body. guild_id lives only on
+            # the guild subclass; None (DM) never matches a test guild.
+            channel_id = event.channel_id
+            guild_id = getattr(event, "guild_id", None)
+        else:
             return
 
         in_src_channel = (
-            int(msg.channel_id) in await MirroredChannel.get_or_fetch_all_srcs()
+            int(channel_id) in await MirroredChannel.get_or_fetch_all_srcs()
         )
         # In a test env, also process messages that live in one of the test guild(s),
-        # so the live test bot can mirror arbitrary channels there. Scoped to
-        # msg.guild_id so the bot's presence in *other* servers never drags their
-        # channels into the mirror path. guild_id is None in DMs, never a test guild.
-        in_test_guild = msg.guild_id is not None and msg.guild_id in cfg.test_env
+        # so the live test bot can mirror arbitrary channels there. Scoped to guild_id
+        # so the bot's presence in *other* servers never drags their channels into the
+        # mirror path. guild_id is None in DMs, never a test guild.
+        in_test_guild = guild_id is not None and guild_id in cfg.test_env
 
         if in_src_channel or in_test_guild:
             return await func(event)

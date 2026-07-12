@@ -320,6 +320,7 @@ class MirrorWorker:
                     logging.exception("mirror convergence pass failed; continuing")
                     outcomes = []
                 await self._flush(outcomes)
+                await self._evict_resolved_sources(batch)
             else:
                 # Idle: the source cache only helps within an active fan-out.
                 self._source_cache.clear()
@@ -402,6 +403,26 @@ class MirrorWorker:
         role_map = await MirroredChannel.fetch_mirror_and_role_mention_id(src_ch_id)
         self._source_cache[src_msg_id] = (version, msg, role_map)
         return msg, role_map
+
+    async def _evict_resolved_sources(self, batch: list[PickedRow]) -> None:
+        """Drop cached source content for any batch source whose fan-out has resolved.
+
+        The per-source content cache is otherwise only cleared when the loop goes idle,
+        so under sustained load it would retain a Message per source ever seen. After
+        each batch, keep only the sources that still have a PENDING non-deleted delivery
+        row (they still need their content on a later pick) and evict the rest. A query
+        failure is non-fatal — the cache just isn't trimmed this pass (idle clears it).
+        """
+        cached = self._source_cache.keys() & {row.src_msg_id for row in batch}
+        if not cached:
+            return
+        try:
+            still_needed = await MirrorDelivery.sources_needing_source_content(cached)
+        except Exception:
+            logging.exception("mirror source-cache eviction query failed; skipping")
+            return
+        for src_msg_id in cached - still_needed:
+            self._source_cache.pop(src_msg_id, None)
 
     def _handle_group_source_failure(
         self, rows: list[PickedRow], exc: Exception

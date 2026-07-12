@@ -363,3 +363,35 @@ async def test_stop_force_cancels_when_drain_stalls(monkeypatch):
     await w.stop(drain_timeout=0.05)  # too short → force-cancel
 
     assert w._main_task is None  # returned without hanging
+
+
+# -- source-cache eviction ---------------------------------------------------
+
+
+async def test_evict_resolved_sources_drops_only_resolved(monkeypatch):
+    # After a batch, a source whose fan-out has resolved is evicted from the content
+    # cache; one that still has PENDING delivery work is kept.
+    w = _worker(monkeypatch)
+    w._source_cache = {1: (1, _fake_msg(), {}), 2: (1, _fake_msg(), {})}
+    monkeypatch.setattr(
+        mw.MirrorDelivery,
+        "sources_needing_source_content",
+        AsyncMock(return_value={1}),
+    )
+
+    await w._evict_resolved_sources([_row(10, src_msg_id=1), _row(20, src_msg_id=2)])
+
+    assert set(w._source_cache) == {1}  # 2 resolved → evicted, 1 kept
+
+
+async def test_evict_resolved_sources_skips_query_when_nothing_cached(monkeypatch):
+    w = _worker(monkeypatch)
+    w._source_cache = {}  # batch source 1 is not cached (e.g. a crosspost/delete batch)
+    query = AsyncMock(return_value=set())
+    monkeypatch.setattr(
+        mw.MirrorDelivery, "sources_needing_source_content", query
+    )
+
+    await w._evict_resolved_sources([_row(10, src_msg_id=1)])
+
+    query.assert_not_awaited()
