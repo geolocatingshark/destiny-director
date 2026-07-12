@@ -1,11 +1,12 @@
 <!doctype html>
 <!--
-  Anchor autopost settings — one checkbox per global autopost produce toggle. Served by
-  dd.anchor.extensions.autopost_settings; the GET handler substitutes the __TOGGLES__
-  placeholder comment in <main> with the server-rendered rows (each reflecting the current
-  AutoPostSettings row, sub-toggles indented). Save POSTs the checkbox state as JSON to
-  /autopost_settings/save via shared.js's window.api(). Auth is the shared OAuth middleware
-  (web_auth), same as every other page.
+  Anchor autopost settings — one labelled/described row with a toggle switch per global
+  autopost produce toggle. Served by dd.anchor.extensions.autopost_settings; the GET
+  handler substitutes the __TOGGLES__ placeholder comment in <main> with the
+  server-rendered rows (each reflecting the current AutoPostSettings row, sub-toggles
+  indented). Each switch is a CSS-styled checkbox, so Save still POSTs the checkbox state
+  as JSON to /autopost_settings/save via shared.js's window.api(). Auth is the shared
+  OAuth middleware (web_auth), same as every other page.
 -->
 <html lang="en">
   <head>
@@ -19,15 +20,37 @@
          styles are inlined here. Palette mirrors control_panel.html. */
       main.settings { margin: 1rem 0; }
       form#toggles { display: flex; flex-direction: column; gap: .4rem; }
-      label.row {
-        display: flex; align-items: center; gap: .6rem;
-        border: 1px solid #3a3d44; border-radius: 8px; padding: .6rem .9rem;
-        background: #24262c; cursor: pointer;
+      .row {
+        display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+        border: 1px solid #3a3d44; border-radius: 8px; padding: .7rem .9rem;
+        background: #24262c;
       }
-      label.row:hover { border-color: #2f81f7; }
-      label.row.sub { margin-left: 1.6rem; background: #202228; }
-      label.row input { width: 1.05rem; height: 1.05rem; accent-color: #2f81f7; }
-      label.row .name { font-size: .95rem; }
+      .row:hover { border-color: #2f81f7; }
+      .row.sub { margin-left: 1.6rem; background: #202228; }
+      .row .text { min-width: 0; }
+      .row .name { font-size: .95rem; }
+      .row .desc { color: #9aa0a6; font-size: .8rem; margin-top: .15rem; }
+
+      /* Toggle switch — a checkbox restyled as an iOS-style slider. The <input> stays a
+         checkbox (visually hidden) so nothing about the save/read path changes. */
+      .switch {
+        position: relative; flex: none; width: 42px; height: 24px;
+      }
+      .switch input { position: absolute; opacity: 0; width: 100%; height: 100%;
+        margin: 0; cursor: pointer; }
+      .switch .slider {
+        position: absolute; inset: 0; border-radius: 24px; background: #3a3d44;
+        transition: background .15s ease;
+      }
+      .switch .slider::before {
+        content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px;
+        border-radius: 50%; background: #e6e6e6; transition: transform .15s ease;
+      }
+      .switch input:checked + .slider { background: #2f81f7; }
+      .switch input:checked + .slider::before { transform: translateX(18px); }
+      .switch input:focus-visible + .slider {
+        outline: 2px solid #2f81f7; outline-offset: 2px;
+      }
       .actions {
         display: flex; align-items: center; gap: .8rem; margin-top: 1rem;
       }

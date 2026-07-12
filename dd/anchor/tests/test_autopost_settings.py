@@ -19,6 +19,7 @@
 # test_web_auth.py, so the handlers assume an already-authenticated request.
 
 import asyncio
+import html
 import typing as t
 
 import aiohttp.web
@@ -79,9 +80,13 @@ async def test_render_reflects_db_state() -> None:
     assert 'data-slug="lost_sector" checked' in html_out
     assert 'data-slug="xur" checked' not in html_out
     assert 'data-slug="xur"' in html_out
-    # Every known toggle appears, and the placeholder is consumed.
+    # Every known toggle appears with its label + description, and rows are switches.
+    # Compare against the escaped copy — descriptions carry apostrophes/em-dashes.
     for setting in aps._SETTINGS:
         assert f'data-slug="{setting.slug}"' in html_out
+        assert html.escape(setting.label) in html_out
+        assert html.escape(setting.desc) in html_out
+    assert 'class="switch"' in html_out
     assert aps._TOGGLES_PLACEHOLDER not in html_out
 
 

@@ -57,12 +57,14 @@ class _Setting(t.NamedTuple):
     """One global autopost toggle.
 
     ``slug`` is the ``AutoPostSettings.name`` primary key; ``label`` is display copy;
-    ``sub`` marks a toggle that refines its predecessor (rendered indented) — e.g.
-    ``lost_sector_details`` under ``lost_sector``.
+    ``desc`` is a one-line explanation shown under the label; ``sub`` marks a toggle
+    that refines its predecessor (rendered indented) — e.g. ``lost_sector_details``
+    under ``lost_sector``.
     """
 
     slug: str
     label: str
+    desc: str
     sub: bool
 
 
@@ -70,14 +72,44 @@ class _Setting(t.NamedTuple):
 # is an AutoPostSettings row a producer checks before posting (see dd/anchor/extensions/
 # lost_sector.py, xur.py, etc.).
 _SETTINGS: tuple[_Setting, ...] = (
-    _Setting("lost_sector", "Lost Sector", False),
-    _Setting("lost_sector_details", "Legendary weapon details", True),
-    _Setting("xur", "Xûr", False),
-    _Setting("xur_default_image", "Use default image", True),
-    _Setting("eververse", "Eververse", False),
-    _Setting("ada", "Ada-1", False),
-    _Setting("portal_ops", "Portal Ops", False),
-    _Setting("weekly_reset", "Weekly Reset", False),
+    _Setting(
+        "lost_sector",
+        "Lost Sector",
+        "Today's Lost Sector — location, champions, and shields.",
+        False,
+    ),
+    _Setting(
+        "lost_sector_details",
+        "Legendary weapon details",
+        "Also list the featured legendary weapon rewards.",
+        True,
+    ),
+    _Setting("xur", "Xûr", "Xûr's weekend location and inventory.", False),
+    _Setting(
+        "xur_default_image",
+        "Use default image",
+        "Fall back to a saved banner when no fresh image is available.",
+        True,
+    ),
+    _Setting(
+        "eververse",
+        "Eververse",
+        "This week's Eververse featured items and Bright Dust.",
+        False,
+    ),
+    _Setting("ada", "Ada-1", "Ada-1's weekly rotating shaders.", False),
+    _Setting(
+        "portal_ops",
+        "Portal Ops",
+        "Today's featured Portal Ops and their guaranteed rewards.",
+        False,
+    ),
+    _Setting(
+        "weekly_reset",
+        "Weekly Reset",
+        "Tuesday reset overview — activities, rotators, and rewards.",
+        False,
+    ),
 )
 
 # The slugs this page is allowed to write — a save request's keys are filtered against
@@ -86,14 +118,25 @@ _KNOWN_SLUGS = frozenset(setting.slug for setting in _SETTINGS)
 
 
 def _render_row(setting: _Setting, enabled: bool) -> str:
-    """Render one checkbox row (label + hidden-backed checkbox), fully escaped."""
+    """Render one row: label + description on the left, a toggle switch on the right.
+
+    The switch is a checkbox styled by CSS (see autopost_settings.html), so it keeps the
+    ``data-slug`` checkbox the save handler / client script already key off — the visual
+    change is purely presentational.
+    """
     checked = " checked" if enabled else ""
     row_class = "row sub" if setting.sub else "row"
     return (
-        f'<label class="{row_class}">'
+        f'<div class="{row_class}">'
+        '<div class="text">'
+        f'<div class="name">{html.escape(setting.label)}</div>'
+        f'<div class="desc">{html.escape(setting.desc)}</div>'
+        "</div>"
+        '<label class="switch">'
         f'<input type="checkbox" data-slug="{html.escape(setting.slug)}"{checked} />'
-        f'<span class="name">{html.escape(setting.label)}</span>'
+        '<span class="slider"></span>'
         "</label>"
+        "</div>"
     )
 
 
