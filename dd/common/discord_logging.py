@@ -36,6 +36,7 @@ same short code, so a user-reported code maps straight to its deduped alert.
 import asyncio as aio
 import contextlib
 import dataclasses
+import itertools
 import logging
 import sys
 import time
@@ -149,6 +150,10 @@ class _AlertRecord:
     reference: str
     operation: str | None = None
     count: int = 1
+    # Monotonic per-process ordinal, stamped at emit time. The queue/flush pipeline can
+    # batch and coalesce, and the shown timestamp is only whole-second — so this ordinal
+    # is the authoritative "which came first" signal, and gaps hint at drops/coalesces.
+    seq: int = 0
 
 
 class DiscordLogHandler(logging.Handler):
@@ -179,6 +184,9 @@ class DiscordLogHandler(logging.Handler):
             maxsize=int(cfg.alert_queue_maxsize)
         )
         self._task: aio.Task[None] | None = None
+        # Monotonic ordinal source; ``next`` is atomic (C-level), so it's safe even if a
+        # record is emitted from a non-loop thread.
+        self._seq = itertools.count(1)
         # Per-signature rolling occurrence timestamps (monotonic) and the last
         # time we escalated that signature, for storm detection + debounce.
         self._sig_times: dict[str, deque[float]] = defaultdict(deque)
@@ -208,6 +216,7 @@ class DiscordLogHandler(logging.Handler):
                 signature=f"{record.name}|{record.levelno}|{identity}",
                 reference=_reference_for_record(record, identity=identity),
                 operation=record.__dict__.get("dd_operation"),
+                seq=next(self._seq),
             )
             self._queue.put_nowait(alert)
         except aio.QueueFull:
@@ -324,7 +333,7 @@ class DiscordLogHandler(logging.Handler):
         levelname = "CRITICAL" if effective_level >= logging.CRITICAL else rec.levelname
         code = rec.reference
 
-        header = f"{emoji} **{levelname}** · `{self._bot_name}` · `{code}`"
+        header = f"{emoji} **{levelname}** · `{self._bot_name}` · `{code}` · #{rec.seq}"
         if rec.operation:
             header += f" · {rec.operation}"
         if rec.count > 1:

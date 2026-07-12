@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+import itertools
 import logging
 
 from dd.common import (
@@ -55,6 +56,7 @@ def test_emit_carries_operation_and_reference_onto_alert_record():
     queued: list[dl._AlertRecord] = []
     handler._queue = type("Q", (), {"put_nowait": lambda self, x: queued.append(x)})()
     handler._overflow_warned = False
+    handler._seq = itertools.count(1)
 
     rec = _record("dd.error", logging.ERROR, "Error reference: %s", "ABC")
     rec.dd_operation = "Mirror update"
@@ -63,6 +65,30 @@ def test_emit_carries_operation_and_reference_onto_alert_record():
     (alert,) = queued
     assert alert.operation == "Mirror update"
     assert alert.reference == dl.reference_code(dl._record_identity(rec))
+
+
+def test_emit_stamps_a_monotonic_sequence_and_render_shows_it():
+    """Each emit gets the next ordinal (the authoritative order signal), and the ordinal
+    is rendered into the alert header so it's visible in the channel."""
+    handler = dl.DiscordLogHandler.__new__(dl.DiscordLogHandler)
+    logging.Handler.__init__(handler, level=logging.ERROR)
+    queued: list[dl._AlertRecord] = []
+    handler._queue = type("Q", (), {"put_nowait": lambda self, x: queued.append(x)})()
+    handler._overflow_warned = False
+    handler._seq = itertools.count(1)
+    handler._bot_name = "beacon"
+
+    handler.emit(_record("dd.error", logging.ERROR, "first"))
+    handler.emit(_record("dd.error", logging.ERROR, "second"))
+    assert [a.seq for a in queued] == [1, 2]  # strictly increasing in emit order
+
+    components = handler._render(queued[1], effective_level=logging.ERROR, ping=False)
+    text = "\n".join(
+        getattr(child, "content", "")
+        for c in components
+        for child in getattr(c, "components", [])
+    )
+    assert "#2" in text
 
 
 def test_prune_escalations_bounds_last_escalation():
