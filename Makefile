@@ -53,7 +53,15 @@ destroy-schemas: .env
 create-schemas: .env
 	uv run python -m dd.common.schemas --create-all
 
+# Render the SQLAlchemy models to DDL (.atlas/desired.sql, gitignored), then let
+# Atlas diff it against migrations/ and write a new migration if they differ. The
+# DDL is generated here rather than via Atlas's `external_schema` provider so the
+# community Atlas binary in the dev container can run it too (see atlas.hcl). Set
+# ATLAS_DEV_URL (dev container does) to use the sibling MySQL scratch schema
+# instead of an ephemeral docker:// dev database.
 atlas-migration-plan: .env
+	mkdir -p .atlas
+	uv run python dd/common/schemas.py --print-ddl > .atlas/desired.sql
 	atlas migrate diff --env sqlalchemy
 
 atlas-migration-dry-run:

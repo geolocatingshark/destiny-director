@@ -118,8 +118,17 @@ DB layer, or building a message/embed, read it.** Quick orientation:
 
 - SQLAlchemy schemas in `dd/common/schemas.py` (it doubles as the Atlas DDL source and a
   management CLI). Migrations via **Atlas** (`atlas.hcl`, `migrations/` at repo root):
-  `make atlas-migration-plan` to diff, `make atlas-migration-apply` to apply.
-  `make create-schemas` / `destroy-schemas` manage tables directly.
+  `make atlas-migration-plan` to diff (renders the models to `.atlas/desired.sql`, then
+  `atlas migrate diff` writes a new migration you then hand-edit), `make
+  atlas-migration-apply` to apply. `make create-schemas` / `destroy-schemas` manage
+  tables directly.
+- **`atlas-migration-plan` works both on the local box and inside the dev container.**
+  Atlas needs a throwaway "dev" database to compute the diff: locally it defaults to an
+  ephemeral `docker://` MySQL; the dev container has no usable Docker, so it sets
+  `ATLAS_DEV_URL` (docker-compose.dev.yml) to a dedicated `atlas_dev` scratch schema on
+  the sibling MySQL — created idempotently by `docker-entrypoint.dev.sh`. We do **not**
+  use Atlas's `external_schema` provider (non-community-only); the community Atlas binary
+  baked into the container handles the file-based diff fine.
 - **`make destroy-schemas` / `--destroy-all` refuse a non-local DB** unless
   `ALLOW_REMOTE_SCHEMA_DESTROY=1` (`schemas.py`). Never bypass it — there was a real
   dev-DB-wipe incident (`plans/dev_db_auto_wipe_investigation.md`).

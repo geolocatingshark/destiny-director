@@ -115,6 +115,9 @@ venv.bak/
 # Remote Pi dev container — git identity keys + SSH config (never commit)
 /.dev-ssh/
 
+# Atlas migration planning — generated desired-state DDL (make atlas-migration-plan)
+/.atlas/
+
 # Spyder project settings
 .spyderproject
 .spyproject
