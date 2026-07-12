@@ -335,12 +335,15 @@ async def _resolve_source_fields(
     bot: CachedFetchBot,
     source_message: h.Message | None,
     source_channel: h.GuildChannel | None,
+    src_ch_id: int | None = None,
 ) -> tuple[str, str, str, str]:
     """Resolve the card's source message/channel display links (best-effort).
 
     Any lookup failure degrades to "Unknown"/empty rather than aborting the card — the
     only thing worth retrying is the actual card send, and resolving these outside that
     retry loop is what lets the cancel menu be attached exactly once (not per attempt).
+    ``src_ch_id`` lets a recovery/delete card (which carries no cached message/channel)
+    still name its source channel from the run's known id.
     """
     source_message_link = ""
     source_channel_link = ""
@@ -353,6 +356,10 @@ async def _resolve_source_fields(
             channel_from_message = await bot.fetch_channel(source_message.channel_id)
             if isinstance(channel_from_message, h.GuildChannel):
                 source_channel = channel_from_message
+        if not source_channel and src_ch_id is not None:
+            channel_from_id = await bot.fetch_channel(src_ch_id)
+            if isinstance(channel_from_id, h.GuildChannel):
+                source_channel = channel_from_id
         if source_channel and source_message:
             source_guild = await bot.fetch_guild(source_channel.guild_id)
             source_message_link = source_message.make_link(source_guild)
@@ -431,7 +438,9 @@ async def _run_card(
     """
     menu_handle: lbc.MenuHandle | None = None
     try:
-        scl_fields = await _resolve_source_fields(bot, source_message, source_channel)
+        scl_fields = await _resolve_source_fields(
+            bot, source_message, source_channel, view.src_ch_id
+        )
         source_message_link, source_message_summary, source_channel_link, scn = (
             scl_fields
         )
