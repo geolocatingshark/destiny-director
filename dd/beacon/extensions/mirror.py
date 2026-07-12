@@ -869,9 +869,13 @@ def is_content_edit(message: h.PartialMessage) -> bool:
 async def message_update_repeater(
     event: h.MessageUpdateEvent, client: lb.Client = lb.di.INJECTED
 ):
-    # Skip non-content updates (publishes/crossposts, embed unfurls, flag changes). The
-    # reconcile edits existing dests AND fresh-sends to any added since, so a publish
-    # update arriving before the create handler enqueued would have nothing to do.
+    # Cheap early-out for the non-content updates Discord also reports as edits (embed
+    # unfurls, flag changes) so an unfurl of an already-delivered message doesn't
+    # trigger a needless dest re-edit. The publish/crosspost transition is *not* caught
+    # here (a message edited before it was published carries a stale edited_timestamp),
+    # so the authoritative guard is bump_for_edit's delivered-baseline gate below: a
+    # message that has not been delivered anywhere yet is a true no-op, which is exactly
+    # the state of a message at the moment it is published.
     if not is_content_edit(event.message):
         return
 

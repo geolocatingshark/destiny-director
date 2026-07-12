@@ -130,14 +130,17 @@ async def test_bump_for_edit_bumps_version_and_revives_terminal():
         await MirroredChannel.add_mirror(src, dest, guild, legacy=True)
     await MirrorDelivery.enqueue_send(src, 920)
 
-    # Drive one to DELIVERED, one to FAILED, then edit.
+    # Drive one to DELIVERED (with a recorded dest message — the delivered baseline that
+    # lets an edit reconcile at all), one to FAILED, then edit.
     async with schemas.db_session() as session, session.begin():
         await session.execute(
             update(MirrorDelivery)
             .where(
                 and_(MirrorDelivery.src_msg_id == 920, MirrorDelivery.dest_ch_id == 220)
             )
-            .values(state=DeliveryState.DELIVERED.value, applied_version=1)
+            .values(
+                state=DeliveryState.DELIVERED.value, dest_msg_id=7777, applied_version=1
+            )
         )
         await session.execute(
             update(MirrorDelivery)
@@ -159,17 +162,54 @@ async def test_bump_for_edit_bumps_version_and_revives_terminal():
 async def test_bump_for_edit_leaves_deleted_rows_untouched_and_inserts_new_dest():
     src = 130
     await MirroredChannel.add_mirror(src, 230, 1, legacy=True)
+    await MirroredChannel.add_mirror(src, 231, 2, legacy=True)
     await MirrorDelivery.enqueue_send(src, 930)
-    await MirrorDelivery.mark_deleted(930)  # 230 never delivered → CANCELLED
+    # 230 delivered (has a dest message → the reconcile baseline); 231 carries a pending
+    # delete-intent and must be left untouched by the edit.
+    async with schemas.db_session() as session, session.begin():
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(MirrorDelivery.src_msg_id == 930, MirrorDelivery.dest_ch_id == 230)
+            )
+            .values(
+                state=DeliveryState.DELIVERED.value, dest_msg_id=6666, applied_version=1
+            )
+        )
+        await session.execute(
+            update(MirrorDelivery)
+            .where(
+                and_(MirrorDelivery.src_msg_id == 930, MirrorDelivery.dest_ch_id == 231)
+            )
+            .values(deleted=True, desired_version=1)
+        )
 
     # A dest added *after* the original send is picked up by the reconcile insert.
-    await MirroredChannel.add_mirror(src, 231, 2, legacy=True)
+    await MirroredChannel.add_mirror(src, 232, 3, legacy=True)
     bumped, inserted = await MirrorDelivery.bump_for_edit(src, 930)
-    # 230 is deleted → not bumped; 231 is freshly inserted.
-    assert bumped == 0
+    # 230 (non-deleted) bumped; 231 (deleted) left untouched; 232 freshly inserted.
+    assert bumped == 1
     assert inserted == 1
-    assert (await _row(930, 230))["deleted"] is True
-    assert (await _row(930, 231))["state"] == DeliveryState.PENDING.value
+    assert (await _row(930, 230))["desired_version"] == 2
+    assert (await _row(930, 231))["deleted"] is True
+    assert (await _row(930, 231))["desired_version"] == 1  # untouched
+    assert (await _row(930, 232))["state"] == DeliveryState.PENDING.value
+
+
+async def test_bump_for_edit_is_a_no_op_before_first_delivery():
+    # The publish/crosspost transition Discord reports as a MessageUpdateEvent reaches
+    # bump_for_edit with the message enqueued but not delivered anywhere yet (no row has
+    # a dest_msg_id). It must be a true no-op: no version bump, no phantom fan-out — the
+    # create handler owns the send, and the worker delivers the current content.
+    src = 135
+    await MirroredChannel.add_mirror(src, 235, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(src, 935)
+
+    bumped, inserted = await MirrorDelivery.bump_for_edit(src, 935)
+    assert (bumped, inserted) == (0, 0)
+    row = await _row(935, 235)
+    assert row["desired_version"] == 1  # not bumped
+    assert row["state"] == DeliveryState.PENDING.value
 
 
 # -- mark_deleted ------------------------------------------------------------

@@ -852,11 +852,21 @@ class MirrorDelivery(Base):
         """Reconcile an edit: bump every non-deleted row's ``desired_version`` and reset
         its retry budget, then insert rows for any dests added since the send.
 
-        Returns ``(bumped, inserted)`` rowcounts — both zero means this was not a
-        mirrored message. Rows for dests since removed from ``mirrored_channel`` keep
-        converging (they are bumped but not re-inserted).
-        FAILED/CANCELLED/PENDING rows are (re)armed to PENDING; rows with ``deleted=1``
-        are never touched by an edit.
+        Returns ``(bumped, inserted)`` rowcounts — both zero means there was nothing to
+        reconcile (not a mirrored message, or not delivered anywhere yet). Rows for
+        dests since removed from ``mirrored_channel`` keep converging (they are bumped
+        but not re-inserted). FAILED/CANCELLED/PENDING rows are (re)armed to PENDING;
+        rows with ``deleted=1`` are never touched by an edit.
+
+        Only reconciles a source that has already been **delivered** somewhere — a row
+        carries a ``dest_msg_id`` once its send landed. Before first delivery the send
+        fetches the source's *current* content at delivery time (see
+        ``mirror_worker``), so an edit has nothing to reconcile; and the
+        publish/crosspost transition Discord also reports as a ``MessageUpdateEvent``
+        must never insert a fresh fan-out here — that would race the create handler's
+        send and surface a phantom "update" for a message whose only change was being
+        published. Gating on a delivered baseline makes both a true no-op regardless of
+        gateway event ordering.
 
         A row that is in-flight *right now* is re-armed to PENDING here too, but the one
         worker flushes the current batch's outcomes before it picks again, so it can't
@@ -866,6 +876,21 @@ class MirrorDelivery(Base):
         recorded message instead of re-sending it. No duplicate, no orphan, no lease.
         """
         now = _utcnow()
+        delivered_baseline = (
+            await session.execute(
+                select(func.count())
+                .select_from(cls)
+                .where(
+                    and_(
+                        cls.src_msg_id == int(src_msg_id),
+                        cls.dest_msg_id.is_not(None),
+                        ~cls.deleted,
+                    )
+                )
+            )
+        ).scalar_one()
+        if not delivered_baseline:
+            return (0, 0)
         bumped = await session.execute(
             update(cls)
             .where(and_(cls.src_msg_id == int(src_msg_id), ~cls.deleted))
