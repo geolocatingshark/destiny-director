@@ -32,6 +32,7 @@ never runs them; use ``make test-integration``. The bot token is reused from
 ``DISCORD_TOKEN_BEACON`` and the guild from ``TEST_ENV``.
 """
 
+import asyncio as aio
 import contextlib
 import datetime as dt
 import os
@@ -133,6 +134,8 @@ async def _converge(bot: CachedFetchBot) -> None:
             break
         outcomes = await mw.mirror_worker._process(batch)
         await MirrorDelivery.flush_outcomes(outcomes)
+        # Mirror the live loop's post-flush step so tests see real cache eviction.
+        await mw.mirror_worker._evict_resolved_sources(batch)
 
 
 async def _delivered(src_msg_id: int) -> list[tuple[int, int]]:
@@ -409,3 +412,54 @@ async def test_cv2_message_is_mirrored(mirror_env: _MirrorEnv) -> None:
     await _converge(mirror_env.bot)
     remirrored = await mirror_env.rest.fetch_message(ch_id, dest_msg_id)
     assert "edited body" in _cv2_text(remirrored)
+
+
+async def test_source_cache_evicted_after_fanout(mirror_env: _MirrorEnv) -> None:
+    """After a fan-out fully resolves the worker drops the source's cached content, so
+    the per-source content cache does not grow under sustained load."""
+    src = await mirror_env.make_channel("src-evict")
+    dest = await mirror_env.make_channel("dst-evict")
+    await MirroredChannel.add_mirror(
+        src.id, dest.id, dest_server_id=mirror_env.guild_id, legacy=True
+    )
+    mw.mirror_worker._source_cache.clear()
+
+    posted = await _send(mirror_env, src, "evict me")
+
+    assert await _delivered(posted.id)  # delivered (so it *was* cached during the send)
+    # Its fan-out has resolved, so the source content is no longer retained.
+    assert posted.id not in mw.mirror_worker._source_cache
+    assert await MirrorDelivery.sources_needing_source_content([posted.id]) == set()
+
+
+async def test_graceful_stop_drains_without_duplicates(mirror_env: _MirrorEnv) -> None:
+    """The real worker loop delivers, stop() drains the in-flight batch, and a restart
+    does not re-send — the dest ends with exactly one copy."""
+    src = await mirror_env.make_channel("src-drain")
+    dest = await mirror_env.make_channel("dst-drain")
+    await MirroredChannel.add_mirror(
+        src.id, dest.id, dest_server_id=mirror_env.guild_id, legacy=True
+    )
+
+    posted = await mirror_env.rest.create_message(src.id, "drain me")
+    src_channel = t.cast(h.TextableChannel, await mirror_env.rest.fetch_channel(src.id))
+    await mirror.message_create_repeater_impl(
+        posted, mirror_env.bot, src_channel, wait_for_crosspost=False
+    )
+
+    await mw.mirror_worker.start(mirror_env.bot)
+    try:
+        for _ in range(100):  # bounded wait for the loop to deliver
+            if await _delivered(posted.id):
+                break
+            await aio.sleep(0.1)
+        assert len(await _delivered(posted.id)) == 1
+    finally:
+        await mw.mirror_worker.stop()  # drain the loop
+
+    msgs = [m async for m in mirror_env.rest.fetch_messages(dest.id)]
+    assert len(msgs) == 1
+    # A restart re-picks nothing outstanding, so it never re-sends a duplicate.
+    await _converge(mirror_env.bot)
+    msgs_after = [m async for m in mirror_env.rest.fetch_messages(dest.id)]
+    assert len(msgs_after) == 1

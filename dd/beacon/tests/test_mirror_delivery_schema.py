@@ -826,6 +826,37 @@ async def test_sources_needing_source_content():
     assert await MirrorDelivery.sources_needing_source_content([]) == set()
 
 
+async def test_non_terminal_backlog_summarises_pending_work_per_source():
+    # The post-restart recovery scan: group PENDING rows per source and flag whether any
+    # is a delete or an unsent (never-delivered) row, so it posts the right card.
+    # Source 1500: a fresh unsent send (PENDING, applied_version 0).
+    await MirroredChannel.add_mirror(1500, 850, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(1500, 1500)
+    # Source 1501: delivered once, now carrying a pending delete (PENDING, deleted).
+    await MirroredChannel.add_mirror(1501, 851, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(1501, 1501)
+    # Source 1502: fully delivered → no non-terminal work → absent from the backlog.
+    await MirroredChannel.add_mirror(1502, 852, 1, legacy=True)
+    await MirrorDelivery.enqueue_send(1502, 1502)
+    async with schemas.db_session() as session, session.begin():
+        await session.execute(
+            update(MirrorDelivery)
+            .where(MirrorDelivery.src_msg_id == 1501)
+            .values(deleted=True, applied_version=1, dest_msg_id=9001)
+        )
+        await session.execute(
+            update(MirrorDelivery)
+            .where(MirrorDelivery.src_msg_id == 1502)
+            .values(state=DeliveryState.DELIVERED.value, applied_version=1)
+        )
+
+    backlog = {row[0]: row for row in await MirrorDelivery.non_terminal_backlog()}
+    assert set(backlog) == {1500, 1501}  # 1502 fully delivered → excluded
+    # (src_msg_id, src_ch_id, count, any_deleted, any_unsent)
+    assert backlog[1500] == (1500, 1500, 1, False, True)  # unsent send
+    assert backlog[1501] == (1501, 1501, 1, True, False)  # delivered, delete pending
+
+
 async def test_failure_breakdown_groups_by_ref():
     src = 858
     for dest in (738, 739, 742):
