@@ -617,7 +617,14 @@ class MirroredChannel(Base):
 
 
 def _utcnow() -> dt.datetime:
-    return dt.datetime.now(tz=dt.UTC)
+    # Truncated to whole seconds on purpose: the ledger's datetime columns are MySQL
+    # DATETIME(0), which *rounds* a fractional value (…23.6 -> …24) rather than
+    # truncating. Rounding a just-now ``due_at`` UP past the current second makes an
+    # immediately-due row fail the ``due_at <= now`` pick gate until the next poll — on
+    # SQLite the full precision is kept so this never shows. Whole seconds
+    # store exactly on both backends; second granularity is ample for the scheduler
+    # (retries 180-300s, poll 45s, grace in hours).
+    return dt.datetime.now(tz=dt.UTC).replace(microsecond=0)
 
 
 def _insert_ignore(cls: type[Base]):
