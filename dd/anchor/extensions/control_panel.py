@@ -20,7 +20,7 @@ each feature module at import time via :func:`web.register_card` (mirroring how 
 are contributed via :func:`web.register_routes`), so a new page appears here without
 editing this module. Authentication is handled centrally by the Discord-OAuth middleware
 in ``web_auth.py`` — it protects every non-allowlisted route by default, so ``/`` is
-gated with no extra code here. ``/control_panel`` links the owner to the panel URL.
+gated with no extra code here. ``/control_panel`` gives the owner a button to the panel.
 """
 
 import html
@@ -28,6 +28,7 @@ import logging
 from pathlib import Path
 
 import aiohttp.web
+import hikari as h
 import lightbulb as lb
 
 from ...common import cfg
@@ -97,14 +98,17 @@ class ControlPanel(
             return
 
         url = f"{cfg.public_base_url}/"
-        await respond_cv2(
-            ctx,
-            cv2_notice(
-                f"[Open the control panel here]({url}) — it lists every web tool. "
-                "You'll sign in with Discord the first time."
-            ),
-            ephemeral=True,
+        # Ephemeral (owner-private) response with a link button, mirroring the
+        # weekly-reset form command. The panel is gated by Discord OAuth (web_auth.py) —
+        # you sign in with Discord on first open.
+        container = cv2_notice(
+            "Open the control panel with the button below — it lists every web tool. "
+            "You'll sign in with Discord the first time."
         )
+        row = h.impl.MessageActionRowBuilder()
+        row.add_component(h.impl.LinkButtonBuilder(url=url, label="Open control panel"))
+        container.add_component(row)
+        await respond_cv2(ctx, container, ephemeral=True)
 
 
 loader.command(ControlPanel)
