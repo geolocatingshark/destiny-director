@@ -589,48 +589,6 @@ async def test_derive_portal_fields_survives_fetch_failure(monkeypatch) -> None:
     assert await wr.derive_portal_fields() == wr.PortalDerivation("", None)
 
 
-# --- web form: session manager ----------------------------------------------------
-
-
-def test_weekly_reset_session_mint_resolves() -> None:
-    token = wr.WeeklyResetSessionManager.mint()
-    assert wr.WeeklyResetSessionManager.resolve(token)
-
-
-def test_weekly_reset_session_rejects_garbage_and_tampering() -> None:
-    assert not wr.WeeklyResetSessionManager.resolve("")
-    assert not wr.WeeklyResetSessionManager.resolve("never-minted")
-    # A tampered (extended) expiry no longer matches the signature.
-    token = wr.WeeklyResetSessionManager.mint()
-    expiry_str, _, sig = token.partition(".")
-    forged = f"{int(expiry_str) + 100_000}.{sig}"
-    assert not wr.WeeklyResetSessionManager.resolve(forged)
-    # A non-ASCII cookie must fail closed (return False), not raise TypeError from
-    # hmac.compare_digest and 500 the route.
-    assert not wr.WeeklyResetSessionManager.resolve("1.\udcff")
-    assert not wr.WeeklyResetSessionManager.resolve("héllo")
-
-
-def test_weekly_reset_session_expiry() -> None:
-    # A correctly-signed token whose embedded expiry is in the past is rejected.
-    past = int((dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)).timestamp())
-    expired = wr.WeeklyResetSessionManager._sign(past)
-    assert not wr.WeeklyResetSessionManager.resolve(expired)
-
-
-def test_weekly_reset_session_key_distinct_from_rotation_editor() -> None:
-    # Distinct signing-key salts: a token minted for one surface must never authenticate
-    # the other, even though both derive from the same anchor bot token.
-    from dd.anchor.extensions import rotation_editor as editor
-
-    assert not editor.RotationSessionManager.resolve(
-        wr.WeeklyResetSessionManager.mint()
-    )
-    assert not wr.WeeklyResetSessionManager.resolve(
-        editor.RotationSessionManager.mint()
-    )
-
-
 # --- web form: payload -> context mapping -----------------------------------------
 
 
@@ -715,8 +673,8 @@ def _req(**kwargs: t.Any) -> aiohttp.web.Request:
     return t.cast(aiohttp.web.Request, _FakeRequest(**kwargs))
 
 
-def _authed_cookies() -> dict[str, str]:
-    return {wr._SESSION_COOKIE: wr.WeeklyResetSessionManager.mint()}
+# Auth is enforced by the web_auth middleware (see test_web_auth.py); these handlers
+# assume an already-authenticated request and carry no auth code of their own.
 
 
 @pytest.mark.asyncio
@@ -726,22 +684,14 @@ async def test_publish_returns_problems_for_invalid_draft(monkeypatch) -> None:
     monkeypatch.setattr(wr, "_bot", object())
     await wr.save_draft(wr.WeeklyResetContext(reset_ts=1))
     await wr.save_meta(wr.DraftMeta())
-    resp = await wr._handle_publish(_req(cookies=_authed_cookies()))
+    resp = await wr._handle_publish(_req())
     assert resp.status == 422
     assert json.loads(resp.text or "")["problems"]
 
 
 @pytest.mark.asyncio
-async def test_publish_without_cookie_is_401() -> None:
-    resp = await wr._handle_publish(_req())
-    assert resp.status == 401
-
-
-@pytest.mark.asyncio
 async def test_auto_toggle_round_trips() -> None:
-    resp = await wr._handle_auto(
-        _req(cookies=_authed_cookies(), body={"enabled": True})
-    )
+    resp = await wr._handle_auto(_req(body={"enabled": True}))
     assert resp.status == 200
     assert json.loads(resp.text or "") == {"enabled": True}
     assert await wr.schemas.AutoPostSettings.get_weekly_reset_enabled() is True
@@ -1012,9 +962,7 @@ async def test_handle_save_posts_and_returns_warnings(
     await wr.save_meta(wr.DraftMeta())  # fresh: no post yet
     # A near-empty draft trips validate_post, but saving still succeeds AND posts it —
     # the problems come back as non-blocking warnings, not a 422.
-    resp = await wr._handle_save(
-        _req(cookies=_authed_cookies(), body={"reset_ts": 1783443600})
-    )
+    resp = await wr._handle_save(_req(body={"reset_ts": 1783443600}))
     assert resp.status == 200
     data = json.loads(resp.text or "")
     assert data["ok"] is True and data["warnings"]
@@ -1028,9 +976,7 @@ async def test_handle_save_posts_and_returns_warnings(
 @pytest.mark.asyncio
 async def test_handle_save_503_when_bot_unset(monkeypatch) -> None:
     monkeypatch.setattr(wr, "_bot", None)
-    resp = await wr._handle_save(
-        _req(cookies=_authed_cookies(), body={"reset_ts": 1})
-    )
+    resp = await wr._handle_save(_req(body={"reset_ts": 1}))
     assert resp.status == 503
 
 
@@ -1041,7 +987,7 @@ async def test_handle_delete_removes_post_and_resets(monkeypatch) -> None:
     await wr.save_meta(
         wr.DraftMeta(message_id=77, status="published", crossposted=True)
     )
-    resp = await wr._handle_delete(_req(cookies=_authed_cookies()))
+    resp = await wr._handle_delete(_req())
     assert resp.status == 200 and json.loads(resp.text or "") == {"ok": True}
     assert bot.rest.deleted == [(wr.cfg.followables["weekly_reset"], 77)]
     meta = await wr.load_meta()
@@ -1053,18 +999,13 @@ async def test_handle_delete_noop_when_unposted(monkeypatch) -> None:
     bot = _FakeBot()
     monkeypatch.setattr(wr, "_bot", bot)
     await wr.save_meta(wr.DraftMeta(message_id=0, status="draft"))
-    resp = await wr._handle_delete(_req(cookies=_authed_cookies()))
+    resp = await wr._handle_delete(_req())
     assert resp.status == 200 and json.loads(resp.text or "") == {"ok": True}
     assert bot.rest.deleted == []
 
 
 @pytest.mark.asyncio
-async def test_handle_delete_without_cookie_is_401() -> None:
-    assert (await wr._handle_delete(_req())).status == 401
-
-
-@pytest.mark.asyncio
 async def test_handle_delete_503_when_bot_unset(monkeypatch) -> None:
     monkeypatch.setattr(wr, "_bot", None)
-    resp = await wr._handle_delete(_req(cookies=_authed_cookies()))
+    resp = await wr._handle_delete(_req())
     assert resp.status == 503

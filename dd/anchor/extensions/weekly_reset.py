@@ -23,9 +23,9 @@ mirrored it. This extension automates that authoring:
    carried-over curated bits, and persists a **draft** (the WeeklyResetContext) to the
    ``weekly_reset_draft`` :class:`~dd.common.schemas.RotationData` row.
 2. The team fills in the weapons/rotators/prose the API can't supply through an
-   owner-authenticated **web form** (``/weekly_reset create`` mints the link; the
-   routes and auth live at the bottom of this module), backed by the same
-   data/render/publish core below.
+   owner-authenticated **web form** (``/weekly_reset create`` links to it; the routes
+   live at the bottom of this module, and Discord-OAuth auth is enforced centrally by
+   the ``web_auth.py`` middleware), backed by the same data/render/publish core below.
 3. On publish the assembled post is crossposted to
    :data:`cfg.followables["weekly_reset"]`; beacon mirrors it as usual.
 
@@ -43,8 +43,6 @@ the web form.
 import asyncio
 import dataclasses
 import datetime as dt
-import hashlib
-import hmac
 import html
 import json
 import logging
@@ -1467,23 +1465,18 @@ async def mutate_draft(
 
 
 # ---------------------------------------------------------------------------
-# Owner-authenticated web form — auth + routes (mirrors rotation_editor.py)
+# Owner-authenticated web form — routes
 # ---------------------------------------------------------------------------
 #
-# The Discord input UI is gone; input now flows through this form. Auth is an
-# HMAC-signed, bot-token-keyed session cookie (~2h, no store), minted by the owner-only
-# ``/weekly_reset create`` command and traded for a cookie on first load — cloned from
-# ``RotationSessionManager``. Every state-changing route ALSO checks the request
-# ``Origin`` (defence-in-depth atop ``SameSite=Lax``). All security-relevant transforms
-# (weapon resolution, the Iron-Banner⇒Trials-off rule, link validation) run server-side
-# in :func:`_context_from_payload`; the client payload is never trusted for them.
+# The Discord input UI is gone; input now flows through this form. Auth is enforced
+# centrally by the Discord-OAuth middleware in ``web_auth.py`` (which also covers the
+# cross-origin defence), so this module carries no auth code. All security-relevant
+# transforms (weapon resolution, the Iron-Banner⇒Trials-off rule, link validation) still
+# run server-side in :func:`_context_from_payload`; the client payload is never trusted.
 
 _FORM_HTML_PATH = (
     Path(__file__).resolve().parent.parent / "web_static" / "weekly_reset_form.html"
 )
-_SESSION_TTL = dt.timedelta(hours=2)
-_SESSION_COOKIE = "weekly_reset_session"
-_EXPIRED_MSG = "This link has expired. Run /weekly_reset create for a fresh one."
 
 #: The live bot, stashed by the StartedEvent listener so the ``/publish`` route can
 #: reach the REST client. A module global (not aiohttp app state) because the listener
@@ -1524,94 +1517,6 @@ async def _preview_emoji_dict() -> dict[str, h.Emoji]:
         logger.warning("weekly_reset: preview emoji fetch failed", exc_info=True)
         return _emoji_cache or {}
     return _emoji_cache
-
-
-def _signing_key() -> bytes:
-    """Stable secret for signing session tokens, derived from the anchor bot token.
-
-    Uses a DISTINCT salt from the rotation editor's key, so a token minted for one
-    surface can never authenticate the other. Deriving (not using the token raw) keeps
-    the bot token itself out of the signing material; no new env var is needed.
-    """
-    return hashlib.sha256(
-        b"weekly-reset-session|" + cfg.discord_token_anchor.encode()
-    ).digest()
-
-
-class WeeklyResetSessionManager:
-    """Stateless, signed editor-session tokens (cloned from RotationSessionManager).
-
-    A token is ``"<expiry_epoch>.<hex_hmac>"``; the HMAC (SHA-256, keyed by a secret
-    derived from the anchor bot token) covers the expiry, so it survives process
-    restarts and carries no server-side state. Minted by the owner-only
-    ``/weekly_reset create`` command and multi-use for its whole ~2-hour life; tokens
-    simply expire, nothing to revoke.
-    """
-
-    @classmethod
-    def _sign(cls, expiry_epoch: int) -> str:
-        sig = hmac.new(
-            _signing_key(), str(expiry_epoch).encode(), hashlib.sha256
-        ).hexdigest()
-        return f"{expiry_epoch}.{sig}"
-
-    @classmethod
-    def mint(cls) -> str:
-        expiry = dt.datetime.now(dt.UTC) + _SESSION_TTL
-        return cls._sign(int(expiry.timestamp()))
-
-    @classmethod
-    def resolve(cls, token: str) -> bool:
-        """Whether ``token`` is a well-signed, unexpired session token."""
-        expiry_str, _, _sig = token.partition(".")
-        try:
-            expiry_epoch = int(expiry_str)
-            # Constant-time compare of the whole "<exp>.<sig>" against a fresh signature
-            # — rejects a tampered expiry or a bad signature. compare_digest raises
-            # TypeError on a non-ASCII token, so guard it too: a hostile cookie must
-            # fail closed (401), not 500 the route.
-            valid_sig = hmac.compare_digest(token, cls._sign(expiry_epoch))
-        except (ValueError, TypeError):
-            return False
-        if not valid_sig:
-            return False
-        return expiry_epoch > int(dt.datetime.now(dt.UTC).timestamp())
-
-
-def _session_from_request(request: aiohttp.web.Request) -> str:
-    return request.cookies.get(_SESSION_COOKIE, "")
-
-
-def _set_session_cookie(response: aiohttp.web.StreamResponse, token: str) -> None:
-    response.set_cookie(
-        _SESSION_COOKIE,
-        token,
-        max_age=int(_SESSION_TTL.total_seconds()),
-        httponly=True,
-        # Secure only over https (local http tunnels can't set a Secure cookie);
-        # Railway's public_base_url is https.
-        secure=cfg.public_base_url.startswith("https"),
-        # Lax (not Strict) so the cookie survives the cross-site top-level arrival from
-        # Discord + the same-origin redirect, while withheld on cross-site POSTs.
-        samesite="Lax",
-        path="/weekly_reset",
-    )
-
-
-def _origin_ok(request: aiohttp.web.Request) -> bool:
-    """Reject cross-site POSTs (defence-in-depth atop the SameSite=Lax cookie).
-
-    A browser sends ``Origin`` on state-changing fetches; if present it must match our
-    own origin. Absent, or with no public origin configured, we defer to SameSite/allow.
-    """
-    origin = request.headers.get("Origin")
-    if not origin or not cfg.public_base_url:
-        return True
-    return origin.rstrip("/") == cfg.public_base_url.rstrip("/")
-
-
-def _authed(request: aiohttp.web.Request) -> bool:
-    return WeeklyResetSessionManager.resolve(_session_from_request(request))
 
 
 def _pair(raw: t.Any) -> tuple[str, str]:
@@ -1716,32 +1621,8 @@ async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> WeeklyResetCo
     return ctx
 
 
-def _json_401() -> aiohttp.web.Response:
-    return aiohttp.web.json_response({"error": _EXPIRED_MSG}, status=401)
-
-
-def _json_403() -> aiohttp.web.Response:
-    return aiohttp.web.json_response(
-        {"error": "Cross-origin request refused."}, status=403
-    )
-
-
 async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    # Entry: a fresh ?token=… from the slash command. Trade it for a session cookie and
-    # redirect to the bare path so the token doesn't linger in the URL / history.
-    entry_token = request.query.get("token", "")
-    if entry_token:
-        if not WeeklyResetSessionManager.resolve(entry_token):
-            return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
-        response = aiohttp.web.HTTPFound("/weekly_reset")
-        # Issue a freshly minted token (not the request-supplied one): refreshes the
-        # TTL and keeps request input out of the Set-Cookie value.
-        _set_session_cookie(response, WeeklyResetSessionManager.mint())
-        return response
-
-    if not _authed(request):
-        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
-
+    # Auth is enforced by the web_auth middleware; this just renders the form.
     draft = await load_draft() or await build_draft_context()
     meta = await load_meta()
     config = await load_config()
@@ -1791,10 +1672,6 @@ def _discord_error_note(exc: Exception) -> str:
 
 
 async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    if not _authed(request):
-        return _json_401()
-    if not _origin_ok(request):
-        return _json_403()
     if _bot is None:
         return aiohttp.web.json_response(
             {"error": "Bot is still starting — try again in a moment."}, status=503
@@ -1847,10 +1724,6 @@ async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    if not _authed(request):
-        return aiohttp.web.Response(status=401, text=_EXPIRED_MSG)
-    if not _origin_ok(request):
-        return aiohttp.web.Response(status=403, text="Cross-origin request refused.")
     try:
         payload = await request.json()
     except Exception:
@@ -1868,10 +1741,6 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 async def _handle_publish(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    if not _authed(request):
-        return _json_401()
-    if not _origin_ok(request):
-        return _json_403()
     if _bot is None:
         return aiohttp.web.json_response(
             {"error": "Bot is still starting — try again in a moment."}, status=503
@@ -1901,10 +1770,6 @@ async def _handle_publish(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 async def _handle_delete(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    if not _authed(request):
-        return _json_401()
-    if not _origin_ok(request):
-        return _json_403()
     if _bot is None:
         return aiohttp.web.json_response(
             {"error": "Bot is still starting — try again in a moment."}, status=503
@@ -1934,10 +1799,6 @@ async def _handle_delete(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 async def _handle_auto(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    if not _authed(request):
-        return _json_401()
-    if not _origin_ok(request):
-        return _json_403()
     try:
         payload = await request.json()
     except Exception:
@@ -1988,15 +1849,13 @@ class Create(
             )
             return
 
-        token = WeeklyResetSessionManager.mint()
-        url = f"{cfg.public_base_url}/weekly_reset?token={token}"
-        # Ephemeral (owner-private) response with a link button; the anchor bot is
-        # owner-only in its entirety, so this is only ever seen by the owner who ran it
-        # and keeps the token out of any shared channel.
+        url = f"{cfg.public_base_url}/weekly_reset"
+        # Ephemeral (owner-private) response with a link button. The form itself is
+        # gated by Discord OAuth (web_auth.py) — you sign in with Discord on first open.
         container = cv2_notice(
-            "Open the weekly-reset form with the button below — it stays signed in for "
-            "about 2 hours. Edit, preview, save, publish and toggle the autopost all "
-            "from that page."
+            "Open the weekly-reset form with the button below — you'll sign in with "
+            "Discord the first time. Edit, preview, save, publish and toggle the "
+            "autopost all from that page."
         )
         row = h.impl.MessageActionRowBuilder()
         row.add_component(
