@@ -35,7 +35,11 @@ import pathlib
 import typing as t
 
 from ..common import rotation_schema, schemas
-from ..common.legacy_activities import weapon_values
+from ..common.legacy_activities import (
+    is_weapon_value,
+    weapon_slot_values,
+    weapon_values,
+)
 from ..sector_accounting.legacy_activities import LegacyRotation
 from .extensions.bungie_api import item_index
 
@@ -53,6 +57,26 @@ def _bake_links(doc: dict[str, t.Any]) -> int:
     if links:
         doc["item_links"] = links
     return len(links)
+
+
+def _unlinked_weapons(doc: dict[str, t.Any]) -> list[str]:
+    """Weapon-slot values that ended up without a light.gg link, tagged with the likely
+    cause: a mistyped ``(Type)`` (dropped before resolution) vs. an unmatched name.
+
+    A mistyped type is the dangerous one — the value never even reaches resolution, so
+    it silently loses its link (exactly how ``Auto Rilfe`` slipped through)."""
+    links = doc.get("item_links", {})
+    report: list[str] = []
+    for value in sorted(weapon_slot_values(doc)):
+        if value in links:
+            continue
+        reason = (
+            "unmatched name"
+            if is_weapon_value(value)
+            else "bad (Type) — check spelling"
+        )
+        report.append(f"{value!r} [{reason}]")
+    return report
 
 
 async def seed(*, force: bool, only: str | None = None, links: bool = False) -> None:
@@ -83,6 +107,9 @@ async def seed(*, force: bool, only: str | None = None, links: bool = False) -> 
         await schemas.RotationData.set_data(slug, doc)
         suffix = f", {link_count} links" if links else ""
         print(f"seed  {slug} ({_value_count(doc)} values{suffix})")
+        if links and item_index.ready():
+            for entry in _unlinked_weapons(doc):
+                print(f"  WARN  {slug}: no light.gg link for {entry}")
 
 
 def _value_count(doc: dict[str, t.Any]) -> int:

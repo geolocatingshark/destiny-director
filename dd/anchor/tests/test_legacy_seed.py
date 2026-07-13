@@ -80,6 +80,46 @@ def test_editor_default_doc_for_legacy_type():
     assert loot["schedule"] == [] and loot["sets"] == []
 
 
+@pytest.mark.parametrize("key", sorted(rs.LEGACY_DESTINATIONS))
+def test_seed_weapon_slot_values_are_recognized(key: str):
+    # Every value in a weapon slot must name a known weapon type; a mistyped ``(Type)``
+    # (e.g. "Auto Rilfe") is silently dropped from link-baking, so guard it here.
+    from dd.common.legacy_activities import is_weapon_value, weapon_slot_values
+
+    doc = json.loads((_SEED_DIR / f"{key}.json").read_text(encoding="utf-8"))
+    bad = [v for v in weapon_slot_values(doc) if not is_weapon_value(v)]
+    assert not bad, f"{key}: weapon values with an unrecognized (Type): {bad}"
+
+
+def test_unlinked_weapons_flags_bad_type_and_unmatched_name():
+    from dd.anchor.seed_legacy_rotations import _unlinked_weapons
+
+    doc = {
+        "activities": [
+            {
+                "key": "loot_table",
+                "kind": "sets",
+                "sets": [
+                    {
+                        "name": "Set 1",
+                        "weapons": [
+                            "Good Gun (Auto Rifle)",  # linked → not reported
+                            "Typo Gun (Auto Rilfe)",  # bad type → dropped silently
+                            "Ghost Gun (Hand Cannon)",  # good type, unmatched name
+                        ],
+                        "armor": ["Wild Hunt"],
+                    }
+                ],
+            }
+        ],
+        "item_links": {"Good Gun (Auto Rifle)": "https://lg/Good%20Gun"},
+    }
+    report = _unlinked_weapons(doc)
+    assert any("Typo Gun" in r and "bad (Type)" in r for r in report)
+    assert any("Ghost Gun" in r and "unmatched name" in r for r in report)
+    assert not any("Good Gun" in r for r in report)  # linked ones are silent
+
+
 def test_dares_seed_is_set_based_and_spotchecks():
     doc = json.loads((_SEED_DIR / "dares.json").read_text(encoding="utf-8"))
     rot = LegacyRotation.from_json(doc)

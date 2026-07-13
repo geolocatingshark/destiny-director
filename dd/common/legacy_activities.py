@@ -143,6 +143,26 @@ def is_weapon_value(value: str) -> bool:
     return _weapon_emoji(value) is not None
 
 
+def weapon_slot_values(doc: dict) -> set[str]:
+    """Every distinct value sitting in a *weapon slot* — a set's ``weapons`` list or an
+    element whose name mentions "weapon" — regardless of whether it parses as a weapon.
+
+    Unlike :func:`weapon_values` this does **not** filter on :func:`is_weapon_value`, so
+    it still surfaces a value whose ``(Type)`` is misspelled (e.g. ``Auto Rilfe``). The
+    seed's link step uses it to warn about weapons that would otherwise be dropped
+    silently and never get a light.gg link."""
+    found: set[str] = set()
+    for activity in doc.get("activities", []):
+        if activity.get("kind") == "sets":
+            for gear_set in activity.get("sets", []):
+                found.update(gear_set.get("weapons", []))
+        else:
+            for element in activity.get("elements", []):
+                if "weapon" in element.get("name", "").lower():
+                    found.update(element.get("values", []))
+    return found
+
+
 def weapon_values(doc: dict) -> set[str]:
     """Every distinct weapon-looking value in a legacy doc (for light.gg links)."""
     found: set[str] = set()
