@@ -32,6 +32,11 @@ hikari's fire-and-forget task wrapper.
 ``ALWAYS``. All services are ``ON_FAILURE`` (prod beacon was flipped from ``ALWAYS`` on
 2026-06-25), so ``/beacon stop`` works everywhere. ``restart`` exits non-zero and works
 under any restart-on-failure policy.
+
+``restart`` is **disabled in prod** (see :func:`restarts_enabled`): a non-zero exit is a
+crash to Railway, and Railway applies crash-loop backoff, so repeated ``/restart`` there
+risks leaving the bot down. In prod the command refuses and takes no action; operators
+redeploy from Railway instead. It stays available in dev/test.
 """
 
 import asyncio
@@ -54,6 +59,17 @@ from .components import (
     respond_cv2,
 )
 from .schemas import MirroredChannel
+
+
+def restarts_enabled() -> bool:
+    """Whether ``/restart`` may exit non-zero to trigger a Railway restart.
+
+    Disabled in prod (``cfg.test_env`` falsy — an empty tuple): Railway reads a non-zero
+    exit as a crash and applies crash-loop backoff, so a ``/restart`` there can trip
+    that backoff and leave the bot down. In prod, restart via redeploy instead. Enabled
+    in dev/test, where ``TEST_ENV`` is set and the exit-and-be-restarted trick is safe.
+    """
+    return bool(cfg.test_env)
 
 
 async def _run_lifecycle(
@@ -177,6 +193,21 @@ def make_controller_group(
     ):
         @lb.invoke
         async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+            # In prod, restart-by-exit is unsafe: Railway crash-loop-backs-off repeated
+            # non-zero exits and can leave the bot down. Refuse and take no action —
+            # the running process is left untouched; redeploy from Railway to restart.
+            if not restarts_enabled():
+                await respond_cv2(
+                    ctx,
+                    cv2_notice(
+                        "Restart is disabled in production. A `/restart` exits the "
+                        "process non-zero to be restarted, but Railway rate-limits "
+                        "crash-looping services and may leave the bot down. Redeploy "
+                        "from Railway to restart instead."
+                    ),
+                    ephemeral=True,
+                )
+                return
             await _run_lifecycle(
                 ctx,
                 bot,
