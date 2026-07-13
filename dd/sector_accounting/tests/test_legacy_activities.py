@@ -187,3 +187,17 @@ def test_missing_scheduled_set_is_tbc_not_error():
     resolved = LegacyRotation.from_json(doc)(DAY0)[0]
     assert resolved.set is None
     assert resolved.is_empty
+
+
+def test_item_links_round_trip():
+    doc = _doc()
+    doc["item_links"] = {"A (Auto Rifle)": "https://www.light.gg/db/items/1/"}
+    rot = LegacyRotation.from_json(doc)
+    assert rot.item_links == {"A (Auto Rifle)": "https://www.light.gg/db/items/1/"}
+    assert rot.to_json()["item_links"] == rot.item_links
+
+
+def test_item_links_absent_by_default():
+    rot = LegacyRotation.from_json(_doc())
+    assert rot.item_links == {}
+    assert "item_links" not in rot.to_json()  # omitted when empty

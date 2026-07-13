@@ -89,11 +89,15 @@ async def build_pages(
     for date in period_starts(rotation, now, count):
         if destination_key == "dares":
             sections = render_dares_sections(
-                rotation(date), date, emoji_dict=emoji_dict
+                rotation(date), date, emoji_dict=emoji_dict, links=rotation.item_links
             )
         else:
             sections = render_date_sections(
-                destination_key, rotation(date), date, emoji_dict=emoji_dict
+                destination_key,
+                rotation(date),
+                date,
+                emoji_dict=emoji_dict,
+                links=rotation.item_links,
             )
         pages.append(_page(sections))
     return pages
@@ -112,7 +116,11 @@ async def build_week_pages(
     for offset in range(_WEEK_DAILY_PAGE_COUNT):
         week_start = week0 + dt.timedelta(days=7 * offset)
         sections = render_week_sections(
-            destination_key, rotation, week_start, emoji_dict=emoji_dict
+            destination_key,
+            rotation,
+            week_start,
+            emoji_dict=emoji_dict,
+            links=rotation.item_links,
         )
         pages.append(_page(sections))
     return pages
@@ -158,6 +166,7 @@ def make_legacy_command(
                     dates,
                     emoji_dict=emoji,
                     armor=destination_key == "rahool",
+                    links=rotation.item_links,
                 )
                 await ctx.respond(
                     components=[

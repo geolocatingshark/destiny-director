@@ -7,9 +7,9 @@ scheduler, follow/mirror, or Google-Sheet fallback.
 
 Rendering produces a list of markdown *sections* (each a text display, divider-separated
 in the CV2 container — see :func:`dd.common.components.build_container`), styled after
-``/distortion``: ``##`` headers, a ``###`` current-highlight, ``**Upcoming**`` lists and
-``-#`` subtext. Dates are shown as ``Mmm DD`` (no year) and loot is tagged with
-weapon-type / ``:armor:`` emoji via the shared emoji substituter.
+Kyber's embeds: a ``#`` title, ``**bold**`` section labels and ``-#`` subtext. Dates are
+shown as ``Mmm DD`` (no year); loot is tagged with weapon-type / ``:armor:`` emoji and,
+when a light.gg URL has been baked into the doc (``item_links``), weapons are linked.
 """
 
 import datetime as dt
@@ -112,23 +112,50 @@ def _weapon_emoji(text: str) -> str | None:
     return None
 
 
-def _weaponize(text: str) -> str:
-    """Prefix a weapon with its type emoji and drop the ``(Type)`` suffix; a non-weapon
-    is returned unchanged."""
+def _linked(text: str, links: dict[str, str]) -> str:
+    """The bare item name (``(Type)`` dropped), hyperlinked to light.gg if a URL was
+    baked for this value."""
+    name = text.split(" (")[0].strip()
+    url = links.get(text)
+    return f"[{name}]({url})" if url else name
+
+
+def _weaponize(text: str, links: dict[str, str]) -> str:
+    """Prefix a weapon with its type emoji and link it; a non-weapon is unchanged."""
     emoji = _weapon_emoji(text)
     if emoji is None:
         return text
-    return f"{emoji} {text.split(' (')[0].strip()}"
+    return f"{emoji} {_linked(text, links)}"
 
 
-def _dares_weapon(text: str) -> str:
+def _dares_weapon(text: str, links: dict[str, str]) -> str:
     """Like :func:`_weaponize` but always shows an emoji (``:weapon:`` fallback)."""
     emoji = _weapon_emoji(text) or ":weapon:"
-    return f"{emoji} {text.split(' (')[0].strip()}"
+    return f"{emoji} {_linked(text, links)}"
 
 
 def _armorize(text: str) -> str:
     return f":armor: {text}"
+
+
+def is_weapon_value(value: str) -> bool:
+    """Whether a stored value looks like a weapon (names a known weapon type)."""
+    return _weapon_emoji(value) is not None
+
+
+def weapon_values(doc: dict) -> set[str]:
+    """Every distinct weapon-looking value in a legacy doc (for light.gg links)."""
+    found: set[str] = set()
+    for activity in doc.get("activities", []):
+        if activity.get("kind") == "sets":
+            for gear_set in activity.get("sets", []):
+                found.update(
+                    w for w in gear_set.get("weapons", []) if is_weapon_value(w)
+                )
+        else:
+            for element in activity.get("elements", []):
+                found.update(v for v in element.get("values", []) if is_weapon_value(v))
+    return found
 
 
 def _sub(text: str, emoji_dict: dict) -> str:
@@ -156,30 +183,30 @@ def period_starts(
     return [first + step * i for i in range(count)]
 
 
-def _inline_values(activity: ResolvedActivity) -> str:
+def _inline_values(activity: ResolvedActivity, links: dict[str, str]) -> str:
     """A compact one-line summary of an activity (weapon-tagged) for day/week rows."""
     if activity.set is not None:
         return activity.set.name or "TBC"
-    values = [_weaponize(v) for v in activity.values.values() if v]
+    values = [_weaponize(v, links) for v in activity.values.values() if v]
     return " · ".join(values) if values else "TBC"
 
 
-def _activity_block(activity: ResolvedActivity) -> str:
+def _activity_block(activity: ResolvedActivity, links: dict[str, str]) -> str:
     """A ``**Title**`` block with the activity's current value(s), weapon-tagged."""
     if activity.is_empty:
         return f"**{activity.title}**\n*TBC*"
     if len(activity.values) == 1:
-        value = _weaponize(next(iter(activity.values.values())))
+        value = _weaponize(next(iter(activity.values.values())), links)
         return f"**{activity.title}**\n{value}"
     lines = [
-        f"{_field_label(name)}: {_weaponize(value)}"
+        f"{_field_label(name)}: {_weaponize(value, links)}"
         for name, value in activity.values.items()
         if value
     ]
     return f"**{activity.title}**\n" + "\n".join(lines)
 
 
-def _set_sections(activity: ResolvedActivity) -> list[str]:
+def _set_sections(activity: ResolvedActivity, links: dict[str, str]) -> list[str]:
     """The Dares loot set as its own sections: header, weapons, armor."""
     live = activity.set
     if live is None:
@@ -187,7 +214,7 @@ def _set_sections(activity: ResolvedActivity) -> list[str]:
     sections = [f"### 🎲 {live.name}"]
     if live.weapons:
         sections.append(
-            "**Weapons**\n" + "\n".join(_dares_weapon(w) for w in live.weapons)
+            "**Weapons**\n" + "\n".join(_dares_weapon(w, links) for w in live.weapons)
         )
     if live.armor:
         # Armor is identical across the three classes, so name it once.
@@ -205,16 +232,18 @@ def render_date_sections(
     date: dt.datetime,
     *,
     emoji_dict: dict,
+    links: dict[str, str] | None = None,
 ) -> list[str]:
     """A single date's page (navigator mode): the day's/week's activities."""
+    links = links or {}
     title = rotation_schema.LEGACY_DESTINATIONS[destination_key][0]
     blocks: list[str] = []
     set_sections: list[str] = []
     for activity in resolved:
         if activity.set is not None:
-            set_sections = _set_sections(activity)
+            set_sections = _set_sections(activity, links)
         else:
-            blocks.append(_activity_block(activity))
+            blocks.append(_activity_block(activity, links))
 
     sections = [f"# {title}\n-# {_fmt(date)}"]
     if blocks:
@@ -230,9 +259,11 @@ def render_week_sections(
     week_start: dt.datetime,
     *,
     emoji_dict: dict,
+    links: dict[str, str] | None = None,
 ) -> list[str]:
     """One reset-week: weekly activities once, plus a per-day breakdown of the daily
     activities across the seven days of that week."""
+    links = links or {}
     title = rotation_schema.LEGACY_DESTINATIONS[destination_key][0]
     days = [week_start + dt.timedelta(days=i) for i in range(7)]
     per_day = [rotation(d) for d in days]
@@ -242,13 +273,14 @@ def render_week_sections(
 
     weekly = [a for a in week_activities if a.cadence == "weekly"]
     if weekly:
-        sections.append("\n\n".join(_activity_block(a) for a in weekly))
+        sections.append("\n\n".join(_activity_block(a, links) for a in weekly))
 
     for pos, activity in enumerate(week_activities):
         if activity.cadence != "daily":
             continue
         rows = "\n".join(
-            f"{_fmt(days[i])} · {_inline_values(per_day[i][pos])}" for i in range(7)
+            f"{_fmt(days[i])} · {_inline_values(per_day[i][pos], links)}"
+            for i in range(7)
         )
         sections.append(f"**{activity.title}** · daily\n\n{rows}")
 
@@ -256,11 +288,13 @@ def render_week_sections(
     return _subbed(sections, emoji_dict)
 
 
-def _row_value(activity: ResolvedActivity, *, armor: bool) -> str:
+def _row_value(
+    activity: ResolvedActivity, *, armor: bool, links: dict[str, str]
+) -> str:
     if activity.set is not None:
         return activity.set.name or "TBC"
     values = [
-        (_armorize(v) if armor else _weaponize(v))
+        (_armorize(v) if armor else _weaponize(v, links))
         for v in activity.values.values()
         if v
     ]
@@ -274,12 +308,14 @@ def render_upcoming_sections(
     *,
     emoji_dict: dict,
     armor: bool = False,
+    links: dict[str, str] | None = None,
 ) -> list[str]:
     """A single, non-paginated "A Look Ahead" post (after Kyber's schedule embeds).
 
     A title, a live resets-countdown, then ``**date**`` / ``▸ value`` rows with the
     current one marked. ``dates`` are reset-aligned: ``dates[0]`` is the current period
     and ``dates[1]`` the next boundary (the countdown target)."""
+    links = links or {}
     weekly = rotation.step.days == 7
     per_date = [(d, rotation(d)) for d in dates]
     step = rotation.step
@@ -299,7 +335,7 @@ def render_upcoming_sections(
             span = f"{_fmt(day)} - {_fmt(day + step)}" if weekly else _fmt(day)
             marker = "  ·  *now*" if i == 0 else ""
             lines.append(f"**{span}**{marker}")
-            lines.append(f"▸ {_row_value(acts[pos], armor=armor)}")
+            lines.append(f"▸ {_row_value(acts[pos], armor=armor, links=links)}")
             lines.append("")
 
     lines.append(
@@ -318,9 +354,11 @@ def render_dares_sections(
     date: dt.datetime,
     *,
     emoji_dict: dict,
+    links: dict[str, str] | None = None,
 ) -> list[str]:
     """The Dares of Eternity page, after Kyber's embed: expert rounds (an arrow chain),
     then Legendary Armor and Legendary Weapons for the week's set."""
+    links = links or {}
     rounds = next((a for a in resolved if a.key == "rounds"), None)
     loot = next((a for a in resolved if a.set is not None), None)
 
@@ -339,7 +377,7 @@ def render_dares_sections(
                 "\n-# available for all classes"
             )
         if live.weapons:
-            weapons = "\n".join(_dares_weapon(w) for w in live.weapons)
+            weapons = "\n".join(_dares_weapon(w, links) for w in live.weapons)
             sections.append(f"**Legendary Weapons // {live.name}**\n\n{weapons}")
 
     sections.append(

@@ -106,6 +106,8 @@ class LegacyRotation:
 
     start_date: dt.datetime = attr.ib()
     activities: list[LegacyActivity] = attr.ib()
+    # Weapon value → light.gg URL, baked by the editor on save (empty otherwise).
+    item_links: dict[str, str] = attr.ib(factory=dict)
 
     @classmethod
     def from_json(cls, doc: dict[str, t.Any]) -> LegacyRotation:
@@ -164,17 +166,20 @@ class LegacyRotation:
                     )
                 )
 
-        return cls(start_date, activities)
+        return cls(start_date, activities, dict(doc.get("item_links") or {}))
 
     def to_json(self, *, version: int = 1) -> dict[str, t.Any]:
         """Serialise back to the JSON document shape (inverse of :meth:`from_json`)."""
-        return {
+        doc: dict[str, t.Any] = {
             "version": version,
             # start_date is midnight-UTC-of-reference-date + (<24h) reset offset, so its
             # UTC date is exactly the reference date.
             "reference_date": self.start_date.astimezone(dt.UTC).date().isoformat(),
             "activities": [self._activity_to_json(a) for a in self.activities],
         }
+        if self.item_links:
+            doc["item_links"] = dict(self.item_links)
+        return doc
 
     @staticmethod
     def _activity_to_json(activity: LegacyActivity) -> dict[str, t.Any]:

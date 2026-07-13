@@ -291,8 +291,12 @@ if (type.startsWith("legacy_")) {
   const label = (name) =>
     name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-  function addValue(list, v) {
+  function addValue(list, v, ac) {
     const input = el("input", { type: "text", value: v || "", className: "grow" });
+    if (ac) {
+      input.setAttribute("list", ac.id); // manifest weapon/armor autocomplete
+      input.addEventListener("input", ac.onInput);
+    }
     const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
     const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
     const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
@@ -304,14 +308,49 @@ if (type.startsWith("legacy_")) {
     list.append(row);
   }
 
+  // Debounced DestinyItem autocomplete (weapons/armor) backed by /rotation/search.
+  // The stored value keeps the "Name (Type)" shape so emoji tagging + link baking work.
+  let _acSeq = 0;
+  function itemAutocomplete(kind) {
+    const id = `ac-${kind}-${_acSeq++}`;
+    const dl = el("datalist", { id });
+    let timer = null;
+    const onInput = (e) => {
+      const q = e.target.value.trim();
+      clearTimeout(timer);
+      if (q.length < 2) return;
+      timer = setTimeout(async () => {
+        try {
+          const res = await fetch(
+            `/rotation/search?q=${encodeURIComponent(q)}&kind=${kind}`,
+            { credentials: "same-origin" },
+          );
+          if (!res.ok) return;
+          const items = await res.json();
+          dl.replaceChildren(
+            ...items.map((it) =>
+              el("option", { value: it.type ? `${it.name} (${it.type})` : it.name }),
+            ),
+          );
+        } catch (_e) {
+          /* autocomplete is best-effort */
+        }
+      }, 200);
+    };
+    return { id, dl, onInput };
+  }
+
   // A labelled, reorderable value list (the shared building block for element cycles,
-  // set weapon/armor lists, and the set schedule).
-  function valueList(legend, values, addLabel) {
+  // set weapon/armor lists, and the set schedule). `kind` enables item autocomplete.
+  function valueList(legend, values, addLabel, kind) {
     const list = el("div");
-    (values || []).forEach((v) => addValue(list, v));
+    const ac = kind ? itemAutocomplete(kind) : null;
+    (values || []).forEach((v) => addValue(list, v, ac));
     const add = el("button", { className: "tiny secondary", type: "button", textContent: addLabel });
-    add.addEventListener("click", () => addValue(list));
-    const fs = el("fieldset", { className: "zone" }, [el("legend", { textContent: legend }), list, add]);
+    add.addEventListener("click", () => addValue(list, undefined, ac));
+    const children = [el("legend", { textContent: legend }), list, add];
+    if (ac) children.push(ac.dl);
+    const fs = el("fieldset", { className: "zone" }, children);
     return { fs, list };
   }
 
@@ -378,8 +417,8 @@ if (type.startsWith("legacy_")) {
       const setsWrap = el("div");
       for (const s of act.sets || []) {
         const nameInput = el("input", { type: "text", value: s.name || "", className: "grow", placeholder: "Set name" });
-        const weapons = valueList("Weapons", s.weapons, "+ Weapon");
-        const armor = valueList("Armor (named once; offered for all classes)", s.armor, "+ Armor");
+        const weapons = valueList("Weapons", s.weapons, "+ Weapon", "weapon");
+        const armor = valueList("Armor (named once; offered for all classes)", s.armor, "+ Armor", "armor");
         const model = { nameInput, prev: (s.name || "").trim(), weaponsList: weapons.list, armorList: armor.list };
         nameInput.addEventListener("input", () => { refreshSetNames(); validateSets(); });
         // On commit, propagate a rename to every schedule week that named the old set,
@@ -432,7 +471,9 @@ if (type.startsWith("legacy_")) {
     const elementModels = [];
     const elemsWrap = el("div");
     for (const elem of act.elements || []) {
-      const { fs, list } = valueList(label(elem.name), elem.values, "+ Value");
+      // Weapon elements (e.g. Terminal Overload / Wellspring / Altar) get autocomplete.
+      const kind = elem.name === "weapon" ? "weapon" : null;
+      const { fs, list } = valueList(label(elem.name), elem.values, "+ Value", kind);
       elemsWrap.append(fs);
       elementModels.push({ name: elem.name, list });
     }

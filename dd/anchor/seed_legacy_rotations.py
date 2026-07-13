@@ -35,12 +35,35 @@ import pathlib
 import typing as t
 
 from ..common import rotation_schema, schemas
+from ..common.legacy_activities import weapon_values
 from ..sector_accounting.legacy_activities import LegacyRotation
+from .extensions.bungie_api import item_index
 
 _SEED_DIR = pathlib.Path(__file__).resolve().parent / "seed_data" / "legacy"
 
 
-async def seed(*, force: bool, only: str | None = None) -> None:
+def _bake_links(doc: dict[str, t.Any]) -> int:
+    """Resolve the doc's weapon values to light.gg URLs in place; returns the count."""
+    doc.pop("item_links", None)
+    links = {
+        value: url
+        for value in weapon_values(doc)
+        if (url := item_index.resolve_light_gg_url(value))
+    }
+    if links:
+        doc["item_links"] = links
+    return len(links)
+
+
+async def seed(*, force: bool, only: str | None = None, links: bool = False) -> None:
+    if links:
+        print("warming the manifest item index… (first run downloads the manifest)")
+        await item_index.warm(schemas.BungieCredentials.api_key)
+        if not item_index.ready():
+            print(
+                "WARNING: item index not ready (no API key / manifest); links skipped"
+            )
+
     for key in rotation_schema.LEGACY_DESTINATIONS:
         if only is not None and key != only:
             continue
@@ -56,8 +79,10 @@ async def seed(*, force: bool, only: str | None = None) -> None:
             print(f"skip  {slug} (already present; use --force to overwrite)")
             continue
 
+        link_count = _bake_links(doc) if links else 0
         await schemas.RotationData.set_data(slug, doc)
-        print(f"seed  {slug} ({_value_count(doc)} values)")
+        suffix = f", {link_count} links" if links else ""
+        print(f"seed  {slug} ({_value_count(doc)} values{suffix})")
 
 
 def _value_count(doc: dict[str, t.Any]) -> int:
@@ -87,8 +112,14 @@ def main() -> None:
         default=None,
         help="Seed only this destination key (e.g. 'dares'); default: all.",
     )
+    parser.add_argument(
+        "--links",
+        action="store_true",
+        help="Also resolve weapon light.gg links from the manifest (needs the "
+        "Bungie API key; downloads the manifest on first run).",
+    )
     args = parser.parse_args()
-    asyncio.run(seed(force=args.force, only=args.only))
+    asyncio.run(seed(force=args.force, only=args.only, links=args.links))
 
 
 if __name__ == "__main__":

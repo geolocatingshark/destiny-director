@@ -410,6 +410,13 @@ def _build_legacy_rotation_schema(spec: _DestinationSpec) -> dict[str, t.Any]:
         "additionalProperties": False,
         "properties": {
             "version": {"type": "integer", "options": {"hidden": True}},
+            # Weapon value → light.gg URL, baked by the editor on save (hidden from the
+            # form). Optional; absent/blank means the post renders the name un-linked.
+            "item_links": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "options": {"hidden": True},
+            },
             "reference_date": {
                 "type": "string",
                 "format": "date",

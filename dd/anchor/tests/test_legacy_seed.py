@@ -103,3 +103,51 @@ def test_home_page_lists_legacy_slugs():
     html = editor._render_home_html()
     assert "legacy_neomuna" in html
     assert "legacy_kepler" in html
+
+
+def test_bake_item_links_resolves_weapons(monkeypatch):
+    from dd.anchor.extensions.bungie_api import item_index
+
+    monkeypatch.setattr(item_index, "ready", lambda: True)
+    monkeypatch.setattr(
+        item_index,
+        "resolve_light_gg_url",
+        lambda v: (
+            f"https://lg/{v.split(' (')[0]}"
+            if ("Rifle" in v or "Cannon" in v)
+            else None
+        ),
+    )
+    doc = {
+        "activities": [
+            {
+                "key": "loot_table",
+                "kind": "sets",
+                "sets": [
+                    {
+                        "name": "Set 1",
+                        "weapons": [
+                            "Chroma Rush (Auto Rifle)",
+                            "Vulpecula (Hand Cannon)",
+                        ],
+                        "armor": ["Wild Hunt"],  # armor: not linked
+                    }
+                ],
+            }
+        ],
+    }
+    editor._bake_item_links(doc)
+    assert doc["item_links"] == {
+        "Chroma Rush (Auto Rifle)": "https://lg/Chroma Rush",
+        "Vulpecula (Hand Cannon)": "https://lg/Vulpecula",
+    }
+
+
+def test_bake_item_links_noop_when_index_cold(monkeypatch):
+    from dd.anchor.extensions.bungie_api import item_index
+
+    monkeypatch.setattr(item_index, "ready", lambda: False)
+    doc = {"item_links": {"stale": "x"}, "activities": []}
+    editor._bake_item_links(doc)
+    # Server owns item_links: cleared and only recomputed when the index is warm.
+    assert "item_links" not in doc

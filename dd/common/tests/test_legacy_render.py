@@ -233,3 +233,48 @@ def test_emoji_tokens_are_substituted():
     )
     text = "\n".join(sections)
     assert emoji.mention in text  # :armor: resolved to the guild emoji
+
+
+def test_weapon_links_render_when_baked():
+    from dd.common.legacy_activities import render_dares_sections
+
+    rot = (
+        _dares_rotation()
+    )  # weapons: Chroma Rush (Auto Rifle), Vulpecula (Hand Cannon)
+    links = {"Chroma Rush (Auto Rifle)": "https://www.light.gg/db/items/100/"}
+    text = "\n".join(render_dares_sections(rot(DATE), DATE, emoji_dict={}, links=links))
+    # Linked weapon: emoji + [Name](url); the "(Type)" suffix is dropped.
+    assert ":auto_rifle: [Chroma Rush](https://www.light.gg/db/items/100/)" in text
+    # Un-baked weapon stays plain (emoji + name, no link).
+    assert ":hand_cannon: Vulpecula" in text
+    assert "[Vulpecula]" not in text
+
+
+def test_weapon_values_extracts_only_weapons():
+    from dd.common.legacy_activities import weapon_values
+
+    doc: dict[str, t.Any] = {
+        "activities": [
+            {
+                "key": "loot_table",
+                "kind": "sets",
+                "sets": [
+                    {
+                        "name": "Set 1",
+                        "weapons": ["Chroma Rush (Auto Rifle)"],
+                        "armor": ["Wild Hunt"],
+                    }
+                ],
+            },
+            {
+                "key": "wellspring",
+                "elements": [
+                    {"name": "weapon", "values": ["Tarnation (Grenade Launcher)"]},
+                    {"name": "boss", "values": ["Golmag"]},
+                ],
+            },
+        ],
+    }
+    found = weapon_values(doc)
+    assert found == {"Chroma Rush (Auto Rifle)", "Tarnation (Grenade Launcher)"}
+    assert "Wild Hunt" not in found and "Golmag" not in found
