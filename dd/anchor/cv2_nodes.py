@@ -42,6 +42,8 @@ import typing as t
 
 import hikari as h
 
+from ..common import cfg
+
 # --- Discord component type ids ---------------------------------------------------
 
 ACTION_ROW = 1
@@ -101,7 +103,15 @@ def has_modal(node: Node) -> bool:
 
 
 def make_container() -> Node:
-    return {"type": CONTAINER, "components": []}
+    # Seed the brand accent colour so a fresh container matches every other
+    # container-producing path (build_container / embeds_to_container both default to
+    # cfg.embed_default_color). The Edit modal (container_fields / mutate_container)
+    # still lets the user recolour it or clear it back to none.
+    return {
+        "type": CONTAINER,
+        "components": [],
+        "accent_color": int(cfg.embed_default_color),
+    }
 
 
 def make_text(content: str = "") -> Node:
