@@ -11,6 +11,7 @@ import typing as t
 from pprint import pformat
 
 from .constants import (
+    BUNGIE_NET,
     DESTINY_CLASS_TYPE_IDS,
     DESTINY_CLASSES_ENUM,
     DESTINY_ITEM_TYPE_ARMOR,
@@ -148,6 +149,7 @@ class DestinyItem:
         manifest_entry = manifest_table["DestinyInventoryItemDefinition"][hash_]
 
         name: str = manifest_entry["displayProperties"]["name"]
+        icon_path: str | None = manifest_entry["displayProperties"].get("icon")
         rarity: str = manifest_entry["inventory"].get("tierTypeName", "Unknown Rarity")
         class_type_id: int = manifest_entry["classType"]
         class_: str = (
@@ -214,6 +216,7 @@ class DestinyItem:
             item_type_friendly_name=item_type_friendly_name,
             collectible_set_name=collectible_set_name,
             costs=costs,
+            icon_path=icon_path,
         )
         item = item.with_stats(stats, manifest_table)
         item = item.with_perks(perks, manifest_table)
@@ -231,6 +234,7 @@ class DestinyItem:
         item_type_friendly_name: str,
         collectible_set_name: str | None = None,
         costs: dict[str, int] | None = None,
+        icon_path: str | None = None,
     ):
         if costs is None:
             costs = {}
@@ -243,6 +247,7 @@ class DestinyItem:
         self.item_type_friendly_name = item_type_friendly_name
         self.collectible_set_name = collectible_set_name
         self.costs = costs
+        self.icon_path = icon_path
         self._stats: dict[str, t.Any] = {}
         self._perks: t.Any = []
 
@@ -293,6 +298,11 @@ class DestinyItem:
     @property
     def lightgg_url(self) -> str:
         return f"https://light.gg/db/items/{self.hash}"
+
+    @property
+    def icon_url(self) -> str | None:
+        """Absolute Bungie.net URL of the item's icon, or ``None`` if it has none."""
+        return f"{BUNGIE_NET}{self.icon_path}" if self.icon_path else None
 
     @property
     def expected_emoji_name(self) -> str:

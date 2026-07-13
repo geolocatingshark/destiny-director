@@ -220,6 +220,12 @@ def construct_emoji_substituter(
     """Constructs a substituter for user-side emoji to be used in re.sub"""
 
     def func(match: t.Any) -> str:
+        # Leave already-qualified ``<:name:id>`` mentions untouched — group(4) is the
+        # trailing ``id>``. Without this, an app-emoji mention spliced in earlier (e.g.
+        # a lazily-uploaded item icon) whose name collides with a guild emoji would be
+        # silently rewritten to the guild emoji's id.
+        if match.group(4):
+            return str(match.group(0))
         maybe_emoji_name = str(match.group(2))
         return str(
             emoji_dict.get(maybe_emoji_name)

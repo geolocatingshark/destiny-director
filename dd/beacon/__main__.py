@@ -34,6 +34,7 @@ from ..common.discord_logging import (
     install_command_error_reporting,
     install_discord_logging,
 )
+from ..common.emoji_store import AppEmojiStore
 from ..common.extension_loader import load_extensions_strict
 from ..common.lifecycle import consume_exit_code
 from .mirror_worker import mirror_worker
@@ -57,6 +58,12 @@ client.di.registry_for(lb.di.Contexts.DEFAULT).register_value(CachedFetchBot, bo
 # Make the live command client injectable so the dynamic user-command system can
 # reach it to (re)register commands at runtime.
 client.di.registry_for(lb.di.Contexts.DEFAULT).register_value(lb.Client, client)
+# The pure-lazy application-emoji store for Destiny item icons (uploaded on first use,
+# LRU-evicted near the 2000/app cap). Self-warms on StartedEvent; injectable so posts
+# can resolve an item to an inline ``<:emoji:id>`` from this bot's own app store.
+client.di.registry_for(lb.di.Contexts.DEFAULT).register_value(
+    AppEmojiStore, AppEmojiStore(bot)
+)
 
 # Render owner-gate rejections ephemerally, ahead of the catch-all alert reporter so
 # they never page the alerts channel.
