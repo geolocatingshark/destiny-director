@@ -99,9 +99,7 @@ async def test_bucketing_reachable_unreachable(monkeypatch):
         (0, None),  # nothing disabled -> no health log at all
     ],
 )
-async def test_escalation_by_disabled_count(
-    monkeypatch, num_disabled, expected_method
-):
+async def test_escalation_by_disabled_count(monkeypatch, num_disabled, expected_method):
     """The health-logger level escalates with the number of disabled mirrors."""
     monkeypatch.setattr(mirror.cfg, "disable_bad_channels", True)
     monkeypatch.setattr(mirror.aio, "sleep", AsyncMock())

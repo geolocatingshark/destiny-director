@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "reference_date": "2026-04-21",
+  "activities": [
+    {
+      "key": "rounds",
+      "title": "Encounter Rounds",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "first",
+          "values": [
+            "Fallen",
+            "Hive",
+            "Cabal",
+            "Taken",
+            "Hive",
+            "Vex"
+          ]
+        },
+        {
+          "name": "second",
+          "values": [
+            "Hive",
+            "Vex",
+            "Taken",
+            "Cabal",
+            "Fallen",
+            "Cabal"
+          ]
+        },
+        {
+          "name": "final",
+          "values": [
+            "Zydron (Vex)",
+            "Valus Ta'aurc (Cabal)",
+            "Crota (Hive)"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "loot_table",
+      "title": "Legendary Loot",
+      "cadence": "weekly",
+      "kind": "sets",
+      "schedule": [
+        "Set 1",
+        "Set 2",
+        "Set 3",
+        "Set 4"
+      ],
+      "sets": [
+        {
+          "name": "Set 1",
+          "weapons": [
+            "Enigmas's Draw (Sidearm)",
+            "Dire Promise (Hand Cannon)",
+            "True Prophecy (Hand Cannon)",
+            "Arsenic Bite-4b (Combat Bow)",
+            "Royal Chase (Scout Rifle)",
+            "Jian 7 Rifle (Pulse Rifle)",
+            "Friction Fire (Submachine Gun)",
+            "Escape Velocity (Submachine Gun)",
+            "Corsair's Wrath (Linear Fusion Rifle)",
+            "Deafening Whisper (Grenade Launcher)",
+            "Blast Battue (Grenade Launcher)"
+          ],
+          "armor": [
+            "Wild Hunt",
+            "Scatterhorn"
+          ]
+        },
+        {
+          "name": "Set 2",
+          "weapons": [
+            "Far Future (Sniper Rifle)",
+            "Extraordinary Rendition (Submachine Gun)",
+            "Brass Attacks (Sidearm)",
+            "Threaded Needle (Linear Fusion Rifle)",
+            "Code Duello (Rocket Launcher)",
+            "Annual Skate (Hand Cannon)",
+            "Imperial Needle (Combat Bow)",
+            "Shepherd's Watch (Sniper Rifle)",
+            "Scathelocke (Auto Rifle)",
+            "Interference VI (Grenade Launcher)",
+            "Distant Tumulus (Sniper Rifle)",
+            "Honor's Edge (Sidearm)"
+          ],
+          "armor": [
+            "Praefectus",
+            "Scatterhorn"
+          ]
+        },
+        {
+          "name": "Set 3",
+          "weapons": [
+            "Chroma Rush (Auto Rifle)",
+            "Sojourner's Tale (Shotgun (Solar))",
+            "Wishbringer (Shotgun (Solar))",
+            "Farewell (Sidearm)",
+            "The Last Dance (Sidearm (Arc))",
+            "Gridskipper (Pulse Rifle (Void))",
+            "Last Perdition (Pulse Rifle (Void))",
+            "Main Ingredient (Fusion Rifle (Arc))",
+            "Long Shadow (Sniper Rifle)",
+            "Toil and Trouble (Shotgun)",
+            "Shattered Cipher (Machine Gun (Void))",
+            "Ignition Code (Grenade Launcher)"
+          ],
+          "armor": [
+            "Scatterhorn Suit",
+            "Lightkin Suit"
+          ]
+        },
+        {
+          "name": "Set 4",
+          "weapons": [
+            "Fracethyst (Shotgun (Stasis))",
+            "Vulpecula (Hand Cannon (Stasis))",
+            "Contingency Plan (Scout Rifle (Arc))",
+            "Legal Action II (Pulse Rifle)",
+            "Spoiler Alert (Sidearm)",
+            "Iota Draconis (Fusion Rifle (Solar))",
+            "Wolftone Draw (Combat Bow (Arc))",
+            "Steel Sybil Z-14 (Sword (Void))",
+            "Canis Major (Grenade Launcher (Solar))",
+            "Chrysura Melo (Auto Rilfe (Solar))",
+            "Outrageous Fortune (Grenade Launcher (Solar))"
+          ],
+          "armor": [
+            "Pathfinder",
+            "Scatterhorn"
+          ]
+        }
+      ]
+    }
+  ]
+}

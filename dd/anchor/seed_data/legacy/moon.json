@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "reference_date": "2026-04-21",
+  "activities": [
+    {
+      "key": "wandering_nightmare",
+      "title": "Wandering Nightmare (Patrol)",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "nightmare",
+          "values": [
+            "Nightmare of Jaxx",
+            "Fallen Council",
+            "Nightmare of Xortal",
+            "Nightmare of Horkis"
+          ]
+        },
+        {
+          "name": "location",
+          "values": [
+            "Hellmouth",
+            "Archer's Line",
+            "Sorrow's Harbor",
+            "Anchor of Light"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "nightmare_hunts",
+      "title": "Nightmare Hunts",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "hunt_1",
+          "values": [
+            "Fanatic"
+          ]
+        },
+        {
+          "name": "hunt_2",
+          "values": [
+            "Crota"
+          ]
+        },
+        {
+          "name": "hunt_3",
+          "values": [
+            "Phogoth"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "altar_of_sorrow",
+      "title": "Altar of Sorrow",
+      "cadence": "daily",
+      "elements": [
+        {
+          "name": "weapon",
+          "values": [
+            "Heretic (Rocket Launcher)",
+            "Blasphemer (Shotgun)",
+            "Apostate (Sniper Rifle)"
+          ]
+        },
+        {
+          "name": "boss",
+          "values": [
+            "Nightmare of Zydron",
+            "Nightmare of Phogoth",
+            "Nightmare of Taniks"
+          ]
+        }
+      ]
+    }
+  ]
+}

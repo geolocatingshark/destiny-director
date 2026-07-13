@@ -9,10 +9,11 @@
   server re-validates against the JSON schema, so this form is a convenience, not a
   trust boundary.
 
-  Each post type has its own bespoke form (tagged .ls-only / .xur-only in the markup);
-  on load the other type's nodes are removed and the matching type's block builds its
-  fields and assigns collect(). lost_sector is tabbed (Sectors / Planet cycles /
-  Preview); xur_location is a simpler Locations / Preview. The layout stays usable on a
+  Each post type has its own bespoke form (tagged .ls-only / .xur-only / .legacy-only in
+  the markup); on load every other type's nodes are removed and the matching type's block
+  builds its fields and assigns collect(). lost_sector is tabbed (Sectors / Planet cycles
+  / Preview); xur_location is a simpler Locations / Preview; legacy_* is Activities /
+  Preview. The layout stays usable on a
   phone — only one section is visible at a time; the tab bar and Save button stay
   pinned. This type's panels all live in the DOM at once (hidden via CSS), so collect()
   always sees every field regardless of the active tab.
@@ -41,6 +42,7 @@
       <button type="button" data-tab="sectors" class="active ls-only">Sectors</button>
       <button type="button" data-tab="schedule" class="ls-only">Planet cycles</button>
       <button type="button" data-tab="locations" class="xur-only">Locations</button>
+      <button type="button" data-tab="activities" class="legacy-only">Activities</button>
       <button type="button" data-tab="preview">Preview</button>
     </nav>
 
@@ -70,6 +72,21 @@
         </p>
         <div id="locations"></div>
         <button class="secondary tiny" id="addLocation" type="button">+ Add location</button>
+      </section>
+
+      <section class="panel legacy-only" data-panel="activities">
+        <div class="field">
+          <label for="referenceDate">Rotation start date (a weekly-reset Tuesday)</label>
+          <input type="date" id="referenceDate" />
+        </div>
+        <h2>Activities</h2>
+        <p class="muted">
+          Each element rotates independently through its own list of values — one per day
+          or week, looping. Order matters: the first value is what shows on the start
+          date. Leave a value blank for a period with nothing (e.g. a Dares week with no
+          armor).
+        </p>
+        <div id="legacyActivities"></div>
       </section>
 
       <section class="panel" data-panel="preview">

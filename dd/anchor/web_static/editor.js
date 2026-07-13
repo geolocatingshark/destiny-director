@@ -8,10 +8,11 @@
 // no token is embedded here. The server re-validates against the JSON schema, so this
 // form is a convenience, not a trust boundary.
 //
-// Each post type has its own bespoke form (tagged .ls-only / .xur-only in the markup);
-// on load the other type's nodes are removed and the matching type's block builds its
-// fields and assigns collect(). lost_sector is tabbed (Sectors / Planet cycles /
-// Preview); xur_location is a simpler Locations / Preview.
+// Each post type has its own bespoke form (tagged .ls-only / .xur-only / .legacy-only in
+// the markup); on load every other type's nodes are removed and the matching type's
+// block builds its fields and assigns collect(). lost_sector is tabbed (Sectors / Planet
+// cycles / Preview); xur_location is a simpler Locations / Preview; legacy_* is Activities
+// (each activity's elements are independent editable value lists) / Preview.
 
 const BOOTSTRAP = window.__BOOTSTRAP__;
 const { type, data, vocab } = BOOTSTRAP;
@@ -26,11 +27,16 @@ document.getElementById("typeName").textContent = type;
 document.getElementById("authNote").textContent =
   "Signed in via Discord (about 30 days). Changes save straight to the database.";
 
-// Each post type has its own bespoke form; drop the other type's markup so the
+// Each post type has its own bespoke form; drop every other type's markup so the
 // tab bar and collect() only ever see this type's fields.
-document
-  .querySelectorAll(type === "lost_sector" ? ".xur-only" : ".ls-only")
-  .forEach((n) => n.remove());
+const activeOnly = type.startsWith("legacy_")
+  ? "legacy-only"
+  : type === "lost_sector"
+    ? "ls-only"
+    : "xur-only";
+document.querySelectorAll(".ls-only, .xur-only, .legacy-only").forEach((n) => {
+  if (!n.classList.contains(activeOnly)) n.remove();
+});
 
 // collect() is assigned by the active type's block below; the shared preview /
 // save plumbing calls it without caring which post type produced the document.
@@ -274,6 +280,205 @@ if (type === "xur_location") {
   });
 }
 
+// ===== legacy_* form ===================================================
+// A legacy destination is a fixed set of activities (from the loaded doc); each
+// activity has fixed elements, and each element is its own independent, editable list
+// of cycle values. The structure (activities/elements/names) is pinned by the spec, so
+// this form only edits reference_date and the per-element value lists.
+if (type.startsWith("legacy_")) {
+  $("referenceDate").value = data.reference_date || "";
+  const box = $("legacyActivities");
+  const label = (name) =>
+    name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  function addValue(list, v) {
+    const input = el("input", { type: "text", value: v || "", className: "grow" });
+    const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
+    const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
+    const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
+    const row = el("div", { className: "row" }, [input, up, down, del]);
+    row._value = () => input.value;
+    del.addEventListener("click", () => row.remove());
+    up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
+    down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
+    list.append(row);
+  }
+
+  // A labelled, reorderable value list (the shared building block for element cycles,
+  // set weapon/armor lists, and the set schedule).
+  function valueList(legend, values, addLabel) {
+    const list = el("div");
+    (values || []).forEach((v) => addValue(list, v));
+    const add = el("button", { className: "tiny secondary", type: "button", textContent: addLabel });
+    add.addEventListener("click", () => addValue(list));
+    const fs = el("fieldset", { className: "zone" }, [el("legend", { textContent: legend }), list, add]);
+    return { fs, list };
+  }
+
+  const activityModels = [];
+  // Each set-based activity registers a validator here; Save is gated on all of them
+  // (mirrors the lost_sector consistency gate between sectors and the schedule).
+  const setsValidators = [];
+  for (const act of data.activities || []) {
+    // ----- set-based activity (Dares loot): a schedule + a pool of sets --------------
+    // The Weekly schedule references sets by name, with autocomplete + the same
+    // consistency/rename treatment the lost-sector editor gives its sectors ↔ schedule.
+    if (act.kind === "sets") {
+      const listId = `setNames-${act.key}`;
+      const dataList = el("datalist", { id: listId });
+      const scheduleBox = el("div");
+      const setModels = [];
+
+      function addWeek(value) {
+        const input = el("input", { type: "text", value: value || "", className: "grow" });
+        input.setAttribute("list", listId); // autocomplete from the set names
+        input.addEventListener("input", validateSets);
+        const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
+        const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
+        const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
+        const row = el("div", { className: "row" }, [input, up, down, del]);
+        row._value = () => input.value.trim();
+        row._input = input;
+        del.addEventListener("click", () => { row.remove(); validateSets(); });
+        up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
+        down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
+        scheduleBox.append(row);
+      }
+
+      function refreshSetNames() {
+        dataList.replaceChildren(
+          ...setModels.map((m) => el("option", { value: m.nameInput.value.trim() })).filter((o) => o.value),
+        );
+      }
+
+      // Highlight blank/duplicate set names and schedule weeks that name no set; return
+      // the problems (empty ⇒ internally consistent).
+      function validateSets() {
+        const names = setModels.map((m) => m.nameInput.value.trim());
+        const counts = {};
+        for (const n of names) counts[n] = (counts[n] || 0) + 1;
+        const known = new Set(names.filter(Boolean));
+        const problems = new Set();
+        for (const m of setModels) {
+          const n = m.nameInput.value.trim();
+          const bad = !n || counts[n] > 1;
+          m.nameInput.classList.toggle("invalid", bad);
+          if (!n) problems.add("a set has a blank name");
+          else if (counts[n] > 1) problems.add(`duplicate set name "${n}"`);
+        }
+        for (const row of scheduleBox.children) {
+          const v = row._value();
+          const bad = !!v && !known.has(v);
+          row._input.classList.toggle("invalid", bad);
+          if (bad) problems.add(`schedule week "${v}" isn't a set`);
+        }
+        return [...problems];
+      }
+
+      const setsWrap = el("div");
+      for (const s of act.sets || []) {
+        const nameInput = el("input", { type: "text", value: s.name || "", className: "grow", placeholder: "Set name" });
+        const weapons = valueList("Weapons", s.weapons, "+ Weapon");
+        const armor = valueList("Armor (named once; offered for all classes)", s.armor, "+ Armor");
+        const model = { nameInput, prev: (s.name || "").trim(), weaponsList: weapons.list, armorList: armor.list };
+        nameInput.addEventListener("input", () => { refreshSetNames(); validateSets(); });
+        // On commit, propagate a rename to every schedule week that named the old set,
+        // so the Sets and Weekly schedule never drift apart.
+        nameInput.addEventListener("change", () => {
+          const oldName = model.prev;
+          const newName = nameInput.value.trim();
+          if (oldName && newName && oldName !== newName)
+            for (const row of scheduleBox.children) if (row._value() === oldName) row._input.value = newName;
+          model.prev = newName;
+          refreshSetNames();
+          validateSets();
+        });
+        setsWrap.append(
+          el("div", { className: "card" }, [
+            el("div", { className: "field" }, [el("label", { textContent: "Set name" }), nameInput]),
+            weapons.fs,
+            armor.fs,
+          ]),
+        );
+        setModels.push(model);
+      }
+
+      (act.schedule || []).forEach((v) => addWeek(v));
+      const schedAdd = el("button", { className: "tiny secondary", type: "button", textContent: "+ Week" });
+      schedAdd.addEventListener("click", () => { addWeek(); validateSets(); });
+      const scheduleFs = el("fieldset", { className: "zone" }, [
+        el("legend", { textContent: "Weekly schedule (set names, in order, looping)" }),
+        scheduleBox,
+        schedAdd,
+        dataList,
+      ]);
+
+      refreshSetNames();
+      box.append(
+        el("div", { className: "card" }, [
+          el("div", { className: "card-head" }, [el("strong", { className: "grow", textContent: act.title })]),
+          el("p", { className: "muted", textContent: "Changes weekly" }),
+          scheduleFs,
+          el("h3", { textContent: "Sets" }),
+          setsWrap,
+        ]),
+      );
+      activityModels.push({ kind: "sets", key: act.key, title: act.title, cadence: act.cadence, scheduleBox, setModels });
+      setsValidators.push(validateSets);
+      continue;
+    }
+
+    // ----- element-based activity: one independent value list per element ------------
+    const elementModels = [];
+    const elemsWrap = el("div");
+    for (const elem of act.elements || []) {
+      const { fs, list } = valueList(label(elem.name), elem.values, "+ Value");
+      elemsWrap.append(fs);
+      elementModels.push({ name: elem.name, list });
+    }
+    box.append(
+      el("div", { className: "card" }, [
+        el("div", { className: "card-head" }, [el("strong", { className: "grow", textContent: act.title })]),
+        el("p", { className: "muted", textContent: act.cadence === "daily" ? "Changes daily" : "Changes weekly" }),
+        elemsWrap,
+      ]),
+    );
+    activityModels.push({ kind: "elements", key: act.key, title: act.title, cadence: act.cadence, elements: elementModels });
+  }
+
+  const listValues = (list) => [...list.children].map((r) => r._value());
+
+  collect = () => ({
+    version: data.version || 1,
+    reference_date: $("referenceDate").value,
+    activities: activityModels.map((a) =>
+      a.kind === "sets"
+        ? {
+            key: a.key,
+            title: a.title,
+            cadence: a.cadence,
+            kind: "sets",
+            schedule: listValues(a.scheduleBox),
+            sets: a.setModels.map((s) => ({
+              name: s.nameInput.value.trim(),
+              weapons: listValues(s.weaponsList),
+              armor: listValues(s.armorList),
+            })),
+          }
+        : {
+            key: a.key,
+            title: a.title,
+            cadence: a.cadence,
+            elements: a.elements.map((e) => ({ name: e.name, values: listValues(e.list) })),
+          },
+    ),
+  });
+
+  // Gate Save on every set-based activity's consistency, and paint the initial state.
+  consistencyProblems = () => setsValidators.flatMap((v) => v());
+  setsValidators.forEach((v) => v());
+}
+
 // --- submit helpers ----------------------------------------------------
 function setStatus(msg, ok) {
   const s = $("status");
@@ -338,5 +543,6 @@ $("saveBtn").addEventListener("click", async () => {
 });
 
 // Activate the initial tab. lost_sector keeps its static default (Sectors);
-// xur_location's default tab lived in the removed markup, so activate it here.
+// the other types' default tab lived in the removed markup, so activate it here.
 if (type === "xur_location") showTab("locations");
+if (type.startsWith("legacy_")) showTab("activities");

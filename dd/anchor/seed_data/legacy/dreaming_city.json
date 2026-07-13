@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "reference_date": "2026-04-21",
+  "activities": [
+    {
+      "key": "petras_location",
+      "title": "Petra's Location",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "location",
+          "values": [
+            "Divalian Mists"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "blind_well",
+      "title": "Blind Well",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "charge",
+          "values": [
+            "Hive, Plague: Cragur",
+            "Taken, Plague: Inomina",
+            "Scorn, Plagues: Sikariis & Varkuuriis"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "quest",
+      "title": "Weekly Quest",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "quest",
+          "values": [
+            "The Oracle Engine",
+            "Dark Monastery",
+            "Broken Courier"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "curse_strength",
+      "title": "Curse Strength",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "strength",
+          "values": [
+            "Medium",
+            "Full",
+            "Low"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "ascendant_challenge",
+      "title": "Ascendant Challenge",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "challenge",
+          "values": [
+            "Shattered Ruins",
+            "Keep of Honed Edges",
+            "Agonarch Abyss",
+            "Cimmerian Garrison",
+            "Ouroborea",
+            "Forfeit Shrine"
+          ]
+        },
+        {
+          "name": "location",
+          "values": [
+            "Spine of Keres",
+            "Harbinger's Seclude",
+            "Bay of Drowned Wishes",
+            "Chamber of Starlight",
+            "Aphelion's Rest",
+            "Gardens of Esila"
+          ]
+        }
+      ]
+    }
+  ]
+}

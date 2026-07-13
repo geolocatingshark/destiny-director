@@ -388,9 +388,7 @@ async def test_evict_resolved_sources_skips_query_when_nothing_cached(monkeypatc
     w = _worker(monkeypatch)
     w._source_cache = {}  # batch source 1 is not cached (e.g. a crosspost/delete batch)
     query = AsyncMock(return_value=set())
-    monkeypatch.setattr(
-        mw.MirrorDelivery, "sources_needing_source_content", query
-    )
+    monkeypatch.setattr(mw.MirrorDelivery, "sources_needing_source_content", query)
 
     await w._evict_resolved_sources([_row(10, src_msg_id=1)])
 

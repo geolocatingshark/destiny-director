@@ -40,6 +40,7 @@ import lightbulb as lb
 from ...common import cfg, rotation_schema, schemas
 from ...common.components import cv2_error, cv2_notice, respond_cv2
 from ...sector_accounting import (
+    legacy_activities,
     sector_accounting,
     xur as xur_support_data,
 )
@@ -74,6 +75,8 @@ def _default_doc(post_type: str) -> dict[str, t.Any]:
         }
     if post_type == "xur_location":
         return {"version": 1, "locations": []}
+    if post_type.startswith("legacy_"):
+        return rotation_schema.legacy_default_doc(post_type)
     return {}
 
 
@@ -150,6 +153,39 @@ def _render_xur_location_preview_html(
     return "<ul>" + "".join(items) + "</ul>"
 
 
+def _render_legacy_preview_html(
+    rotation: legacy_activities.LegacyRotation,
+) -> str:
+    """A compact HTML rendering of the next few periods of a legacy destination."""
+    today = dt.datetime.now(dt.UTC)
+    step = rotation.step
+    blocks: list[str] = []
+    for offset in range(_PREVIEW_DAYS):
+        date = today + step * offset
+        blocks.append(f"<h4>{date.date().isoformat()}</h4>")
+        items: list[str] = []
+        for activity in rotation(date):
+            title = html.escape(activity.title)
+            if activity.set is not None:
+                s = activity.set
+                weapons = ", ".join(s.weapons) or "—"
+                armor = ", ".join(s.armor)
+                detail = f"{html.escape(s.name)} — weapons: {html.escape(weapons)}" + (
+                    f"; armor: {html.escape(armor)} (all classes)" if armor else ""
+                )
+                items.append(f"<li>{title} — {detail}</li>")
+                continue
+            parts: list[str] = []
+            for name, value in activity.values.items():
+                if not value:
+                    continue
+                parts.append(f"{html.escape(name)}: {html.escape(value)}")
+            detail = "; ".join(parts) or "<em>TBC</em>"
+            items.append(f"<li>{title} — {detail}</li>")
+        blocks.append("<ul>" + "".join(items) + "</ul>")
+    return "".join(blocks)
+
+
 # --- per-type dispatch ------------------------------------------------------------
 
 
@@ -162,12 +198,16 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
     """
     if post_type == "xur_location":
         return xur_support_data.XurLocations.from_json(data)
+    if post_type.startswith("legacy_"):
+        return legacy_activities.LegacyRotation.from_json(data)
     return sector_accounting.Rotation.from_json(data)
 
 
 def _render_preview(post_type: str, obj: t.Any) -> str:
     if post_type == "xur_location":
         return _render_xur_location_preview_html(obj)
+    if post_type.startswith("legacy_"):
+        return _render_legacy_preview_html(obj)
     return _render_preview_html(obj)
 
 

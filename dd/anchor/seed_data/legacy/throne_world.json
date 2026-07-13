@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "reference_date": "2026-04-21",
+  "activities": [
+    {
+      "key": "wellspring",
+      "title": "Wellspring",
+      "cadence": "daily",
+      "elements": [
+        {
+          "name": "weapon",
+          "values": [
+            "Father's Sins (Sniper Rifle)",
+            "Come to Pass (Auto Rifle)",
+            "Tarnation (Grenade Launcher)",
+            "Fel Taradiddle (Bow)"
+          ]
+        },
+        {
+          "name": "mode",
+          "values": [
+            "Defend",
+            "Attack"
+          ]
+        },
+        {
+          "name": "boss",
+          "values": [
+            "Zeerik (Scorn Raider)",
+            "Golmag (Hive Ogre)",
+            "Vezuul (Solar Scorn Chieftain)",
+            "Bor'gong (Hive Knight)"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "lucent_executioner",
+      "title": "Lucent Executioner",
+      "cadence": "daily",
+      "elements": [
+        {
+          "name": "boss",
+          "values": [
+            "Queen's Bailey Executioner",
+            "Alluring Curtain Executioner",
+            "Witch's Echo Excecutioner"
+          ]
+        },
+        {
+          "name": "location",
+          "values": [
+            "Florescent Canal",
+            "Quagmire",
+            "Miasma"
+          ]
+        }
+      ]
+    }
+  ]
+}

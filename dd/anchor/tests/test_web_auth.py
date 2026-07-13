@@ -450,9 +450,7 @@ async def test_callback_happy_path_sets_cookie_and_redirects(
     monkeypatch.setattr(auth, "_bot", _StubBot([123]))
     _patch_oauth_http(monkeypatch, user_json={"id": "123"})
     state = auth._AuthStateManager.issue("/weekly_reset")
-    resp = await auth._handle_callback(
-        _req(query={"state": state, "code": "abc"})
-    )
+    resp = await auth._handle_callback(_req(query={"state": state, "code": "abc"}))
     assert resp.status == 302
     assert resp.headers["Location"] == "/weekly_reset"
     morsel = resp.cookies[auth._SESSION_COOKIE]

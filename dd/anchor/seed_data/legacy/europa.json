@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "reference_date": "2026-04-21",
+  "activities": [
+    {
+      "key": "eclipsed_zone",
+      "title": "Eclipsed Zone",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "zone",
+          "values": [
+            "Asterion Abyss",
+            "Cadmus Ridge",
+            "Eventide Ruins"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "exo_challenge",
+      "title": "Exo Challenge",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "challenge",
+          "values": [
+            "Agility",
+            "Safeguard",
+            "Survival"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "empire_hunt",
+      "title": "Empire Hunt",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "hunt",
+          "values": [
+            "The Warrior",
+            "Technocrat",
+            "Dark Priestess"
+          ]
+        }
+      ]
+    }
+  ]
+}

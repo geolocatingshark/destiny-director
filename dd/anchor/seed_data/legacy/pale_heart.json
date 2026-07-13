@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "reference_date": "2026-04-21",
+  "activities": [
+    {
+      "key": "overthrow",
+      "title": "Overthrow (Matchmade)",
+      "cadence": "daily",
+      "elements": [
+        {
+          "name": "location",
+          "values": [
+            "The Landing",
+            "The Impasse",
+            "The Blooming"
+          ]
+        }
+      ]
+    }
+  ]
+}

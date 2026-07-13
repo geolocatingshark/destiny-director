@@ -303,11 +303,7 @@ def _dev_bypass_active() -> bool:
     bypass stays inert there. Local dev without a tunnel has an empty
     ``public_base_url`` — the only place the bypass is meant to run.
     """
-    return (
-        bool(cfg.test_env)
-        and bool(cfg.dev_auth_user_id)
-        and not cfg.public_base_url
-    )
+    return bool(cfg.test_env) and bool(cfg.dev_auth_user_id) and not cfg.public_base_url
 
 
 def _is_allowlisted(path: str) -> bool:
@@ -534,9 +530,7 @@ async def _auth_middleware(
     if _bot is None:
         return _reject(request, 503, "Bot is still starting — try again in a moment.")
     if not await _is_owner(_bot, user_id):
-        return _reject(
-            request, 403, "This account is not authorized to use this tool."
-        )
+        return _reject(request, 403, "This account is not authorized to use this tool.")
     return await handler(request)
 
 
