@@ -141,8 +141,14 @@ def _render_row(setting: _Setting, enabled: bool) -> str:
 
 
 async def _render_html() -> str:
-    """Render the settings page with the current DB state substituted in."""
-    parts: list[str] = []
+    """Render the settings page with the current DB state substituted in.
+
+    A top-level setting (``sub`` is False) and every sub-setting that follows it share
+    one ``.group`` box, so a feed and its content sub-toggles read as one category. A
+    parent always precedes its subs in ``_SETTINGS``, so a single pass groups them.
+    """
+    groups: list[str] = []
+    current: list[str] = []
     async with schemas.db_session() as session:
         for setting in _SETTINGS:
             enabled = bool(
@@ -150,9 +156,17 @@ async def _render_html() -> str:
                     setting.slug, session=session
                 )
             )
-            parts.append(_render_row(setting, enabled))
+            row = _render_row(setting, enabled)
+            if setting.sub:
+                current.append(row)
+            else:
+                if current:
+                    groups.append(f'<div class="group">{"".join(current)}</div>')
+                current = [row]
+        if current:
+            groups.append(f'<div class="group">{"".join(current)}</div>')
     return _PAGE_HTML_PATH.read_text(encoding="utf-8").replace(
-        _TOGGLES_PLACEHOLDER, "".join(parts)
+        _TOGGLES_PLACEHOLDER, "".join(groups)
     )
 
 

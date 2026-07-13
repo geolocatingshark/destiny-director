@@ -87,6 +87,10 @@ async def test_render_reflects_db_state() -> None:
         assert html.escape(setting.label) in html_out
         assert html.escape(setting.desc) in html_out
     assert 'class="switch"' in html_out
+    # One .group box per top-level feed; sub-toggles share their parent's box.
+    assert html_out.count('class="group"') == sum(
+        1 for s in aps._SETTINGS if not s.sub
+    )
     assert aps._TOGGLES_PLACEHOLDER not in html_out
 
 

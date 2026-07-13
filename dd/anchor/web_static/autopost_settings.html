@@ -3,8 +3,9 @@
   Anchor autopost settings — one labelled/described row with a toggle switch per global
   autopost produce toggle. Served by dd.anchor.extensions.autopost_settings; the GET
   handler substitutes the __TOGGLES__ placeholder comment in <main> with the
-  server-rendered rows (each reflecting the current AutoPostSettings row, sub-toggles
-  indented). Each switch is a CSS-styled checkbox, so Save still POSTs the checkbox state
+  server-rendered rows (each reflecting the current AutoPostSettings row). A feed and its
+  content sub-toggles share one .group box so they read as one category. Each switch is a
+  CSS-styled checkbox, so Save still POSTs the checkbox state
   as JSON to /autopost_settings/save via shared.js's window.api(). Auth is the shared
   OAuth middleware (web_auth), same as every other page.
 -->
@@ -19,14 +20,22 @@
       /* Base/reset/theme lives in shared.css (linked above); only this page's own
          styles are inlined here. Palette mirrors control_panel.html. */
       main.settings { margin: 1rem 0; }
-      form#toggles { display: flex; flex-direction: column; gap: .4rem; }
+      form#toggles { display: flex; flex-direction: column; gap: .6rem; }
+      /* One box per category: a feed and its content sub-toggles share a .group. */
+      .group {
+        border: 1px solid #3a3d44; border-radius: 8px; background: #24262c;
+        overflow: hidden;
+      }
+      .group:hover { border-color: #2f81f7; }
       .row {
         display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-        border: 1px solid #3a3d44; border-radius: 8px; padding: .7rem .9rem;
-        background: #24262c;
+        padding: .7rem .9rem;
       }
-      .row:hover { border-color: #2f81f7; }
-      .row.sub { margin-left: 1.6rem; background: #202228; }
+      /* Sub-options live in the same box, set off by a divider, an indent and a dimmer
+         background so they read as "part of this category, not a feed of their own". */
+      .row + .row { border-top: 1px solid #30333a; }
+      .row.sub { padding-left: 1.7rem; background: #202228; }
+      .row.sub .name { font-size: .88rem; }
       .row .text { min-width: 0; }
       .row .name { font-size: .95rem; }
       .row .desc { color: #9aa0a6; font-size: .8rem; margin-top: .15rem; }
