@@ -166,6 +166,29 @@ COPY_COMPONENTS_DETAIL = CommandDetail(
     ),
 )
 
+CONVERT_COMPONENTS_DETAIL = CommandDetail(
+    command="Convert to components",
+    title="Convert to components (right-click message command)",
+    summary=(
+        "Turn an embed post this bot made into a Components V2 message in place, after "
+        "a preview. Owner/team only."
+    ),
+    steps=(
+        "Right-click (long-press on mobile) an embed message this bot posted ▸ Apps ▸ "
+        '"Convert to components".',
+        "The bot shows a preview of how the converted Components V2 post will look.",
+        'Press "Convert" to replace the original in place, or "Cancel" to leave it '
+        "untouched.",
+    ),
+    notes=(
+        "Only works on this bot's own messages, and only on embed posts that aren't "
+        'already Components V2 (those get an error pointing you at "Edit components").',
+        "The message must have an embed with content to convert.",
+        "Conversion is one-way: once a message becomes Components V2 the flag "
+        'can\'t be removed. Use "Edit components" afterwards to tweak the result.',
+    ),
+)
+
 HELP_DETAILS: tuple[CommandDetail, ...] = (
     POST_COMPONENTS_DETAIL,
     CREATE_POST_DETAIL,
@@ -173,5 +196,6 @@ HELP_DETAILS: tuple[CommandDetail, ...] = (
     COPY_POST_DETAIL,
     EDIT_COMPONENTS_DETAIL,
     COPY_COMPONENTS_DETAIL,
+    CONVERT_COMPONENTS_DETAIL,
     LS_UPDATE_DETAIL,
 )

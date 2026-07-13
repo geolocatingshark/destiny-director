@@ -127,7 +127,8 @@ def explain_missing_permission(
         return "a channel permission override on me denies it"
     if denying_roles and not (permission & role_allow):
         names = ", ".join(f"@{role.name}" for role in denying_roles)
-        return f"a channel override on the {names} role denies it"
+        noun = "role" if len(denying_roles) == 1 else "roles"
+        return f"a channel override on the {names} {noun} denies it"
     if everyone_ow and (permission & everyone_ow.deny):
         return "the channel's @everyone override denies it"
     return (

@@ -263,14 +263,20 @@ def make_controller_group(
                 lines.append("\n**Mirror status**")
                 lines.append(f"- Operations in progress: {await mirror_check()}")
                 followed = [(n, c) for n, c in cfg.followables.items() if c]
-                counts = await asyncio.gather(
-                    *(
-                        MirroredChannel.count_dests(c, legacy_only=None)
-                        for _, c in followed
+                try:
+                    counts = await asyncio.gather(
+                        *(
+                            MirroredChannel.count_dests(c, legacy_only=None)
+                            for _, c in followed
+                        )
                     )
-                )
-                for (name, _), n in zip(followed, counts, strict=True):
-                    lines.append(f"- `{name}` → {n} mirror dest(s)")
+                except Exception:
+                    # A DB blip shouldn't sink the whole diagnostic — the in-memory
+                    # mirror_check() count above already rendered.
+                    lines.append("- *(mirror counts unavailable)*")
+                else:
+                    for (name, _), n in zip(followed, counts, strict=True):
+                        lines.append(f"- `{name}` → {n} mirror dest(s)")
 
             await respond_cv2(ctx, build_container(["\n".join(lines)]))
 

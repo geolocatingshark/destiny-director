@@ -414,7 +414,7 @@ def _rendered_parity(
 ) -> tuple[bool, str | None]:
     """Compare rendered output of the Sheet reader vs. the imported JSON over a window.
 
-    Compares the presence-level rendered fields (names/links/champions/shields/surges),
+    Compares the presence-level rendered fields (names/links/champions/shields),
     not raw attrs equality, since counts intentionally collapse to a present/absent
     sentinel on import.
     """

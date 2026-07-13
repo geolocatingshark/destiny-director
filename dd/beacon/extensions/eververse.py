@@ -30,7 +30,7 @@ EVERVERSE = cfg.followables["eververse"]
 _pages = setup_nav_pages(
     loader,
     followable_channel=EVERVERSE,
-    history_len=4,
+    history_len=14,
     period=dt.timedelta(days=1),
     reference_date=REFERENCE_DATE,
     # The eververse autopost is a Components V2 message, so its navigator renders CV2

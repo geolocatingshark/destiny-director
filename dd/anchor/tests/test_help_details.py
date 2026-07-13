@@ -16,6 +16,7 @@
 # Content checks for the anchor bot's detailed /help pages.
 
 from dd.anchor.help_details import (
+    CONVERT_COMPONENTS_DETAIL,
     COPY_COMPONENTS_DETAIL,
     HELP_DETAILS,
     POST_COMPONENTS_DETAIL,
@@ -38,6 +39,13 @@ def test_post_components_walkthrough_renders() -> None:
 def test_copy_components_walkthrough_renders() -> None:
     joined = "\n".join(render_detail_sections(COPY_COMPONENTS_DETAIL))
     assert "Copy components" in joined
+    assert "Apps" in joined  # the right-click invocation hint
+
+
+def test_convert_components_walkthrough_renders() -> None:
+    assert CONVERT_COMPONENTS_DETAIL in HELP_DETAILS
+    joined = "\n".join(render_detail_sections(CONVERT_COMPONENTS_DETAIL))
+    assert "Convert to components" in joined
     assert "Apps" in joined  # the right-click invocation hint
 
 

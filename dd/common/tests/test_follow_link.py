@@ -123,3 +123,16 @@ async def test_timeout_is_swallowed_and_falls_back(
     assert await utils.follow_link_single_step(url) == url
     assert session.get_calls == utils._LINK_FOLLOW_RETRIES + 1
     assert len(sleeps) == utils._LINK_FOLLOW_RETRIES
+
+
+async def test_server_error_retries_then_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://flaky.example/x"
+    session = _FakeSession(_FakeResp(status=503))
+    sleeps = _install(monkeypatch, session)
+
+    # A 5xx is transient: retry the bounded number of times, then fall back to the url.
+    assert await utils.follow_link_single_step(url) == url
+    assert session.get_calls == utils._LINK_FOLLOW_RETRIES + 1
+    assert len(sleeps) == utils._LINK_FOLLOW_RETRIES
