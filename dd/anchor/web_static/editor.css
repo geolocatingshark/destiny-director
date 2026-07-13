@@ -52,7 +52,6 @@ details > summary { cursor: pointer; color: #9aa0a6; margin: .3rem 0; }
 .zone { margin: .4rem 0; }
 .diff-cols { display: flex; gap: 1rem; flex-wrap: wrap; }
 .diff-cols > div { flex: 1 1 240px; }
-.backlink { color: #9aa0a6; text-decoration: none; font-size: .85rem; }
-.backlink:hover { text-decoration: underline; }
+/* .backlink lives in shared.css so every page's header nav can reuse it. */
 /* A blank/duplicate sector name, or a schedule entry with no matching sector. */
 input.invalid { border-color: #e5736f; background: #2a1e1e; }

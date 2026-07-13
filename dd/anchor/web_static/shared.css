@@ -13,3 +13,7 @@ body {
 header { padding-top: 1.2rem; }
 h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
 .muted { color: #9aa0a6; font-size: .85rem; }
+/* Header nav links (e.g. "← Control panel") — one place so every page matches. */
+.backlink { color: #9aa0a6; text-decoration: none; font-size: .85rem; }
+.backlink:hover { text-decoration: underline; }
+p.nav { margin: 0 0 .4rem; }
