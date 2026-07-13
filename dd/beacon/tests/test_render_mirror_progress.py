@@ -23,44 +23,32 @@ from dd.beacon.extensions.mirror import (
     _CANCEL_CUSTOM_ID_PREFIX,
     render_mirror_progress,
 )
-from dd.beacon.mirror_core import (
-    KernelFailure,
-    KernelOutcome,
-    KernelSuccess,
-    KernelWorkControl,
-    MirrorOperationType,
-)
+from dd.beacon.mirror_core import MirrorOperationType, RunCounts, RunView
 from dd.common import cfg
-from dd.common.utils import ErrorClass
 
 
-async def _noop_kernel(ch_id: int, msg_id: int | None) -> KernelOutcome:
-    raise AssertionError("kernel should not be invoked in render tests")
-
-
-def _control(op=MirrorOperationType.SEND, source_message_id=832):
-    return KernelWorkControl(
-        source_channel_id=1,
-        source_message_id=source_message_id,
-        targets={10: None, 11: None, 12: None},
-        role_ping_per_ch_id={},
-        mirror_operation_type=op,
-        kernel=_noop_kernel,
-        retry_threshold=3,
+def _view(op=MirrorOperationType.SEND, source_message_id=832, **counts):
+    view = RunView(
+        op=op,
+        src_ch_id=1,
+        src_msg_id=source_message_id,
+        start_time=perf_counter(),
     )
+    view.counts = RunCounts(**counts)
+    return view
 
 
-def _render(control, *, enable_cancellation, final=False):
+def _render(view, *, enable_cancellation, final=False, breakdown=None):
     return render_mirror_progress(
-        control,
+        view,
         title="Mirror send progress",
         source_message_link="https://discord.com/x",
         source_message_summary="Announcement",
         source_channel_link="https://discord.com/y",
         source_channel_name="news",
-        start_time=perf_counter(),
         final=final,
         enable_cancellation=enable_cancellation,
+        breakdown=breakdown,
     )
 
 
@@ -69,6 +57,14 @@ def _container(components) -> h.impl.ContainerComponentBuilder:
     container = components[0]
     assert isinstance(container, h.impl.ContainerComponentBuilder)
     return container
+
+
+def _text(container: h.impl.ContainerComponentBuilder) -> str:
+    return " ".join(
+        c.content
+        for c in container.components
+        if isinstance(c, h.impl.TextDisplayComponentBuilder)
+    )
 
 
 def _cancel_custom_ids(container: h.impl.ContainerComponentBuilder) -> list[str]:
@@ -80,71 +76,63 @@ def _cancel_custom_ids(container: h.impl.ContainerComponentBuilder) -> list[str]
 
 
 def test_default_accent_when_no_failures() -> None:
-    control = _control()
-    control._apply_outcome(KernelSuccess(channel_id=10, message_id=100))  # noqa: SLF001
-    container = _container(_render(control, enable_cancellation=False))
+    container = _container(
+        _render(_view(delivered=1, pending=2), enable_cancellation=False)
+    )
     assert container.accent_color == cfg.embed_default_color
 
 
-def test_error_accent_when_failures() -> None:
-    control = _control()
-    control.report_scheduled(10)
-    control._apply_outcome(  # noqa: SLF001
-        KernelFailure(
-            channel_id=10,
-            exc=ValueError("boom"),
-            error_class=ErrorClass.PERMANENT,
-            reference_code="PERM01",
+def test_error_accent_and_breakdown_when_failures() -> None:
+    view = _view(failed=1, delivered=1)
+    container = _container(
+        _render(
+            view,
+            enable_cancellation=False,
+            breakdown=[("PERM01", "PERMANENT", 1, "boom")],
         )
     )
-    container = _container(_render(control, enable_cancellation=False))
     assert container.accent_color == cfg.embed_error_color
-    # The failure breakdown surfaces the reference code.
-    text = " ".join(
-        c.content
-        for c in container.components
-        if isinstance(c, h.impl.TextDisplayComponentBuilder)
-    )
-    assert "PERM01" in text
+    assert "PERM01" in _text(container)  # the failure breakdown surfaces the ref code
 
 
 def test_cancel_row_present_for_send_in_progress() -> None:
-    control = _control(op=MirrorOperationType.SEND, source_message_id=832)
-    container = _container(_render(control, enable_cancellation=True, final=False))
-    ids = _cancel_custom_ids(container)
-    assert ids == [f"{_CANCEL_CUSTOM_ID_PREFIX}:832"]
+    view = _view(op=MirrorOperationType.SEND, source_message_id=832, pending=3)
+    container = _container(_render(view, enable_cancellation=True, final=False))
+    assert _cancel_custom_ids(container) == [f"{_CANCEL_CUSTOM_ID_PREFIX}:832"]
 
 
 def test_cancel_row_namespaced_by_source_message_id() -> None:
-    a = _container(_render(_control(source_message_id=111), enable_cancellation=True))
-    b = _container(_render(_control(source_message_id=222), enable_cancellation=True))
+    a = _container(
+        _render(_view(source_message_id=111, pending=1), enable_cancellation=True)
+    )
+    b = _container(
+        _render(_view(source_message_id=222, pending=1), enable_cancellation=True)
+    )
     assert _cancel_custom_ids(a) != _cancel_custom_ids(b)
 
 
 def test_no_cancel_row_when_final() -> None:
-    control = _control()
-    container = _container(_render(control, enable_cancellation=True, final=True))
+    container = _container(
+        _render(_view(delivered=3), enable_cancellation=True, final=True)
+    )
     assert _cancel_custom_ids(container) == []
 
 
 def test_no_cancel_row_when_disabled() -> None:
     # DELETE never enables cancellation.
-    control = _control(op=MirrorOperationType.DELETE)
-    container = _container(_render(control, enable_cancellation=False))
+    view = _view(op=MirrorOperationType.DELETE, pending=3)
+    container = _container(_render(view, enable_cancellation=False))
     assert _cancel_custom_ids(container) == []
 
 
-def test_cancel_row_dropped_once_cancellation_requested() -> None:
-    # Once cancel() fires (control.cancelled populated) the button is removed even
-    # though work is still draining, so it can't be pressed twice.
-    control = _control()
-    control.cancel()
-    container = _container(_render(control, enable_cancellation=True, final=False))
-    assert _cancel_custom_ids(container) == []
-    # Footer reflects the draining state.
-    text = " ".join(
-        c.content
-        for c in container.components
-        if isinstance(c, h.impl.TextDisplayComponentBuilder)
+def test_cancelled_footer_when_all_cancelled() -> None:
+    view = _view(cancelled=3)
+    text = _text(_container(_render(view, enable_cancellation=True, final=True)))
+    assert "Cancelled" in text
+
+
+def test_time_taken_line_present() -> None:
+    text = _text(
+        _container(_render(_view(delivered=1, pending=2), enable_cancellation=False))
     )
-    assert "Cancelling" in text
+    assert "Time taken" in text

@@ -14,14 +14,16 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 
+import datetime as dt
 import logging
 import secrets
 import string
 
 import hikari as h
 import lightbulb as lb
+from sqlalchemy import and_, update
 
-from ...common import cfg
+from ...common import cfg, schemas
 from ...common.auth import owner_only
 from ...common.bot import CachedFetchBot
 from ...common.schemas import MirroredChannel
@@ -309,22 +311,16 @@ class MirrorDelete(
 
 
 @mirror_group.register
-class MirrorFailRateBump(
+class MirrorSimulateUnreachable(
     lb.SlashCommand,
-    name="fail_rate_bump",
-    description="Bump legacy failure counts so the next run trips the disable alert",
+    name="simulate_unreachable",
+    description="Backdate a source's targets past the grace and run the disable sweep",
     hooks=[owner_only],
 ):
     # A string (not lb.channel) so a source in another server can be given — the
     # slash-command channel picker only lists channels in the invoking guild.
     source = lb.string(
-        "source", "Source channel whose mirror targets to fail (link, mention, or id)"
-    )
-    times = lb.integer(
-        "times",
-        "How many failures to record (disable threshold is 3)",
-        default=3,
-        min_value=1,
+        "source", "Source channel whose mirror targets to disable (link/mention/id)"
     )
 
     @lb.invoke
@@ -337,15 +333,33 @@ class MirrorFailRateBump(
             return
 
         dest_ids = await MirroredChannel.fetch_dests(source_id)
-        for _ in range(self.times):
-            await MirroredChannel.add_confirmed_dead_strikes_in_batch(
-                source_id, dest_ids
+        pairs = [(source_id, dest_id) for dest_id in dest_ids]
+        if not pairs:
+            await ctx.respond(f"<#{source_id}> has no enabled legacy mirror targets.")
+            return
+
+        # Backdate unreachable_since past the grace window, then run the sweep's disable
+        # step treating every target as confirmed-unreachable — the same path the real
+        # reachability sweep takes, without waiting for a genuinely broken channel.
+        old = dt.datetime.now(tz=dt.UTC) - dt.timedelta(
+            hours=cfg.mirror_unreachable_grace_hours + 1
+        )
+        async with schemas.db_session() as session, session.begin():
+            await session.execute(
+                update(MirroredChannel)
+                .where(
+                    and_(
+                        MirroredChannel.src_id == source_id,
+                        MirroredChannel.dest_id.in_(dest_ids),
+                    )
+                )
+                .values(unreachable_since=old)
             )
+        disabled = await MirroredChannel.apply_reachability_sweep([], pairs)
 
         await ctx.respond(
-            f"Recorded {self.times} failures for {len(dest_ids)} targets of "
-            f"<#{source_id}>. With `DISABLE_BAD_CHANNELS=true`, the next mirror "
-            "run will disable them and emit the disabled-count alert."
+            f"Simulated {len(pairs)} unreachable target(s) for <#{source_id}>; "
+            f"the reachability sweep disabled {len(disabled)}."
         )
 
 

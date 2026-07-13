@@ -8,9 +8,9 @@ section **before** adding a command, touching the DB layer, or building a messag
 
 Everything lives under `dd/`:
 
-- `dd.beacon` — the main bot. `__main__.py` boots it; `mirror_core.py`, `nav.py`
-  (paged-message system), `utils.py`, `help_details.py`, and **`extensions/`** (the
-  command modules).
+- `dd.beacon` — the main bot. `__main__.py` boots it; the **mirror subsystem**
+  (`mirror_worker.py` + `mirror_core.py`, see below), `nav.py` (paged-message system),
+  `utils.py`, `help_details.py`, and **`extensions/`** (the command modules).
 - `dd.anchor` — the "secondary" bot, but substantial: `__main__.py`, an aiohttp **web UI**
   (`web.py` + `web_static/`) for rotation editing, **OpenCV** image generation
   (`cv2_builder.py`, `cv2_nodes.py`, `cv2_raw.py`), `embeds.py`, `search_json.py`, and
@@ -118,6 +118,49 @@ For multi-page / navigable responses use the nav system rather than rolling your
 `NavPages` (a date-range-keyed page store), `NavigatorView` (the interactive view), and
 `make_navigator_command()` (builds a navigator-backed command). `Pages.from_channel(...)`
 pulls messages from a followable channel; see `template.py`.
+
+## Mirror subsystem — `dd/beacon/mirror_worker.py` + `mirror_core.py`
+
+The mirror subsystem fans one source-channel message out to N legacy destination
+channels (`legacy=True` rows in `mirrored_channel`; non-legacy rows are native Discord
+channel-follows, untouched by this). It is a **durable delivery ledger** driven by a
+single worker (there is only ever one process — the ceiling is Discord's global ~50
+req/s, so concurrency is small):
+
+- **`mirror_delivery`** (`dd/common/schemas.py`) — one row per `(src_msg_id, dest_ch_id)`
+  carrying `desired_version` / `applied_version` / `state` / `deleted` / `crosspost_state`.
+  It stores *intent*, never content — content is fetched fresh from Discord at delivery
+  time. States are `PENDING / DELIVERED / FAILED / CANCELLED`; there is **no CLAIMED
+  state** — a row being worked right now is tracked only in the one worker's memory, so a
+  crash just leaves it PENDING for the next pick.
+- **Gateway handlers** (`extensions/mirror.py`) do one transactional enqueue each —
+  `enqueue_send` (create), `bump_for_edit` (edit → bump `desired_version`), `mark_deleted`
+  (delete) — then start a progress card and nudge the worker.
+- **The worker** (`mirror_worker.py`, one `MirrorWorker` per process, started from
+  `StartedEvent`) runs a single **pick → process → flush** loop: it `pick_batch`es due
+  rows (biggest-server-first, no lease/lock), converges each destination under a
+  concurrency semaphore + a global token-bucket `RateLimiter`, and `flush_outcomes`
+  writes every result back **before the next pick** — that ordering is what makes a row
+  safe to re-pick after a crash without duplicating a send. Retries are `due_at` backoffs
+  in the ledger, not in-process sleeps. A fresh send to a Discord announcement (news)
+  channel is recorded `crosspost_state = PENDING` and crossposted durably by a later pick
+  (idempotent — "already crossposted" counts as success), so a crash between send and
+  crosspost never drops the publish.
+- **Progress cards** re-render from a cheap ledger `GROUP BY state` count
+  (`state_counts`) until the run drains (no `PENDING` rows left) — the ledger is the
+  single source of truth for progress, so there is no in-memory accounting to drift.
+- **Auto-disable is off the hot path.** A separate low-load task (`reachability_sweep`)
+  probes each enabled legacy destination's reachability + send perms
+  (`utils.confirm_dest_unsendable`; `SEND_MESSAGES` for channels, `SEND_MESSAGES_IN_THREADS`
+  for threads) and disables a pair only once it has stayed continuously unreachable past
+  `cfg.mirror_unreachable_grace_hours` (tracked by `mirrored_channel.unreachable_since`).
+  No failure counting. `prune` keeps ledger rows for `cfg.mirror_retention_days` (bar the
+  latest DELIVERED message per destination channel, kept indefinitely as an anchor).
+- **`mirror_core.py`** holds the pure survivors: `MirrorOperationType`, the global
+  token-bucket `RateLimiter`, and `RunView` / `RunCounts` (progress card display state).
+
+The pre-rewrite in-memory implementation is snapshotted on `mirror-v1`; the durable-ledger
+rewrite on `mirror-v2`.
 
 ## Configuration — `dd/common/cfg.py`
 

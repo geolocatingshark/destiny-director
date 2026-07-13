@@ -222,19 +222,15 @@ alert_queue_maxsize = 1000
 alert_freq_window = 300
 alert_freq_threshold = 10
 alert_escalation_debounce = 600
-# Fraction of a mirror run's targets that must fail (and minimum sample size)
-# before a "majority of mirrors failing" critical alert fires.
-mirror_failure_ratio_threshold = 0.5
-mirror_failure_min_sample = 10
-# Cross-run auto-disable time gate (hours): a confirmed-failing legacy mirror must stay
-# failing at least this long — measured from the first confirmed failure in the streak
-# (legacy_failing_since) — before it is auto-disabled. Pairs with the count gate
-# (legacy_disable_strikes >= threshold) so a perm reshuffle on a chatty source can't
-# disable it on a handful of quick posts.
-mirror_disable_forgiveness_hours = 48
+# Auto-disable is driven by a separate low-load reachability sweep, not delivery
+# failures. A legacy mirror pair whose destination stays unreachable / unsendable for
+# at least this many hours (continuous, measured from unreachable_since) is disabled.
+# The sweep itself runs every mirror_reachability_sweep_hours.
+mirror_unreachable_grace_hours = 48
+mirror_reachability_sweep_hours = 6
 # Mirror fan-out tuning. These are baked-in defaults (not env-backed) to keep the
 # env contract small; re-introduce env-backing if a per-deploy override is ever
-# needed. mirror_max_concurrency caps in-flight kernel coroutines; mirror_rate_per_sec
+# needed. mirror_max_concurrency caps in-flight delivery coroutines; mirror_rate_per_sec
 # is the global token-bucket rate shared across all runs (kept below Discord's ~50/s
 # global REST budget to leave headroom for interactive commands). The retry window is
 # the randomised delay (seconds) before a transient failure is retried.
@@ -242,6 +238,16 @@ mirror_max_concurrency = 8
 mirror_rate_per_sec = 30.0
 mirror_retry_min = 180
 mirror_retry_max = 300
+# Delivery-ledger worker knobs. The single worker picks up to mirror_pick_batch_size due
+# rows per pass; mirror_poll_interval is the lazy backstop it sleeps when no gateway
+# nudge arrives. The per-op attempt caps are 3 for a send, 2 for an edit/delete.
+# Ledger rows are pruned once older than mirror_retention_days (bar the latest delivered
+# message per destination channel, kept as an anchor).
+mirror_pick_batch_size = 50
+mirror_poll_interval = 45
+mirror_send_max_attempts = 3
+mirror_edit_max_attempts = 2
+mirror_retention_days = 14
 # Seconds an autopost announcer may stall (API offline / edit failing) before a
 # single critical alert fires for that run.
 announcer_offline_alert_after = 900

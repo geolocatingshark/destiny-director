@@ -161,7 +161,8 @@ async def test_thread_resolves_to_parent_for_perms(
 
     def fake_calc(_m: object, channel: object) -> h.Permissions:
         seen.append(channel)
-        return h.Permissions.VIEW_CHANNEL | h.Permissions.SEND_MESSAGES
+        # A thread needs the in-thread send perm, not the base send perm, to be OK.
+        return h.Permissions.VIEW_CHANNEL | h.Permissions.SEND_MESSAGES_IN_THREADS
 
     thread = _thread(parent_id=789)
     parent = _text_channel()
@@ -172,3 +173,22 @@ async def test_thread_resolves_to_parent_for_perms(
     assert await utils.confirm_dest_unsendable(app, _CHANNEL_ID) is DestVerdict.SENDABLE
     app.rest.fetch_channel.assert_any_await(789)
     assert seen == [parent]  # perms computed against the parent, not the thread
+
+
+async def test_thread_needs_in_thread_send_perm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Holding only the base Send Messages perm (but not Send Messages In Threads) on a
+    # thread's parent is NOT enough to post in the thread → CONFIRMED_UNSENDABLE.
+    def fake_calc(_m: object, _c: object) -> h.Permissions:
+        return h.Permissions.VIEW_CHANNEL | h.Permissions.SEND_MESSAGES
+
+    thread = _thread(parent_id=789)
+    parent = _text_channel()
+    app = _make_app(cached_channel=None, rest_channels=[thread, parent])
+    monkeypatch.setattr(utils, "calculate_permissions", fake_calc)
+
+    assert (
+        await utils.confirm_dest_unsendable(app, _CHANNEL_ID)
+        is DestVerdict.CONFIRMED_UNSENDABLE
+    )

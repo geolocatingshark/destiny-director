@@ -245,9 +245,7 @@ async def test_send_falls_back_on_client_http_error(monkeypatch):
     container = h.impl.ContainerComponentBuilder()
     container.add_text_display("page")
     # history_len=1 -> no pagination, so send() returns right after the first respond.
-    fake = _MultiPages(
-        {0: HMessage(components=[container])}, cv2=True, history_len=1
-    )
+    fake = _MultiPages({0: HMessage(components=[container])}, cv2=True, history_len=1)
     navigator = NavigatorView(pages=fake)  # ty: ignore[invalid-argument-type]
 
     ctx = _FakeCtx(fail_first=True)

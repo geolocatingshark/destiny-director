@@ -83,8 +83,37 @@ async def test_dm_guild_id_none_does_not_raise() -> None:
     assert await _processed(_create_event(NON_SRC_CHANNEL, None)) is False
 
 
-async def test_uncached_delete_old_message_none_does_not_raise() -> None:
+def _delete_event(
+    channel_id: int, guild_id: int | None, *, old_message: object = None
+) -> MagicMock:
+    event = MagicMock(spec=h.GuildMessageDeleteEvent)
+    event.channel_id = channel_id
+    event.guild_id = guild_id
+    event.old_message = old_message  # the gate no longer reads this
+    event.message_id = 999
+    return event
+
+
+async def test_uncached_delete_in_src_channel_is_processed() -> None:
+    # The fix: a delete whose source message isn't cached (old_message None) is still
+    # propagated when it's in a source channel — the gate reads event.channel_id, not
+    # event.old_message (mark_deleted keys on message_id and needs no cached body).
+    assert await _processed(_delete_event(SRC_CHANNEL, OTHER_GUILD)) is True
+
+
+async def test_uncached_delete_in_non_src_channel_is_skipped() -> None:
+    assert await _processed(_delete_event(NON_SRC_CHANNEL, OTHER_GUILD)) is False
+
+
+async def test_delete_in_test_guild_is_processed() -> None:
+    assert await _processed(_delete_event(NON_SRC_CHANNEL, TEST_GUILD)) is True
+
+
+async def test_dm_delete_without_guild_id_does_not_raise() -> None:
+    # A base MessageDeleteEvent (DM) has no guild_id attribute; the getattr fallback
+    # must treat it as None rather than raising.
     event = MagicMock(spec=h.MessageDeleteEvent)
+    event.channel_id = NON_SRC_CHANNEL
     event.old_message = None
     assert await _processed(event) is False
 

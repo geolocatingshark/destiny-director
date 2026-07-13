@@ -36,6 +36,7 @@ from ..common.discord_logging import (
 )
 from ..common.extension_loader import load_extensions_strict
 from ..common.lifecycle import consume_exit_code
+from .mirror_worker import mirror_worker
 
 bot = ServerEmojiEnabledBot(
     token=cfg.discord_token_beacon,
@@ -81,11 +82,20 @@ async def on_start_install_logging(_event: h.StartedEvent):
 
 @bot.listen(h.StoppingEvent)
 async def on_stopping_event(_event: h.StoppingEvent):
+    # Drain the mirror worker *before* disposing the DB engine (its in-flight flush
+    # needs a live engine): stop() lets the current batch finish and flush so already-
+    # sent rows are recorded and never re-sent on restart, force-cancelling if the drain
+    # stalls (see MirrorWorker.stop). StoppingEvent fires on a clean shutdown and on
+    # SIGINT/SIGTERM (hikari's signal handlers, enabled below) — i.e. on a Railway
+    # redeploy — so this drain runs on every graceful exit; only a SIGKILL skips it.
+    await mirror_worker.stop()
     await aclose_discord_logging()
     await schemas.db_engine.dispose()
 
 
-bot.run()
+# enable_signal_handlers=True (hikari's main-thread default, made explicit) installs the
+# SIGINT/SIGTERM handlers that trigger a clean shutdown → StoppingEvent → the drain.
+bot.run(enable_signal_handlers=True)
 # Exit on the main thread with the code requested by a lifecycle command (0 if none).
 # This is reliable where a SystemExit raised inside an interaction-callback task is not.
 raise SystemExit(consume_exit_code())

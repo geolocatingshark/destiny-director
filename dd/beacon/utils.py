@@ -213,12 +213,14 @@ class DestVerdict(enum.Enum):
     UNKNOWN = enum.auto()  # couldn't determine — do NOT count toward disable
 
 
-# Minimal perms genuinely required to send. Deliberately just View + Send (computed on a
-# thread's parent): being *less* eager to confirm "unsendable" is the safe direction
-# given the cost asymmetry. A thread that also needs Send-Messages-in-Threads but reads
-# View + Send fine is reported SENDABLE (alerted, never auto-disabled) rather than
-# risking a false disable — see the deferred thread-perm nuance in the plan.
+# Minimal perms genuinely required to send, computed on a thread's parent. A normal
+# channel needs View + Send Messages; a thread needs View + Send Messages In Threads
+# (the base Send Messages perm does not authorise posting inside a thread). Being *less*
+# eager to confirm "unsendable" is the safe direction given the cost asymmetry.
 _REQUIRED_SEND_PERMS = h.Permissions.VIEW_CHANNEL | h.Permissions.SEND_MESSAGES
+_REQUIRED_THREAD_SEND_PERMS = (
+    h.Permissions.VIEW_CHANNEL | h.Permissions.SEND_MESSAGES_IN_THREADS
+)
 
 
 async def _fetch_channel_or_gone(
@@ -252,7 +254,9 @@ async def confirm_dest_unsendable(app: h.GatewayBot, channel_id: int) -> DestVer
     channel = await _fetch_channel_or_gone(app, channel_id)
     if isinstance(channel, DestVerdict):
         return channel
-    # A thread carries no overwrites of its own — resolve to the parent for perms.
+    # A thread carries no overwrites of its own — resolve to the parent for perms, but
+    # remember it was a thread so we require the in-thread send perm below.
+    is_thread = isinstance(channel, h.GuildThreadChannel)
     if isinstance(channel, h.GuildThreadChannel):
         if channel.parent_id is None:
             return DestVerdict.UNKNOWN
@@ -276,7 +280,8 @@ async def confirm_dest_unsendable(app: h.GatewayBot, channel_id: int) -> DestVer
     except CacheFailureError:
         return DestVerdict.UNKNOWN
 
-    if perms & _REQUIRED_SEND_PERMS == _REQUIRED_SEND_PERMS:
+    required = _REQUIRED_THREAD_SEND_PERMS if is_thread else _REQUIRED_SEND_PERMS
+    if perms & required == required:
         return DestVerdict.SENDABLE
     return DestVerdict.CONFIRMED_UNSENDABLE
 
