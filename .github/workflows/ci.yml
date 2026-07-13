@@ -54,3 +54,58 @@ jobs:
         # Mirror `make coverage`: skip the live-Discord tests (they need a real
         # bot token + guild and are opt-in via `make test-integration`).
         run: uv run python -m pytest -m "not discord" --cov=dd --cov-report=term-missing
+
+  mysql:
+    # Real-MySQL dialect lane. The `check` job runs the DB tests on SQLite, which hides
+    # MySQL-only bugs (DATETIME(0) rounding, self-referencing DELETE / error 1093, the
+    # asyncmy executemany round-trip). This re-runs the DB-`integration` tests against a
+    # MySQL 8 service; the live-Discord tests are still skipped (no bot token/guild in CI).
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: dd
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      MYSQL_SSL: "false"
+      # 127.0.0.1 is in schemas._db_is_local()'s allowlist, so TEST_USE_MYSQL exercises
+      # the real engine (the fixtures create/drop the schema) WITHOUT needing the
+      # ALLOW_REMOTE_SCHEMA_DESTROY override — this is a throwaway CI database.
+      MYSQL_URL: "mysql://root:root@127.0.0.1:3306/dd"
+      TEST_USE_MYSQL: "1"
+      SHEETS_PROJECT_ID: "ci"
+      SHEETS_PRIVATE_KEY_ID: "ci"
+      SHEETS_PRIVATE_KEY: "ci"
+      SHEETS_CLIENT_EMAIL: "ci@example.com"
+      SHEETS_CLIENT_ID: "ci"
+      SHEETS_CLIENT_X509_CERT_URL: "https://example.com/cert"
+      SHEETS_LS_URL: "https://example.com/ls"
+      LOST_SECTOR_GIF_URL: "https://example.com/ls.gif"
+      XUR_IMAGE_URL: "https://example.com/xur.png"
+      FOLLOWABLES: '{"ada":1,"emblems_and_cosmetics":2,"eververse":3,"free_games":4,"iron_banner":6,"lost_sector":7,"trials":8,"twab":9,"weekly_nightfall":10,"weekly_reset":11,"xur":12}'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Test (pytest, MySQL — DB integration only)
+        # `wait_for_db()` in the test fixture handles any residual connect delay after
+        # the service health check. Discord-marked tests are excluded (no live token).
+        run: uv run python -m pytest -m "integration and not discord"
