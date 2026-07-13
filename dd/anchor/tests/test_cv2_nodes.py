@@ -58,6 +58,16 @@ def test_text_roundtrip():
     assert node["content"] == "world"
 
 
+def test_container_seeds_default_accent_colour():
+    # A fresh builder container carries the brand default so it matches every other
+    # container-producing path; the modal can still recolour or clear it (below).
+    node = cn.make_container()
+    assert node["accent_color"] == int(cn.cfg.embed_default_color)
+    # container_fields pre-fills that default into the Edit modal (not blank).
+    label, value, *_ = cn.container_fields(node)[0]
+    assert value == f"#{int(cn.cfg.embed_default_color):06x}"
+
+
 def test_container_color_and_spoiler():
     node = cn.make_container()
     out = cn.mutate_container(node, ["#ff0000", "yes"])
