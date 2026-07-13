@@ -288,61 +288,51 @@ def render_week_sections(
     return _subbed(sections, emoji_dict)
 
 
-def _row_value(
-    activity: ResolvedActivity, *, armor: bool, links: dict[str, str]
-) -> str:
-    if activity.set is not None:
-        return activity.set.name or "TBC"
-    values = [
-        (_armorize(v) if armor else _weaponize(v, links))
-        for v in activity.values.values()
-        if v
-    ]
-    return " · ".join(values) if values else "TBC"
-
-
 def render_upcoming_sections(
     destination_key: str,
     rotation: LegacyRotation,
     dates: list[dt.datetime],
     *,
     emoji_dict: dict,
-    armor: bool = False,
     links: dict[str, str] | None = None,
 ) -> list[str]:
-    """A single, non-paginated "A Look Ahead" post (after Kyber's schedule embeds).
+    """A single, non-paginated post styled after ``/distortion``: a title, the current
+    focus highlighted in its own divider-flanked section with a live reset countdown,
+    then an upcoming list of ``value — date`` rows.
 
-    A title, a live resets-countdown, then ``**date**`` / ``▸ value`` rows with the
-    current one marked. ``dates`` are reset-aligned: ``dates[0]`` is the current period
-    and ``dates[1]`` the next boundary (the countdown target)."""
+    ``dates`` are reset-aligned: ``dates[0]`` is the current period and ``dates[1]`` the
+    next boundary (the countdown target)."""
     links = links or {}
     weekly = rotation.step.days == 7
     per_date = [(d, rotation(d)) for d in dates]
     step = rotation.step
 
-    lines: list[str] = []
-    for pos, first in enumerate(per_date[0][1]):
-        lines += [
-            f"# {first.title}",
-            "*`A Look Ahead`*",
-            f"-# Resets <t:{int(dates[1].timestamp())}:R>",
-            "",
-        ]
-        if first.set is None and len(first.values) > 1:
-            lines.append("-# " + " · ".join(_field_label(n) for n in first.values))
-            lines.append("")
-        for i, (day, acts) in enumerate(per_date):
-            span = f"{_fmt(day)} - {_fmt(day + step)}" if weekly else _fmt(day)
-            marker = "  ·  *now*" if i == 0 else ""
-            lines.append(f"**{span}**{marker}")
-            lines.append(f"▸ {_row_value(acts[pos], armor=armor, links=links)}")
-            lines.append("")
+    def when(day: dt.datetime) -> str:
+        return f"{_fmt(day)} - {_fmt(day + step)}" if weekly else _fmt(day)
 
-    lines.append(
-        "-# *(sequence repeats)* · "
-        "[Kyber's Corner](https://kyberscorner.com/destiny2/legacy-activities/)"
-    )
-    return _subbed(["\n".join(lines)], emoji_dict)
+    sections: list[str] = []
+    for pos, first in enumerate(per_date[0][1]):
+        # Title (with the field labels as subtext for a multi-element activity).
+        title = f"# {first.title}"
+        if first.set is None and len(first.values) > 1:
+            title += "\n-# " + " · ".join(_field_label(n) for n in first.values)
+        sections.append(title)
+
+        # Current focus — its own section (divider-flanked) with a live reset countdown.
+        current = _inline_values(per_date[0][1][pos], links)
+        sections.append(
+            f"### {current}\n-# Now · resets <t:{int(dates[1].timestamp())}:R>"
+        )
+
+        # Upcoming: the value first, then the date it applies.
+        rows = "\n".join(
+            f"{_inline_values(acts[pos], links)} — {when(day)}"
+            for day, acts in per_date[1:]
+        )
+        sections.append(f"**Upcoming**\n{rows}")
+
+    sections.append(_FOOTER)
+    return _subbed(sections, emoji_dict)
 
 
 # Fancy title matching Kyber's Dares embed ("𝑜𝑓" is math-italic o + f).
@@ -380,8 +370,5 @@ def render_dares_sections(
             weapons = "\n".join(_dares_weapon(w, links) for w in live.weapons)
             sections.append(f"**Legendary Weapons // {live.name}**\n\n{weapons}")
 
-    sections.append(
-        "**Other**\n\n"
-        "[View more details](https://kyberscorner.com/destiny2/legacy-activities/) ↗"
-    )
+    sections.append(_FOOTER)
     return _subbed(sections, emoji_dict)

@@ -165,7 +165,6 @@ def make_legacy_command(
                     rotation,
                     dates,
                     emoji_dict=emoji,
-                    armor=destination_key == "rahool",
                     links=rotation.item_links,
                 )
                 await ctx.respond(

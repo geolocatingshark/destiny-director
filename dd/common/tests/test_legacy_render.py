@@ -168,7 +168,8 @@ def test_dares_sections_layout_emoji_and_rounds():
     assert "available for all classes" in text
     assert "Legendary Weapons // Set 1" in text
     assert ":auto_rifle: Chroma Rush" in text
-    assert "View more details" in text
+    assert "Other" not in text  # the trailing "Other" section was removed
+    assert "Kyber's Corner" in text  # standard footer instead
     container = components.build_container(sections)
     assert components.cv2_text_length([container]) <= components.CV2_TEXT_LIMIT
 
@@ -207,32 +208,32 @@ def test_week_sections_weekly_once_daily_per_day():
     assert "2026" not in text and "<t:" not in text
 
 
-def test_upcoming_a_look_ahead_format():
+def test_upcoming_distortion_style():
     rot = _rahool_rotation()
     dates = period_starts(rot, DATE, 4)  # current + 3 upcoming
-    text = "\n".join(
-        render_upcoming_sections("rahool", rot, dates, emoji_dict={}, armor=True)
+    sections = render_upcoming_sections("rahool", rot, dates, emoji_dict={})
+    text = "\n".join(sections)
+    assert sections[0].startswith("# Rahool's Armor Focus")  # activity title as the h1
+    # The current focus is highlighted in its own (divider-flanked) section, with a live
+    # reset countdown after it.
+    assert any(
+        s.startswith("### Arms") and f"resets <t:{int(dates[1].timestamp())}:R>" in s
+        for s in sections
     )
-    assert text.startswith("# Rahool's Armor Focus")  # activity title as the h1
-    assert "*`A Look Ahead`*" in text
-    assert f"Resets <t:{int(dates[1].timestamp())}:R>" in text  # live countdown
-    assert "*now*" in text  # the current period is marked
-    assert "▸ :armor: Arms" in text  # current value, armor-tagged
-    assert "(sequence repeats)" in text
+    # Upcoming rows put the value first, then the date (no generic armor emoji).
+    assert "Chest — Apr 22" in text
+    assert ":armor:" not in text
     assert "2026" not in text  # year-less dates
 
 
 def test_emoji_tokens_are_substituted():
-    emoji = h.CustomEmoji(id=h.Snowflake(1), name="armor", is_animated=False)
-    sections = render_upcoming_sections(
-        "rahool",
-        _rahool_rotation(),
-        period_starts(_rahool_rotation(), DATE, 3),
-        emoji_dict={"armor": emoji},
-        armor=True,
+    # A weapon-type emoji token resolves via the substituter in the daily breakdown.
+    emoji = h.CustomEmoji(id=h.Snowflake(1), name="auto_rifle", is_animated=False)
+    sections = render_date_sections(
+        "neomuna", _neomuna_rotation()(DATE), DATE, emoji_dict={"auto_rifle": emoji}
     )
     text = "\n".join(sections)
-    assert emoji.mention in text  # :armor: resolved to the guild emoji
+    assert emoji.mention in text  # :auto_rifle: resolved to the guild emoji
 
 
 def test_weapon_links_render_when_baked():
