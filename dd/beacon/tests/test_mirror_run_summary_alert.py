@@ -58,12 +58,14 @@ def _view(
 @pytest.mark.parametrize(
     ("delivered", "failed", "expected_level"),
     [
+        # CRITICAL threshold is max(10, 50% of targets).
         (100, 0, None),  # no failures → no alert at all
-        (97, 3, logging.ERROR),  # 3/100 < max(10, 10%*100=10) → ERROR
-        (90, 10, logging.CRITICAL),  # 10/100 >= 10 → CRITICAL
-        (35, 5, logging.ERROR),  # 5/40: max(10, ceil(4))=10, 5 < 10 → ERROR
-        (440, 60, logging.CRITICAL),  # 60/500: max(10, 50)=50, 60 >= 50 → CRITICAL
-        (0, 2, logging.ERROR),  # tiny run: max(10, ceil(0.2))=10, 2 < 10 → ERROR
+        (97, 3, logging.ERROR),  # 3/100 < max(10, 50)=50 → ERROR
+        (50, 50, logging.CRITICAL),  # 50/100 >= 50 → CRITICAL (exactly half)
+        (400, 100, logging.ERROR),  # 100/500 < max(10, 250)=250 → ERROR
+        (250, 250, logging.CRITICAL),  # 250/500 >= 250 → CRITICAL (half of a big run)
+        (0, 10, logging.CRITICAL),  # small run, hits the flat floor: 10 >= max(10, 5)
+        (0, 2, logging.ERROR),  # tiny run below the floor: 2 < max(10, 1)=10 → ERROR
     ],
 )
 def test_run_summary_failure_escalation(

@@ -578,11 +578,10 @@ _DISABLE_ERROR_MIN = 5
 # Escalate a completed run's failures by blast radius so a broad outage pages the owner
 # (health_logger only reaches the Discord alerts channel at ERROR/CRITICAL). Any failed
 # target is an ERROR; it becomes CRITICAL once the failure count reaches whichever is
-# LARGER of a flat floor or a share of the run's targets — so a handful of failures in a
-# huge fan-out, or a large fraction of a mid-size one, pages, while a stray failure only
-# errors.
+# LARGER of a flat floor (10) or half the run's targets — i.e. a majority-scale failure
+# of a big fan-out, or ≥10 of a small one, pages; anything less only errors.
 _RUN_FAIL_CRITICAL_MIN = 10
-_RUN_FAIL_CRITICAL_RATIO = 0.10
+_RUN_FAIL_CRITICAL_RATIO = 0.50
 
 # Idempotent failure alerting. A source message can be converged by more than one run
 # over its lifetime (the initial send, then an edit that re-arms every row — the failed

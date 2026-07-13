@@ -395,3 +395,146 @@ async def test_evict_resolved_sources_skips_query_when_nothing_cached(monkeypatc
     await w._evict_resolved_sources([_row(10, src_msg_id=1)])
 
     query.assert_not_awaited()
+
+
+async def test_evict_resolved_sources_survives_a_query_failure(monkeypatch):
+    # The eviction query is called unguarded in the loop; a failure must leave the cache
+    # intact and never escape (a raise here would kill the worker).
+    w = _worker(monkeypatch)
+    w._source_cache = {1: (1, _fake_msg(), {}), 2: (1, _fake_msg(), {})}
+
+    async def boom(_srcs):
+        raise RuntimeError("db blip")
+
+    monkeypatch.setattr(mw.MirrorDelivery, "sources_needing_source_content", boom)
+
+    await w._evict_resolved_sources([_row(10, src_msg_id=1)])  # must not raise
+
+    assert set(w._source_cache) == {1, 2}  # left intact
+
+
+# -- loop resilience (a dead loop silently stops ALL mirroring) ---------------
+
+
+async def test_loop_survives_a_pick_failure_and_recovers(monkeypatch):
+    monkeypatch.setattr(mw.aio, "sleep", AsyncMock())  # instant backoff
+    w = _worker(monkeypatch)
+    picks = {"n": 0}
+    processed = aio.Event()
+
+    async def pick(_bs, **_kw):
+        picks["n"] += 1
+        if picks["n"] == 1:
+            raise RuntimeError("db blip")
+        return [_row(200)] if picks["n"] == 2 else []
+
+    monkeypatch.setattr(mw.MirrorDelivery, "pick_batch", pick)
+
+    async def process(_batch):
+        processed.set()
+        return []
+
+    monkeypatch.setattr(w, "_process", process)
+    monkeypatch.setattr(w, "_flush", AsyncMock())
+    monkeypatch.setattr(w, "_evict_resolved_sources", AsyncMock())
+
+    await w.start(w._bot)
+    try:
+        await aio.wait_for(processed.wait(), timeout=2.0)  # recovered after the failure
+    finally:
+        await w.stop()
+    assert picks["n"] >= 2
+
+
+async def test_loop_continues_when_a_convergence_pass_raises(monkeypatch):
+    # _process raising is caught; the batch flushes empty outcomes and the loop lives.
+    monkeypatch.setattr(mw.aio, "sleep", AsyncMock())
+    w = _worker(monkeypatch)
+    picks = {"n": 0}
+
+    async def pick(_bs, **_kw):
+        picks["n"] += 1
+        return [_row(200)] if picks["n"] == 1 else []
+
+    monkeypatch.setattr(mw.MirrorDelivery, "pick_batch", pick)
+
+    async def process(_batch):
+        raise RuntimeError("convergence bug")
+
+    flushed = aio.Event()
+    flush_arg: dict[str, object] = {}
+
+    async def flush(outcomes):
+        flush_arg["outcomes"] = outcomes
+        flushed.set()
+
+    monkeypatch.setattr(w, "_process", process)
+    monkeypatch.setattr(w, "_flush", flush)
+    monkeypatch.setattr(w, "_evict_resolved_sources", AsyncMock())
+
+    await w.start(w._bot)
+    try:
+        await aio.wait_for(flushed.wait(), timeout=2.0)
+    finally:
+        await w.stop()
+    assert flush_arg["outcomes"] == []  # process raised → outcomes=[], loop survived
+
+
+async def test_flush_retries_until_durable(monkeypatch):
+    monkeypatch.setattr(mw.aio, "sleep", AsyncMock())
+    w = _worker(monkeypatch)
+    calls = {"n": 0}
+
+    async def flush_outcomes(_outcomes):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("db down")
+
+    monkeypatch.setattr(mw.MirrorDelivery, "flush_outcomes", flush_outcomes)
+
+    await w._flush(["outcome"])  # keeps retrying until the write lands
+
+    assert calls["n"] == 3
+
+
+async def test_flush_reraises_cancellation(monkeypatch):
+    # A shutdown cancel must propagate (not be retried), so rows recover on restart.
+    w = _worker(monkeypatch)
+
+    async def flush_outcomes(_outcomes):
+        raise aio.CancelledError
+
+    monkeypatch.setattr(mw.MirrorDelivery, "flush_outcomes", flush_outcomes)
+
+    with pytest.raises(aio.CancelledError):
+        await w._flush(["outcome"])
+
+
+async def test_idle_clears_the_source_cache(monkeypatch):
+    w = _worker(monkeypatch)
+    w._source_cache = {1: (1, _fake_msg(), {})}
+
+    async def pick(_bs, **_kw):
+        return []  # always idle
+
+    monkeypatch.setattr(mw.MirrorDelivery, "pick_batch", pick)
+
+    await w.start(w._bot)
+    await aio.sleep(0.05)  # let one idle iteration run
+    await w.stop()
+
+    assert w._source_cache == {}
+
+
+async def test_mixed_group_transient_fetch_backs_off_send_but_deletes(monkeypatch):
+    # A group with a send row + a delete row, source fetch fails transiently: the send
+    # backs off (it needs the source), the delete still converges (it doesn't).
+    _stub_primitives(monkeypatch)
+    fetch = AsyncMock(side_effect=ConnectionError("boom"))
+    w = _worker(monkeypatch, fetch_message=fetch)
+
+    outcomes = await w._process([_row(10), _row(11, dest_msg_id=100, deleted=True)])
+
+    kinds = _kinds(outcomes)
+    assert kinds[10] == OutcomeKind.TRANSIENT  # send backed off behind the bad source
+    assert kinds[11] == OutcomeKind.DELETE_SUCCESS  # delete needs no source → converged
