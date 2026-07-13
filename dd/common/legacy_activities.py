@@ -216,9 +216,9 @@ def render_date_sections(
         else:
             blocks.append(_activity_block(activity))
 
-    sections = [f"## {title}\n-# {_fmt(date)}"]
+    sections = [f"# {title}\n-# {_fmt(date)}"]
     if blocks:
-        sections.append("\n".join(blocks))
+        sections.append("\n\n".join(blocks))
     sections += set_sections
     sections.append(_FOOTER)
     return _subbed(sections, emoji_dict)
@@ -238,11 +238,11 @@ def render_week_sections(
     per_day = [rotation(d) for d in days]
     week_activities = per_day[0]
 
-    sections = [f"## {title}\n-# Week of {_fmt(week_start)}"]
+    sections = [f"# {title}\n-# Week of {_fmt(week_start)}"]
 
     weekly = [a for a in week_activities if a.cadence == "weekly"]
     if weekly:
-        sections.append("\n".join(_activity_block(a) for a in weekly))
+        sections.append("\n\n".join(_activity_block(a) for a in weekly))
 
     for pos, activity in enumerate(week_activities):
         if activity.cadence != "daily":
@@ -250,7 +250,7 @@ def render_week_sections(
         rows = "\n".join(
             f"{_fmt(days[i])} · {_inline_values(per_day[i][pos])}" for i in range(7)
         )
-        sections.append(f"**{activity.title}** · daily\n{rows}")
+        sections.append(f"**{activity.title}** · daily\n\n{rows}")
 
     sections.append(_FOOTER)
     return _subbed(sections, emoji_dict)
@@ -294,6 +294,7 @@ def render_upcoming_sections(
         ]
         if first.set is None and len(first.values) > 1:
             lines.append("-# " + " · ".join(_field_label(n) for n in first.values))
+            lines.append("")
         for i, (day, acts) in enumerate(per_date):
             span = f"{_fmt(day)} - {_fmt(day + step)}" if weekly else _fmt(day)
             marker = "  ·  *now*" if i == 0 else ""
@@ -327,22 +328,22 @@ def render_dares_sections(
 
     if rounds is not None and not rounds.is_empty:
         chain = "⇢ ".join(v for v in rounds.values.values() if v)
-        sections.append(f"**Expert Rounds**\n:30th_annv: {chain}")
+        sections.append(f"**Expert Rounds**\n\n:30th_annv: {chain}")
 
     if loot is not None and loot.set is not None:
         live = loot.set
         if live.armor:
             armor = "\n".join(f":armor: {a}" for a in live.armor)
             sections.append(
-                f"**Legendary Armor // {live.name}**\n{armor}"
+                f"**Legendary Armor // {live.name}**\n\n{armor}"
                 "\n-# available for all classes"
             )
         if live.weapons:
             weapons = "\n".join(_dares_weapon(w) for w in live.weapons)
-            sections.append(f"**Legendary Weapons // {live.name}**\n{weapons}")
+            sections.append(f"**Legendary Weapons // {live.name}**\n\n{weapons}")
 
     sections.append(
-        "**Other**\n"
+        "**Other**\n\n"
         "[View more details](https://kyberscorner.com/destiny2/legacy-activities/) ↗"
     )
     return _subbed(sections, emoji_dict)

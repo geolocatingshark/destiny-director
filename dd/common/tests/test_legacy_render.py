@@ -118,7 +118,7 @@ def test_date_sections_title_and_weapon_emoji():
         "neomuna", _neomuna_rotation()(DATE), DATE, emoji_dict={}
     )
     text = "\n".join(sections)
-    assert sections[0].startswith("## Neomuna")
+    assert sections[0].startswith("# Neomuna")  # h1 title, consistent across posts
     # Weapon tagged with its type emoji, and the "(Auto Rifle)" suffix dropped.
     assert ":auto_rifle: Circular Logic" in text
     assert "(Auto Rifle)" not in text
