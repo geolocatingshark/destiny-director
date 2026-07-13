@@ -15,7 +15,10 @@
 
 # Pure tests for the shared bot-administration controller factory — no Discord I/O.
 
-from dd.common.controller import make_controller_group
+import pytest
+
+from dd.common import cfg
+from dd.common.controller import make_controller_group, restarts_enabled
 
 
 def test_group_named_after_bot() -> None:
@@ -36,3 +39,16 @@ def test_each_call_builds_fresh_instances() -> None:
     second = make_controller_group("anchor")
     assert first is not second
     assert first.subcommands["restart"] is not second.subcommands["restart"]
+
+
+def test_restarts_disabled_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Prod is the only config that leaves TEST_ENV empty (cfg.test_env == ()); there a
+    # `/restart` non-zero exit risks Railway crash-loop backoff, so it must be refused.
+    monkeypatch.setattr(cfg, "test_env", ())
+    assert restarts_enabled() is False
+
+
+def test_restarts_enabled_in_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A test/dev environment (TEST_ENV set → truthy tuple of guild ids) keeps restart.
+    monkeypatch.setattr(cfg, "test_env", (1000000000000000000,))
+    assert restarts_enabled() is True
