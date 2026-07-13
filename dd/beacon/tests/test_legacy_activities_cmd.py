@@ -106,12 +106,13 @@ async def test_build_pages_factories_are_fresh_per_call():
 
     first = factory()
     container = t.cast(h.impl.ContainerComponentBuilder, first[0])
+    baseline = len(container.components)
     container.add_action_row(components.nav_buttons_row(page_index=0, page_count=2))
     second = factory()
 
     assert second[0] is not first[0]  # a new builder each call
     fresh = t.cast(h.impl.ContainerComponentBuilder, second[0])
-    assert len(fresh.components) == 1  # only the text display, no leaked nav row
+    assert len(fresh.components) == baseline  # no nav row leaked from the first render
 
 
 async def test_build_week_pages_count_and_fresh():

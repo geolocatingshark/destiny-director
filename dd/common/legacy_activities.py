@@ -4,19 +4,22 @@ Mirrors :mod:`dd.common.lost_sector` (loader + ``format_post``) but for the
 per-destination legacy rotations. There are no autoposts, so this module is consumed
 only by the beacon read commands and the anchor web-editor preview — there is no
 scheduler, follow/mirror, or Google-Sheet fallback.
+
+Rendering produces a list of markdown *sections* (each a text display, divider-separated
+in the CV2 container — see :func:`dd.common.components.build_container`), styled after
+``/distortion``: ``##`` headers, a ``###`` current-highlight, ``**Upcoming**`` lists and
+``-#`` subtext. Dates are shown as ``Mmm DD`` (no year) and loot is tagged with
+weapon-type / ``:armor:`` emoji via the shared emoji substituter.
 """
 
 import datetime as dt
 import logging
 
-import hikari as h
-
 from ..sector_accounting.legacy_activities import (
     LegacyRotation,
     ResolvedActivity,
-    ResolvedSet,
 )
-from . import cfg, components, rotation_schema, schemas
+from . import rotation_schema, schemas
 from .utils import construct_emoji_substituter, re_user_side_emoji
 
 # Last-known-good rotation per slug: served only if the DB read/parse fails, so a
@@ -52,72 +55,88 @@ async def load_rotation(destination_key: str) -> LegacyRotation:
     raise RuntimeError(f"No rotation data available for {slug}")
 
 
+# --- formatting helpers -----------------------------------------------------------
+
+_FOOTER = (
+    "-# [Kyber's Corner](https://kyberscorner.com/destiny2/legacy-activities/)"
+    " · [Support](https://ko-fi.com/Kyber3000)"
+)
+
+
 def _field_label(name: str) -> str:
     return name.replace("_", " ").title()
 
 
-def _render_entry(activity: ResolvedActivity) -> str:
-    """Render one resolved activity as markdown (TBC if empty)."""
-    if activity.is_empty:
-        return "*TBC*\n"
-
-    if activity.set is not None:
-        return _render_set(activity.set)
-
-    lines: list[str] = []
-    single = len(activity.values) == 1
-    for name, value in activity.values.items():
-        if not value:
-            continue
-        # A lone element needs no label — the activity title already names it.
-        lines.append(value if single else f"{_field_label(name)}: {value}")
-
-    return ("\n".join(lines) if lines else "*TBC*") + "\n"
+def _fmt(date: dt.datetime) -> str:
+    """A compact, year-less date, e.g. ``Jul 14``."""
+    return f"{date:%b} {date.day}"
 
 
-def _render_set(live_set: ResolvedSet) -> str:
-    """Render a set-based activity's live set: name, full weapon list, armor once."""
-    lines: list[str] = []
-    if live_set.name:
-        lines.append(f"*{live_set.name}*")
-    if live_set.weapons:
-        lines.append("Weapons:")
-        lines.extend(f"- {weapon}" for weapon in live_set.weapons)
-    if live_set.armor:
-        # Armor is identical across the three classes, so name it once.
-        lines.append(f"Armor: {', '.join(live_set.armor)} (all classes)")
-    return "\n".join(lines) + "\n"
-
-
-_FOOTER = (
-    "[More on Kyber's Corner](https://kyberscorner.com/destiny2/legacy-activities/) ↗\n"
-    "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
+# Weapon-type emoji that exist in the Kyber server (same set matched in
+# ``dd.anchor.extensions.portal_ops``). Longest names first so e.g. "linear fusion
+# rifle" matches before "fusion rifle".
+_WEAPON_TYPE_SLUGS = (
+    "auto_rifle",
+    "hand_cannon",
+    "pulse_rifle",
+    "scout_rifle",
+    "sidearm",
+    "submachine_gun",
+    "shotgun",
+    "sniper_rifle",
+    "fusion_rifle",
+    "linear_fusion_rifle",
+    "grenade_launcher",
+    "rocket_launcher",
+    "machine_gun",
+    "sword",
+    "glaive",
+    "combat_bow",
+    "trace_rifle",
+)
+_WEAPON_TYPES = sorted(
+    ((slug.replace("_", " "), slug) for slug in _WEAPON_TYPE_SLUGS),
+    key=lambda pair: -len(pair[0]),
 )
 
 
-def _header(title: str, subtitle: str) -> str:
-    return f"**Destiny 2**\n## {title} — Legacy Activities\n\n-# {subtitle}\n\n"
+def _weapon_emoji(text: str) -> str | None:
+    """The ``:weapon_type:`` emoji token for a weapon string, or ``None`` if it names
+    no known weapon type (so non-weapons — bosses, locations — stay un-prefixed)."""
+    low = text.lower()
+    for name, slug in _WEAPON_TYPES:
+        if name in low:
+            return f":{slug}:"
+    if "bow" in low:
+        return ":combat_bow:"
+    return None
 
 
-def _inline_values(activity: ResolvedActivity) -> str:
-    """A compact one-line summary of an activity (for day/week rows)."""
-    if activity.set is not None:
-        return activity.set.name or "TBC"
-    values = [v for v in activity.values.values() if v]
-    return " — ".join(values) if values else "TBC"
+def _weaponize(text: str) -> str:
+    """Prefix a weapon with its type emoji and drop the ``(Type)`` suffix; a non-weapon
+    is returned unchanged."""
+    emoji = _weapon_emoji(text)
+    if emoji is None:
+        return text
+    return f"{emoji} {text.split(' (')[0].strip()}"
 
 
-async def _finish(
-    header: str, body: str, *, post_name: str, emoji_dict: dict[str, h.Emoji]
-) -> str:
-    """Emoji-substitute and length-guard the assembled header/body/footer."""
+def _dares_weapon(text: str) -> str:
+    """Like :func:`_weaponize` but always shows an emoji (``:weapon:`` fallback)."""
+    emoji = _weapon_emoji(text) or ":weapon:"
+    return f"{emoji} {text.split(' (')[0].strip()}"
 
-    def sub(text: str) -> str:
-        return re_user_side_emoji.sub(construct_emoji_substituter(emoji_dict), text)
 
-    return await components.guard_cv2_post_sections(
-        sub(header), sub(body), sub(_FOOTER), post_name=post_name
-    )
+def _armorize(text: str) -> str:
+    return f":armor: {text}"
+
+
+def _sub(text: str, emoji_dict: dict) -> str:
+    return re_user_side_emoji.sub(construct_emoji_substituter(emoji_dict), text)
+
+
+def _subbed(sections: list[str], emoji_dict: dict) -> list[str]:
+    return [_sub(s, emoji_dict) for s in sections]
 
 
 def reset_week_start(rotation: LegacyRotation, when: dt.datetime) -> dt.datetime:
@@ -126,125 +145,204 @@ def reset_week_start(rotation: LegacyRotation, when: dt.datetime) -> dt.datetime
     return rotation.start_date + dt.timedelta(days=7 * weeks)
 
 
-async def render_description(
+def period_starts(
+    rotation: LegacyRotation, when: dt.datetime, count: int
+) -> list[dt.datetime]:
+    """``count`` reset boundaries starting with the one active at ``when`` (aligned to
+    the rotation's day/week cadence)."""
+    step = rotation.step
+    n = (when - rotation.start_date) // step
+    first = rotation.start_date + step * n
+    return [first + step * i for i in range(count)]
+
+
+def _inline_values(activity: ResolvedActivity) -> str:
+    """A compact one-line summary of an activity (weapon-tagged) for day/week rows."""
+    if activity.set is not None:
+        return activity.set.name or "TBC"
+    values = [_weaponize(v) for v in activity.values.values() if v]
+    return " · ".join(values) if values else "TBC"
+
+
+def _activity_block(activity: ResolvedActivity) -> str:
+    """A ``**Title**`` block with the activity's current value(s), weapon-tagged."""
+    if activity.is_empty:
+        return f"**{activity.title}**\n*TBC*"
+    if len(activity.values) == 1:
+        value = _weaponize(next(iter(activity.values.values())))
+        return f"**{activity.title}**\n{value}"
+    lines = [
+        f"{_field_label(name)}: {_weaponize(value)}"
+        for name, value in activity.values.items()
+        if value
+    ]
+    return f"**{activity.title}**\n" + "\n".join(lines)
+
+
+def _set_sections(activity: ResolvedActivity) -> list[str]:
+    """The Dares loot set as its own sections: header, weapons, armor."""
+    live = activity.set
+    if live is None:
+        return [f"**{activity.title}**\n*TBC*"]
+    sections = [f"### 🎲 {live.name}"]
+    if live.weapons:
+        sections.append(
+            "**Weapons**\n" + "\n".join(_dares_weapon(w) for w in live.weapons)
+        )
+    if live.armor:
+        # Armor is identical across the three classes, so name it once.
+        armor = "\n".join(_armorize(a) for a in live.armor)
+        sections.append(f"**Armor**\n{armor}\n-# available for all classes")
+    return sections
+
+
+# --- renderers (each returns a list of markdown sections) -------------------------
+
+
+def render_date_sections(
     destination_key: str,
     resolved: list[ResolvedActivity],
     date: dt.datetime,
     *,
-    emoji_dict: dict[str, h.Emoji],
-) -> str:
-    """Build the (emoji-substituted, length-guarded) post text for a destination/date.
-
-    The date is shown in the header so paginated pages are self-identifying (the
-    paginator's ``n/m`` indicator alone doesn't say which day/week is on screen).
-    """
-    title, _activities = rotation_schema.LEGACY_DESTINATIONS[destination_key]
-    header = _header(title, f"Showing <t:{int(date.timestamp())}:D>")
-
-    body = ""
+    emoji_dict: dict,
+) -> list[str]:
+    """A single date's page (navigator mode): the day's/week's activities."""
+    title = rotation_schema.LEGACY_DESTINATIONS[destination_key][0]
+    blocks: list[str] = []
+    set_sections: list[str] = []
     for activity in resolved:
-        body += f"**{activity.title}**\n"
-        body += _render_entry(activity)
-        body += "\n"
+        if activity.set is not None:
+            set_sections = _set_sections(activity)
+        else:
+            blocks.append(_activity_block(activity))
 
-    return await _finish(
-        header, body, post_name=f"Legacy {title}", emoji_dict=emoji_dict
-    )
-
-
-def build_container(description: str) -> list[h.api.ComponentBuilder]:
-    """Wrap a rendered description in a **fresh** CV2 container.
-
-    Fresh per call by contract: :class:`.components.Paginator` injects its nav row into
-    the returned container on every render, so a reused builder would accumulate rows on
-    revisits — a page factory must therefore build this anew each time it is invoked.
-    """
-    container = h.impl.ContainerComponentBuilder(
-        accent_color=h.Color(cfg.embed_default_color)
-    )
-    container.add_text_display(description)
-    return [container]
+    sections = [f"## {title}\n-# {_fmt(date)}"]
+    if blocks:
+        sections.append("\n".join(blocks))
+    sections += set_sections
+    sections.append(_FOOTER)
+    return _subbed(sections, emoji_dict)
 
 
-async def render_page(
-    destination_key: str,
-    resolved: list[ResolvedActivity],
-    date: dt.datetime,
-    *,
-    emoji_dict: dict[str, h.Emoji],
-) -> list[h.api.ComponentBuilder]:
-    """Render a destination/date to a one-off CV2 component list (non-paginated use)."""
-    description = await render_description(
-        destination_key, resolved, date, emoji_dict=emoji_dict
-    )
-    return build_container(description)
-
-
-async def render_week_description(
+def render_week_sections(
     destination_key: str,
     rotation: LegacyRotation,
     week_start: dt.datetime,
     *,
-    emoji_dict: dict[str, h.Emoji],
-) -> str:
-    """Render one reset-week: weekly activities once, plus a per-day breakdown of the
-    daily activities across the seven days of that week."""
+    emoji_dict: dict,
+) -> list[str]:
+    """One reset-week: weekly activities once, plus a per-day breakdown of the daily
+    activities across the seven days of that week."""
     title = rotation_schema.LEGACY_DESTINATIONS[destination_key][0]
-    header = _header(title, f"Week of <t:{int(week_start.timestamp())}:D>")
-
     days = [week_start + dt.timedelta(days=i) for i in range(7)]
     per_day = [rotation(d) for d in days]
     week_activities = per_day[0]
 
-    body = ""
+    sections = [f"## {title}\n-# Week of {_fmt(week_start)}"]
+
     weekly = [a for a in week_activities if a.cadence == "weekly"]
     if weekly:
-        for activity in weekly:
-            body += f"**{activity.title}**\n" + _render_entry(activity)
-        body += "\n"
+        sections.append("\n".join(_activity_block(a) for a in weekly))
 
     for pos, activity in enumerate(week_activities):
         if activity.cadence != "daily":
             continue
-        body += f"**{activity.title}** · daily\n"
-        for i, day in enumerate(days):
-            body += f"<t:{int(day.timestamp())}:d>  {_inline_values(per_day[i][pos])}\n"
-        body += "\n"
+        rows = "\n".join(
+            f"{_fmt(days[i])} · {_inline_values(per_day[i][pos])}" for i in range(7)
+        )
+        sections.append(f"**{activity.title}** · daily\n{rows}")
 
-    return await _finish(
-        header, body, post_name=f"Legacy {title}", emoji_dict=emoji_dict
-    )
+    sections.append(_FOOTER)
+    return _subbed(sections, emoji_dict)
 
 
-async def render_upcoming_description(
+def _row_value(activity: ResolvedActivity, *, armor: bool) -> str:
+    if activity.set is not None:
+        return activity.set.name or "TBC"
+    values = [
+        (_armorize(v) if armor else _weaponize(v))
+        for v in activity.values.values()
+        if v
+    ]
+    return " · ".join(values) if values else "TBC"
+
+
+def render_upcoming_sections(
     destination_key: str,
     rotation: LegacyRotation,
     dates: list[dt.datetime],
     *,
-    emoji_dict: dict[str, h.Emoji],
-    date_style: str,
-) -> str:
-    """Render a single, non-paginated post listing the current + upcoming rotation.
+    emoji_dict: dict,
+    armor: bool = False,
+) -> list[str]:
+    """A single, non-paginated "A Look Ahead" post (after Kyber's schedule embeds).
 
-    ``dates[0]`` is the current period (bolded); the rest are upcoming. Used for the
-    short-cycle destinations that fit their whole upcoming schedule in one post.
-    """
-    title = rotation_schema.LEGACY_DESTINATIONS[destination_key][0]
-    header = _header(title, "Current and upcoming rotation")
+    A title, a live resets-countdown, then ``**date**`` / ``▸ value`` rows with the
+    current one marked. ``dates`` are reset-aligned: ``dates[0]`` is the current period
+    and ``dates[1]`` the next boundary (the countdown target)."""
+    weekly = rotation.step.days == 7
     per_date = [(d, rotation(d)) for d in dates]
+    step = rotation.step
 
-    body = ""
+    lines: list[str] = []
     for pos, first in enumerate(per_date[0][1]):
-        body += f"**{first.title}**\n"
-        # For a multi-element activity, name the columns once (e.g. Fabled — Legendary).
+        lines += [
+            f"# {first.title}",
+            "*`A Look Ahead`*",
+            f"-# Resets <t:{int(dates[1].timestamp())}:R>",
+            "",
+        ]
         if first.set is None and len(first.values) > 1:
-            body += "-# " + " — ".join(_field_label(n) for n in first.values) + "\n"
-        for i, (day, activities) in enumerate(per_date):
-            stamp = f"<t:{int(day.timestamp())}:{date_style}>"
-            row = f"{stamp} · {_inline_values(activities[pos])}"
-            body += (f"**{row}**" if i == 0 else row) + "\n"
-        body += "\n"
+            lines.append("-# " + " · ".join(_field_label(n) for n in first.values))
+        for i, (day, acts) in enumerate(per_date):
+            span = f"{_fmt(day)} - {_fmt(day + step)}" if weekly else _fmt(day)
+            marker = "  ·  *now*" if i == 0 else ""
+            lines.append(f"**{span}**{marker}")
+            lines.append(f"▸ {_row_value(acts[pos], armor=armor)}")
+            lines.append("")
 
-    return await _finish(
-        header, body, post_name=f"Legacy {title}", emoji_dict=emoji_dict
+    lines.append(
+        "-# *(sequence repeats)* · "
+        "[Kyber's Corner](https://kyberscorner.com/destiny2/legacy-activities/)"
     )
+    return _subbed(["\n".join(lines)], emoji_dict)
+
+
+# Fancy title matching Kyber's Dares embed ("𝑜𝑓" is math-italic o + f).
+_DARES_TITLE = "# Dares 𝑜𝑓 Eternity"
+
+
+def render_dares_sections(
+    resolved: list[ResolvedActivity],
+    date: dt.datetime,
+    *,
+    emoji_dict: dict,
+) -> list[str]:
+    """The Dares of Eternity page, after Kyber's embed: expert rounds (an arrow chain),
+    then Legendary Armor and Legendary Weapons for the week's set."""
+    rounds = next((a for a in resolved if a.key == "rounds"), None)
+    loot = next((a for a in resolved if a.set is not None), None)
+
+    sections = [f"{_DARES_TITLE}\n-# Week of {_fmt(date)}"]
+
+    if rounds is not None and not rounds.is_empty:
+        chain = "⇢ ".join(v for v in rounds.values.values() if v)
+        sections.append(f"**Expert Rounds**\n:30th_annv: {chain}")
+
+    if loot is not None and loot.set is not None:
+        live = loot.set
+        if live.armor:
+            armor = "\n".join(f":armor: {a}" for a in live.armor)
+            sections.append(
+                f"**Legendary Armor // {live.name}**\n{armor}"
+                "\n-# available for all classes"
+            )
+        if live.weapons:
+            weapons = "\n".join(_dares_weapon(w) for w in live.weapons)
+            sections.append(f"**Legendary Weapons // {live.name}**\n{weapons}")
+
+    sections.append(
+        "**Other**\n"
+        "[View more details](https://kyberscorner.com/destiny2/legacy-activities/) ↗"
+    )
+    return _subbed(sections, emoji_dict)

@@ -19,14 +19,14 @@ One top-level command per destination (``/neomuna``, ``/moon``, ``/dares``, …)
 destination renders in one of three modes:
 
 - **single** (``rahool``, ``pale_heart``, ``kepler``): short cycles, so a single
-  non-paginated post lists the current + upcoming rotation.
+  non-paginated post (distortion-style) lists the current + upcoming rotation.
 - **week-daily** (``neomuna``, ``moon``): a *weekly* navigator; each page shows the
   week's weekly activities once plus a per-day breakdown of the daily activities.
 - **navigator** (everything else): a date-navigable navigator (one page per day for a
   daily destination, per week for a weekly one).
 
-All modes are built on :class:`dd.common.components.Paginator` (or a one-off response)
-— no followable channel, no autoposts.
+Each page is a CV2 container of divider-separated markdown sections
+(:func:`dd.common.components.build_container`).
 """
 
 import datetime as dt
@@ -35,15 +35,16 @@ import typing as t
 import hikari as h
 import lightbulb as lb
 
-from ...common import components
+from ...common import cfg, components
 from ...common.bot import ServerEmojiEnabledBot
 from ...common.components import cv2_error, respond_cv2
 from ...common.legacy_activities import (
-    build_container,
     load_rotation,
-    render_description,
-    render_upcoming_description,
-    render_week_description,
+    period_starts,
+    render_dares_sections,
+    render_date_sections,
+    render_upcoming_sections,
+    render_week_sections,
     reset_week_start,
 )
 from ...common.rotation_schema import LEGACY_DESTINATIONS
@@ -60,8 +61,19 @@ _WEEK_DAILY = frozenset({"neomuna", "moon"})
 _DAILY_PAGE_COUNT = 14  # navigator, daily destination (two weeks)
 _WEEKLY_PAGE_COUNT = 8  # navigator, weekly destination (two months)
 _WEEK_DAILY_PAGE_COUNT = 8  # week-daily navigator (two months of weeks)
-_SINGLE_DAILY_COUNT = 8  # single mode, daily destination (rows)
-_SINGLE_WEEKLY_COUNT = 6  # single mode, weekly destination (rows)
+_SINGLE_DAILY_ROWS = 7  # single mode, daily destination (upcoming rows)
+_SINGLE_WEEKLY_ROWS = 5  # single mode, weekly destination (upcoming rows)
+
+
+def _page(sections: list[str]) -> components.Page:
+    """A Paginator page factory building a **fresh** container each call.
+
+    Fresh per call by contract: the Paginator injects its nav row into the returned
+    container on every render, so a reused builder would pile up rows on revisits.
+    """
+    return lambda secs=sections: [
+        components.build_container(secs, accent_color=cfg.embed_default_color)
+    ]
 
 
 async def build_pages(
@@ -71,22 +83,19 @@ async def build_pages(
     *,
     now: dt.datetime,
 ) -> list[components.Page]:
-    """A navigator's forward window of per-date pages (day or week per the cadence).
-
-    The async post text is computed once up front, but each factory builds a **fresh**
-    container per call — the Paginator injects its nav row into the returned container
-    on every render, so a reused builder would pile up rows on revisits (paging back).
-    """
-    step = rotation.step
-    page_count = _DAILY_PAGE_COUNT if step.days == 1 else _WEEKLY_PAGE_COUNT
-
+    """A navigator's forward window of per-date pages (reset-aligned day or week)."""
+    count = _DAILY_PAGE_COUNT if rotation.step.days == 1 else _WEEKLY_PAGE_COUNT
     pages: list[components.Page] = []
-    for offset in range(page_count):
-        date = now + step * offset
-        description = await render_description(
-            destination_key, rotation(date), date, emoji_dict=emoji_dict
-        )
-        pages.append(lambda desc=description: build_container(desc))
+    for date in period_starts(rotation, now, count):
+        if destination_key == "dares":
+            sections = render_dares_sections(
+                rotation(date), date, emoji_dict=emoji_dict
+            )
+        else:
+            sections = render_date_sections(
+                destination_key, rotation(date), date, emoji_dict=emoji_dict
+            )
+        pages.append(_page(sections))
     return pages
 
 
@@ -102,10 +111,10 @@ async def build_week_pages(
     pages: list[components.Page] = []
     for offset in range(_WEEK_DAILY_PAGE_COUNT):
         week_start = week0 + dt.timedelta(days=7 * offset)
-        description = await render_week_description(
+        sections = render_week_sections(
             destination_key, rotation, week_start, emoji_dict=emoji_dict
         )
-        pages.append(lambda desc=description: build_container(desc))
+        pages.append(_page(sections))
     return pages
 
 
@@ -136,23 +145,26 @@ def make_legacy_command(
             now = dt.datetime.now(tz=dt.UTC)
 
             if destination_key in _SINGLE:
-                if rotation.step.days == 1:  # daily
-                    dates = [
-                        now + dt.timedelta(days=i) for i in range(_SINGLE_DAILY_COUNT)
-                    ]
-                    style = "d"
-                else:  # weekly — align rows to the reset boundary
-                    week0 = reset_week_start(rotation, now)
-                    dates = [
-                        week0 + dt.timedelta(days=7 * i)
-                        for i in range(_SINGLE_WEEKLY_COUNT)
-                    ]
-                    style = "D"
-                description = await render_upcoming_description(
-                    destination_key, rotation, dates, emoji_dict=emoji, date_style=style
+                rows = (
+                    _SINGLE_WEEKLY_ROWS
+                    if rotation.step.days == 7
+                    else _SINGLE_DAILY_ROWS
+                )
+                # +1: the aligned window's first entry is the *current* period.
+                dates = period_starts(rotation, now, rows + 1)
+                sections = render_upcoming_sections(
+                    destination_key,
+                    rotation,
+                    dates,
+                    emoji_dict=emoji,
+                    armor=destination_key == "rahool",
                 )
                 await ctx.respond(
-                    components=build_container(description),
+                    components=[
+                        components.build_container(
+                            sections, accent_color=cfg.embed_default_color
+                        )
+                    ],
                     flags=h.MessageFlag.IS_COMPONENTS_V2,
                 )
                 return
