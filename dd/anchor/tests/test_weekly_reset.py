@@ -678,13 +678,13 @@ def _req(**kwargs: t.Any) -> aiohttp.web.Request:
 
 
 @pytest.mark.asyncio
-async def test_publish_returns_problems_for_invalid_draft(monkeypatch) -> None:
-    # An empty draft fails validate_post, so publish_draft raises ValueError before it
-    # ever touches the bot — a non-None sentinel just clears the 503 "bot unset" gate.
+async def test_create_publish_returns_problems_for_invalid_draft(monkeypatch) -> None:
+    # Create-and-publish an empty draft: it fails validate_post, so publish_draft raises
+    # ValueError before it ever touches the bot — a non-None sentinel just clears the
+    # 503 "bot unset" gate.
     monkeypatch.setattr(wr, "_bot", object())
-    await wr.save_draft(wr.WeeklyResetContext(reset_ts=1))
     await wr.save_meta(wr.DraftMeta())
-    resp = await wr._handle_publish(_req())
+    resp = await wr._handle_create(_req(body={"reset_ts": 1, "publish": True}))
     assert resp.status == 422
     assert json.loads(resp.text or "")["problems"]
 
@@ -796,7 +796,11 @@ def test_format_reset_ts_is_utc_long_short() -> None:
 
 def test_draft_meta_round_trip() -> None:
     meta = wr.DraftMeta(
-        message_id=999, crossposted=True, status="published", last_edited_ts=5
+        message_id=999,
+        reset_ts=1783443600,
+        crossposted=True,
+        status="published",
+        last_edited_ts=5,
     )
     assert wr.DraftMeta.from_dict(meta.to_dict()) == meta
 
@@ -815,11 +819,28 @@ def test_draft_meta_back_compat_from_published_message_id() -> None:
     assert meta.message_id == 42
     assert meta.crossposted is True
     assert meta.status == "published"
+    # reset_ts predates per-week tracking, so a legacy doc has no notion of it.
+    assert meta.reset_ts == 0
 
 
 def test_draft_meta_back_compat_unpublished_defaults_not_crossposted() -> None:
     meta = wr.DraftMeta.from_dict({"published_message_id": 0, "status": "draft"})
     assert meta.message_id == 0 and meta.crossposted is False and meta.status == "draft"
+
+
+def test_draft_meta_is_current() -> None:
+    now = 1783443600
+    prev, nxt = 1782838800, 1784048400
+    # No post -> never current.
+    assert wr.DraftMeta(message_id=0, reset_ts=now).is_current(now) is False
+    # Post stamped with this week -> current.
+    assert wr.DraftMeta(message_id=42, reset_ts=now).is_current(now) is True
+    # Post stamped with another (past or future) week -> not current: start fresh.
+    assert wr.DraftMeta(message_id=42, reset_ts=prev).is_current(now) is False
+    assert wr.DraftMeta(message_id=42, reset_ts=nxt).is_current(now) is False
+    # Legacy doc (reset_ts absent -> 0) with a live post -> treated as current so it
+    # stays editable/deletable after deploy instead of being duplicated by a Create.
+    assert wr.DraftMeta(message_id=42, reset_ts=0).is_current(now) is True
 
 
 # --- lifecycle: post_or_edit_unpublished / publish_draft / delete (fake bot) -------
@@ -890,6 +911,9 @@ async def test_post_or_edit_unpublished_creates_when_no_post(fake_publish_env) -
     assert fake_publish_env.sent == [{"channel": channel, "crosspost": False}]
     assert not bot.rest.edited and fake_publish_env.crossposted == []
     assert meta.message_id == 555 and meta.status == "posted"
+    # The new post is stamped with the CURRENT reset week (wall clock), not the draft's
+    # own (user-overridable) reset_ts — so is_current stays correct under an override.
+    assert meta.reset_ts == wr.current_reset_ts()
 
 
 @pytest.mark.asyncio
@@ -956,30 +980,208 @@ async def test_publish_draft_raises_and_touches_nothing_on_invalid(
 
 
 @pytest.mark.asyncio
-async def test_handle_save_posts_and_returns_warnings(
+async def test_handle_create_posts_and_returns_warnings(
     monkeypatch, fake_publish_env, stub_indexes
 ) -> None:
     bot = _FakeBot()
     monkeypatch.setattr(wr, "_bot", bot)
+    # Pin "this week" to the draft's reset boundary so post_this_period reads True.
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
     await wr.save_meta(wr.DraftMeta())  # fresh: no post yet
-    # A near-empty draft trips validate_post, but saving still succeeds AND posts it —
+    # A near-empty draft trips validate_post, but Create still succeeds AND posts it —
     # the problems come back as non-blocking warnings, not a 422.
-    resp = await wr._handle_save(_req(body={"reset_ts": 1783443600}))
+    resp = await wr._handle_create(_req(body={"reset_ts": 1783443600}))
     assert resp.status == 200
     data = json.loads(resp.text or "")
     assert data["ok"] is True and data["warnings"]
-    assert data["posted"] is True and data["crossposted"] is False
+    assert data["post_this_period"] is True and data["crossposted"] is False
     channel = wr.cfg.followables["weekly_reset"]
     assert fake_publish_env.sent == [{"channel": channel, "crosspost": False}]
     meta = await wr.load_meta()
     assert meta.message_id == 555 and meta.status == "posted"
+    assert meta.reset_ts == 1783443600
 
 
 @pytest.mark.asyncio
-async def test_handle_save_503_when_bot_unset(monkeypatch) -> None:
+async def test_handle_create_preserves_last_editor(
+    monkeypatch, fake_publish_env, stub_indexes
+) -> None:
+    # Create resets the message-tracking fields but keeps editorial metadata like the
+    # last editor (a slash-command edit may have set it) — it isn't wiped to 0.
+    bot = _FakeBot()
+    monkeypatch.setattr(wr, "_bot", bot)
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+    await wr.save_meta(wr.DraftMeta(last_edited_by=12345))  # no post yet
+    resp = await wr._handle_create(_req(body={"reset_ts": 1783443600}))
+    assert resp.status == 200
+    meta = await wr.load_meta()
+    assert meta.message_id == 555 and meta.last_edited_by == 12345
+
+
+@pytest.mark.asyncio
+async def test_handle_create_reports_problem_when_post_fails(monkeypatch) -> None:
+    # If the in-channel send itself fails (e.g. a bad image URL), no message was
+    # created, so the handler returns a blocking `problems` 502 — NOT a green ok:true —
+    # and the meta is not persisted with a phantom message id.
+    bot = _FakeBot()
+    monkeypatch.setattr(wr, "_bot", bot)
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+
+    async def boom(*a: t.Any, **k: t.Any) -> t.Any:
+        raise RuntimeError("Discord rejected the image")
+
+    monkeypatch.setattr(wr, "post_or_edit_unpublished", boom)
+    await wr.save_meta(wr.DraftMeta())
+    resp = await wr._handle_create(_req(body={"reset_ts": 1783443600}))
+    assert resp.status == 502
+    data = json.loads(resp.text or "")
+    assert data.get("problems") and "ok" not in data
+    meta = await wr.load_meta()
+    assert meta.message_id == 0  # nothing tracked; not a false success
+
+
+@pytest.mark.asyncio
+async def test_handle_create_refuses_when_post_exists(monkeypatch) -> None:
+    # Create is a no-op guard when this week already has a post — the form hides the
+    # button, and the server enforces it so a stale tab can't orphan the live message.
+    monkeypatch.setattr(wr, "_bot", object())
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+    await wr.save_meta(
+        wr.DraftMeta(message_id=42, reset_ts=1783443600, status="posted")
+    )
+    resp = await wr._handle_create(_req(body={"reset_ts": 1783443600}))
+    assert resp.status == 409
+    assert "already exists" in json.loads(resp.text or "")["error"]
+
+
+@pytest.mark.asyncio
+async def test_handle_edit_edits_existing_in_place(
+    monkeypatch, fake_publish_env, stub_indexes
+) -> None:
+    bot = _FakeBot()
+    monkeypatch.setattr(wr, "_bot", bot)
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+    # A published post for this week: Edit updates it in place (re-mirrors) and keeps
+    # the crossposted state; no new message is sent.
+    await wr.save_meta(
+        wr.DraftMeta(
+            message_id=42, reset_ts=1783443600, status="published", crossposted=True
+        )
+    )
+    resp = await wr._handle_edit(_req(body={"reset_ts": 1783443600}))
+    assert resp.status == 200
+    data = json.loads(resp.text or "")
+    assert data["ok"] is True
+    assert data["post_this_period"] is True and data["crossposted"] is True
+    channel = wr.cfg.followables["weekly_reset"]
+    assert bot.rest.edited == [(channel, 42)] and fake_publish_env.sent == []
+    meta = await wr.load_meta()
+    assert meta.message_id == 42
+
+
+@pytest.mark.asyncio
+async def test_handle_edit_refuses_when_no_post(monkeypatch) -> None:
+    monkeypatch.setattr(wr, "_bot", object())
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+    await wr.save_meta(wr.DraftMeta())  # no post this week
+    resp = await wr._handle_edit(_req(body={"reset_ts": 1783443600}))
+    assert resp.status == 409
+    assert "No weekly-reset post" in json.loads(resp.text or "")["error"]
+
+
+@pytest.mark.asyncio
+async def test_handle_edit_refuses_stale_prior_week_post(monkeypatch) -> None:
+    # A post tracked from a PRIOR week isn't editable here — the form starts fresh and
+    # Edit refuses, so we never accidentally edit last week's message.
+    monkeypatch.setattr(wr, "_bot", object())
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+    await wr.save_meta(
+        wr.DraftMeta(message_id=42, reset_ts=1782838800, status="posted")
+    )
+    resp = await wr._handle_edit(_req(body={"reset_ts": 1783443600}))
+    assert resp.status == 409
+
+
+@pytest.mark.asyncio
+async def test_handle_create_503_when_bot_unset(monkeypatch) -> None:
     monkeypatch.setattr(wr, "_bot", None)
-    resp = await wr._handle_save(_req(body={"reset_ts": 1}))
+    resp = await wr._handle_create(_req(body={"reset_ts": 1}))
     assert resp.status == 503
+
+
+async def _stub_form_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the manifest/API-backed bits of the GET form so it renders offline."""
+
+    async def fake_options() -> dict[str, t.Any]:
+        return {
+            "items": [],
+            "conquests": {},
+            "strikes": [],
+            "raids": [],
+            "dungeons": [],
+            "pantheon": [],
+            "crucible_modes": [],
+            "crucible_3v3_first": "",
+            "crucible_6v6_first": "",
+        }
+
+    async def fake_build(config: t.Any = None) -> wr.WeeklyResetContext:
+        return wr.WeeklyResetContext(reset_ts=wr.current_reset_ts())
+
+    monkeypatch.setattr(wr, "_build_options", fake_options)
+    monkeypatch.setattr(wr, "build_draft_context", fake_build)
+
+
+@pytest.mark.asyncio
+async def test_form_get_loads_current_week_post(monkeypatch) -> None:
+    # A post tracked for THIS week -> the form opens on its saved draft and reports
+    # post_this_period so the client shows Edit/Delete (not the Create buttons).
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+    await _stub_form_deps(monkeypatch)
+    ctx = _full_ctx()
+    ctx.reset_ts = 1783443600
+    await wr.save_draft(ctx)
+    await wr.save_meta(
+        wr.DraftMeta(message_id=42, reset_ts=1783443600, status="posted")
+    )
+    resp = await wr._handle_form_get(_req())
+    assert resp.status == 200
+    assert '"post_this_period": true' in (resp.text or "")
+
+
+@pytest.mark.asyncio
+async def test_form_get_starts_fresh_when_no_current_post(monkeypatch) -> None:
+    # A post/draft left over from a PRIOR week is stale: the form starts a fresh draft
+    # and reports no post this period, so the client shows the Create buttons.
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+    await _stub_form_deps(monkeypatch)
+    stale = _full_ctx()
+    stale.reset_ts = 1782838800  # last week
+    await wr.save_draft(stale)
+    await wr.save_meta(
+        wr.DraftMeta(message_id=42, reset_ts=1782838800, status="posted")
+    )
+    resp = await wr._handle_form_get(_req())
+    assert resp.status == 200
+    assert '"post_this_period": false' in (resp.text or "")
+
+
+@pytest.mark.asyncio
+async def test_form_get_legacy_post_is_current(monkeypatch) -> None:
+    # Back-compat: a live post from before per-week tracking has reset_ts=0. The form
+    # must treat it as current (Edit/Delete), NOT show Create — else clicking Create
+    # would orphan and duplicate the live, already-crossposted message.
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+    await _stub_form_deps(monkeypatch)
+    ctx = _full_ctx()
+    ctx.reset_ts = 1783443600
+    await wr.save_draft(ctx)
+    await wr.save_meta(
+        wr.DraftMeta(message_id=42, status="published", crossposted=True)  # reset_ts=0
+    )
+    resp = await wr._handle_form_get(_req())
+    assert resp.status == 200
+    assert '"post_this_period": true' in (resp.text or "")
 
 
 @pytest.mark.asyncio

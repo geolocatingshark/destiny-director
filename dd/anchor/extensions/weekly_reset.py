@@ -906,6 +906,12 @@ META_SLUG = "weekly_reset_meta"
 class DraftMeta:
     #: Id of the single in-channel post in the weekly_reset followable; 0 = not posted.
     message_id: int = 0
+    #: Wall-clock reset boundary (``current_reset_ts()`` at post time) of the week the
+    #: tracked ``message_id`` belongs to. Stamped from the clock, NOT the draft's
+    #: (user-overridable) ``reset_ts``, so it always names the real week. Lets the form
+    #: tell whether the tracked post is *this* week's (see :meth:`is_current`). A legacy
+    #: doc predating this field carries 0.
+    reset_ts: int = 0
     #: Whether that post has been crossposted (broadcast to followers via beacon).
     crossposted: bool = False
     #: "draft" (no post) | "posted" (uncrossposted) | "published" (crossposted).
@@ -913,6 +919,18 @@ class DraftMeta:
     last_edited_by: int = 0
     last_edited_ts: int = 0
     needs_attention: list[str] = dataclasses.field(default_factory=list)
+
+    def is_current(self, reset_ts: int) -> bool:
+        """Whether the tracked post should be managed as the reset week ``reset_ts``'s.
+
+        Drives the form's Edit/Delete-vs-Create split. True when a post exists and its
+        stamped week matches ``reset_ts`` — OR the stamp is 0, i.e. a legacy doc from
+        before per-week tracking: its live post is treated as current so it stays
+        editable/deletable instead of being duplicated by a Create. A post whose stamp
+        names a *different* (past-or-future) week is not current — the form starts a
+        fresh draft for ``reset_ts`` and offers Create.
+        """
+        return self.message_id != 0 and self.reset_ts in (0, reset_ts)
 
     def to_dict(self) -> dict[str, t.Any]:
         return dataclasses.asdict(self)
@@ -924,10 +942,13 @@ class DraftMeta:
         status = d.get("status", "draft")
         # Back-compat: pre-lifecycle docs stored ``published_message_id`` (and no
         # ``crossposted``). Read the old key into ``message_id`` and default
-        # ``crossposted`` from the legacy "published" status.
+        # ``crossposted`` from the legacy "published" status. ``reset_ts`` predates the
+        # per-week tracking, so old docs default it to 0 — which ``is_current`` treats
+        # as the current week so a pre-existing live post stays manageable after deploy.
         message_id = int(d.get("message_id", d.get("published_message_id", 0)) or 0)
         return cls(
             message_id=message_id,
+            reset_ts=int(d.get("reset_ts", 0) or 0),
             crossposted=bool(d.get("crossposted", status == "published")),
             status=status,
             last_edited_by=int(d.get("last_edited_by", 0)),
@@ -949,6 +970,22 @@ async def save_meta(meta: DraftMeta) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _send_new_post(
+    bot: CachedFetchBot, hmessage: HMessage, channel_id: int, meta: DraftMeta
+) -> None:
+    """Send a fresh uncrossposted post and stamp its id + reset week onto ``meta``.
+
+    Shared by the two "first post of the week" paths (:func:`post_or_edit_unpublished`
+    and :func:`publish_draft`'s fallback). ``reset_ts`` is stamped from the wall clock
+    (``current_reset_ts()``), NOT ``ctx.reset_ts`` — the draft boundary is a display
+    field the user can override, but the tracked week must name the real reset week so
+    :meth:`DraftMeta.is_current` stays correct.
+    """
+    posted = await utils.send_message(bot, hmessage, channel_id, crosspost=False)
+    meta.message_id = posted.id
+    meta.reset_ts = current_reset_ts()
+
+
 async def post_or_edit_unpublished(
     bot: CachedFetchBot, ctx: WeeklyResetContext, meta: DraftMeta
 ) -> DraftMeta:
@@ -964,8 +1001,7 @@ async def post_or_edit_unpublished(
     hmessage = await format_weekly_reset(ctx, bot)
     channel_id = cfg.followables["weekly_reset"]
     if meta.message_id == 0:
-        posted = await utils.send_message(bot, hmessage, channel_id, crosspost=False)
-        meta.message_id = posted.id
+        await _send_new_post(bot, hmessage, channel_id, meta)
         meta.status = "posted"
     else:
         await bot.rest.edit_message(
@@ -985,7 +1021,7 @@ async def publish_draft(
     mirrors it to every follower. Crossposting is idempotent — a re-publish (or any
     later save-driven edit) just re-mirrors the edit, no duplicate. Falls back to
     post-then-crosspost when nothing has been posted yet (``message_id == 0``). Returns
-    the updated ``meta`` and a short note; raises ``ValueError`` (the joined
+    the updated ``meta`` (caller persists it) and a note; raises ``ValueError`` (joined
     ``validate_post`` problems) instead of publishing an invalid post.
     """
     problems = validate_post(ctx)
@@ -1001,12 +1037,10 @@ async def publish_draft(
         )
     else:
         # No post yet (e.g. publish before any save): post it first, uncrossposted.
-        posted = await utils.send_message(bot, hmessage, channel_id, crosspost=False)
-        meta.message_id = posted.id
+        await _send_new_post(bot, hmessage, channel_id, meta)
     await utils.crosspost_message_with_retries(bot, channel_id, meta.message_id)
     meta.crossposted = True
     meta.status = "published"
-    await save_meta(meta)
     note = (
         "✏️ Updated the published post — beacon re-mirrors the edit."
         if was_crossposted
@@ -1478,11 +1512,11 @@ _FORM_HTML_PATH = (
     Path(__file__).resolve().parent.parent / "web_static" / "weekly_reset_form.html"
 )
 
-#: The live bot, stashed by the StartedEvent listener so the ``/publish`` route can
+#: The live bot, stashed by the StartedEvent listener so the create/edit routes can
 #: reach the REST client. A module global (not aiohttp app state) because the listener
 #: that holds the bot is DI-injected and never sees the app object, while the routes
 #: live in this module — a global is the least-plumbing option. ``None`` until the
-#: StartedEvent fires, at which point ``/publish`` stops 503-ing.
+#: StartedEvent fires, at which point the create/edit routes stop 503-ing.
 _bot: CachedFetchBot | None = None
 
 #: Short-lived cache of the guild emoji dict used to render the rich preview. The form
@@ -1623,8 +1657,15 @@ async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> WeeklyResetCo
 
 async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response:
     # Auth is enforced by the web_auth middleware; this just renders the form.
-    draft = await load_draft() or await build_draft_context()
     meta = await load_meta()
+    post_this_period = meta.is_current(current_reset_ts())
+    # When a post exists for this week, open the form on the saved draft that tracks it
+    # (so you edit what's live); otherwise start a fresh draft for the current week.
+    # Keyed off the post's tracked week (is_current), NOT the draft's own reset_ts —
+    # which is a user-overridable display field and must not decide staleness.
+    draft = (await load_draft() if post_this_period else None) or (
+        await build_draft_context()
+    )
     config = await load_config()
     bootstrap = {
         "draft": draft.to_dict(),
@@ -1639,10 +1680,11 @@ async def _handle_form_get(request: aiohttp.web.Request) -> aiohttp.web.Response
         "default_image_url": config.default_image_url or "",
         # The CV2 container's accent colour, mirrored as the preview's left bar.
         "accent_color": str(cfg.embed_default_color),
-        # Whether an in-channel post already exists (drives the Delete-post button's
-        # enabled state on load), and whether it has been crossposted (drives the
-        # stronger delete-confirm wording).
-        "posted": meta.message_id != 0,
+        # Whether a post already exists *for the current reset week* (drives which
+        # action buttons show: Create-* when there's none, Edit/Delete when there is),
+        # and whether that post has been crossposted (hides the Edit-and-publish button
+        # once published, and drives the stronger delete-confirm wording).
+        "post_this_period": post_this_period,
         "crossposted": meta.crossposted,
     }
     # Escape "<" so a "</script>" in the data can't break out of the inline <script>.
@@ -1671,34 +1713,89 @@ def _discord_error_note(exc: Exception) -> str:
     return f"Discord rejected the post: {msg[:200]}"
 
 
-async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
+async def _post_action(
+    payload: t.Mapping[str, t.Any], *, create: bool
+) -> aiohttp.web.Response:
+    """Shared backend for the Create/Edit (± publish) form actions.
+
+    ``create=True`` sends a brand-new in-channel post for the current week (refusing if
+    one already exists — the form hides the button, this enforces it server-side, and
+    forgetting any stale prior-week id so we never edit last week's message). ``create=
+    False`` edits the existing current-week post in place (refusing if there is none).
+
+    ``payload["publish"]`` selects the crosspost behaviour: publishing validates
+    strictly and broadcasts to followers (blocking ``problems`` on failure); the plain
+    post/edit is lenient (advisory ``warnings``, the draft is kept even if Discord
+    rejects the post). Both persist the draft so the saved copy tracks the live message.
+    """
     if _bot is None:
         return aiohttp.web.json_response(
             {"error": "Bot is still starting — try again in a moment."}, status=503
         )
-    try:
-        payload = await request.json()
-    except Exception:
-        return aiohttp.web.json_response({"error": "Malformed body."}, status=400)
-
+    publish = bool(payload.get("publish"))
     ctx = await _context_from_payload(payload)
-    # Validation is now non-blocking: a WIP draft still saves AND posts (so the staging
-    # in-channel post reflects it), with any problems returned as advisory `warnings`.
-    warnings = validate_post(ctx)
 
-    post_error = None
     async with _draft_lock:
-        await save_draft(ctx)
         meta = await load_meta()
+        post_this_period = meta.is_current(current_reset_ts())
+        if create and post_this_period:
+            return aiohttp.web.json_response(
+                {
+                    "error": "A weekly-reset post already exists for this week — "
+                    "edit or delete it instead."
+                },
+                status=409,
+            )
+        if not create and not post_this_period:
+            return aiohttp.web.json_response(
+                {
+                    "error": "No weekly-reset post exists for this week yet — "
+                    "create one first."
+                },
+                status=409,
+            )
+        # Create drops the message-tracking fields so a fresh message is sent (and any
+        # stale prior-week id is forgotten), while keeping editorial metadata like the
+        # last editor; edit keeps the current meta so its message is updated in place.
+        if create:
+            meta.message_id = 0
+            meta.reset_ts = 0
+            meta.crossposted = False
+            meta.status = "draft"
         meta.last_edited_ts = int(dt.datetime.now(tz=dt.UTC).timestamp())
-        # Create-or-edit the uncrossposted in-channel post so it tracks the saved draft.
-        # If Discord rejects it (e.g. a bad image URL), keep the saved draft and report
-        # the reason as a warning instead of 500-ing — the user can fix and re-save.
-        try:
-            meta = await post_or_edit_unpublished(_bot, ctx, meta)
-        except Exception as exc:
-            logger.warning("weekly_reset: in-channel post update failed", exc_info=True)
-            post_error = _discord_error_note(exc)
+        await save_draft(ctx)
+
+        note: str | None = None
+        if publish:
+            # Publishing validates strictly and crossposts; problems block the send.
+            try:
+                meta, note = await publish_draft(_bot, ctx, meta)
+            except ValueError as exc:
+                return aiohttp.web.json_response(
+                    {"problems": str(exc).split("; ")}, status=422
+                )
+            except Exception as exc:  # Discord rejected the post/crosspost (bad image…)
+                logger.warning("weekly_reset: publish failed", exc_info=True)
+                return aiohttp.web.json_response(
+                    {"problems": [_discord_error_note(exc)]}, status=502
+                )
+            warnings: list[str] = []
+        else:
+            # Post/edit the uncrossposted message. Content problems (validate_post) are
+            # non-blocking advisory warnings, but if the send/edit itself fails (e.g. a
+            # bad image URL) the message did NOT change — report that as a blocking
+            # problem so the form can't show a false "done ✓". The draft stays saved, so
+            # the user fixes and retries without losing their in-page edits.
+            warnings = validate_post(ctx)
+            try:
+                meta = await post_or_edit_unpublished(_bot, ctx, meta)
+            except Exception as exc:
+                logger.warning(
+                    "weekly_reset: in-channel post update failed", exc_info=True
+                )
+                return aiohttp.web.json_response(
+                    {"problems": [_discord_error_note(exc)]}, status=502
+                )
         await save_meta(meta)
         # Optionally persist this week's image as the carried-over default for future
         # weeks' drafts (build_draft_context seeds ctx.image_url from it). An empty
@@ -1708,17 +1805,35 @@ async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
             config.default_image_url = ctx.image_url
             await save_config(config)
     logger.info(
-        "weekly_reset: draft saved via web form (post ok=%s)", post_error is None
+        "weekly_reset: %s via web form (publish=%s)",
+        "created" if create else "edited",
+        publish,
     )
     return aiohttp.web.json_response(
         {
             "ok": True,
-            "draft": ctx.to_dict(),
-            "warnings": [*warnings, post_error] if post_error else warnings,
-            "posted": meta.message_id != 0,
+            "note": note,
+            "warnings": warnings,
+            "post_this_period": meta.is_current(current_reset_ts()),
             "crossposted": meta.crossposted,
         }
     )
+
+
+async def _handle_create(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    try:
+        payload = await request.json()
+    except Exception:
+        return aiohttp.web.json_response({"error": "Malformed body."}, status=400)
+    return await _post_action(payload, create=True)
+
+
+async def _handle_edit(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    try:
+        payload = await request.json()
+    except Exception:
+        return aiohttp.web.json_response({"error": "Malformed body."}, status=400)
+    return await _post_action(payload, create=False)
 
 
 async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -1738,44 +1853,15 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
     )
 
 
-async def _handle_publish(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    if _bot is None:
-        return aiohttp.web.json_response(
-            {"error": "Bot is still starting — try again in a moment."}, status=503
-        )
-    # Publish the latest SAVED draft (the client saves first), under the same lock the
-    # save path uses, so a concurrent save can't race the publish.
-    async with _draft_lock:
-        ctx = await load_draft()
-        if ctx is None:
-            return aiohttp.web.json_response(
-                {"problems": ["No draft to publish — save one first."]}, status=422
-            )
-        meta = await load_meta()
-        try:
-            meta, note = await publish_draft(_bot, ctx, meta)
-        except ValueError as exc:
-            return aiohttp.web.json_response(
-                {"problems": str(exc).split("; ")}, status=422
-            )
-        except Exception as exc:  # Discord rejected the post/crosspost (e.g. bad image)
-            logger.warning("weekly_reset: publish failed", exc_info=True)
-            return aiohttp.web.json_response(
-                {"problems": [_discord_error_note(exc)]}, status=502
-            )
-        await save_meta(meta)
-    return aiohttp.web.json_response({"note": note})
-
-
 async def _handle_delete(request: aiohttp.web.Request) -> aiohttp.web.Response:
     if _bot is None:
         return aiohttp.web.json_response(
             {"error": "Bot is still starting — try again in a moment."}, status=503
         )
     # Delete the in-channel post and reset the draft to unposted, under the same lock
-    # the save/publish paths use. Deleting a crossposted message propagates the deletion
+    # the create/edit paths use. Deleting a crossposted message propagates the deletion
     # to following channels (and beacon mirrors the delete), so the post is removed
-    # everywhere; the persisted draft data is kept so a later Save re-posts it.
+    # everywhere; the persisted draft data is kept so a later Create re-posts it.
     async with _draft_lock:
         meta = await load_meta()
         if meta.message_id:
@@ -1790,6 +1876,7 @@ async def _handle_delete(request: aiohttp.web.Request) -> aiohttp.web.Response:
                     {"ok": False, "error": _discord_error_note(exc)}, status=502
                 )
             meta.message_id = 0
+            meta.reset_ts = 0
             meta.crossposted = False
             meta.status = "draft"
             await save_meta(meta)
@@ -1809,9 +1896,9 @@ async def _handle_auto(request: aiohttp.web.Request) -> aiohttp.web.Response:
 def register_weekly_reset_routes(app: aiohttp.web.Application) -> None:
     """Add the weekly-reset web form routes to the shared persistent app."""
     app.router.add_get("/weekly_reset", _handle_form_get)
-    app.router.add_post("/weekly_reset/save", _handle_save)
+    app.router.add_post("/weekly_reset/create", _handle_create)
+    app.router.add_post("/weekly_reset/edit", _handle_edit)
     app.router.add_post("/weekly_reset/preview", _handle_preview)
-    app.router.add_post("/weekly_reset/publish", _handle_publish)
     app.router.add_post("/weekly_reset/delete", _handle_delete)
     app.router.add_post("/weekly_reset/auto", _handle_auto)
 
@@ -1877,7 +1964,7 @@ async def _schedule_weekly_reset(
     if not cfg.followables.get("weekly_reset"):
         return
 
-    # Stash the live bot so the web form's /publish route can reach the REST client.
+    # Stash the live bot so the web form's create/edit routes can reach the REST client.
     global _bot
     _bot = bot
 

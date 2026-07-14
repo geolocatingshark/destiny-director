@@ -358,7 +358,7 @@ async def test_is_allowlisted() -> None:
         "/rotation",
         "/rotation/edit",
         "/weekly_reset",
-        "/weekly_reset/save",
+        "/weekly_reset/create",
         "/oauth/callback-evil",  # exact match, not a prefix — must NOT be allowlisted
         "/",
     ):
@@ -402,7 +402,8 @@ async def test_auth_middleware_installed_and_feature_routes_gated() -> None:
     assert rotation_editor.register_rotation_routes
     assert weekly_reset.register_weekly_reset_routes
     registered = {r.resource.canonical for r in app.router.routes() if r.resource}
-    for route in ("/rotation", "/rotation/edit", "/weekly_reset", "/weekly_reset/save"):
+    routes = ("/rotation", "/rotation/edit", "/weekly_reset", "/weekly_reset/create")
+    for route in routes:
         assert route in registered, route
         assert not auth._is_allowlisted(route), route
 

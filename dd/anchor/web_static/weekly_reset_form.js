@@ -1,11 +1,12 @@
 // Weekly Reset Overview form script. A self-contained form for editing the weekly_reset
 // draft, served statically from /static/weekly_reset_form.js (no build step). The page
 // (weekly_reset_form.html) is served by dd.anchor.extensions.weekly_reset, which
-// substitutes {draft, options, autopost_enabled, conquest_tiers, reward_fields} into a
-// small inline <script> as window.__BOOTSTRAP__ before this script runs. This script reads
-// that global, edits the draft client-side and POSTs it (via the shared api() helper) to
-// /weekly_reset/{preview,save,publish,auto} — auth is the weekly_reset_session cookie (sent
-// automatically on the same-origin fetch), so no token is embedded here. The server
+// substitutes {draft, options, autopost_enabled, conquest_tiers, reward_fields,
+// post_this_period, crossposted} into a small inline <script> as window.__BOOTSTRAP__
+// before this script runs. This script reads that global, edits the draft client-side and
+// POSTs it (via the shared api() helper) to /weekly_reset/{preview,create,edit,delete,auto}
+// — auth is the weekly_reset_session cookie (sent automatically on the same-origin fetch),
+// so no token is embedded here. The server
 // re-resolves weapons, re-applies the business rules and re-validates, so this form is a
 // convenience, not a trust boundary.
 //
@@ -30,7 +31,7 @@ const el = (tag, props = {}, kids = []) => {
 };
 
 $("authNote").textContent =
-  "Signed in via Discord (about 30 days). Save writes straight to the draft.";
+  "Signed in via Discord (about 30 days). Create/Edit write straight to the live post.";
 
 // Tom Select instances, keyed by element id (plus "conq_<tier>"), so readForm() can pull
 // their values with getValue().
@@ -267,57 +268,96 @@ $("form").addEventListener("submit", (e) => e.preventDefault());
 $("form").addEventListener("input", onEdit);
 $("refreshBtn").addEventListener("click", renderPreview);
 
-// --- post/publish state (drives the Delete-post button) ----------------
-// `posted` = an in-channel post exists; `crossposted` = it's been published to followers.
-// Seeded from the GET bootstrap, flipped on by a successful Save (which creates the post)
-// and off by a successful Delete.
-let posted = !!BOOT.posted;
+// --- action-button visibility ------------------------------------------
+// `postThisPeriod` = a post exists for the CURRENT reset week; `crossposted` = it's been
+// published to followers. Both seed from the GET bootstrap and update after every
+// create/edit/delete. The two Create buttons show only when there's no post this week;
+// once one exists they hide and Edit/Delete take over. "Edit & publish" is the way to
+// publish a post that was created unpublished, so it hides once crossposted.
+let postThisPeriod = !!BOOT.post_this_period;
 let crossposted = !!BOOT.crossposted;
-function updateDeleteBtn() {
-  $("deleteBtn").disabled = !posted;
+function updateButtons() {
+  $("createBtn").hidden = postThisPeriod;
+  $("createPublishBtn").hidden = postThisPeriod;
+  $("editBtn").hidden = !postThisPeriod;
+  $("deleteBtn").hidden = !postThisPeriod;
+  $("editPublishBtn").hidden = !postThisPeriod || crossposted;
 }
-updateDeleteBtn();
+updateButtons();
 
-// --- save --------------------------------------------------------------
-// Saving now also creates-or-edits the uncrossposted in-channel post, so validation is
-// non-blocking: the server returns `warnings` (shown, advisory) instead of blocking
-// `problems`. Returns the response on success (draft saved + posted), else null.
-async function save() {
-  const res = await api("/weekly_reset/save", readForm());
+// --- create / edit (± publish) -----------------------------------------
+// One helper backs all four post buttons: it POSTs the form to /create or /edit with a
+// `publish` flag. The unpublished path is lenient (advisory `warnings`); the publish path
+// blocks on `problems`. On success it re-syncs the button state from the response.
+async function postAction(path, publish, okMsg) {
+  const res = await api("/weekly_reset/" + path, { ...readForm(), publish });
   const data = await res.json();
-  if (!res.ok) {
-    showProblems(data.error ? [data.error] : ["Save failed — try again."]);
-    return null;
+  if (data.problems) {
+    showProblems(data.problems);
+    setStatus("Not done — see problems above.", false);
+    return false;
   }
-  showProblems(data.warnings || []); // advisory only — the draft still saved + posted
-  posted = !!data.posted;
+  if (!res.ok || !data.ok) {
+    showProblems(data.error ? [data.error] : ["Request failed — try again."]);
+    setStatus("Not done — see problems above.", false);
+    return false;
+  }
+  showProblems(data.warnings || []); // advisory only — the post still went through
+  postThisPeriod = !!data.post_this_period;
   crossposted = !!data.crossposted;
-  updateDeleteBtn();
-  return data;
+  updateButtons();
+  const warned = (data.warnings || []).length;
+  setStatus(
+    data.note || (warned ? `${okMsg} — ${warned} warning(s) below.` : okMsg),
+    true,
+  );
+  return true;
 }
-$("saveBtn").addEventListener("click", async () => {
-  setStatus("Saving…", true);
+
+$("createBtn").addEventListener("click", async () => {
+  setStatus("Creating post…", true);
   try {
-    const data = await save();
-    if (!data) return setStatus("Not saved — see problems above.", false);
-    const warned = (data.warnings || []).length;
-    setStatus(
-      warned
-        ? `Saved ✓ — posted, with ${warned} warning(s) below.`
-        : "Saved ✓ — draft posted (uncrossposted).",
-      true,
-    );
+    await postAction("create", false, "Post created (uncrossposted) ✓");
   } catch (e) {
-    setStatus("Save error: " + e, false);
+    setStatus("Create error: " + e, false);
+  }
+});
+
+$("createPublishBtn").addEventListener("click", async () => {
+  if (!confirm("Create the post AND publish it to every follower?")) return;
+  setStatus("Creating & publishing…", true);
+  try {
+    await postAction("create", true, "Published ✓");
+  } catch (e) {
+    setStatus("Create error: " + e, false);
+  }
+});
+
+$("editBtn").addEventListener("click", async () => {
+  setStatus("Editing post…", true);
+  try {
+    await postAction("edit", false, "Post edited ✓");
+  } catch (e) {
+    setStatus("Edit error: " + e, false);
+  }
+});
+
+$("editPublishBtn").addEventListener("click", async () => {
+  if (!confirm("Edit the post AND publish it to every follower?")) return;
+  setStatus("Editing & publishing…", true);
+  try {
+    await postAction("edit", true, "Published ✓");
+  } catch (e) {
+    setStatus("Edit error: " + e, false);
   }
 });
 
 // --- delete post -------------------------------------------------------
 $("deleteBtn").addEventListener("click", async () => {
-  if (!posted) return;
+  if (!postThisPeriod) return;
   const msg = crossposted
-    ? "Delete the PUBLISHED weekly-reset post? This removes it from the channel and propagates the deletion to every follower (beacon mirrors the removal too). The draft data is kept — a Save re-posts it."
-    : "Delete the in-channel draft post? The draft data is kept — a Save re-creates it.";
+    ? "Delete the PUBLISHED weekly-reset post? This removes it from the channel and propagates the deletion to every follower (beacon mirrors the removal too). Your form data stays — Create re-posts it."
+    : "Delete the in-channel draft post? Your form data stays — Create re-creates it.";
   if (!confirm(msg)) return;
   setStatus("Deleting…", true);
   try {
@@ -326,31 +366,12 @@ $("deleteBtn").addEventListener("click", async () => {
     if (!res.ok || !data.ok) {
       return setStatus("Delete failed" + (data.error ? ": " + data.error : "."), false);
     }
-    posted = false;
+    postThisPeriod = false;
     crossposted = false;
-    updateDeleteBtn();
-    setStatus("Post deleted — reset to draft.", true);
+    updateButtons();
+    setStatus("Post deleted — create a new one when ready.", true);
   } catch (e) {
     setStatus("Delete error: " + e, false);
-  }
-});
-
-// --- publish (save first, then publish the saved draft) ----------------
-$("publishBtn").addEventListener("click", async () => {
-  if (!confirm("Save and publish the current form to the followable?")) return;
-  setStatus("Saving…", true);
-  try {
-    if (!(await save())) return setStatus("Not published — see problems above.", false);
-    setStatus("Publishing…", true);
-    const res = await api("/weekly_reset/publish", {});
-    const data = await res.json();
-    if (data.problems) {
-      showProblems(data.problems);
-      return setStatus("Not published — see problems above.", false);
-    }
-    setStatus(data.note || "Published ✓", true);
-  } catch (e) {
-    setStatus("Publish error: " + e, false);
   }
 });
 

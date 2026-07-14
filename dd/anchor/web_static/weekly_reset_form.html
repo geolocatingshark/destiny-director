@@ -3,12 +3,12 @@
   Weekly Reset Overview form — a self-contained form for editing the weekly_reset draft.
   Reached from the link minted by `/weekly_reset create`; served by
   dd.anchor.extensions.weekly_reset, whose GET handler substitutes the __BOOTSTRAP__
-  placeholder with {draft, options, autopost_enabled, conquest_tiers, reward_fields}. The
-  page edits the draft client-side and POSTs it to /weekly_reset/{preview,save,publish,
-  auto} — auth is the weekly_reset_session cookie (sent automatically on the same-origin
-  fetch), so no token is embedded here. The server re-resolves weapons, re-applies the
-  business rules and re-validates on save, so this form is a convenience, not a trust
-  boundary.
+  placeholder with {draft, options, autopost_enabled, conquest_tiers, reward_fields,
+  post_this_period, crossposted}. The page edits the draft client-side and POSTs it to
+  /weekly_reset/{preview,create,edit,delete,auto} — auth is the weekly_reset_session
+  cookie (sent automatically on the same-origin fetch), so no token is embedded here. The
+  server re-resolves weapons, re-applies the business rules and re-validates, so this form
+  is a convenience, not a trust boundary.
 
   Widgets: the weapon pickers, GM strike, Crucible featured modes, raid/dungeon/pantheon
   selects and Conquest tiers are Tom Select (vendored under /static/vendor/, no build step,
@@ -204,10 +204,18 @@
       </aside>
     </main>
 
+    <!--
+      Action buttons. Only one of the two groups shows at a time (weekly_reset_form.js
+      toggles them from `post_this_period`): the Create pair when there's no post for the
+      current reset week, the Edit/Delete group once a post exists. "Edit &amp; publish"
+      additionally hides once the post is crossposted (nothing left to publish).
+    -->
     <div class="toolbar">
-      <button id="saveBtn" type="button">💾 Save draft</button>
-      <button id="publishBtn" class="secondary" type="button">📣 Save &amp; publish</button>
-      <button id="deleteBtn" class="danger" type="button" disabled>🗑 Delete post</button>
+      <button id="createBtn" type="button" hidden>➕ Create post</button>
+      <button id="createPublishBtn" class="secondary" type="button" hidden>📣 Create post &amp; publish</button>
+      <button id="editBtn" type="button" hidden>✏️ Edit last post</button>
+      <button id="editPublishBtn" class="secondary" type="button" hidden>📣 Edit &amp; publish</button>
+      <button id="deleteBtn" class="danger" type="button" hidden>🗑 Delete last post</button>
       <span class="grow"></span>
       <span id="status"></span>
     </div>
