@@ -41,8 +41,8 @@ def test_for_channel_required_and_advisory_base() -> None:
     perms = for_channel(MagicMock(spec=h.GuildTextChannel))
     required = {p.label for p in perms if p.required}
     advisory = {p.label for p in perms if not p.required}
-    assert required == {"View Channel", "Send Messages"}
-    assert advisory == {"Embed Links", "Manage Webhooks"}
+    assert required == {"View Channel", "Send Messages", "Manage Webhooks"}
+    assert advisory == {"Embed Links"}
 
 
 def test_for_channel_thread_swaps_send_for_send_in_threads() -> None:
@@ -53,7 +53,11 @@ def test_for_channel_thread_swaps_send_for_send_in_threads() -> None:
     # requiring both false-blocks a locked parent that grants only Send-in-Threads.
     assert "Send Messages" not in labels
     assert "Send Messages in Threads" in required
-    assert required == {"View Channel", "Send Messages in Threads"}
+    assert required == {
+        "View Channel",
+        "Send Messages in Threads",
+        "Manage Webhooks",
+    }
     sit = next(p for p in perms if p.label == "Send Messages in Threads")
     assert sit.required is True
     assert sit.permission == h.Permissions.SEND_MESSAGES_IN_THREADS

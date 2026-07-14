@@ -57,11 +57,25 @@ async def _run(monkeypatch, non_legacy_exc: BaseException) -> AsyncMock:
     return legacy
 
 
-async def test_missing_webhooks_403_degrades_to_legacy(monkeypatch) -> None:
-    # 50013 (Missing Permissions) is a ForbiddenError — a *sibling* of BadRequestError,
-    # so before the fix it slipped past the `except h.BadRequestError` and propagated.
-    legacy = await _run(monkeypatch, _forbidden(50013))
-    legacy.assert_awaited_once()
+async def test_missing_webhooks_403_propagates(monkeypatch) -> None:
+    # Manage Webhooks is a hard requirement — Preflight 3 blocks a missing-webhooks
+    # enable before the follow path runs, so a MISSING_PERMS 403 that still reaches the
+    # follow path is unexpected and must surface (via the reactive handler), NOT
+    # silently degrade to a legacy mirror.
+    non_legacy = AsyncMock(side_effect=_forbidden(50013))
+    legacy = AsyncMock()
+    monkeypatch.setattr(autoposts, "enable_non_legacy_mirror", non_legacy)
+    monkeypatch.setattr(autoposts, "enable_legacy_mirror", legacy)
+    with pytest.raises(h.ForbiddenError):
+        await autoposts._enable_autopost(
+            bot=MagicMock(),
+            followable_channel=123,
+            ctx=MagicMock(),
+            ping_role=None,
+            session=MagicMock(),
+            target_channel=_text_target(),
+        )
+    legacy.assert_not_awaited()
 
 
 async def test_needs_legacy_400_degrades_to_legacy(monkeypatch) -> None:

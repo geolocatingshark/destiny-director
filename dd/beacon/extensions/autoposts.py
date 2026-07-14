@@ -67,9 +67,12 @@ class AutopostPerm:
     why: str  # static fallback reason when the specific block-source is unknown
 
 
-# Single source of truth for the perms an autopost target needs. View Channel + Send
-# Messages are hard requirements (both delivery paths post as the bot); Embed Links and
-# Manage Webhooks are advisory (the bot degrades gracefully without them).
+# Single source of truth for the perms an autopost target needs. View Channel, Send
+# Messages (both delivery paths post as the bot) and Manage Webhooks are hard
+# requirements. Manage Webhooks is required even though today's legacy path works
+# without it, so the webhook-follow delivery path is always available — e.g. to switch
+# all mirrors to native follows, or to add ping features. Embed Links stays advisory
+# (embeds still send without it, links just don't render).
 _AUTOPOST_PERMS: list[AutopostPerm] = [
     AutopostPerm(
         h.Permissions.VIEW_CHANNEL,
@@ -92,8 +95,8 @@ _AUTOPOST_PERMS: list[AutopostPerm] = [
     AutopostPerm(
         h.Permissions.MANAGE_WEBHOOKS,
         "Manage Webhooks",
-        False,
-        "enables the webhook-follow delivery path",
+        True,
+        "the webhook-follow delivery path needs it",
     ),
 ]
 
@@ -455,17 +458,13 @@ async def _enable_autopost(
 
     try:
         await enable_non_legacy_mirror(bot, followable_channel, ctx, session)
-    except (h.BadRequestError, h.ForbiddenError) as e:
-        # The follow-webhook path only works on plain text channels (50024 →
-        # NEEDS_LEGACY) and needs Manage Webhooks (50013/50001 → MISSING_PERMS, a
-        # ForbiddenError — a *sibling* of BadRequestError, so it must be caught here
-        # explicitly). Both degrade to a legacy mirror, which posts as the bot and
-        # needs neither; Preflight 3 already verified the bot can send here, so the
-        # fallback is safe. Any other error is real and must surface.
-        if classify_mirror_error(e) not in (
-            MirrorOutcome.NEEDS_LEGACY,
-            MirrorOutcome.MISSING_PERMS,
-        ):
+    except h.BadRequestError as e:
+        # An announce (news) channel can't be followed into (50024 → NEEDS_LEGACY) —
+        # degrade to a legacy mirror. Manage Webhooks is a hard requirement gated by
+        # Preflight 3, so a missing-webhooks 403 no longer reaches here; any other error
+        # is real and must surface (a MISSING_PERMS 403 propagates to the reactive
+        # handler, which reports it accurately).
+        if classify_mirror_error(e) is not MirrorOutcome.NEEDS_LEGACY:
             raise
         await enable_legacy_mirror(bot, followable_channel, ctx, ping_role, session)
 
