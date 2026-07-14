@@ -15,6 +15,7 @@
 
 
 import enum
+import logging
 from dataclasses import dataclass
 
 import hikari as h
@@ -28,6 +29,8 @@ from ...common.schemas import MirroredChannel, db_session
 from ...common.utils import discord_error_logger
 from .. import utils
 from . import mirror_tracing
+
+logger = logging.getLogger(__name__)
 
 loader = lb.Loader()
 
@@ -67,12 +70,11 @@ class AutopostPerm:
     why: str  # static fallback reason when the specific block-source is unknown
 
 
-# Single source of truth for the perms an autopost target needs. View Channel, Send
-# Messages (both delivery paths post as the bot) and Manage Webhooks are hard
-# requirements. Manage Webhooks is required even though today's legacy path works
-# without it, so the webhook-follow delivery path is always available — e.g. to switch
-# all mirrors to native follows, or to add ping features. Embed Links stays advisory
-# (embeds still send without it, links just don't render).
+# Single source of truth for the perms an autopost target needs. View Channel and Send
+# Messages (both delivery paths post as the bot) are hard requirements. Manage Webhooks
+# is required *only where the webhook-follow delivery path can actually run* — see
+# ``for_channel``, which drops it for legacy-only targets (threads, forums, …). Embed
+# Links stays advisory (embeds still send without it, links just don't render).
 _AUTOPOST_PERMS: list[AutopostPerm] = [
     AutopostPerm(
         h.Permissions.VIEW_CHANNEL,
@@ -101,28 +103,52 @@ _AUTOPOST_PERMS: list[AutopostPerm] = [
 ]
 
 
+# Discord's channel-follow creates a follower webhook in the target, which only
+# standard text channels support; threads, forums, media, voice/stage and
+# announce-as-target reject it (50024 → NEEDS_LEGACY). Decide proactively by type.
+_WEBHOOK_FOLLOW_TARGET_TYPES = frozenset({h.ChannelType.GUILD_TEXT})
+
+
+def _supports_webhook_follow(channel: h.PartialChannel) -> bool:
+    """Whether Discord's webhook-follow works for this target's channel type."""
+    return channel.type in _WEBHOOK_FOLLOW_TARGET_TYPES
+
+
 def for_channel(channel: h.PartialChannel) -> list[AutopostPerm]:
     """The perms table for a specific target.
 
-    A thread autopost delivers via ``channel.send()`` into the thread, which Discord
-    gates on **Send Messages in Threads alone** (resolved against the parent) — the base
-    Send Messages perm does not authorise posting inside a thread. So a thread *swaps*
-    the Send Messages requirement for Send Messages in Threads rather than requiring
-    both; requiring both false-blocks a locked parent that grants only Send-in-Threads.
-    Matches ``utils._REQUIRED_THREAD_SEND_PERMS`` used by the reachability sweep."""
-    if not isinstance(channel, h.GuildThreadChannel):
-        return list(_AUTOPOST_PERMS)
-    return [
-        AutopostPerm(
-            h.Permissions.SEND_MESSAGES_IN_THREADS,
-            "Send Messages in Threads",
-            True,
-            "posting into a thread needs it",
-        )
-        if perm.permission == h.Permissions.SEND_MESSAGES
-        else perm
-        for perm in _AUTOPOST_PERMS
-    ]
+    Two per-target adjustments to the base table:
+
+    * **Threads** deliver via ``channel.send()`` into the thread, which Discord gates on
+      **Send Messages in Threads alone** (resolved against the parent) — the base Send
+      Messages perm does not authorise posting inside a thread. So a thread *swaps* Send
+      Messages for Send Messages in Threads rather than requiring both; requiring both
+      false-blocks a locked parent that grants only Send-in-Threads. Matches
+      ``utils._REQUIRED_THREAD_SEND_PERMS`` used by the reachability sweep.
+
+    * **Manage Webhooks is dropped for legacy-only targets.** A target Discord can't
+      follow into (``not _supports_webhook_follow`` — threads, forums, media, …) always
+      delivers via the legacy bot-post path, which needs no webhook. Requiring Manage
+      Webhooks there would false-block a working setup, so it's removed from the table
+      for those targets (and from the disable path too — see ``disable_mirror``)."""
+    supports_follow = _supports_webhook_follow(channel)
+    is_thread = isinstance(channel, h.GuildThreadChannel)
+    table: list[AutopostPerm] = []
+    for perm in _AUTOPOST_PERMS:
+        if perm.permission == h.Permissions.MANAGE_WEBHOOKS and not supports_follow:
+            continue  # legacy-only target → the webhook path can never run here
+        if is_thread and perm.permission == h.Permissions.SEND_MESSAGES:
+            table.append(
+                AutopostPerm(
+                    h.Permissions.SEND_MESSAGES_IN_THREADS,
+                    "Send Messages in Threads",
+                    True,
+                    "posting into a thread needs it",
+                )
+            )
+            continue
+        table.append(perm)
+    return table
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,13 +377,27 @@ async def disable_mirror(
         )
 
     else:
-        # If this is not a legacy mirror, then we need to delete the webhook for it
-
-        # Fetch and delete follow based webhooks and filter for our channel as a
-        # source
-        await unfollow_channel(
-            bot=bot, news_channel=followable_channel, target_channel=ctx.channel_id
-        )
+        # If this is not a legacy mirror, then we need to delete the follow webhook.
+        # Fetch and delete follow-based webhooks that name our channel as a source.
+        #
+        # Deleting the webhook needs Manage Webhooks. If the bot has since lost it, we
+        # must STILL drop our record — never gate `disable`, so a broken autopost is
+        # always removable. A missing-perms failure here is swallowed (logged); the
+        # orphaned webhook can be cleaned up later once perms return (or by a guild
+        # admin), but the mirror is gone from our side either way.
+        try:
+            await unfollow_channel(
+                bot=bot, news_channel=followable_channel, target_channel=ctx.channel_id
+            )
+        except h.HikariError as e:
+            if classify_mirror_error(e) is not MirrorOutcome.MISSING_PERMS:
+                raise
+            logger.warning(
+                "Disabling mirror %s→%s: can't delete the follow webhook (missing "
+                "Manage Webhooks); removing the record anyway, webhook left orphaned.",
+                followable_channel,
+                ctx.channel_id,
+            )
 
         # Also remove the mirror
         await MirroredChannel.remove_mirror(
@@ -421,17 +461,6 @@ async def _drop_existing_follow(
             raise
 
 
-# Discord's channel-follow creates a follower webhook in the target, which only
-# standard text channels support; threads, forums, media, voice/stage and
-# announce-as-target reject it (50024 → NEEDS_LEGACY). Decide proactively by type.
-_WEBHOOK_FOLLOW_TARGET_TYPES = frozenset({h.ChannelType.GUILD_TEXT})
-
-
-def _supports_webhook_follow(channel: h.PartialChannel) -> bool:
-    """Whether Discord's webhook-follow works for this target's channel type."""
-    return channel.type in _WEBHOOK_FOLLOW_TARGET_TYPES
-
-
 async def _enable_autopost(
     bot: CachedFetchBot,
     followable_channel: int,
@@ -448,8 +477,15 @@ async def _enable_autopost(
     webhook to drop — they never had one). Otherwise we try a new-style mirror first and
     keep the reactive NEEDS_LEGACY fallback as a safety net."""
     if ping_role:
+        # Drop any prior follow webhook FIRST, then record the legacy mirror. The drop
+        # is perms-gated (Manage Webhooks); doing it before the DB write keeps enable
+        # atomic — a failure surfaces the error *without* leaving a half-applied mirror
+        # row committed. Only follow-capable targets could hold a follow webhook, so
+        # legacy-only targets (threads, forums, …) skip the drop entirely (they never
+        # had one, and no longer require Manage Webhooks — see ``for_channel``).
+        if _supports_webhook_follow(target_channel):
+            await _drop_existing_follow(bot, followable_channel, ctx.channel_id)
         await enable_legacy_mirror(bot, followable_channel, ctx, ping_role, session)
-        await _drop_existing_follow(bot, followable_channel, ctx.channel_id)
         return
 
     if not _supports_webhook_follow(target_channel):
