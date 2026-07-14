@@ -1,10 +1,22 @@
 # Plan: act on the dev-over-prod code-review findings
 
-> **Status: NEEDS USER INPUT — captured 2026-07-02, nothing implemented.**
-> This is a triage doc, not an approved change. The user picks which findings to fix (see
+> **Status: PARTIALLY DONE — captured 2026-07-02; #4, #5, #6, #8, #10 landed
+> 2026-07-14 (commit `32b452c`, local `dev`). #1, #2, #3, #7, #9 remain.**
+> This is a triage doc. The user picks which of the *remaining* findings to fix (see
 > **Decisions needed** below), then a later agent implements the chosen ones. Re-verify
 > every symbol + line number against the current tree (grep by name — this repo shifts
 > under you) before editing.
+
+## Completed (landed 2026-07-14, commit `32b452c`)
+
+- **#6** — eververse `history_len` 4 → 14 (restored ~14d back-history for the daily rotator).
+- **#5** — `/beacon info` now guards only the mirror-count gather; a DB blip appends
+  `(mirror counts unavailable)` instead of sinking the diagnostic.
+- **#4** — added the `follow_link_single_step` 5xx retry-then-fallback test.
+- **#8** — pluralise "role"/"roles" in `explain_missing_permission`.
+- **#10** — dropped the stale `/surges` field from the `_rendered_parity` docstring.
+
+Removed from the finding lists below; only the open items (#1, #2, #3, #7, #9) remain.
 
 ## Context
 
@@ -22,17 +34,15 @@ false-negative that refuses a working setup. Fixes are independent — cherry-pi
 
 ## My recommendation (advice requested)
 
-- **Fix before the next prod deploy:** **#1** (thread autoposts falsely blocked — a real
-  user-facing regression in brand-new gate code) and **#6** (eververse back-history
-  collapse — one line, already flagged when the change was made).
-- **Worth doing in the same pass (cheap, high-value):** **#4** (untested 5xx branch) and
-  **#5** (`/beacon info` robustness) — small, self-contained. Consider **#2/#3** together
-  since they're the same "gate passes but enable still fails / hangs" UX gap.
-- **Batch or skip:** the nits **#7–#10** — do #7+#3 together (shared root cause: redundant
-  fetches), the rest are cosmetic.
+The cheap/self-contained items (#4, #5, #6, #8, #10) are done. What's left is the
+autopost permission-gate cluster:
 
-Suggested minimal branch: **#1 + #6** as one focused PR; a follow-up for the autopost UX
-cluster (#2, #3, #7) if you want the permission-gate feature to feel finished.
+- **Fix before the next prod deploy:** **#1** (thread autoposts falsely blocked — a real
+  user-facing regression in brand-new gate code).
+- **Same pass, if you want the gate to feel finished:** the autopost UX cluster **#2**,
+  **#3**, **#7** — #3+#7 share a root cause (redundant channel fetches), and #2 is the
+  product call below.
+- **Skip / opportunistic:** **#9** is cosmetic (fine as-is at this scale).
 
 ## Confirmed findings
 
@@ -75,33 +85,6 @@ the interaction hangs (Discord "thinking…" forever). **Fix:** respond with
 `permission_error_embed`/`autopost_error_embed` instead of bare-returning; ideally resolve
 perms + target channel from a single fetch (see #7) so the state can't arise.
 
-**#4 — New 5xx retry branch — the core "transient failure" case — is untested**
-`dd/common/tests/test_follow_link.py` (~L93-125)
-Tests cover 302-success, 404-immediate-fallback, and TimeoutError-retry, but never the
-`resp.status >= 500` branch (`dd/common/utils.py` ~L291-297) — the whole point of the
-url-latency change. A regression (e.g. returning `url` on 5xx instead of retrying) would
-pass silently. **Fix:** add `_FakeSession(_FakeResp(status=503))` asserting
-`session.get_calls == utils._LINK_FOLLOW_RETRIES + 1`,
-`len(sleeps) == utils._LINK_FOLLOW_RETRIES`, and fallback to the original url. (Shipping
-code is correct — this is a coverage gap only.)
-
-**#5 — A DB blip aborts the entire `/beacon info`**
-`dd/common/controller.py` ~L223-234
-The per-followable `MirroredChannel.count_dests` gather uses default
-`return_exceptions=False`; a brief DB outage re-raises and discards the already-built static
-config (control server id, test env, in-memory `mirror_check()` count) — on a diagnostic
-command you'd run *precisely* when things are broken. **Fix:** wrap only the gather in
-try/except and append `- (mirror counts unavailable)` on failure; render `mirror_check()`
-regardless (it's in-memory).
-
-**#6 — Eververse navpages kept `history_len=4` → browsable back-history collapsed ~28d → ~4d**
-`dd/beacon/extensions/eververse.py` L33 (`history_len`), L34 (`period` now `days=1`)
-The 1-day `period` change (commit `3ed359b`) is correct, but `history_len=4` was sized for
-the old weekly period; back-window = `period * (history_len - 1)` = 3 days now. Both sibling
-*daily* rotators use `history_len=14` (`lost_sector.py` ~L104, `portal_ops.py` ~L61).
-**Fix:** set `history_len=14` (or a deliberately chosen retention). Was flagged when the
-1-day change was made; this closes that loop.
-
 ### ⚪ Nits (cleanup, non-blocking)
 
 - **#7 — Same channel fetched up to 4× per enable inside the open DB transaction** ·
@@ -110,14 +93,9 @@ the old weekly period; back-window = `period * (history_len - 1)` = 3 days now. 
   `_fetch_target_and_view_state`. (Note: SQLAlchemy acquires the pooled connection lazily on
   first SQL, so the "connection held across REST" framing is overstated — it's redundant
   round-trips on an infrequent admin command.)
-- **#8 — "role" singular when multiple roles deny** · `dd/beacon/utils.py` ~L127-129.
-  Pluralise on `len(denying_roles)`.
 - **#9 — N parallel COUNT queries where one `GROUP BY` would do** · `dd/common/controller.py`
   ~L227-232. Optional `MirroredChannel.count_dests_bulk(src_ids)` returning `dict[int,int]`.
   Fine as-is at this scale.
-- **#10 — Stale docstring lists the dropped "surges" field** · `dd/anchor/extensions/rotation_editor.py`
-  ~L359. `_rendered_parity` docstring says `(names/links/champions/shields/surges)` but the
-  compared tuple no longer includes surges. Drop `/surges`.
 
 ## Refuted findings (recorded for transparency — do NOT action)
 
@@ -137,13 +115,11 @@ Six were thrown out by the adversarial verifiers; the notable rigorous catches:
 
 ## Decisions needed from you
 
-1. **Scope:** which findings to fix? (Recommended: **#1 + #6** now; **#2–#5** soon; nits
-   opportunistically.)
+1. **Scope:** which of the remaining findings to fix? (Recommended: **#1** now; the
+   autopost UX cluster **#2, #3, #7** soon; **#9** skippable.)
 2. **#2 direction:** legacy fallback on the 403 (feature works without Manage Webhooks) vs.
    make `MANAGE_WEBHOOKS` a hard requirement (accurate block). This is a product call.
-3. **#6 retention:** `history_len=14` to match the other daily rotators, or a different
-   value?
-4. **Delivery:** one branch for the lot, or split (e.g. #1+#6, then the autopost UX cluster)?
+3. **Delivery:** one branch for the lot, or split (e.g. #1, then the autopost UX cluster)?
 
 ## Repo rules
 uv only; ruff line-length 88 + double quotes; ty types; async throughout;
