@@ -99,19 +99,27 @@ _AUTOPOST_PERMS: list[AutopostPerm] = [
 
 
 def for_channel(channel: h.PartialChannel) -> list[AutopostPerm]:
-    """The perms table for a specific target — threads also need Send Messages in
-    Threads (a hard requirement, since posting into a thread needs it)."""
-    perms = list(_AUTOPOST_PERMS)
-    if isinstance(channel, h.GuildThreadChannel):
-        perms.append(
-            AutopostPerm(
-                h.Permissions.SEND_MESSAGES_IN_THREADS,
-                "Send Messages in Threads",
-                True,
-                "posting into a thread needs it",
-            )
+    """The perms table for a specific target.
+
+    A thread autopost delivers via ``channel.send()`` into the thread, which Discord
+    gates on **Send Messages in Threads alone** (resolved against the parent) — the base
+    Send Messages perm does not authorise posting inside a thread. So a thread *swaps*
+    the Send Messages requirement for Send Messages in Threads rather than requiring
+    both; requiring both false-blocks a locked parent that grants only Send-in-Threads.
+    Matches ``utils._REQUIRED_THREAD_SEND_PERMS`` used by the reachability sweep."""
+    if not isinstance(channel, h.GuildThreadChannel):
+        return list(_AUTOPOST_PERMS)
+    return [
+        AutopostPerm(
+            h.Permissions.SEND_MESSAGES_IN_THREADS,
+            "Send Messages in Threads",
+            True,
+            "posting into a thread needs it",
         )
-    return perms
+        if perm.permission == h.Permissions.SEND_MESSAGES
+        else perm
+        for perm in _AUTOPOST_PERMS
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,8 +455,17 @@ async def _enable_autopost(
 
     try:
         await enable_non_legacy_mirror(bot, followable_channel, ctx, session)
-    except h.BadRequestError as e:
-        if classify_mirror_error(e) is not MirrorOutcome.NEEDS_LEGACY:
+    except (h.BadRequestError, h.ForbiddenError) as e:
+        # The follow-webhook path only works on plain text channels (50024 →
+        # NEEDS_LEGACY) and needs Manage Webhooks (50013/50001 → MISSING_PERMS, a
+        # ForbiddenError — a *sibling* of BadRequestError, so it must be caught here
+        # explicitly). Both degrade to a legacy mirror, which posts as the bot and
+        # needs neither; Preflight 3 already verified the bot can send here, so the
+        # fallback is safe. Any other error is real and must surface.
+        if classify_mirror_error(e) not in (
+            MirrorOutcome.NEEDS_LEGACY,
+            MirrorOutcome.MISSING_PERMS,
+        ):
             raise
         await enable_legacy_mirror(bot, followable_channel, ctx, ping_role, session)
 
@@ -497,12 +514,16 @@ def follow_control_command_maker(
 
             async with db_session() as session, session.begin():
                 try:
-                    # Preflight 1 — the bot must be able to see the channel. Use the
+                    # Preflight 1 — resolve the target channel once, up front. Use the
                     # REST (not the cache): a stale cache can mask a later permissions
-                    # change and make the invoker-perms check pass spuriously.
-                    try:
-                        await bot.rest.fetch_channel(ctx.channel_id)
-                    except h.ForbiddenError:
+                    # change and make the invoker-perms check pass spuriously. A 403
+                    # means the bot can't see the channel (no View Channel). This single
+                    # fetch is reused by Preflight 3 so the target isn't fetched twice.
+                    (
+                        target_channel,
+                        view_channel_missing,
+                    ) = await _fetch_target_and_view_state(bot, ctx.channel_id)
+                    if view_channel_missing:
                         await respond_missing_perms(ctx, bot)
                         return
 
@@ -523,15 +544,12 @@ def follow_control_command_maker(
                     # CHANNEL_GONE (forum webhooks) are resolved inside the helpers;
                     # only MISSING_PERMS and unclassified errors surface here.
                     if enabling:
-                        # Preflight 3 — the bot must actually be able to post here
-                        # (both delivery paths post as the bot). Resolve its perms +
-                        # target once and reuse them. Enable-only: never gate `disable`,
-                        # so a broken autopost is always removable.
+                        # Preflight 3 — the bot must actually be able to post here (both
+                        # delivery paths post as the bot). Reuse the Preflight-1 target
+                        # fetch; only the bot's own perms still need resolving. Enable-
+                        # only: never gate `disable`, so a broken autopost is always
+                        # removable.
                         member, perm_channel, perms = await utils.resolve_bot_perms(ctx)
-                        (
-                            target_channel,
-                            view_channel_missing,
-                        ) = await _fetch_target_and_view_state(bot, ctx.channel_id)
                         statuses = build_perm_statuses(
                             perms,
                             perm_channel,
@@ -553,9 +571,19 @@ def follow_control_command_maker(
                             )
                             return
 
-                        # Reached only when perms are known (channel is viewable), so
-                        # target_channel is set; guard narrows the type for the call.
                         if target_channel is None:
+                            # Perms resolved, but the Preflight-1 target fetch failed
+                            # transiently (a non-403 error → (None, False)). We can't
+                            # enable without the channel object; report a retryable
+                            # error instead of bare-returning after defer() and hanging
+                            # the interaction on "thinking…" forever.
+                            await _respond_autopost_error(
+                                ctx,
+                                bot,
+                                RuntimeError(
+                                    f"Could not fetch target channel {ctx.channel_id}"
+                                ),
+                            )
                             return
                         await _enable_autopost(
                             bot,

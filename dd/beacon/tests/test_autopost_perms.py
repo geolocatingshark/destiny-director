@@ -45,8 +45,15 @@ def test_for_channel_required_and_advisory_base() -> None:
     assert advisory == {"Embed Links", "Manage Webhooks"}
 
 
-def test_for_channel_thread_adds_send_in_threads() -> None:
+def test_for_channel_thread_swaps_send_for_send_in_threads() -> None:
     perms = for_channel(MagicMock(spec=h.GuildThreadChannel))
+    labels = {p.label for p in perms}
+    required = {p.label for p in perms if p.required}
+    # A thread is gated on Send-in-Threads alone, NOT the base Send Messages perm —
+    # requiring both false-blocks a locked parent that grants only Send-in-Threads.
+    assert "Send Messages" not in labels
+    assert "Send Messages in Threads" in required
+    assert required == {"View Channel", "Send Messages in Threads"}
     sit = next(p for p in perms if p.label == "Send Messages in Threads")
     assert sit.required is True
     assert sit.permission == h.Permissions.SEND_MESSAGES_IN_THREADS
