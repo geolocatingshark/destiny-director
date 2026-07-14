@@ -34,8 +34,12 @@ _SEED_DIR = pathlib.Path(__file__).resolve().parent / "seed_data" / "world_activ
 _rotation_cache: dict[str, LegacyRotation] = {}
 
 
-def _load_seed_doc(destination_key: str) -> dict | None:
-    """The committed seed document for a destination key, or ``None`` if absent."""
+def load_seed_doc(destination_key: str) -> dict | None:
+    """The committed seed document for a destination key, or ``None`` if absent.
+
+    These docs are the "known-good defaults": they carry their own baked ``item_links``
+    so they render (and reset) with no manifest access. Used both by :func:`_autoseed`
+    (first-use seeding) and the web editor's *Reset to defaults* action."""
     try:
         raw = (_SEED_DIR / f"{destination_key}.json").read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -49,7 +53,7 @@ async def _autoseed(slug: str, destination_key: str) -> dict | None:
     Each command self-seeds on first use so a freshly-deployed bot (or a wiped row)
     serves data with no manual seed step. Persisting is best-effort — the doc is
     returned for rendering even if the write fails."""
-    doc = _load_seed_doc(destination_key)
+    doc = load_seed_doc(destination_key)
     if doc is None:
         return None
     try:
@@ -143,14 +147,38 @@ _WEAPON_TYPES = sorted(
 )
 
 
+def _weapon_type_hint(value: str) -> str | None:
+    """The lower-cased ``(Type)`` hint from a stored ``Name (Type)`` weapon value.
+
+    ``None`` when the value carries no parenthetical (a bare boss/mode/location name).
+    Handles the nested Dares shape too: ``Sojourner's Tale (Shotgun (Solar))`` → the
+    hint still starts with ``shotgun``."""
+    name = value.split(" (")[0]
+    if len(name) >= len(value):
+        return None
+    return value[len(name) :].strip(" ()").lower()
+
+
 def _weapon_emoji(text: str) -> str | None:
-    """The ``:weapon_type:`` emoji token for a weapon string, or ``None`` if it names
-    no known weapon type (so non-weapons — bosses, locations — stay un-prefixed)."""
-    low = text.lower()
+    """The ``:weapon_type:`` emoji token for a weapon value (``Name (Type)``), or
+    ``None`` if it names no known weapon type (so non-weapons — bosses, locations —
+    stay un-prefixed).
+
+    Matches only the ``(Type)`` hint, never the free-form name. The previous approach
+    scanned the whole value as a substring, which mislabels any non-weapon value that
+    merely *contains* a weapon word — e.g. ``Swordbearer`` → ``sword``, or a value with
+    ``bow`` in it → ``combat_bow`` — and then :func:`_linked` would strip its trailing
+    ``(…)`` qualifier. This mirrors ``portal_ops._reward_emoji``, which sidesteps the
+    same trap by matching Bungie's structured ``itemTypeDisplayName`` (the type field)
+    rather than the display name; here the value has no separate type field, so we
+    recover it from the parenthetical."""
+    hint = _weapon_type_hint(text)
+    if hint is None:
+        return None
     for name, slug in _WEAPON_TYPES:
-        if name in low:
+        if name in hint:
             return f":{slug}:"
-    if "bow" in low:
+    if "bow" in hint:
         return ":combat_bow:"
     return None
 

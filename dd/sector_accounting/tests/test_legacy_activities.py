@@ -189,6 +189,20 @@ def test_missing_scheduled_set_is_tbc_not_error():
     assert resolved.is_empty
 
 
+def test_duplicate_set_names_are_rejected():
+    # Sets are keyed by name, so two sets sharing a name would silently collapse (the
+    # last wins) and the schedule would resolve to the wrong gear. from_json must reject
+    # the document instead (review finding #6).
+    import pytest
+
+    doc = _sets_doc()
+    doc["activities"][0]["sets"].append(
+        {"name": "Set A", "weapons": ["W9"], "armor": ["A9"]}  # duplicate of Set A
+    )
+    with pytest.raises(ValueError, match="duplicate set names"):
+        LegacyRotation.from_json(doc)
+
+
 def test_item_links_round_trip():
     doc = _doc()
     doc["item_links"] = {"A (Auto Rifle)": "https://www.light.gg/db/items/1/"}

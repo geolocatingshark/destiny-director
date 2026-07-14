@@ -11,11 +11,18 @@
 // Each post type has its own bespoke form (tagged .ls-only / .xur-only / .legacy-only in
 // the markup); on load every other type's nodes are removed and the matching type's
 // block builds its fields and assigns collect(). lost_sector is tabbed (Sectors / Planet
-// cycles / Preview); xur_location is a simpler Locations / Preview; legacy_* is Activities
-// (each activity's elements are independent editable value lists) / Preview.
+// cycles / Preview); xur_location is a simpler Locations / Preview; a world-activity
+// destination is Activities (each activity's elements are independent editable value
+// lists) / Preview.
 
 const BOOTSTRAP = window.__BOOTSTRAP__;
 const { type, data, vocab } = BOOTSTRAP;
+// The world-activity destinations are stored under the `world_activity_` slug prefix
+// (dd.common.rotation_schema.ROTATION_SLUG_PREFIX). Server dispatch keys off
+// `is_world_activity`; the form mirrors it with this one prefix test so the two can't
+// drift. (The DOM/CSS markers stay named `.legacy-only` — Bungie/Kyber's own term for
+// the activity category — they're just class names, not the dispatch discriminator.)
+const isWorldActivity = type.startsWith("world_activity_");
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, kids = []) => {
   const n = Object.assign(document.createElement(tag), props);
@@ -29,7 +36,7 @@ document.getElementById("authNote").textContent =
 
 // Each post type has its own bespoke form; drop every other type's markup so the
 // tab bar and collect() only ever see this type's fields.
-const activeOnly = type.startsWith("legacy_")
+const activeOnly = isWorldActivity
   ? "legacy-only"
   : type === "lost_sector"
     ? "ls-only"
@@ -280,12 +287,12 @@ if (type === "xur_location") {
   });
 }
 
-// ===== legacy_* form ===================================================
-// A legacy destination is a fixed set of activities (from the loaded doc); each
+// ===== world-activity form =============================================
+// A world-activity destination is a fixed set of activities (from the loaded doc); each
 // activity has fixed elements, and each element is its own independent, editable list
 // of cycle values. The structure (activities/elements/names) is pinned by the spec, so
 // this form only edits reference_date and the per-element value lists.
-if (type.startsWith("legacy_")) {
+if (isWorldActivity) {
   $("referenceDate").value = data.reference_date || "";
   const box = $("legacyActivities");
   const label = (name) =>
@@ -518,6 +525,24 @@ if (type.startsWith("legacy_")) {
   // Gate Save on every set-based activity's consistency, and paint the initial state.
   consistencyProblems = () => setsValidators.flatMap((v) => v());
   setsValidators.forEach((v) => v());
+
+  // Reset-to-defaults: discard this destination's stored data and re-seed it from the
+  // committed defaults, then reload so the form rebuilds from the fresh doc. The manual
+  // recovery path for a rotation that has gone bad (command errors alert us → reset).
+  $("resetDefaults").addEventListener("click", async () => {
+    if (!confirm(`Reset "${type}" to the committed defaults? This discards the current stored data for it.`))
+      return;
+    setStatus("Resetting…", true);
+    try {
+      const res = await api("/rotation/reset", { type });
+      const body = await res.text();
+      if (!res.ok) return setStatus("Reset failed: " + body, false);
+      setStatus("Reset ✓ — reloading…", true);
+      location.reload();
+    } catch (e) {
+      setStatus("Reset error: " + e, false);
+    }
+  });
 }
 
 // --- submit helpers ----------------------------------------------------
@@ -586,4 +611,4 @@ $("saveBtn").addEventListener("click", async () => {
 // Activate the initial tab. lost_sector keeps its static default (Sectors);
 // the other types' default tab lived in the removed markup, so activate it here.
 if (type === "xur_location") showTab("locations");
-if (type.startsWith("legacy_")) showTab("activities");
+if (isWorldActivity) showTab("activities");

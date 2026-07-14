@@ -37,30 +37,57 @@ from dd.beacon.extensions.autoposts import (
 # --- perms table -----------------------------------------------------------------
 
 
+def _text_channel() -> MagicMock:
+    ch = MagicMock(spec=h.GuildTextChannel)
+    ch.type = h.ChannelType.GUILD_TEXT  # supports webhook-follow
+    return ch
+
+
+def _thread_channel() -> MagicMock:
+    ch = MagicMock(spec=h.GuildThreadChannel)
+    ch.type = h.ChannelType.GUILD_PUBLIC_THREAD  # legacy-only (no webhook-follow)
+    return ch
+
+
 def test_for_channel_required_and_advisory_base() -> None:
-    perms = for_channel(MagicMock(spec=h.GuildTextChannel))
+    # A standard text channel can use webhook-follow, so Manage Webhooks stays required.
+    perms = for_channel(_text_channel())
     required = {p.label for p in perms if p.required}
     advisory = {p.label for p in perms if not p.required}
     assert required == {"View Channel", "Send Messages", "Manage Webhooks"}
     assert advisory == {"Embed Links"}
 
 
-def test_for_channel_thread_swaps_send_for_send_in_threads() -> None:
-    perms = for_channel(MagicMock(spec=h.GuildThreadChannel))
+def test_for_channel_thread_swaps_send_and_drops_manage_webhooks() -> None:
+    perms = for_channel(_thread_channel())
     labels = {p.label for p in perms}
     required = {p.label for p in perms if p.required}
     # A thread is gated on Send-in-Threads alone, NOT the base Send Messages perm —
     # requiring both false-blocks a locked parent that grants only Send-in-Threads.
     assert "Send Messages" not in labels
     assert "Send Messages in Threads" in required
-    assert required == {
-        "View Channel",
-        "Send Messages in Threads",
-        "Manage Webhooks",
-    }
+    # A thread only ever uses the legacy (bot-post) path, which needs no webhook, so
+    # Manage Webhooks must NOT be required (over-gating regression — review finding #3).
+    assert "Manage Webhooks" not in labels
+    assert required == {"View Channel", "Send Messages in Threads"}
     sit = next(p for p in perms if p.label == "Send Messages in Threads")
     assert sit.required is True
     assert sit.permission == h.Permissions.SEND_MESSAGES_IN_THREADS
+
+
+def test_for_channel_forum_drops_manage_webhooks() -> None:
+    # Any non-webhook-follow target (here a forum) delivers via the legacy path only, so
+    # Manage Webhooks is dropped from its perms table too.
+    ch = MagicMock(spec=h.GuildChannel)
+    ch.type = h.ChannelType.GUILD_FORUM
+    perms = for_channel(ch)
+    labels = {p.label for p in perms}
+    assert "Manage Webhooks" not in labels
+    assert "Send Messages" in labels  # not a thread → base Send Messages unchanged
+    assert {p.label for p in perms if p.required} == {
+        "View Channel",
+        "Send Messages",
+    }
 
 
 # --- explain_missing_permission --------------------------------------------------
