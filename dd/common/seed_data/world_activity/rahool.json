@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "reference_date": "2026-04-21",
+  "activities": [
+    {
+      "key": "rahool_focus",
+      "title": "Rahool's Armor Focus",
+      "cadence": "daily",
+      "elements": [
+        {
+          "name": "slot",
+          "values": [
+            "Helmet",
+            "Legs",
+            "Arms",
+            "Chest"
+          ]
+        }
+      ]
+    }
+  ]
+}

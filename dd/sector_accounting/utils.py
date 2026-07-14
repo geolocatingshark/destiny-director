@@ -1,12 +1,28 @@
+import typing as t
 from itertools import dropwhile
 
 import attr
 import gspread
 import gspread.utils
 
+_T = t.TypeVar("_T")
+
 
 class Minutes(int):
     pass
+
+
+class CyclicList(list[_T]):
+    """A list whose integer indexing wraps modulo its length.
+
+    ``x[n]`` returns ``x[n % len(x)]`` for any integer ``n`` (negatives wrap forward, as
+    Python's ``%`` follows the divisor's sign), so a fixed-length rotation is indexable
+    by an ever-growing day/week counter. Slicing is untouched. Generalises the
+    ``str``-only :class:`EntityRotation` to any element type (e.g. entry dicts).
+    """
+
+    def __getitem__(self, index: int) -> _T:
+        return super().__getitem__(index % len(self))
 
 
 def _parse_counts(count: str) -> int:

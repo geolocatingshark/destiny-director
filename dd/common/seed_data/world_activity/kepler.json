@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "reference_date": "2026-04-21",
+  "activities": [
+    {
+      "key": "story_mission",
+      "title": "Weekly Story Mission",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "fabled",
+          "values": [
+            "Commencement",
+            "Quarantine",
+            "The Invitation"
+          ]
+        },
+        {
+          "name": "legendary",
+          "values": [
+            "Charge",
+            "The Message",
+            "The Gouge"
+          ]
+        }
+      ]
+    }
+  ]
+}

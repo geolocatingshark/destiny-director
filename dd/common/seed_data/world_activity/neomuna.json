@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "reference_date": "2026-04-21",
+  "activities": [
+    {
+      "key": "vex_incursion",
+      "title": "Vex Incursion Zone",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "zone",
+          "values": [
+            "Ahimsa Park",
+            "Liming Harbor",
+            "Zephyr Concourse"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "story_mission",
+      "title": "Story Mission",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "mission",
+          "values": [
+            "Desperate Measures",
+            "First Contact",
+            "Downfall",
+            "Breakneck",
+            "No Time Left"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "partition",
+      "title": "Partition",
+      "cadence": "weekly",
+      "elements": [
+        {
+          "name": "variant",
+          "values": [
+            "Ordnance",
+            "Hard Reset",
+            "Backdoor"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "terminal_overload",
+      "title": "Terminal Overload",
+      "cadence": "daily",
+      "elements": [
+        {
+          "name": "weapon",
+          "values": [
+            "Synchronic Roulette (Strand Submachine Gun)",
+            "Circular Logic (Strand Machine Gun)",
+            "Basso Ostinato (Void Shotgun)"
+          ]
+        },
+        {
+          "name": "location",
+          "values": [
+            "Liming Harbor",
+            "Zephyr Concourse",
+            "Ahisma Park"
+          ]
+        }
+      ]
+    }
+  ],
+  "item_links": {
+    "Basso Ostinato (Void Shotgun)": "https://www.light.gg/db/items/2573900604/",
+    "Circular Logic (Strand Machine Gun)": "https://www.light.gg/db/items/2528793321/",
+    "Synchronic Roulette (Strand Submachine Gun)": "https://www.light.gg/db/items/3752860091/"
+  }
+}

@@ -39,11 +39,14 @@ import lightbulb as lb
 
 from ...common import cfg, rotation_schema, schemas
 from ...common.components import cv2_error, cv2_notice, respond_cv2
+from ...common.legacy_activities import weapon_values
 from ...sector_accounting import (
+    legacy_activities,
     sector_accounting,
     xur as xur_support_data,
 )
 from .. import web
+from .bungie_api import item_index
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +77,8 @@ def _default_doc(post_type: str) -> dict[str, t.Any]:
         }
     if post_type == "xur_location":
         return {"version": 1, "locations": []}
+    if rotation_schema.is_world_activity(post_type):
+        return rotation_schema.legacy_default_doc(post_type)
     return {}
 
 
@@ -150,6 +155,39 @@ def _render_xur_location_preview_html(
     return "<ul>" + "".join(items) + "</ul>"
 
 
+def _render_legacy_preview_html(
+    rotation: legacy_activities.LegacyRotation,
+) -> str:
+    """A compact HTML rendering of the next few periods of a legacy destination."""
+    today = dt.datetime.now(dt.UTC)
+    step = rotation.step
+    blocks: list[str] = []
+    for offset in range(_PREVIEW_DAYS):
+        date = today + step * offset
+        blocks.append(f"<h4>{date.date().isoformat()}</h4>")
+        items: list[str] = []
+        for activity in rotation(date):
+            title = html.escape(activity.title)
+            if activity.set is not None:
+                s = activity.set
+                weapons = ", ".join(s.weapons) or "—"
+                armor = ", ".join(s.armor)
+                detail = f"{html.escape(s.name)} — weapons: {html.escape(weapons)}" + (
+                    f"; armor: {html.escape(armor)} (all classes)" if armor else ""
+                )
+                items.append(f"<li>{title} — {detail}</li>")
+                continue
+            parts: list[str] = []
+            for name, value in activity.values.items():
+                if not value:
+                    continue
+                parts.append(f"{html.escape(name)}: {html.escape(value)}")
+            detail = "; ".join(parts) or "<em>TBC</em>"
+            items.append(f"<li>{title} — {detail}</li>")
+        blocks.append("<ul>" + "".join(items) + "</ul>")
+    return "".join(blocks)
+
+
 # --- per-type dispatch ------------------------------------------------------------
 
 
@@ -162,12 +200,16 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
     """
     if post_type == "xur_location":
         return xur_support_data.XurLocations.from_json(data)
+    if rotation_schema.is_world_activity(post_type):
+        return legacy_activities.LegacyRotation.from_json(data)
     return sector_accounting.Rotation.from_json(data)
 
 
 def _render_preview(post_type: str, obj: t.Any) -> str:
     if post_type == "xur_location":
         return _render_xur_location_preview_html(obj)
+    if rotation_schema.is_world_activity(post_type):
+        return _render_legacy_preview_html(obj)
     return _render_preview_html(obj)
 
 
@@ -277,9 +319,36 @@ async def _handle_edit_post(request: aiohttp.web.Request) -> aiohttp.web.Respons
     except Exception as e:
         return aiohttp.web.Response(status=400, text=f"Document is unusable:\n{e}")
 
+    if rotation_schema.is_world_activity(post_type):
+        _bake_item_links(data)
+
     await schemas.RotationData.set_data(post_type, data)
     logger.info("Rotation data for %s saved via web editor", post_type)
     return aiohttp.web.Response(text="Saved")
+
+
+def _bake_item_links(data: dict[str, t.Any]) -> None:
+    """Resolve a legacy doc's weapon values to light.gg URLs, in place (``item_links``).
+
+    Server-owned: recomputed on every save. If the manifest index isn't warm yet the doc
+    just saves without links — they appear on a later save (or the backfill script)."""
+    data.pop("item_links", None)
+    if not item_index.ready():
+        return
+    links: dict[str, str] = {}
+    for value in weapon_values(data):
+        url = item_index.resolve_light_gg_url(value)
+        if url:
+            links[value] = url
+    if links:
+        data["item_links"] = links
+
+
+async def _handle_search(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Autocomplete for the editor: manifest weapon/armor items matching ``?q=``."""
+    query = request.query.get("q", "")
+    kind = request.query.get("kind") or None
+    return aiohttp.web.json_response(item_index.search(query, kind=kind))
 
 
 def register_rotation_routes(app: aiohttp.web.Application) -> None:
@@ -288,9 +357,19 @@ def register_rotation_routes(app: aiohttp.web.Application) -> None:
     app.router.add_get("/rotation/edit", _handle_edit_get)
     app.router.add_post("/rotation/edit", _handle_edit_post)
     app.router.add_post("/rotation/preview", _handle_preview)
+    app.router.add_get("/rotation/search", _handle_search)
 
 
 web.register_routes(register_rotation_routes)
+
+
+@loader.listener(h.StartedEvent)
+async def _warm_item_index(_event: h.StartedEvent) -> None:
+    """Build the manifest weapon/armor index in the background (for autocomplete + link
+    baking), so requests never block on the (large) manifest download."""
+    asyncio.create_task(item_index.warm(schemas.BungieCredentials.api_key))
+
+
 web.register_card(
     web.Card(
         "Rotation Editor",

@@ -180,11 +180,328 @@ def _build_xur_location_schema() -> dict[str, t.Any]:
 
 XUR_LOCATION_SCHEMA: dict[str, t.Any] = _build_xur_location_schema()
 
+
+# --- legacy world-activity rotations ----------------------------------------------
+#
+# Each Destiny "legacy" destination (Neomuna, the Moon, Dares of Eternity, …) is one
+# rotation document made of independent *activities*. Each activity is a set of
+# *elements* (weapon, location, boss, …), and **every element is its own independent,
+# variable-length cyclic list** of values — so a 2-cycle mode can sit beside a 4-cycle
+# boss, or a Dares weapon slot running 12 unique weeks beside an armor slot on a 3-week
+# cycle. One shared schema *builder* + a per-destination *spec* gives DRY code but a
+# precise form per destination. The document is self-describing (each activity carries
+# its ``key``/``title``/``cadence`` as hidden constants) so the domain model
+# (:mod:`dd.sector_accounting.legacy_activities`) never needs the spec.
+
+# An activity is ``(key, title, cadence, elements)`` where ``elements`` is either a list
+# of element names (element-based) or the literal ``"sets"`` (set-based, e.g. Dares
+# loot). A spec is ``(title, [activity, ...])``.
+_Activity = tuple[str, str, t.Literal["daily", "weekly"], list[str] | t.Literal["sets"]]
+_DestinationSpec = tuple[str, list[_Activity]]
+
+# DB-facing slug prefix for these rotation post types. Defined once so the stored
+# identifier (``world_activity_neomuna``) is decoupled from the internal module names
+# (which still say "legacy" — Bungie/Kyber's own term for the activity category). See
+# :func:`is_world_activity` for the dispatch predicate that replaced ``startswith``.
+ROTATION_SLUG_PREFIX = "world_activity_"
+
+
+def rotation_slug(key: str) -> str:
+    """The DB slug for a destination key (``neomuna`` → ``world_activity_neomuna``)."""
+    return f"{ROTATION_SLUG_PREFIX}{key}"
+
+
+LEGACY_DESTINATIONS: dict[str, _DestinationSpec] = {
+    "neomuna": (
+        "Neomuna",
+        [
+            ("vex_incursion", "Vex Incursion Zone", "weekly", ["zone"]),
+            ("story_mission", "Story Mission", "weekly", ["mission"]),
+            ("partition", "Partition", "weekly", ["variant"]),
+            ("terminal_overload", "Terminal Overload", "daily", ["weapon", "location"]),
+        ],
+    ),
+    "moon": (
+        "The Moon",
+        [
+            (
+                "wandering_nightmare",
+                "Wandering Nightmare (Patrol)",
+                "weekly",
+                ["nightmare", "location"],
+            ),
+            (
+                "nightmare_hunts",
+                "Nightmare Hunts",
+                "weekly",
+                ["hunt_1", "hunt_2", "hunt_3"],
+            ),
+            ("altar_of_sorrow", "Altar of Sorrow", "daily", ["weapon", "boss"]),
+        ],
+    ),
+    "dreaming_city": (
+        "Dreaming City",
+        [
+            ("petras_location", "Petra's Location", "weekly", ["location"]),
+            ("blind_well", "Blind Well", "weekly", ["charge"]),
+            ("quest", "Weekly Quest", "weekly", ["quest"]),
+            ("curse_strength", "Curse Strength", "weekly", ["strength"]),
+            (
+                "ascendant_challenge",
+                "Ascendant Challenge",
+                "weekly",
+                ["challenge", "location"],
+            ),
+        ],
+    ),
+    "europa": (
+        "Europa",
+        [
+            ("eclipsed_zone", "Eclipsed Zone", "weekly", ["zone"]),
+            ("exo_challenge", "Exo Challenge", "weekly", ["challenge"]),
+            ("empire_hunt", "Empire Hunt", "weekly", ["hunt"]),
+        ],
+    ),
+    "dares": (
+        "Dares of Eternity",
+        [
+            ("rounds", "Encounter Rounds", "weekly", ["first", "second", "final"]),
+            # Set-based: 4 fixed loot sets + a weekly schedule of which set is live.
+            ("loot_table", "Legendary Loot", "weekly", "sets"),
+        ],
+    ),
+    "pale_heart": (
+        "The Pale Heart",
+        [
+            ("overthrow", "Overthrow (Matchmade)", "daily", ["location"]),
+        ],
+    ),
+    "throne_world": (
+        "Savathûn's Throne World",
+        [
+            ("wellspring", "Wellspring", "daily", ["weapon", "mode", "boss"]),
+            ("lucent_executioner", "Lucent Executioner", "daily", ["boss", "location"]),
+        ],
+    ),
+    "kepler": (
+        "Kepler",
+        [
+            (
+                "story_mission",
+                "Weekly Story Mission",
+                "weekly",
+                ["fabled", "legendary"],
+            ),
+        ],
+    ),
+    "rahool": (
+        "Rahool",
+        [
+            ("rahool_focus", "Rahool's Armor Focus", "daily", ["slot"]),
+        ],
+    ),
+}
+
+
+def _legacy_field_label(name: str) -> str:
+    return name.replace("_", " ").title()
+
+
+def _legacy_element_schema(name: str) -> dict[str, t.Any]:
+    label = _legacy_field_label(name)
+    return {
+        "type": "object",
+        "title": label,
+        "required": ["name", "values"],
+        "additionalProperties": False,
+        "properties": {
+            # The element name is fixed by the spec (hidden const); only ``values`` —
+            # the element's independent cycle — is edited.
+            "name": {"type": "string", "const": name, "options": {"hidden": True}},
+            "values": {
+                "type": "array",
+                "title": f"{label} rotation",
+                "items": {"type": "string"},
+            },
+        },
+    }
+
+
+def _legacy_sets_activity_schema(
+    key: str, title: str, cadence: str
+) -> dict[str, t.Any]:
+    """Schema for a set-based activity: a set pool + a weekly schedule of set ids."""
+    return {
+        "type": "object",
+        "title": title,
+        "required": ["key", "title", "cadence", "kind", "schedule", "sets"],
+        "additionalProperties": False,
+        "properties": {
+            "key": {"type": "string", "const": key, "options": {"hidden": True}},
+            "title": {"type": "string", "const": title, "options": {"hidden": True}},
+            "cadence": {
+                "type": "string",
+                "const": cadence,
+                "options": {"hidden": True},
+            },
+            "kind": {"type": "string", "const": "sets", "options": {"hidden": True}},
+            "schedule": {
+                "type": "array",
+                "title": "Weekly schedule (set names, in order, looping)",
+                "items": {"type": "string"},
+            },
+            "sets": {
+                "type": "array",
+                "title": "Sets",
+                "format": "tabs",
+                "headerTemplate": "{{ self.name }}",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "title": "Set",
+                    "required": ["name", "weapons", "armor"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string", "title": "Set name"},
+                        "weapons": {
+                            "type": "array",
+                            "title": "Weapons",
+                            "items": {"type": "string"},
+                        },
+                        "armor": {
+                            "type": "array",
+                            "title": "Armor",
+                            "items": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def _legacy_activity_schema(activity: _Activity) -> dict[str, t.Any]:
+    key, title, cadence, element_names = activity
+    if element_names == "sets":
+        return _legacy_sets_activity_schema(key, title, cadence)
+    return {
+        "type": "object",
+        "title": title,
+        "required": ["key", "title", "cadence", "elements"],
+        "additionalProperties": False,
+        "properties": {
+            # Structural fields are fixed by the spec — hidden constants so the form
+            # only ever edits element values, and the stored doc stays self-describing.
+            "key": {"type": "string", "const": key, "options": {"hidden": True}},
+            "title": {"type": "string", "const": title, "options": {"hidden": True}},
+            "cadence": {
+                "type": "string",
+                "const": cadence,
+                "options": {"hidden": True},
+            },
+            # A fixed tuple: exactly these elements, in this order.
+            "elements": {
+                "type": "array",
+                "title": f"{title} elements",
+                "minItems": len(element_names),
+                "maxItems": len(element_names),
+                "additionalItems": False,
+                "items": [_legacy_element_schema(name) for name in element_names],
+            },
+        },
+    }
+
+
+def _build_legacy_rotation_schema(spec: _DestinationSpec) -> dict[str, t.Any]:
+    title, activities = spec
+    return {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "title": f"{title} (legacy)",
+        "required": ["reference_date", "activities"],
+        "additionalProperties": False,
+        "properties": {
+            "version": {"type": "integer", "options": {"hidden": True}},
+            # Weapon value → light.gg URL, baked by the editor on save (hidden from the
+            # form). Optional; absent/blank means the post renders the name un-linked.
+            "item_links": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "options": {"hidden": True},
+            },
+            "reference_date": {
+                "type": "string",
+                "format": "date",
+                "title": "Rotation start date (a weekly-reset Tuesday)",
+            },
+            # A fixed tuple: exactly these activities, in this order.
+            "activities": {
+                "type": "array",
+                "title": "Activities",
+                "minItems": len(activities),
+                "maxItems": len(activities),
+                "additionalItems": False,
+                "items": [_legacy_activity_schema(a) for a in activities],
+            },
+        },
+    }
+
+
+def _legacy_default_activity(activity: _Activity) -> dict[str, t.Any]:
+    key, title, cadence, element_names = activity
+    if element_names == "sets":
+        return {
+            "key": key,
+            "title": title,
+            "cadence": cadence,
+            "kind": "sets",
+            "schedule": [],
+            "sets": [],
+        }
+    return {
+        "key": key,
+        "title": title,
+        "cadence": cadence,
+        "elements": [{"name": name, "values": []} for name in element_names],
+    }
+
+
+def legacy_default_doc(post_type: str) -> dict[str, t.Any]:
+    """An empty-but-structurally-complete scaffold for a world-activity slug."""
+    _title, activities = LEGACY_DESTINATIONS[
+        post_type.removeprefix(ROTATION_SLUG_PREFIX)
+    ]
+    return {
+        "version": 1,
+        "reference_date": "",
+        "activities": [_legacy_default_activity(a) for a in activities],
+    }
+
+
 # Registry keyed by post-type slug (matches AutoPostSettings.name / cfg.followables).
 ROTATION_SCHEMAS: dict[str, dict[str, t.Any]] = {
     "lost_sector": LOST_SECTOR_SCHEMA,
     "xur_location": XUR_LOCATION_SCHEMA,
+    # Each destination registers under its own ``world_activity_<key>`` slug, so it
+    # appears automatically at /rotation edit and gets its own DB row (no migration).
+    **{
+        rotation_slug(key): _build_legacy_rotation_schema(spec)
+        for key, spec in LEGACY_DESTINATIONS.items()
+    },
 }
+
+# The registered world-activity slugs, and a predicate over them. Editor/loader dispatch
+# checks membership here rather than a ``startswith("legacy_")`` string prefix, so the
+# discriminator is the registry itself, not a naming convention.
+WORLD_ACTIVITY_SLUGS: frozenset[str] = frozenset(
+    rotation_slug(key) for key in LEGACY_DESTINATIONS
+)
+
+
+def is_world_activity(post_type: str) -> bool:
+    """Whether ``post_type`` is one of the world-activity rotation destinations."""
+    return post_type in WORLD_ACTIVITY_SLUGS
+
 
 _compiled_validators: dict[str, t.Callable[[t.Any], t.Any]] = {}
 
