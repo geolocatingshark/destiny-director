@@ -39,7 +39,7 @@ import lightbulb as lb
 
 from ...common import cfg, rotation_schema, schemas
 from ...common.components import cv2_error, cv2_notice, respond_cv2
-from ...common.legacy_activities import weapon_values
+from ...common.legacy_activities import load_seed_doc, weapon_values
 from ...sector_accounting import (
     legacy_activities,
     sector_accounting,
@@ -344,6 +344,48 @@ def _bake_item_links(data: dict[str, t.Any]) -> None:
         data["item_links"] = links
 
 
+async def _handle_reset(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Reset a world-activity rotation to its committed seed document ("defaults").
+
+    The recovery path for a stored doc that has gone bad (e.g. an unparseable row a
+    command surfaces as an error): the operator resets it here to the known-good seed.
+    Only world-activity types ship a seed; the seed already carries its own baked
+    ``item_links`` so it's saved verbatim (no manifest access needed)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return aiohttp.web.Response(status=400, text="Malformed request body.")
+    post_type = str(payload.get("type", ""))
+    if not rotation_schema.is_world_activity(post_type):
+        return aiohttp.web.Response(
+            status=400,
+            text=f"{post_type!r} has no committed defaults to reset to.",
+        )
+
+    key = post_type.removeprefix(rotation_schema.ROTATION_SLUG_PREFIX)
+    doc = load_seed_doc(key)
+    if doc is None:
+        return aiohttp.web.Response(
+            status=404, text=f"No committed seed document for {post_type!r}."
+        )
+
+    # Sanity-gate the seed (it's committed, but a broken seed must not overwrite live
+    # data): it has to validate and build before we persist it.
+    try:
+        rotation_schema.validate(post_type, doc)
+        _build_domain_object(post_type, doc)
+    except Exception as e:
+        return aiohttp.web.Response(
+            status=500, text=f"Committed seed for {post_type!r} is itself invalid:\n{e}"
+        )
+
+    await schemas.RotationData.set_data(post_type, doc)
+    logger.info(
+        "Rotation data for %s reset to committed defaults via web editor", post_type
+    )
+    return aiohttp.web.Response(text="Reset to defaults")
+
+
 async def _handle_search(request: aiohttp.web.Request) -> aiohttp.web.Response:
     """Autocomplete for the editor: manifest weapon/armor items matching ``?q=``."""
     query = request.query.get("q", "")
@@ -357,17 +399,26 @@ def register_rotation_routes(app: aiohttp.web.Application) -> None:
     app.router.add_get("/rotation/edit", _handle_edit_get)
     app.router.add_post("/rotation/edit", _handle_edit_post)
     app.router.add_post("/rotation/preview", _handle_preview)
+    app.router.add_post("/rotation/reset", _handle_reset)
     app.router.add_get("/rotation/search", _handle_search)
 
 
 web.register_routes(register_rotation_routes)
 
 
+# Hold a strong reference to the background warm task: the event loop keeps only a weak
+# ref to a bare create_task(), so without this the task can be garbage-collected —
+# and cancelled — mid-download, leaving the index cold for the whole process.
+_warm_tasks: set[asyncio.Task[None]] = set()
+
+
 @loader.listener(h.StartedEvent)
 async def _warm_item_index(_event: h.StartedEvent) -> None:
     """Build the manifest weapon/armor index in the background (for autocomplete + link
     baking), so requests never block on the (large) manifest download."""
-    asyncio.create_task(item_index.warm(schemas.BungieCredentials.api_key))
+    task = asyncio.create_task(item_index.warm(schemas.BungieCredentials.api_key))
+    _warm_tasks.add(task)
+    task.add_done_callback(_warm_tasks.discard)
 
 
 web.register_card(

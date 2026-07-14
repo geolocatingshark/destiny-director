@@ -204,6 +204,26 @@ def _full_neomuna() -> dict[str, t.Any]:
     )
 
 
+async def test_reset_writes_committed_seed():
+    from dd.common.legacy_activities import load_seed_doc
+
+    slug = "world_activity_europa"
+    # Dirty the stored row so the reset has something to overwrite.
+    await schemas.RotationData.set_data(slug, {"version": 1, "reference_date": ""})
+
+    resp = await editor._handle_reset(_req(body={"type": slug}))
+    assert resp.status == 200
+
+    stored = await schemas.RotationData.get_data(slug)
+    assert stored == load_seed_doc("europa")  # reset restored the committed defaults
+
+
+async def test_reset_rejects_non_world_activity():
+    # lost_sector ships no committed seed defaults → reset is refused, nothing written.
+    resp = await editor._handle_reset(_req(body={"type": "lost_sector"}))
+    assert resp.status == 400
+
+
 async def test_search_endpoint_returns_matches(monkeypatch):
     from dd.anchor.extensions.bungie_api import item_index
 
