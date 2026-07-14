@@ -251,6 +251,23 @@ def test_weapon_links_render_when_baked():
     assert "[Vulpecula]" not in text
 
 
+def test_weapon_emoji_matches_only_the_type_hint_not_the_name():
+    # A non-weapon value that merely *contains* a weapon word in its NAME must not be
+    # mistaken for a weapon — the match looks only at the "(Type)" hint (review finding
+    # #7). Otherwise "Swordbearer" → :sword: and a "bow"-containing boss → :combat_bow:.
+    from dd.common.legacy_activities import _weapon_emoji, is_weapon_value
+
+    assert _weapon_emoji("Swordbearer") is None
+    assert _weapon_emoji("Rainbow Road") is None
+    assert not is_weapon_value("Swordbearer")
+    # A properly-typed weapon value still resolves off its parenthetical hint…
+    assert _weapon_emoji("Chroma Rush (Auto Rifle)") == ":auto_rifle:"
+    assert _weapon_emoji("Wish-Ender (Combat Bow)") == ":combat_bow:"
+    # …including the nested Dares shape "Name (Type (Element))".
+    assert _weapon_emoji("Sojourner's Tale (Shotgun (Solar))") == ":shotgun:"
+    assert is_weapon_value("Chroma Rush (Auto Rifle)")
+
+
 def test_weapon_values_extracts_only_weapons():
     from dd.common.legacy_activities import weapon_values
 
