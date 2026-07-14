@@ -33,9 +33,16 @@ doc is how you recreate it.
   window, not "daily"; the long one is the **7-day** weekly cap.)
 - Each cap has its own threshold: **5-hour ≥ 90%** or **7-day ≥ 95%**. When a cap
   reaches its threshold the hook exits `2` (blocks the tool call) and tells Claude,
-  via stderr, to call `ScheduleWakeup` for the reset time and stop. (The 7-day
-  window is deliberately allowed closer to the limit — it resets slowly, so pausing
-  a full week of work at 90% is too conservative.)
+  via stderr, to **pause the session** — inform the user it's paused on the usage cap
+  (with the reset time and the `/usage-bypass` option) and stop. (The 7-day window is
+  deliberately allowed closer to the limit — it resets slowly, so pausing a full week
+  of work at 90% is too conservative.)
+
+  > **Temporary (2026-07-14):** the hook used to tell Claude to `ScheduleWakeup` for
+  > the reset and auto-resume. That auto-wake is **disabled** for now, because resuming
+  > this session re-reads the whole transcript uncached on every wake. A
+  > handoff-into-fresh-session replacement is planned — see
+  > `plans/usage_gate_handoff_wake.md`.
 - **`ScheduleWakeup` / `TaskUpdate` / `TaskCreate` are allowlisted** — otherwise the
   gate would block the very tool Claude needs to schedule its own pause.
 - **Per-session bypass (user-confirmed).** A user can authorise a single session to
@@ -232,6 +239,11 @@ not committed):
 # fetches usage at most once per TTL seconds (cached), so the per-step cost is a
 # local file read.
 #
+# TEMPORARY (2026-07-14): on block it PAUSES only — it no longer tells Claude to
+# ScheduleWakeup and auto-resume, because resuming this session re-reads the whole
+# transcript uncached on every wake. A handoff-into-fresh-session replacement is
+# planned; see plans/usage_gate_handoff_wake.md in the Destiny Director repo.
+#
 # FAILS OPEN on any error (network, expired token, changed response shape) so it
 # can never wedge a session.
 #
@@ -319,17 +331,25 @@ try:
     d = json.load(open(cache))
 except Exception:
     sys.exit(0)  # fail open
+blocking = []
 for k, thresh in thresholds.items():
     blk = d.get(k) or {}
     u = blk.get("utilization")
     if u is not None and u >= thresh:
-        sys.stderr.write(
-            f"USAGE GATE: {k} at {u:.0f}% (>= {thresh:.0f}%). "
-            f"Do NOT retry tools or start new work. Call ScheduleWakeup with "
-            f"delaySeconds set to reach {blk.get('resets_at', 'the reset time')}, "
-            f"tell the user you are paused until reset, then stop.\n"
-        )
-        sys.exit(2)  # exit 2 => block the tool call; stderr is shown to Claude
+        blocking.append((k, u, blk.get("resets_at") or ""))
+if blocking:
+    caps = ", ".join(f"{k} at {u:.0f}%" for k, u, _ in blocking)
+    resets = [r for (_, _, r) in blocking if r[:1].isdigit()]
+    resume_at = max(resets) if resets else "the usage reset"
+    # PAUSE-ONLY: do NOT tell Claude to ScheduleWakeup (auto-wake temporarily
+    # disabled — see plans/usage_gate_handoff_wake.md). Just stop and inform.
+    sys.stderr.write(
+        f"USAGE GATE: session PAUSED — {caps} (>= threshold). Do NOT retry tools, "
+        f"schedule a wakeup, or start new work. Tell the user this session is paused "
+        f"on the Claude usage cap and can resume after {resume_at} — or immediately "
+        f"if they authorise a bypass with /usage-bypass — then stop.\n"
+    )
+    sys.exit(2)  # exit 2 => block the tool call; stderr is shown to Claude
 sys.exit(0)
 PY
 ```
