@@ -31,16 +31,51 @@ def _plain_name(value: str) -> str:
     return value.split(" (")[0].strip()
 
 
+def _season_numbers(con: sqlite3.Connection) -> dict[int, int]:
+    """``seasonHash → seasonNumber`` from the manifest, or ``{}`` if unavailable.
+
+    ``seasonNumber`` is monotonic across releases (unlike item hashes, which aren't
+    assigned in release order), so it's the authoritative "which of two same-named
+    weapons is newer" key. The season table isn't in every manifest/older cache, so a
+    missing table degrades to no season data — the resolver then falls back to the
+    collectible + hash tiebreak."""
+    try:
+        rows = con.execute("SELECT json FROM DestinySeasonDefinition")
+    except sqlite3.Error:
+        return {}
+    seasons: dict[int, int] = {}
+    for (raw,) in rows:
+        try:
+            season = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        season_hash = season.get("hash")
+        number = season.get("seasonNumber")
+        if season_hash is not None and number is not None:
+            seasons[season_hash] = number
+    return seasons
+
+
 def _build_sync(path: str) -> dict[str, list[dict[str, t.Any]]]:
     """Parse the manifest item table into a name index (runs in a worker thread)."""
     index: dict[str, list[dict[str, t.Any]]] = {}
     con = sqlite3.connect(path)
     try:
+        seasons = _season_numbers(con)
         rows = con.execute("SELECT json FROM DestinyInventoryItemDefinition")
         for (raw,) in rows:
-            item = json.loads(raw)
+            # Skip an individually-malformed row rather than aborting the whole build:
+            # one bad/truncated JSON blob or a row missing "hash" must not take the
+            # entire index down (autocomplete + link baking dead until a restart).
+            try:
+                item = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
             item_type = item.get("itemType")
             if item_type not in (DESTINY_ITEM_TYPE_WEAPON, DESTINY_ITEM_TYPE_ARMOR):
+                continue
+            item_hash = item.get("hash")
+            if item_hash is None:
                 continue
             display = item.get("displayProperties") or {}
             name = (display.get("name") or "").strip()
@@ -49,11 +84,14 @@ def _build_sync(path: str) -> dict[str, list[dict[str, t.Any]]]:
             index.setdefault(name.lower(), []).append(
                 {
                     "name": name,
-                    "hash": item["hash"],
+                    "hash": item_hash,
                     "type": item.get("itemTypeDisplayName", ""),
                     "item_type": item_type,
                     "icon": display.get("icon", ""),
                     "collectible": bool(item.get("collectibleHash")),
+                    # -1 sorts below any real season, so items without a season fall
+                    # back to the hash tiebreak (exactly the prior behaviour for them).
+                    "season": seasons.get(item.get("seasonHash"), -1),
                 }
             )
     finally:
@@ -78,7 +116,16 @@ async def warm(api_key: str) -> None:
             return
         if path == _index_path and _index is not None:
             return
-        index = await asyncio.get_event_loop().run_in_executor(None, _build_sync, path)
+        try:
+            loop = asyncio.get_running_loop()
+            index = await loop.run_in_executor(None, _build_sync, path)
+        except Exception:
+            # Never let a manifest-parse failure kill the warm task uncaught — that
+            # surfaces only as a stray "Task exception was never retrieved" log and
+            # leaves any previously-built index in place. Log and bail; a later manifest
+            # update (or restart) re-attempts the build.
+            logger.exception("item_index: could not build the index from the manifest")
+            return
         _index, _index_path = index, path
         logger.info("item_index: built (%d names)", len(index))
 
@@ -91,7 +138,8 @@ def resolve_light_gg_url(value: str) -> str | None:
     """Best-effort light.gg URL for a weapon value (``Name (Type)``), or ``None``.
 
     Prefers a weapon whose type matches the ``(Type)`` hint and that is collectible
-    (in-game obtainable), then the newest (highest hash) reissue."""
+    (in-game obtainable), then the newest reissue by season number (falling back to the
+    highest hash when season data is unavailable)."""
     if _index is None:
         return None
     name = _plain_name(value)
@@ -106,6 +154,9 @@ def resolve_light_gg_url(value: str) -> str | None:
             entry["item_type"] == DESTINY_ITEM_TYPE_WEAPON,
             bool(entry_type) and type_hint.startswith(entry_type),
             entry["collectible"],
+            # seasonNumber is the authoritative recency key (item hashes aren't
+            # chronological); hash is only the final fallback when seasons tie / are -1.
+            entry.get("season", -1),
             entry["hash"],
         )
 
