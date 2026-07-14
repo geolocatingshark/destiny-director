@@ -53,7 +53,7 @@ def _doc() -> dict[str, t.Any]:
 
 
 async def test_load_rotation_reads_from_db():
-    await schemas.RotationData.set_data("legacy_neomuna", _doc())
+    await schemas.RotationData.set_data("world_activity_neomuna", _doc())
     rotation = await loader_mod.load_rotation("neomuna")
     resolved = {r.key: r.values for r in rotation(NOW)}
     assert resolved["terminal_overload"] == {
@@ -63,18 +63,29 @@ async def test_load_rotation_reads_from_db():
 
 
 async def test_load_rotation_serves_cache_when_db_blank():
-    # Prime the cache with a good load, then a slug whose row is absent still serves it.
-    await schemas.RotationData.set_data("legacy_moon", _doc())
+    # Prime the cache with a good load, then a corrupt row still serves the cache.
+    await schemas.RotationData.set_data("world_activity_moon", _doc())
     first = await loader_mod.load_rotation("moon")
-    # Wipe the row; the loader must fall back to the last-known-good cache.
-    await schemas.RotationData.set_data("legacy_moon", {"invalid": True})
+    # Corrupt the row; the loader must fall back to the last-known-good cache.
+    await schemas.RotationData.set_data("world_activity_moon", {"invalid": True})
     served = await loader_mod.load_rotation("moon")
     assert served.to_json() == first.to_json()
 
 
+async def test_load_rotation_autoseeds_when_absent():
+    # An absent row is auto-seeded from the committed seed doc (per-command) and the row
+    # is persisted, so a fresh deploy serves data with no manual seed step.
+    slug = "world_activity_europa"
+    assert await schemas.RotationData.get_data(slug) is None
+    rotation = await loader_mod.load_rotation("europa")
+    assert rotation.activities  # rendered from the committed seed
+    assert await schemas.RotationData.get_data(slug) is not None  # persisted
+
+
 async def test_load_rotation_missing_raises():
+    # A key with no committed seed doc (and no DB row / cache) has nothing to serve.
     with pytest.raises(RuntimeError):
-        await loader_mod.load_rotation("europa")
+        await loader_mod.load_rotation("does_not_exist")
 
 
 async def test_build_pages_daily_window():

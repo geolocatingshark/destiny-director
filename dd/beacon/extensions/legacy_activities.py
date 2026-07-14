@@ -193,6 +193,6 @@ for _key, (_title, _activities) in LEGACY_DESTINATIONS.items():
         make_legacy_command(
             _key,
             name=_key.replace("_", "-"),
-            description=f"{_title} legacy activity rotation",
+            description=f"{_title} world-activity rotation",
         )
     )

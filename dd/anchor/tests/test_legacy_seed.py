@@ -17,17 +17,13 @@
 
 import datetime as dt
 import json
-import pathlib
 
 import pytest
 
 from dd.anchor.extensions import rotation_editor as editor
 from dd.common import rotation_schema as rs
+from dd.common.legacy_activities import _SEED_DIR
 from dd.sector_accounting.legacy_activities import LegacyRotation
-
-_SEED_DIR = (
-    pathlib.Path(editor.__file__).resolve().parent.parent / "seed_data" / "legacy"
-)
 
 # Destinations that contain a weekly activity need a Tuesday reference date for the
 # ``days // 7`` week boundary to align with the real reset.
@@ -41,7 +37,7 @@ _WEEKLY_BEARING = {
 @pytest.mark.parametrize("key", sorted(rs.LEGACY_DESTINATIONS))
 def test_seed_doc_exists_validates_and_builds(key: str):
     doc = json.loads((_SEED_DIR / f"{key}.json").read_text(encoding="utf-8"))
-    rs.validate(f"legacy_{key}", doc)
+    rs.validate(f"world_activity_{key}", doc)
     LegacyRotation.from_json(doc)  # hard gate: must build
 
 
@@ -70,7 +66,7 @@ def test_seed_spotcheck_known_dates():
 
 
 def test_editor_default_doc_for_legacy_type():
-    doc = editor._default_doc("legacy_dares")
+    doc = editor._default_doc("world_activity_dares")
     assert [a["key"] for a in doc["activities"]] == ["rounds", "loot_table"]
     rounds, loot = doc["activities"]
     # Element-based activity scaffolds empty value lists...
@@ -133,16 +129,16 @@ def test_dares_seed_is_set_based_and_spotchecks():
 
 def test_editor_builds_and_previews_legacy_type():
     doc = json.loads((_SEED_DIR / "throne_world.json").read_text(encoding="utf-8"))
-    obj = editor._build_domain_object("legacy_throne_world", doc)
+    obj = editor._build_domain_object("world_activity_throne_world", doc)
     assert isinstance(obj, LegacyRotation)
-    html = editor._render_preview("legacy_throne_world", obj)
+    html = editor._render_preview("world_activity_throne_world", obj)
     assert "Wellspring" in html
 
 
 def test_home_page_lists_legacy_slugs():
     html = editor._render_home_html()
-    assert "legacy_neomuna" in html
-    assert "legacy_kepler" in html
+    assert "world_activity_neomuna" in html
+    assert "world_activity_kepler" in html
 
 
 def test_bake_item_links_resolves_weapons(monkeypatch):

@@ -61,21 +61,21 @@ def _neomuna_doc() -> dict[str, t.Any]:
 
 def test_every_destination_is_registered():
     for key in rs.LEGACY_DESTINATIONS:
-        assert f"legacy_{key}" in rs.ROTATION_SCHEMAS
+        assert f"world_activity_{key}" in rs.ROTATION_SCHEMAS
 
 
 def test_valid_document_validates():
-    rs.validate("legacy_neomuna", _neomuna_doc())
+    rs.validate("world_activity_neomuna", _neomuna_doc())
 
 
 def test_independent_element_lengths_allowed():
     # weapon has 2 values, location has 1 — different lengths in one activity is fine.
     doc = _neomuna_doc()
-    rs.validate("legacy_neomuna", doc)
+    rs.validate("world_activity_neomuna", doc)
 
 
 def test_default_doc_matches_spec_structure():
-    doc = rs.legacy_default_doc("legacy_neomuna")
+    doc = rs.legacy_default_doc("world_activity_neomuna")
     assert [a["key"] for a in doc["activities"]] == [
         "vex_incursion",
         "story_mission",
@@ -92,35 +92,35 @@ def test_missing_activity_fails():
     doc = _neomuna_doc()
     doc["activities"].pop()
     with pytest.raises(fastjsonschema.JsonSchemaException):
-        rs.validate("legacy_neomuna", doc)
+        rs.validate("world_activity_neomuna", doc)
 
 
 def test_missing_element_fails():
     doc = _neomuna_doc()
     doc["activities"][-1]["elements"].pop()  # drop terminal_overload location
     with pytest.raises(fastjsonschema.JsonSchemaException):
-        rs.validate("legacy_neomuna", doc)
+        rs.validate("world_activity_neomuna", doc)
 
 
 def test_non_string_value_fails():
     doc = _neomuna_doc()
     doc["activities"][0]["elements"][0]["values"] = [123]
     with pytest.raises(fastjsonschema.JsonSchemaException):
-        rs.validate("legacy_neomuna", doc)
+        rs.validate("world_activity_neomuna", doc)
 
 
 def test_bad_reference_date_fails():
     doc = _neomuna_doc()
     doc["reference_date"] = "not-a-date"
     with pytest.raises(fastjsonschema.JsonSchemaException):
-        rs.validate("legacy_neomuna", doc)
+        rs.validate("world_activity_neomuna", doc)
 
 
 def test_tampered_const_element_name_fails():
     doc = _neomuna_doc()
     doc["activities"][0]["elements"][0]["name"] = "renamed"
     with pytest.raises(fastjsonschema.JsonSchemaException):
-        rs.validate("legacy_neomuna", doc)
+        rs.validate("world_activity_neomuna", doc)
 
 
 def _dares_doc() -> dict[str, t.Any]:
@@ -162,7 +162,7 @@ def _dares_doc() -> dict[str, t.Any]:
 
 
 def test_dares_set_based_loot_validates():
-    rs.validate("legacy_dares", _dares_doc())
+    rs.validate("world_activity_dares", _dares_doc())
 
 
 def test_dares_loot_as_elements_is_rejected():
@@ -175,11 +175,11 @@ def test_dares_loot_as_elements_is_rejected():
         "elements": [{"name": "weapon_1", "values": ["x"]}],
     }
     with pytest.raises(fastjsonschema.JsonSchemaException):
-        rs.validate("legacy_dares", doc)
+        rs.validate("world_activity_dares", doc)
 
 
 def test_dares_set_missing_armor_field_fails():
     doc = _dares_doc()
     del doc["activities"][1]["sets"][0]["armor"]
     with pytest.raises(fastjsonschema.JsonSchemaException):
-        rs.validate("legacy_dares", doc)
+        rs.validate("world_activity_dares", doc)

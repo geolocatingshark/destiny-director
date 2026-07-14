@@ -57,5 +57,11 @@
         }
       ]
     }
-  ]
+  ],
+  "item_links": {
+    "Come to Pass (Auto Rifle)": "https://www.light.gg/db/items/927567426/",
+    "Father's Sins (Sniper Rifle)": "https://www.light.gg/db/items/3865728990/",
+    "Fel Taradiddle (Bow)": "https://www.light.gg/db/items/1399109800/",
+    "Tarnation (Grenade Launcher)": "https://www.light.gg/db/items/2721157927/"
+  }
 }

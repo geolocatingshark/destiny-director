@@ -72,5 +72,10 @@
         }
       ]
     }
-  ]
+  ],
+  "item_links": {
+    "Basso Ostinato (Void Shotgun)": "https://www.light.gg/db/items/2573900604/",
+    "Circular Logic (Strand Machine Gun)": "https://www.light.gg/db/items/2528793321/",
+    "Synchronic Roulette (Strand Submachine Gun)": "https://www.light.gg/db/items/3752860091/"
+  }
 }

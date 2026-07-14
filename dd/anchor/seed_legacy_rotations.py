@@ -13,13 +13,19 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Idempotent seed of the legacy world-activity rotations into the DB JSON store.
+"""Management CLI for the world-activity rotation seed data.
 
-Loads one committed document per destination from ``seed_data/legacy/<key>.json`` (each
-holds a weekly-reset ``reference_date`` plus the cycle lists — not the spreadsheet's
-dated rows), validates it against the schema, and upserts it under ``legacy_<key>``. By
-default an existing row is left untouched (the web editor at ``/rotation edit`` is the
-ongoing authoring path); pass ``--force`` to overwrite.
+The committed documents live in ``dd/common/seed_data/world_activity/<key>.json`` (each
+holds a weekly-reset ``reference_date`` plus the cycle lists and baked ``item_links`` —
+not the spreadsheet's dated rows). **Seeding the DB is normally automatic**: each
+command self-seeds its ``world_activity_<key>`` row from the committed doc on first use
+(:func:`dd.common.legacy_activities.load_rotation`), so a fresh deploy needs no manual
+step. This CLI remains for two jobs:
+
+- ``--force`` — overwrite an existing row (the web editor at ``/rotation edit`` is the
+  usual authoring path, so rows are left untouched by default).
+- ``--bake-files`` — refresh the committed ``item_links`` from the current manifest and
+  write them back into the JSON files (a dev-time step; commit the result).
 
 Run: ``uv run --env-file .env python -m dd.anchor.seed_legacy_rotations [--force]``.
 
@@ -31,19 +37,17 @@ editor.
 import argparse
 import asyncio
 import json
-import pathlib
 import typing as t
 
 from ..common import rotation_schema, schemas
 from ..common.legacy_activities import (
+    _SEED_DIR,
     is_weapon_value,
     weapon_slot_values,
     weapon_values,
 )
 from ..sector_accounting.legacy_activities import LegacyRotation
 from .extensions.bungie_api import item_index
-
-_SEED_DIR = pathlib.Path(__file__).resolve().parent / "seed_data" / "legacy"
 
 
 def _bake_links(doc: dict[str, t.Any]) -> int:
@@ -91,7 +95,7 @@ async def seed(*, force: bool, only: str | None = None, links: bool = False) -> 
     for key in rotation_schema.LEGACY_DESTINATIONS:
         if only is not None and key != only:
             continue
-        slug = f"legacy_{key}"
+        slug = rotation_schema.rotation_slug(key)
         doc = json.loads((_SEED_DIR / f"{key}.json").read_text(encoding="utf-8"))
 
         # Fail loudly on bad seed data rather than storing an unusable document.
@@ -110,6 +114,33 @@ async def seed(*, force: bool, only: str | None = None, links: bool = False) -> 
         if links and item_index.ready():
             for entry in _unlinked_weapons(doc):
                 print(f"  WARN  {slug}: no light.gg link for {entry}")
+
+
+async def bake_files(only: str | None = None) -> None:
+    """Refresh the committed seed files' ``item_links`` from the current manifest.
+
+    A dev-time step: warms the manifest, re-resolves each doc's weapon light.gg links
+    and writes the files back (pretty-printed). Commit the diff so auto-seed ships fresh
+    links. Warns on any weapon-slot value left unlinked (bad ``(Type)`` / bad name).
+    """
+    print("warming the manifest item index… (first run downloads the manifest)")
+    await item_index.warm(schemas.BungieCredentials.api_key)
+    if not item_index.ready():
+        print("ERROR: item index not ready (no API key / manifest); aborting")
+        return
+
+    for key in rotation_schema.LEGACY_DESTINATIONS:
+        if only is not None and key != only:
+            continue
+        path = _SEED_DIR / f"{key}.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        count = _bake_links(doc)
+        path.write_text(
+            json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        print(f"bake  {key}.json ({count} links)")
+        for entry in _unlinked_weapons(doc):
+            print(f"  WARN  {key}: no light.gg link for {entry}")
 
 
 def _value_count(doc: dict[str, t.Any]) -> int:
@@ -145,8 +176,17 @@ def main() -> None:
         help="Also resolve weapon light.gg links from the manifest (needs the "
         "Bungie API key; downloads the manifest on first run).",
     )
+    parser.add_argument(
+        "--bake-files",
+        action="store_true",
+        help="Refresh the committed seed files' item_links from the manifest and write "
+        "them back (dev-time; commit the diff). Does not touch the DB.",
+    )
     args = parser.parse_args()
-    asyncio.run(seed(force=args.force, only=args.only, links=args.links))
+    if args.bake_files:
+        asyncio.run(bake_files(only=args.only))
+    else:
+        asyncio.run(seed(force=args.force, only=args.only, links=args.links))
 
 
 if __name__ == "__main__":

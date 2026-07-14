@@ -13,7 +13,9 @@ when a light.gg URL has been baked into the doc (``item_links``), weapons are li
 """
 
 import datetime as dt
+import json
 import logging
+import pathlib
 
 from ..sector_accounting.legacy_activities import (
     LegacyRotation,
@@ -22,24 +24,65 @@ from ..sector_accounting.legacy_activities import (
 from . import rotation_schema, schemas
 from .utils import construct_emoji_substituter, re_user_side_emoji
 
+# Committed seed documents (one per destination key), shipped with both bots. They carry
+# their own baked ``item_links`` so an auto-seed needs no manifest access — see
+# ``_autoseed`` and ``dd/anchor/seed_legacy_rotations.py --bake-files``.
+_SEED_DIR = pathlib.Path(__file__).resolve().parent / "seed_data" / "world_activity"
+
 # Last-known-good rotation per slug: served only if the DB read/parse fails, so a
 # transient DB blip doesn't break a command mid-session.
 _rotation_cache: dict[str, LegacyRotation] = {}
 
 
+def _load_seed_doc(destination_key: str) -> dict | None:
+    """The committed seed document for a destination key, or ``None`` if absent."""
+    try:
+        raw = (_SEED_DIR / f"{destination_key}.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    return json.loads(raw)
+
+
+async def _autoseed(slug: str, destination_key: str) -> dict | None:
+    """Populate an absent destination row from its committed seed doc, and return it.
+
+    Each command self-seeds on first use so a freshly-deployed bot (or a wiped row)
+    serves data with no manual seed step. Persisting is best-effort — the doc is
+    returned for rendering even if the write fails."""
+    doc = _load_seed_doc(destination_key)
+    if doc is None:
+        return None
+    try:
+        await schemas.RotationData.set_data(slug, doc)
+        logging.info("Auto-seeded %s from committed seed data", slug)
+    except Exception:
+        logging.exception(
+            "Failed to persist auto-seed for %s (serving in-memory)", slug
+        )
+    return doc
+
+
 async def load_rotation(destination_key: str) -> LegacyRotation:
-    """Load a destination's rotation from the DB JSON store (``legacy_<key>``).
+    """Load a destination's rotation from the DB JSON store (``world_activity_<key>``).
 
-    DB every call (cheap; editor saves take effect immediately) → last-known-good cache
-    on total failure. No Google-Sheet fallback (these types are editor/seed authored).
+    DB every call (cheap; editor saves take effect immediately). An *absent* row is
+    auto-seeded from the committed seed doc (per-command, independent). A read/parse
+    failure falls back to the last-known-good cache. No Google-Sheet fallback (these
+    types are editor/seed authored).
     """
-    slug = f"legacy_{destination_key}"
+    slug = rotation_schema.rotation_slug(destination_key)
 
+    db_ok = True
     try:
         doc = await schemas.RotationData.get_data(slug)
     except Exception:
         logging.exception("Failed to read %s rotation from the DB", slug)
-        doc = None
+        doc, db_ok = None, False
+
+    # Only auto-seed on a *clean* absent read — a transient DB error must not overwrite
+    # a row that may exist, so it falls through to the cache instead.
+    if doc is None and db_ok:
+        doc = await _autoseed(slug, destination_key)
 
     if doc is not None:
         try:

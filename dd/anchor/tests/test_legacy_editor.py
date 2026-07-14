@@ -45,7 +45,7 @@ def _req(query=None, body=None) -> aiohttp.web.Request:
 
 async def test_edit_get_embeds_stored_legacy_doc():
     # A single-activity doc keeps the test independent of the full neomuna spec.
-    slug = "legacy_pale_heart"
+    slug = "world_activity_pale_heart"
     doc = {
         "version": 1,
         "reference_date": "2026-04-21",
@@ -69,7 +69,7 @@ async def test_edit_get_embeds_stored_legacy_doc():
 
 
 async def test_edit_get_falls_back_to_default_doc_when_absent():
-    resp = await editor._handle_edit_get(_req(query={"type": "legacy_europa"}))
+    resp = await editor._handle_edit_get(_req(query={"type": "world_activity_europa"}))
     assert resp.status == 200
     # No stored row → the empty-but-structured scaffold (has the activity keys).
     assert "eclipsed_zone" in (resp.text or "")
@@ -77,7 +77,7 @@ async def test_edit_get_falls_back_to_default_doc_when_absent():
 
 async def test_preview_renders_legacy_document():
     resp = await editor._handle_preview(
-        _req(body={"type": "legacy_neomuna", "data": _full_neomuna()})
+        _req(body={"type": "world_activity_neomuna", "data": _full_neomuna()})
     )
     assert resp.status == 200
     assert "Terminal Overload" in (resp.text or "")
@@ -86,10 +86,10 @@ async def test_preview_renders_legacy_document():
 async def test_save_persists_legacy_document():
     doc = _full_neomuna()
     resp = await editor._handle_edit_post(
-        _req(body={"type": "legacy_neomuna", "data": doc})
+        _req(body={"type": "world_activity_neomuna", "data": doc})
     )
     assert resp.status == 200
-    stored = await schemas.RotationData.get_data("legacy_neomuna")
+    stored = await schemas.RotationData.get_data("world_activity_neomuna")
     assert stored == doc
 
 
@@ -111,10 +111,10 @@ async def test_save_rejects_invalid_legacy_document():
         ],
     }
     resp = await editor._handle_edit_post(
-        _req(body={"type": "legacy_kepler", "data": bad})
+        _req(body={"type": "world_activity_kepler", "data": bad})
     )
     assert resp.status == 400
-    assert await schemas.RotationData.get_data("legacy_kepler") is None
+    assert await schemas.RotationData.get_data("world_activity_kepler") is None
 
 
 async def test_save_and_preview_set_based_dares():
@@ -149,13 +149,13 @@ async def test_save_and_preview_set_based_dares():
         ],
     }
     save = await editor._handle_edit_post(
-        _req(body={"type": "legacy_dares", "data": doc})
+        _req(body={"type": "world_activity_dares", "data": doc})
     )
     assert save.status == 200
-    assert await schemas.RotationData.get_data("legacy_dares") == doc
+    assert await schemas.RotationData.get_data("world_activity_dares") == doc
 
     preview = await editor._handle_preview(
-        _req(body={"type": "legacy_dares", "data": doc})
+        _req(body={"type": "world_activity_dares", "data": doc})
     )
     assert preview.status == 200
     body = preview.text or ""

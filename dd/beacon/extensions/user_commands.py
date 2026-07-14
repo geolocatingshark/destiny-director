@@ -398,18 +398,29 @@ async def resync_user_commands(
     for key, obj in objects.items():
         (name,) = key
         if name in code_defined_names:
-            # Should not happen: the admin /command subcommands refuse to create
-            # rows clashing with code-defined commands. If a row slips through
-            # anyway (e.g. a command added to code after the row existed), skip it
-            # and leave the code-defined command working rather than shadowing it.
-            logger.critical(
-                "DB-backed user command %r clashes with a code-defined command of "
-                "the same name; skipping the DB-backed command so the code-defined "
-                "one keeps working. Remove or rename the `%s` UserCommand row to "
-                "clear this.",
-                name,
-                name,
-            )
+            # A DB-backed command must never shadow a code-defined one. This can arise
+            # when a command is added to code *after* a DB row of the same name existed
+            # (e.g. the new world-activity commands vs. a pre-existing `/dares` row).
+            # Self-heal: delete the offending row(s) — both the standalone-command and
+            # group forms so a group's subcommands cascade — and alert once, rather than
+            # skipping and re-alerting on every resync while a dead row lingers.
+            try:
+                await UserCommand.delete_command_group(
+                    name, cascade=True, session=session
+                )
+                await UserCommand.delete_command(name, session=session)
+            except Exception:
+                logger.exception(
+                    "Failed to delete DB-backed user command %r that clashes with a "
+                    "code-defined command; skipping it so the code-defined one works",
+                    name,
+                )
+            else:
+                logger.critical(
+                    "Deleted DB-backed user command %r: it clashed with a code-defined "
+                    "command of the same name and would have shadowed it.",
+                    name,
+                )
             continue
         # In a test environment register to the test guild(s) so command changes
         # propagate instantly; in production register globally so the commands are

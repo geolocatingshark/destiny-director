@@ -75,5 +75,10 @@
         }
       ]
     }
-  ]
+  ],
+  "item_links": {
+    "Apostate (Sniper Rifle)": "https://www.light.gg/db/items/2164448701/",
+    "Blasphemer (Shotgun)": "https://www.light.gg/db/items/2782847179/",
+    "Heretic (Rocket Launcher)": "https://www.light.gg/db/items/3067821200/"
+  }
 }

@@ -77,7 +77,7 @@ def _default_doc(post_type: str) -> dict[str, t.Any]:
         }
     if post_type == "xur_location":
         return {"version": 1, "locations": []}
-    if post_type.startswith("legacy_"):
+    if rotation_schema.is_world_activity(post_type):
         return rotation_schema.legacy_default_doc(post_type)
     return {}
 
@@ -200,7 +200,7 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
     """
     if post_type == "xur_location":
         return xur_support_data.XurLocations.from_json(data)
-    if post_type.startswith("legacy_"):
+    if rotation_schema.is_world_activity(post_type):
         return legacy_activities.LegacyRotation.from_json(data)
     return sector_accounting.Rotation.from_json(data)
 
@@ -208,7 +208,7 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
 def _render_preview(post_type: str, obj: t.Any) -> str:
     if post_type == "xur_location":
         return _render_xur_location_preview_html(obj)
-    if post_type.startswith("legacy_"):
+    if rotation_schema.is_world_activity(post_type):
         return _render_legacy_preview_html(obj)
     return _render_preview_html(obj)
 
@@ -319,7 +319,7 @@ async def _handle_edit_post(request: aiohttp.web.Request) -> aiohttp.web.Respons
     except Exception as e:
         return aiohttp.web.Response(status=400, text=f"Document is unusable:\n{e}")
 
-    if post_type.startswith("legacy_"):
+    if rotation_schema.is_world_activity(post_type):
         _bake_item_links(data)
 
     await schemas.RotationData.set_data(post_type, data)

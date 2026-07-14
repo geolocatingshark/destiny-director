@@ -199,6 +199,18 @@ XUR_LOCATION_SCHEMA: dict[str, t.Any] = _build_xur_location_schema()
 _Activity = tuple[str, str, t.Literal["daily", "weekly"], list[str] | t.Literal["sets"]]
 _DestinationSpec = tuple[str, list[_Activity]]
 
+# DB-facing slug prefix for these rotation post types. Defined once so the stored
+# identifier (``world_activity_neomuna``) is decoupled from the internal module names
+# (which still say "legacy" — Bungie/Kyber's own term for the activity category). See
+# :func:`is_world_activity` for the dispatch predicate that replaced ``startswith``.
+ROTATION_SLUG_PREFIX = "world_activity_"
+
+
+def rotation_slug(key: str) -> str:
+    """The DB slug for a destination key (``neomuna`` → ``world_activity_neomuna``)."""
+    return f"{ROTATION_SLUG_PREFIX}{key}"
+
+
 LEGACY_DESTINATIONS: dict[str, _DestinationSpec] = {
     "neomuna": (
         "Neomuna",
@@ -455,8 +467,10 @@ def _legacy_default_activity(activity: _Activity) -> dict[str, t.Any]:
 
 
 def legacy_default_doc(post_type: str) -> dict[str, t.Any]:
-    """An empty-but-structurally-complete scaffold for a legacy destination slug."""
-    _title, activities = LEGACY_DESTINATIONS[post_type.removeprefix("legacy_")]
+    """An empty-but-structurally-complete scaffold for a world-activity slug."""
+    _title, activities = LEGACY_DESTINATIONS[
+        post_type.removeprefix(ROTATION_SLUG_PREFIX)
+    ]
     return {
         "version": 1,
         "reference_date": "",
@@ -468,13 +482,26 @@ def legacy_default_doc(post_type: str) -> dict[str, t.Any]:
 ROTATION_SCHEMAS: dict[str, dict[str, t.Any]] = {
     "lost_sector": LOST_SECTOR_SCHEMA,
     "xur_location": XUR_LOCATION_SCHEMA,
-    # Each legacy destination registers under its own ``legacy_<key>`` slug, so it
+    # Each destination registers under its own ``world_activity_<key>`` slug, so it
     # appears automatically at /rotation edit and gets its own DB row (no migration).
     **{
-        f"legacy_{key}": _build_legacy_rotation_schema(spec)
+        rotation_slug(key): _build_legacy_rotation_schema(spec)
         for key, spec in LEGACY_DESTINATIONS.items()
     },
 }
+
+# The registered world-activity slugs, and a predicate over them. Editor/loader dispatch
+# checks membership here rather than a ``startswith("legacy_")`` string prefix, so the
+# discriminator is the registry itself, not a naming convention.
+WORLD_ACTIVITY_SLUGS: frozenset[str] = frozenset(
+    rotation_slug(key) for key in LEGACY_DESTINATIONS
+)
+
+
+def is_world_activity(post_type: str) -> bool:
+    """Whether ``post_type`` is one of the world-activity rotation destinations."""
+    return post_type in WORLD_ACTIVITY_SLUGS
+
 
 _compiled_validators: dict[str, t.Callable[[t.Any], t.Any]] = {}
 
