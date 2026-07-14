@@ -133,6 +133,18 @@ class LegacyRotation:
         for activity in doc["activities"]:
             kind = activity.get("kind", "elements")
             if kind == "sets":
+                raw_sets = activity.get("sets", [])
+                # Sets are keyed (and the schedule references them) by name, so names
+                # must be unique — otherwise a later set silently overwrites an earlier
+                # one and the schedule resolves to the wrong gear. Reject the document
+                # here (the domain hard-gate) rather than collapsing duplicates quietly.
+                names = [s["name"] for s in raw_sets]
+                duplicates = sorted({n for n in names if names.count(n) > 1})
+                if duplicates:
+                    raise ValueError(
+                        f"Set-based activity {activity['key']!r} has duplicate set "
+                        f"names: {', '.join(duplicates)}. Set names must be unique."
+                    )
                 activities.append(
                     LegacyActivity(
                         key=activity["key"],
@@ -146,7 +158,7 @@ class LegacyRotation:
                                 weapons=list(s.get("weapons", [])),
                                 armor=list(s.get("armor", [])),
                             )
-                            for s in activity.get("sets", [])
+                            for s in raw_sets
                         },
                     )
                 )
