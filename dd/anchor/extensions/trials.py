@@ -88,6 +88,42 @@ TRIALS_REWARDS: tuple[str, ...] = (
 #: The static sign-off line (an ``### `` H3 header + the Kyber cheer emoji).
 TRIALS_FOOTER_LINE = "### Good luck in your games!  :gscheer:"
 
+# The Trials bonus-focus-pool rotation: a fixed loop of curated weapon sets. Trials
+# cycles through these one per *active* weekend (Iron Banner "No Trials" weeks are
+# skipped, which falls out naturally because the cursor only advances when a post is
+# committed). Baked from the "Trials Bonus Pools" tab of the rotation spreadsheet as a
+# one-off seed — the bot never reads the sheet at runtime. Stored in (and editable via)
+# the ``trials_config`` DB row; this constant only seeds it when that row has none.
+DEFAULT_LOOT_SETS: tuple[tuple[str, ...], ...] = (
+    (
+        "The Scholar",
+        "Exile's Curse",
+        "Sola's Scar",
+        "Forgiveness",
+        "Aisha's Embrace",
+        "Corundum Hammer",
+        "Astral Horizon",
+    ),
+    (
+        "Aisha's Care",
+        "Keen Thistle",
+        "Willful Hamartia",
+        "The Immortal",
+        "Burden of Guilt",
+        "Unwavering Duty",
+        "Cataphract GL3",
+    ),
+    (
+        "Exalted Truth",
+        "Eye of Sol",
+        "Tomorrow's Answer",
+        "Everburning Glitz",
+        "Auric Disabler",
+        "Aureus Neutralizer",
+        "The Martlet",
+    ),
+)
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -131,31 +167,66 @@ class TrialsContext:
         )
 
 
+def _default_loot_sets() -> list[list[str]]:
+    return [list(s) for s in DEFAULT_LOOT_SETS]
+
+
 @dataclasses.dataclass
 class TrialsConfig:
-    """Carried-over data so each Friday's fresh draft starts pre-filled, not blank."""
+    """Carried-over data so each Friday's fresh draft starts pre-filled, not blank.
+
+    Also holds the bonus-focus-pool rotation state: ``loot_sets`` is the fixed loop of
+    weapon sets (seeded from :data:`DEFAULT_LOOT_SETS`, then DB-authoritative) and
+    ``last_loot_set_index`` is the memory of the last set used, so the next draft
+    defaults to the following set. ``-1`` = "none used yet" — the first draft is set 0.
+    """
 
     default_image_url: str | None = None
     last_featured_maps: list[str] = dataclasses.field(default_factory=list)
-    last_focus_pool: list[WeaponRef] = dataclasses.field(default_factory=list)
+    loot_sets: list[list[str]] = dataclasses.field(default_factory=_default_loot_sets)
+    last_loot_set_index: int = -1
+
+    def next_loot_set(self) -> list[str]:
+        """The weapon-name list for the set the next draft should default to."""
+        if not self.loot_sets:
+            return []
+        return self.loot_sets[(self.last_loot_set_index + 1) % len(self.loot_sets)]
+
+    def match_loot_set(self, names: t.Iterable[str]) -> int | None:
+        """Index of the set whose names equal ``names`` (order-insensitive), else None.
+
+        A committed post's focus pool is matched here to decide which set was "used".
+        """
+        wanted = {n.strip().lower() for n in names if n and n.strip()}
+        if not wanted:
+            return None
+        for i, s in enumerate(self.loot_sets):
+            if {n.strip().lower() for n in s} == wanted:
+                return i
+        return None
 
     def to_dict(self) -> dict[str, t.Any]:
         return {
             "default_image_url": self.default_image_url,
             "last_featured_maps": list(self.last_featured_maps),
-            "last_focus_pool": [w.to_dict() for w in self.last_focus_pool],
+            "loot_sets": [list(s) for s in self.loot_sets],
+            "last_loot_set_index": self.last_loot_set_index,
         }
 
     @classmethod
     def from_dict(cls, d: t.Mapping[str, t.Any] | None) -> "TrialsConfig":
         if not d:
             return cls()
+        # Seed loot_sets from the baked default when the stored row has none (first run
+        # or a pre-rotation doc), so the rotation works before anyone edits the DB.
+        loot_sets = [
+            [str(n) for n in s] for s in d.get("loot_sets") or DEFAULT_LOOT_SETS
+        ]
         return cls(
             default_image_url=d.get("default_image_url"),
             last_featured_maps=[str(m) for m in d.get("last_featured_maps") or []],
-            last_focus_pool=[
-                WeaponRef.from_dict(w) for w in d.get("last_focus_pool") or []
-            ],
+            loot_sets=loot_sets,
+            last_loot_set_index=int(d.get("last_loot_set_index", -1)),
         )
 
 
@@ -195,12 +266,22 @@ async def save_meta(meta: DraftMeta) -> None:
 
 
 async def build_draft_context(config: TrialsConfig | None = None) -> TrialsContext:
-    """A fresh draft: the current week's reset boundary + carried-over maps/pool."""
+    """A fresh draft: the reset boundary, carried-over maps + the NEXT loot set.
+
+    The bonus focus pool defaults to the set after the last-used one (the fixed
+    rotation loop); each name resolves to a manifest-linked :class:`WeaponRef`
+    (light.gg), degrading to a plain name if the manifest is offline. Still editable.
+    """
     config = config or await load_config()
+    focus_pool: list[WeaponRef] = []
+    for name in config.next_loot_set():
+        weapon = await _resolve_focus(name)
+        if weapon is not None:
+            focus_pool.append(weapon)
     return TrialsContext(
         reset_ts=current_reset_ts(),
         featured_maps=list(config.last_featured_maps),
-        focus_pool=list(config.last_focus_pool),
+        focus_pool=focus_pool,
         image_url=config.default_image_url,
     )
 
@@ -387,18 +468,32 @@ async def _build_bootstrap(draft: TrialsContext, meta: DraftMeta) -> dict[str, t
     }
 
 
+def _record_loot_set_used(config: TrialsConfig, ctx: TrialsContext) -> None:
+    """Advance the rotation cursor to the set this committed post used.
+
+    If the post's focus pool matches a known loot set (the usual case — the default IS a
+    set, and a manual pick of another pool matches it), record that set's index so the
+    next draft defaults to the following set. A custom/edited pool that matches nothing
+    leaves the cursor untouched (the loop pauses rather than jumping arbitrarily).
+    """
+    matched = config.match_loot_set(w.name for w in ctx.focus_pool if w and w.name)
+    if matched is not None:
+        config.last_loot_set_index = matched
+
+
 async def _persist_carryover(
     payload: t.Mapping[str, t.Any], ctx: TrialsContext
 ) -> None:
-    """Persist the carried-over config on save so next Friday's draft pre-fills.
+    """Persist carried-over config on every committed post (Create/Edit).
 
-    Always stores this week's maps + focus pool as the carry-over; also stores the image
-    as the default when the form's "use as default" box is ticked (an empty URL with the
+    Stores this week's maps as the carry-over, advances the loot-set rotation cursor to
+    the set actually used (see :func:`_record_loot_set_used`), and stores the image as
+    the default when the form's "use as default" box is ticked (an empty URL with the
     box ticked clears the default).
     """
     config = await load_config()
     config.last_featured_maps = list(ctx.featured_maps)
-    config.last_focus_pool = list(ctx.focus_pool)
+    _record_loot_set_used(config, ctx)
     if payload.get("set_default_image"):
         config.default_image_url = ctx.image_url
     await save_config(config)
@@ -505,6 +600,10 @@ async def run_trials_draft(bot: CachedFetchBot) -> None:
         await save_draft(ctx)
         meta = await hybrid_post_core.post_or_edit_unpublished(_SPEC, bot, ctx, meta)
         await save_meta(meta)
+        # The cron just committed this weekend's post using the next loot set — advance
+        # the rotation cursor so a later manual Edit (or next weekend) starts from here.
+        _record_loot_set_used(config, ctx)
+        await save_config(config)
 
     logger.info("trials: fresh draft posted (uncrossposted) for the new weekend")
 

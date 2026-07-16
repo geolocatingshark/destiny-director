@@ -105,27 +105,45 @@ def test_context_round_trip() -> None:
     assert tr.TrialsContext.from_dict(ctx.to_dict()) == ctx
 
 
-def test_config_round_trip_and_empty_default() -> None:
-    assert tr.TrialsConfig.from_dict(None) == tr.TrialsConfig()
+def test_config_round_trip_and_default_seeds_loot_sets() -> None:
+    # A blank config seeds the baked loot-set loop and an unused cursor.
+    fresh = tr.TrialsConfig.from_dict(None)
+    assert fresh.loot_sets == [list(s) for s in tr.DEFAULT_LOOT_SETS]
+    assert fresh.last_loot_set_index == -1
     config = tr.TrialsConfig(
         default_image_url="https://img",
         last_featured_maps=["Burnout"],
-        last_focus_pool=[tr.WeaponRef("The Scholar", 123)],
+        loot_sets=[["A", "B"], ["C"]],
+        last_loot_set_index=1,
     )
     assert tr.TrialsConfig.from_dict(config.to_dict()) == config
 
 
+def test_next_loot_set_loops_and_match() -> None:
+    config = tr.TrialsConfig(loot_sets=[["A", "B"], ["C", "D"], ["E"]])
+    config.last_loot_set_index = -1
+    assert config.next_loot_set() == ["A", "B"]  # first draft -> set 0
+    config.last_loot_set_index = 0
+    assert config.next_loot_set() == ["C", "D"]
+    config.last_loot_set_index = 2
+    assert config.next_loot_set() == ["A", "B"]  # wraps
+    # match is order-insensitive + case-insensitive; a non-set returns None.
+    assert config.match_loot_set(["d", "c"]) == 1
+    assert config.match_loot_set(["A", "X"]) is None
+
+
 @pytest.mark.asyncio
-async def test_build_draft_context_carries_over() -> None:
+async def test_build_draft_context_defaults_to_next_loot_set(stub_weapon_items) -> None:
+    # last used = set 0 (Pool 1) -> the draft defaults to set 1 (Pool 2), linked.
     config = tr.TrialsConfig(
         default_image_url="https://img",
         last_featured_maps=["Burnout"],
-        last_focus_pool=[tr.WeaponRef("The Scholar", 123)],
+        last_loot_set_index=0,
     )
     ctx = await tr.build_draft_context(config)
     assert ctx.reset_ts == hpc.current_reset_ts()
     assert ctx.featured_maps == ["Burnout"]
-    assert ctx.focus_pool == [tr.WeaponRef("The Scholar", 123)]
+    assert [w.name for w in ctx.focus_pool] == list(tr.DEFAULT_LOOT_SETS[1])
     assert ctx.image_url == "https://img"
 
 
@@ -389,24 +407,41 @@ async def test_handle_edit_refuses_when_absent(monkeypatch, stub_weapon_items) -
 
 
 @pytest.mark.asyncio
-async def test_handle_create_carries_over_maps_and_pool(
+async def test_handle_create_carries_maps_and_advances_loot_cursor(
     monkeypatch, fake_publish_env, stub_weapon_items
 ) -> None:
     monkeypatch.setattr(tr, "_bot", _FakeBot())
-    await tr.save_meta(tr.DraftMeta())
+    await tr.save_config(tr.TrialsConfig())  # reset the shared-DB rotation state
+    await tr.save_meta(tr.DraftMeta())  # cursor starts unused (-1)
+    # Commit a post whose focus pool is exactly Pool 2 (index 1) — the cursor advances
+    # to that set so the next draft defaults to Pool 3.
     await tr._handle_create(
         _req(
             body={
                 "reset_ts": SAMPLE_RESET,
                 "maps_text": "Burnout",
-                "focus_pool": ["123"],
+                "focus_pool": list(tr.DEFAULT_LOOT_SETS[1]),
             }
         )
     )
     config = await tr.load_config()
     assert config.last_featured_maps == ["Burnout"]
-    # The resolved WeaponRef also carries the type emoji, so compare name + hash only.
-    assert [(w.name, w.hash) for w in config.last_focus_pool] == [("The Scholar", 123)]
+    assert config.last_loot_set_index == 1
+    assert config.next_loot_set() == list(tr.DEFAULT_LOOT_SETS[2])
+
+
+@pytest.mark.asyncio
+async def test_handle_create_custom_pool_leaves_cursor(
+    monkeypatch, fake_publish_env, stub_weapon_items
+) -> None:
+    monkeypatch.setattr(tr, "_bot", _FakeBot())
+    await tr.save_config(tr.TrialsConfig())  # reset the shared-DB rotation state (-1)
+    await tr.save_meta(tr.DraftMeta())
+    # A focus pool that matches no known set leaves the rotation cursor untouched.
+    await tr._handle_create(
+        _req(body={"reset_ts": SAMPLE_RESET, "focus_pool": ["The Scholar"]})
+    )
+    assert (await tr.load_config()).last_loot_set_index == -1
 
 
 @pytest.mark.asyncio
