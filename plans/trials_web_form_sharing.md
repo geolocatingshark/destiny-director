@@ -2,11 +2,18 @@
 
 ## Context / why
 
-The Trials hybrid post (merged to dev `39f57f9`, 2026-07-16) deduped the **server** side of
-the two web-form producers into `dd/anchor/hybrid_post_core.py` (spec-driven route handlers,
-publish path, DraftMeta, preview renderer, weapon resolver). The **client** side and the
-manifest weapon-pool build were left duplicated. This plan captures the three sharing
-opportunities a code review surfaced, with enough detail to execute without re-discovery.
+The Trials hybrid post (merged to dev 2026-07-16) deduped the **server** side of the two
+web-form producers into `dd/anchor/hybrid_post_core.py` (spec-driven route handlers, publish
+path, DraftMeta, preview renderer, weapon resolver). The **client** side and the manifest
+weapon-pool build were left duplicated. This plan captures the three sharing opportunities a
+code review surfaced, with enough detail to execute without re-discovery.
+
+**Baseline (branch from here):** all of the above is on **`dev`** (pushed to origin, tip
+`9af4499` at time of writing) and **deployed to the Railway dev anchor**. That deploy already
+forced the one *correctness* piece of finding C — the concurrent-manifest **startup race** —
+to be fixed on its own (an `asyncio.Lock` in `dd/anchor/extensions/bungie_api/manifest.py`,
+commit `4092720`), so **C below is now a pure efficiency cleanup, no longer urgent.** Start
+any of this work from a fresh branch off `dev`.
 
 Both producers now share the same server contract (so the client can be shared too):
 - `POST /{weekly_reset,trials}/create` and `/edit` take `{...form, publish: bool}` and
@@ -93,14 +100,22 @@ preview. Needs the anchor web UI reachable (Discord-OAuth configured).
 
 ---
 
-## C. Manifest weapon pool built twice at startup (minor efficiency — opportunistic)
+## C. Manifest weapon pool built twice at startup (efficiency only — the race is already fixed)
+
+> **The correctness half of this is already done.** The concurrent-manifest **startup race**
+> it originally implied (both extensions prewarming `_get_latest_manifest` at once corrupted
+> the shared `manifest.zip`/`manifest/` → "database disk image is malformed", crashing
+> `trials`' weapon-pool build on the dev deploy) was fixed by serialising the fetch with an
+> `asyncio.Lock` in `dd/anchor/extensions/bungie_api/manifest.py` (commit `4092720`). What
+> remains below is **pure efficiency**, not a bug.
 
 `weekly_reset._build_indexes`/`get_indexes` and `trials._build_weapon_items`/
 `get_weapon_items` each `api._get_latest_manifest(...)`, open their own `aiosqlite`
 connection, and run `hybrid_post_core.iter_weapon_items(cur)` — a full scan + JSON-parse of
 `DestinyInventoryItemDefinition` (~4166 rows). Both prewarm on `StartedEvent` and cache in
 **separate** globals (`weekly_reset._indexes.items`, `trials._weapon_items`); the weapon
-tuples are identical → the item table is scanned + decoded twice and held in two copies.
+tuples are identical → the item table is scanned + decoded twice and held in two copies (the
+lock now serialises the two builds, but they still each do the full scan).
 
 **Approach:** add a cached, process-wide `hybrid_post_core.get_weapon_pool()` (opens the
 manifest, returns `iter_weapon_items`). Trials' `get_weapon_items` becomes a thin call to it.
