@@ -132,10 +132,11 @@ const listValues = (list) => [...list.children].map((r) => r._value());
 // callers wrap them in whatever container they like. Mirrors the lost_sector sectors ↔
 // schedule consistency + rename-propagation treatment.
 let _setSeq = 0;
-function buildSetPool({ sets, schedule, includeArmor, scheduleLegend }) {
+function buildSetPool({ sets, schedule, includeArmor, scheduleLegend, allowAddRemove }) {
   const listId = `setNames-${_setSeq++}`;
   const dataList = el("datalist", { id: listId });
   const scheduleBox = el("div");
+  const setsWrap = el("div");
   const setModels = [];
 
   function addWeek(value) {
@@ -184,8 +185,7 @@ function buildSetPool({ sets, schedule, includeArmor, scheduleLegend }) {
     return [...problems];
   }
 
-  const setsWrap = el("div");
-  for (const s of sets || []) {
+  function addSet(s = {}) {
     const nameInput = el("input", { type: "text", value: s.name || "", className: "grow", placeholder: "Set name" });
     const weapons = valueList("Weapons", s.weapons, "+ Weapon", "weapon");
     const cardChildren = [
@@ -197,6 +197,22 @@ function buildSetPool({ sets, schedule, includeArmor, scheduleLegend }) {
       const armor = valueList("Armor (named once; offered for all classes)", s.armor, "+ Armor", "armor");
       model.armorList = armor.list;
       cardChildren.push(armor.fs);
+    }
+    // A per-set remove control (opt-in). On removal, drop the model + auto-remove any
+    // schedule weeks that named this set — unless a duplicate set still holds the name —
+    // mirroring the lost_sector sector-removal treatment.
+    if (allowAddRemove) {
+      const remove = el("button", { className: "tiny danger", type: "button", textContent: "✕ Remove set" });
+      remove.addEventListener("click", () => {
+        const goneName = nameInput.value.trim();
+        card.remove();
+        setModels.splice(setModels.indexOf(model), 1);
+        if (goneName && !setModels.some((m) => m.nameInput.value.trim() === goneName))
+          for (const row of [...scheduleBox.children]) if (row._value() === goneName) row.remove();
+        refreshSetNames();
+        validateSets();
+      });
+      cardChildren.unshift(el("div", { className: "card-head" }, [el("span", { className: "grow" }), remove]));
     }
     nameInput.addEventListener("input", () => { refreshSetNames(); validateSets(); });
     // On commit, propagate a rename to every schedule week that named the old set, so the
@@ -210,9 +226,18 @@ function buildSetPool({ sets, schedule, includeArmor, scheduleLegend }) {
       refreshSetNames();
       validateSets();
     });
-    setsWrap.append(el("div", { className: "card" }, cardChildren));
+    const card = el("div", { className: "card" }, cardChildren);
+    setsWrap.append(card);
     setModels.push(model);
   }
+
+  (sets || []).forEach((s) => addSet(s));
+  // Opt-in "+ Add set" button (returned to the caller to place under the pool).
+  const setsAdd = allowAddRemove
+    ? el("button", { className: "secondary tiny", type: "button", textContent: "+ Add set" })
+    : null;
+  if (setsAdd)
+    setsAdd.addEventListener("click", () => { addSet(); refreshSetNames(); validateSets(); });
 
   (schedule || []).forEach((v) => addWeek(v));
   const schedAdd = el("button", { className: "tiny secondary", type: "button", textContent: "+ Week" });
@@ -224,7 +249,7 @@ function buildSetPool({ sets, schedule, includeArmor, scheduleLegend }) {
     dataList,
   ]);
   refreshSetNames();
-  return { scheduleFs, setsWrap, scheduleBox, setModels, validateSets };
+  return { scheduleFs, setsWrap, setsAdd, scheduleBox, setModels, validateSets };
 }
 
 // ===== lost_sector form ================================================
@@ -575,19 +600,22 @@ if (isWorldActivity) {
 
 // ===== trials_loot form ================================================
 // A standalone, weapons-only set pool (no armor, no reference_date): the same set-pool UI
-// the Dares "Legendary Loot" activity uses, minus the world-activity envelope. The Trials
-// producer owns a skip-aware cursor over the schedule, so there's nothing to date-anchor.
+// the Dares "Legendary Loot" activity uses, minus the world-activity envelope, plus
+// add/remove-set controls (Dares' pool is Bungie-fixed; the Trials pool is owner-managed).
+// The Trials producer owns a skip-aware cursor over the schedule — nothing to date-anchor.
 if (type === "trials_loot") {
   const pool = buildSetPool({
     sets: data.sets,
     schedule: data.schedule,
     includeArmor: false,
     scheduleLegend: "Schedule (set names, in order, looping)",
+    allowAddRemove: true,
   });
   $("trialsLootSets").append(
     pool.scheduleFs,
     el("h3", { textContent: "Sets" }),
     pool.setsWrap,
+    pool.setsAdd,
   );
 
   // Gate Save on the set-pool consistency, and paint the initial highlight.
