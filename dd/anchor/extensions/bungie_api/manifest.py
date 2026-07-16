@@ -17,49 +17,59 @@ from .constants import API_MANIFEST, BUNGIE_NET, manifest_table_names
 _MANIFEST_META_TIMEOUT = aiohttp.ClientTimeout(total=30)
 _MANIFEST_DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=600)
 
+# Serialises the download+extract so concurrent callers don't race the shared
+# ``manifest.zip`` / ``manifest/`` paths. Without it, two extensions prewarming the
+# manifest at once (e.g. weekly_reset + trials on StartedEvent) each download over the
+# same file, one wipes ``manifest/`` while the other is extracting, and both
+# ``extractall`` concurrently — corrupting the sqlite ("database disk image is
+# malformed"). The first caller downloads; the rest wait and hit the cached path below.
+_manifest_lock = asyncio.Lock()
+
 
 async def _get_latest_manifest(api_key: str) -> str:
-    # Prep the manifest directory
-    Path("manifest").mkdir(exist_ok=True)
+    async with _manifest_lock:
+        # Prep the manifest directory
+        Path("manifest").mkdir(exist_ok=True)
 
-    # Get the latest manifest url from the API
-    async with (
-        aiohttp.ClientSession(timeout=_MANIFEST_META_TIMEOUT) as session,
-        session.get(API_MANIFEST, headers={"X-API-Key": api_key}) as response,
-    ):
-        manifest_url_fragment = (await response.json())["Response"][
-            "mobileWorldContentPaths"
-        ]["en"]
+        # Get the latest manifest url from the API
+        async with (
+            aiohttp.ClientSession(timeout=_MANIFEST_META_TIMEOUT) as session,
+            session.get(API_MANIFEST, headers={"X-API-Key": api_key}) as response,
+        ):
+            manifest_url_fragment = (await response.json())["Response"][
+                "mobileWorldContentPaths"
+            ]["en"]
 
-    manifest_url_filename = manifest_url_fragment.split("/")[-1]
-    # Check if the manifest is already downloaded
-    if os.path.exists("manifest/" + manifest_url_filename):
-        return "manifest/" + manifest_url_filename
+        manifest_url_filename = manifest_url_fragment.split("/")[-1]
+        # Check if the manifest is already downloaded (a concurrent caller that waited
+        # on the lock finds the freshly-extracted file here and returns, no re-fetch)
+        if os.path.exists("manifest/" + manifest_url_filename):
+            return "manifest/" + manifest_url_filename
 
-    manifest_url = BUNGIE_NET + manifest_url_fragment
+        manifest_url = BUNGIE_NET + manifest_url_fragment
 
-    async with (
-        aiohttp.ClientSession(timeout=_MANIFEST_DOWNLOAD_TIMEOUT) as session,
-        session.get(manifest_url) as response,
-    ):
-        manifest_zip = await response.read()
+        async with (
+            aiohttp.ClientSession(timeout=_MANIFEST_DOWNLOAD_TIMEOUT) as session,
+            session.get(manifest_url) as response,
+        ):
+            manifest_zip = await response.read()
 
-    async with aiofiles.open("manifest.zip", "wb") as file:
-        await file.write(manifest_zip)
+        async with aiofiles.open("manifest.zip", "wb") as file:
+            await file.write(manifest_zip)
 
-    # Cleanup manifest directory
-    for file in os.listdir("manifest"):
-        os.remove("manifest/" + file)
+        # Cleanup manifest directory
+        for file in os.listdir("manifest"):
+            os.remove("manifest/" + file)
 
-    def _extract():
-        # Extract the newly downloaded manifest
-        with zipfile.ZipFile("manifest.zip", "r") as zip_ref:
-            zip_ref.extractall("manifest")
+        def _extract():
+            # Extract the newly downloaded manifest
+            with zipfile.ZipFile("manifest.zip", "r") as zip_ref:
+                zip_ref.extractall("manifest")
 
-    await asyncio.get_event_loop().run_in_executor(None, _extract)
+        await asyncio.get_event_loop().run_in_executor(None, _extract)
 
-    manifest_path = "manifest/" + os.listdir("manifest")[0]
-    return manifest_path
+        manifest_path = "manifest/" + os.listdir("manifest")[0]
+        return manifest_path
 
 
 async def _build_manifest_dict(manifest_path: str):
