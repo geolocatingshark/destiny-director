@@ -9,11 +9,12 @@
   server re-validates against the JSON schema, so this form is a convenience, not a
   trust boundary.
 
-  Each post type has its own bespoke form (tagged .ls-only / .xur-only / .legacy-only in
-  the markup); on load every other type's nodes are removed and the matching type's block
-  builds its fields and assigns collect(). lost_sector is tabbed (Sectors / Planet cycles
-  / Preview); xur_location is a simpler Locations / Preview; legacy_* is Activities /
-  Preview. The layout stays usable on a
+  Each post type has its own bespoke form (tagged .ls-only / .xur-only / .legacy-only /
+  .trials-loot-only in the markup); on load every other type's nodes are removed and the
+  matching type's block builds its fields and assigns collect(). lost_sector is tabbed
+  (Sectors / Planet cycles / Preview); xur_location is a simpler Locations / Preview;
+  legacy_* is Activities / Preview; trials_loot is Loot sets / Preview. The layout stays
+  usable on a
   phone — only one section is visible at a time; the tab bar and Save button stay
   pinned. This type's panels all live in the DOM at once (hidden via CSS), so collect()
   always sees every field regardless of the active tab.
@@ -43,6 +44,7 @@
       <button type="button" data-tab="schedule" class="ls-only">Planet cycles</button>
       <button type="button" data-tab="locations" class="xur-only">Locations</button>
       <button type="button" data-tab="activities" class="legacy-only">Activities</button>
+      <button type="button" data-tab="trials_loot" class="trials-loot-only">Loot sets</button>
       <button type="button" data-tab="preview">Preview</button>
     </nav>
 
@@ -92,6 +94,17 @@
           committed defaults (discards the current stored data for it), then re-edit.
         </p>
         <button class="danger tiny" id="resetDefaults" type="button">↺ Reset to defaults</button>
+      </section>
+
+      <section class="panel trials-loot-only" data-panel="trials_loot">
+        <h2>Trials loot pool</h2>
+        <p class="muted">
+          Define each loot set's weapons, then list the weekly schedule of set names (in
+          order, looping). Trials advances through the schedule one set per active
+          weekend — Iron Banner "No Trials" weekends are skipped automatically, so the
+          schedule is a pure order, not a calendar.
+        </p>
+        <div id="trialsLootSets"></div>
       </section>
 
       <section class="panel" data-panel="preview">

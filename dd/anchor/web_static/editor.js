@@ -8,12 +8,13 @@
 // no token is embedded here. The server re-validates against the JSON schema, so this
 // form is a convenience, not a trust boundary.
 //
-// Each post type has its own bespoke form (tagged .ls-only / .xur-only / .legacy-only in
-// the markup); on load every other type's nodes are removed and the matching type's
-// block builds its fields and assigns collect(). lost_sector is tabbed (Sectors / Planet
-// cycles / Preview); xur_location is a simpler Locations / Preview; a world-activity
-// destination is Activities (each activity's elements are independent editable value
-// lists) / Preview.
+// Each post type has its own bespoke form (tagged .ls-only / .xur-only / .legacy-only /
+// .trials-loot-only in the markup); on load every other type's nodes are removed and the
+// matching type's block builds its fields and assigns collect(). lost_sector is tabbed
+// (Sectors / Planet cycles / Preview); xur_location is a simpler Locations / Preview; a
+// world-activity destination is Activities (each activity's elements are independent
+// editable value lists) / Preview; trials_loot is a standalone weapons-only set pool
+// (Loot sets / Preview), reusing the world-activity set-pool building blocks.
 
 const BOOTSTRAP = window.__BOOTSTRAP__;
 const { type, data, vocab } = BOOTSTRAP;
@@ -40,8 +41,10 @@ const activeOnly = isWorldActivity
   ? "legacy-only"
   : type === "lost_sector"
     ? "ls-only"
-    : "xur-only";
-document.querySelectorAll(".ls-only, .xur-only, .legacy-only").forEach((n) => {
+    : type === "xur_location"
+      ? "xur-only"
+      : "trials-loot-only";
+document.querySelectorAll(".ls-only, .xur-only, .legacy-only, .trials-loot-only").forEach((n) => {
   if (!n.classList.contains(activeOnly)) n.remove();
 });
 
@@ -52,6 +55,177 @@ let collect;
 // isn't internally consistent; the Save handler blocks while it's non-empty. The
 // lost_sector block sets it; other types leave the no-op default.
 let consistencyProblems = () => [];
+
+// ===== shared value-list + set-pool building blocks ====================
+// Used by both the world-activity form (element cycles + Dares-style set pools) and the
+// standalone trials_loot set pool. Kept at module scope so neither form duplicates them.
+
+function addValue(list, v, ac) {
+  const input = el("input", { type: "text", value: v || "", className: "grow" });
+  if (ac) {
+    input.setAttribute("list", ac.id); // manifest weapon/armor autocomplete
+    input.addEventListener("input", ac.onInput);
+  }
+  const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
+  const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
+  const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
+  const row = el("div", { className: "row" }, [input, up, down, del]);
+  row._value = () => input.value;
+  del.addEventListener("click", () => row.remove());
+  up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
+  down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
+  list.append(row);
+}
+
+// Debounced DestinyItem autocomplete (weapons/armor) backed by /rotation/search. The
+// stored value keeps the "Name (Type)" shape so emoji tagging + link baking work (the
+// trials_loot producer strips the "(Type)" suffix before resolving names).
+let _acSeq = 0;
+function itemAutocomplete(kind) {
+  const id = `ac-${kind}-${_acSeq++}`;
+  const dl = el("datalist", { id });
+  let timer = null;
+  const onInput = (e) => {
+    const q = e.target.value.trim();
+    clearTimeout(timer);
+    if (q.length < 2) return;
+    timer = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/rotation/search?q=${encodeURIComponent(q)}&kind=${kind}`,
+          { credentials: "same-origin" },
+        );
+        if (!res.ok) return;
+        const items = await res.json();
+        dl.replaceChildren(
+          ...items.map((it) =>
+            el("option", { value: it.type ? `${it.name} (${it.type})` : it.name }),
+          ),
+        );
+      } catch (_e) {
+        /* autocomplete is best-effort */
+      }
+    }, 200);
+  };
+  return { id, dl, onInput };
+}
+
+// A labelled, reorderable value list (the shared building block for element cycles, set
+// weapon/armor lists, and the set schedule). `kind` enables item autocomplete.
+function valueList(legend, values, addLabel, kind) {
+  const list = el("div");
+  const ac = kind ? itemAutocomplete(kind) : null;
+  (values || []).forEach((v) => addValue(list, v, ac));
+  const add = el("button", { className: "tiny secondary", type: "button", textContent: addLabel });
+  add.addEventListener("click", () => addValue(list, undefined, ac));
+  const children = [el("legend", { textContent: legend }), list, add];
+  if (ac) children.push(ac.dl);
+  const fs = el("fieldset", { className: "zone" }, children);
+  return { fs, list };
+}
+
+const listValues = (list) => [...list.children].map((r) => r._value());
+
+// A set pool: a weekly schedule of set names + a pool of named sets (each a weapon list,
+// optionally an armor list). Returns the schedule + sets DOM, the models for collect(),
+// and validateSets() (blank/duplicate set names + schedule weeks that name no set), so
+// callers wrap them in whatever container they like. Mirrors the lost_sector sectors ↔
+// schedule consistency + rename-propagation treatment.
+let _setSeq = 0;
+function buildSetPool({ sets, schedule, includeArmor, scheduleLegend }) {
+  const listId = `setNames-${_setSeq++}`;
+  const dataList = el("datalist", { id: listId });
+  const scheduleBox = el("div");
+  const setModels = [];
+
+  function addWeek(value) {
+    const input = el("input", { type: "text", value: value || "", className: "grow" });
+    input.setAttribute("list", listId); // autocomplete from the set names
+    input.addEventListener("input", validateSets);
+    const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
+    const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
+    const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
+    const row = el("div", { className: "row" }, [input, up, down, del]);
+    row._value = () => input.value.trim();
+    row._input = input;
+    del.addEventListener("click", () => { row.remove(); validateSets(); });
+    up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
+    down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
+    scheduleBox.append(row);
+  }
+
+  function refreshSetNames() {
+    dataList.replaceChildren(
+      ...setModels.map((m) => el("option", { value: m.nameInput.value.trim() })).filter((o) => o.value),
+    );
+  }
+
+  // Highlight blank/duplicate set names and schedule weeks that name no set; return the
+  // problems (empty ⇒ internally consistent).
+  function validateSets() {
+    const names = setModels.map((m) => m.nameInput.value.trim());
+    const counts = {};
+    for (const n of names) counts[n] = (counts[n] || 0) + 1;
+    const known = new Set(names.filter(Boolean));
+    const problems = new Set();
+    for (const m of setModels) {
+      const n = m.nameInput.value.trim();
+      const bad = !n || counts[n] > 1;
+      m.nameInput.classList.toggle("invalid", bad);
+      if (!n) problems.add("a set has a blank name");
+      else if (counts[n] > 1) problems.add(`duplicate set name "${n}"`);
+    }
+    for (const row of scheduleBox.children) {
+      const v = row._value();
+      const bad = !!v && !known.has(v);
+      row._input.classList.toggle("invalid", bad);
+      if (bad) problems.add(`schedule week "${v}" isn't a set`);
+    }
+    return [...problems];
+  }
+
+  const setsWrap = el("div");
+  for (const s of sets || []) {
+    const nameInput = el("input", { type: "text", value: s.name || "", className: "grow", placeholder: "Set name" });
+    const weapons = valueList("Weapons", s.weapons, "+ Weapon", "weapon");
+    const cardChildren = [
+      el("div", { className: "field" }, [el("label", { textContent: "Set name" }), nameInput]),
+      weapons.fs,
+    ];
+    const model = { nameInput, prev: (s.name || "").trim(), weaponsList: weapons.list, armorList: null };
+    if (includeArmor) {
+      const armor = valueList("Armor (named once; offered for all classes)", s.armor, "+ Armor", "armor");
+      model.armorList = armor.list;
+      cardChildren.push(armor.fs);
+    }
+    nameInput.addEventListener("input", () => { refreshSetNames(); validateSets(); });
+    // On commit, propagate a rename to every schedule week that named the old set, so the
+    // Sets and Weekly schedule never drift apart.
+    nameInput.addEventListener("change", () => {
+      const oldName = model.prev;
+      const newName = nameInput.value.trim();
+      if (oldName && newName && oldName !== newName)
+        for (const row of scheduleBox.children) if (row._value() === oldName) row._input.value = newName;
+      model.prev = newName;
+      refreshSetNames();
+      validateSets();
+    });
+    setsWrap.append(el("div", { className: "card" }, cardChildren));
+    setModels.push(model);
+  }
+
+  (schedule || []).forEach((v) => addWeek(v));
+  const schedAdd = el("button", { className: "tiny secondary", type: "button", textContent: "+ Week" });
+  schedAdd.addEventListener("click", () => { addWeek(); validateSets(); });
+  const scheduleFs = el("fieldset", { className: "zone" }, [
+    el("legend", { textContent: scheduleLegend }),
+    scheduleBox,
+    schedAdd,
+    dataList,
+  ]);
+  refreshSetNames();
+  return { scheduleFs, setsWrap, scheduleBox, setModels, validateSets };
+}
 
 // ===== lost_sector form ================================================
 if (type === "lost_sector") {
@@ -298,68 +472,8 @@ if (isWorldActivity) {
   const label = (name) =>
     name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-  function addValue(list, v, ac) {
-    const input = el("input", { type: "text", value: v || "", className: "grow" });
-    if (ac) {
-      input.setAttribute("list", ac.id); // manifest weapon/armor autocomplete
-      input.addEventListener("input", ac.onInput);
-    }
-    const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
-    const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
-    const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
-    const row = el("div", { className: "row" }, [input, up, down, del]);
-    row._value = () => input.value;
-    del.addEventListener("click", () => row.remove());
-    up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
-    down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
-    list.append(row);
-  }
-
-  // Debounced DestinyItem autocomplete (weapons/armor) backed by /rotation/search.
-  // The stored value keeps the "Name (Type)" shape so emoji tagging + link baking work.
-  let _acSeq = 0;
-  function itemAutocomplete(kind) {
-    const id = `ac-${kind}-${_acSeq++}`;
-    const dl = el("datalist", { id });
-    let timer = null;
-    const onInput = (e) => {
-      const q = e.target.value.trim();
-      clearTimeout(timer);
-      if (q.length < 2) return;
-      timer = setTimeout(async () => {
-        try {
-          const res = await fetch(
-            `/rotation/search?q=${encodeURIComponent(q)}&kind=${kind}`,
-            { credentials: "same-origin" },
-          );
-          if (!res.ok) return;
-          const items = await res.json();
-          dl.replaceChildren(
-            ...items.map((it) =>
-              el("option", { value: it.type ? `${it.name} (${it.type})` : it.name }),
-            ),
-          );
-        } catch (_e) {
-          /* autocomplete is best-effort */
-        }
-      }, 200);
-    };
-    return { id, dl, onInput };
-  }
-
-  // A labelled, reorderable value list (the shared building block for element cycles,
-  // set weapon/armor lists, and the set schedule). `kind` enables item autocomplete.
-  function valueList(legend, values, addLabel, kind) {
-    const list = el("div");
-    const ac = kind ? itemAutocomplete(kind) : null;
-    (values || []).forEach((v) => addValue(list, v, ac));
-    const add = el("button", { className: "tiny secondary", type: "button", textContent: addLabel });
-    add.addEventListener("click", () => addValue(list, undefined, ac));
-    const children = [el("legend", { textContent: legend }), list, add];
-    if (ac) children.push(ac.dl);
-    const fs = el("fieldset", { className: "zone" }, children);
-    return { fs, list };
-  }
+  // addValue / itemAutocomplete / valueList / buildSetPool are hoisted to module scope
+  // (shared with the trials_loot form).
 
   const activityModels = [];
   // Each set-based activity registers a validator here; Save is gated on all of them
@@ -370,107 +484,23 @@ if (isWorldActivity) {
     // The Weekly schedule references sets by name, with autocomplete + the same
     // consistency/rename treatment the lost-sector editor gives its sectors ↔ schedule.
     if (act.kind === "sets") {
-      const listId = `setNames-${act.key}`;
-      const dataList = el("datalist", { id: listId });
-      const scheduleBox = el("div");
-      const setModels = [];
-
-      function addWeek(value) {
-        const input = el("input", { type: "text", value: value || "", className: "grow" });
-        input.setAttribute("list", listId); // autocomplete from the set names
-        input.addEventListener("input", validateSets);
-        const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
-        const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
-        const del = el("button", { className: "tiny danger", type: "button", textContent: "✕" });
-        const row = el("div", { className: "row" }, [input, up, down, del]);
-        row._value = () => input.value.trim();
-        row._input = input;
-        del.addEventListener("click", () => { row.remove(); validateSets(); });
-        up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
-        down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
-        scheduleBox.append(row);
-      }
-
-      function refreshSetNames() {
-        dataList.replaceChildren(
-          ...setModels.map((m) => el("option", { value: m.nameInput.value.trim() })).filter((o) => o.value),
-        );
-      }
-
-      // Highlight blank/duplicate set names and schedule weeks that name no set; return
-      // the problems (empty ⇒ internally consistent).
-      function validateSets() {
-        const names = setModels.map((m) => m.nameInput.value.trim());
-        const counts = {};
-        for (const n of names) counts[n] = (counts[n] || 0) + 1;
-        const known = new Set(names.filter(Boolean));
-        const problems = new Set();
-        for (const m of setModels) {
-          const n = m.nameInput.value.trim();
-          const bad = !n || counts[n] > 1;
-          m.nameInput.classList.toggle("invalid", bad);
-          if (!n) problems.add("a set has a blank name");
-          else if (counts[n] > 1) problems.add(`duplicate set name "${n}"`);
-        }
-        for (const row of scheduleBox.children) {
-          const v = row._value();
-          const bad = !!v && !known.has(v);
-          row._input.classList.toggle("invalid", bad);
-          if (bad) problems.add(`schedule week "${v}" isn't a set`);
-        }
-        return [...problems];
-      }
-
-      const setsWrap = el("div");
-      for (const s of act.sets || []) {
-        const nameInput = el("input", { type: "text", value: s.name || "", className: "grow", placeholder: "Set name" });
-        const weapons = valueList("Weapons", s.weapons, "+ Weapon", "weapon");
-        const armor = valueList("Armor (named once; offered for all classes)", s.armor, "+ Armor", "armor");
-        const model = { nameInput, prev: (s.name || "").trim(), weaponsList: weapons.list, armorList: armor.list };
-        nameInput.addEventListener("input", () => { refreshSetNames(); validateSets(); });
-        // On commit, propagate a rename to every schedule week that named the old set,
-        // so the Sets and Weekly schedule never drift apart.
-        nameInput.addEventListener("change", () => {
-          const oldName = model.prev;
-          const newName = nameInput.value.trim();
-          if (oldName && newName && oldName !== newName)
-            for (const row of scheduleBox.children) if (row._value() === oldName) row._input.value = newName;
-          model.prev = newName;
-          refreshSetNames();
-          validateSets();
-        });
-        setsWrap.append(
-          el("div", { className: "card" }, [
-            el("div", { className: "field" }, [el("label", { textContent: "Set name" }), nameInput]),
-            weapons.fs,
-            armor.fs,
-          ]),
-        );
-        setModels.push(model);
-      }
-
-      (act.schedule || []).forEach((v) => addWeek(v));
-      const schedAdd = el("button", { className: "tiny secondary", type: "button", textContent: "+ Week" });
-      schedAdd.addEventListener("click", () => { addWeek(); validateSets(); });
-      const scheduleFs = el("fieldset", { className: "zone" }, [
-        el("legend", { textContent: "Weekly schedule (set names, in order, looping)" }),
-        scheduleBox,
-        schedAdd,
-        dataList,
-      ]);
-
-      refreshSetNames();
+      const pool = buildSetPool({
+        sets: act.sets,
+        schedule: act.schedule,
+        includeArmor: true,
+        scheduleLegend: "Weekly schedule (set names, in order, looping)",
+      });
       box.append(
         el("div", { className: "card" }, [
           el("div", { className: "card-head" }, [el("strong", { className: "grow", textContent: act.title })]),
           el("p", { className: "muted", textContent: "Changes weekly" }),
-          scheduleFs,
+          pool.scheduleFs,
           el("h3", { textContent: "Sets" }),
-          setsWrap,
+          pool.setsWrap,
         ]),
       );
-      activityModels.push({ kind: "sets", key: act.key, title: act.title, cadence: act.cadence, scheduleBox, setModels });
-      setsValidators.push(validateSets);
+      activityModels.push({ kind: "sets", key: act.key, title: act.title, cadence: act.cadence, scheduleBox: pool.scheduleBox, setModels: pool.setModels });
+      setsValidators.push(pool.validateSets);
       continue;
     }
 
@@ -493,8 +523,6 @@ if (isWorldActivity) {
     );
     activityModels.push({ kind: "elements", key: act.key, title: act.title, cadence: act.cadence, elements: elementModels });
   }
-
-  const listValues = (list) => [...list.children].map((r) => r._value());
 
   collect = () => ({
     version: data.version || 1,
@@ -542,6 +570,37 @@ if (isWorldActivity) {
     } catch (e) {
       setStatus("Reset error: " + e, false);
     }
+  });
+}
+
+// ===== trials_loot form ================================================
+// A standalone, weapons-only set pool (no armor, no reference_date): the same set-pool UI
+// the Dares "Legendary Loot" activity uses, minus the world-activity envelope. The Trials
+// producer owns a skip-aware cursor over the schedule, so there's nothing to date-anchor.
+if (type === "trials_loot") {
+  const pool = buildSetPool({
+    sets: data.sets,
+    schedule: data.schedule,
+    includeArmor: false,
+    scheduleLegend: "Schedule (set names, in order, looping)",
+  });
+  $("trialsLootSets").append(
+    pool.scheduleFs,
+    el("h3", { textContent: "Sets" }),
+    pool.setsWrap,
+  );
+
+  // Gate Save on the set-pool consistency, and paint the initial highlight.
+  consistencyProblems = pool.validateSets;
+  pool.validateSets();
+
+  collect = () => ({
+    version: data.version || 1,
+    schedule: listValues(pool.scheduleBox),
+    sets: pool.setModels.map((s) => ({
+      name: s.nameInput.value.trim(),
+      weapons: listValues(s.weaponsList),
+    })),
   });
 }
 
@@ -612,3 +671,4 @@ $("saveBtn").addEventListener("click", async () => {
 // the other types' default tab lived in the removed markup, so activate it here.
 if (type === "xur_location") showTab("locations");
 if (isWorldActivity) showTab("activities");
+if (type === "trials_loot") showTab("trials_loot");

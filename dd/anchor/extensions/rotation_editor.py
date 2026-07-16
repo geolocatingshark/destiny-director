@@ -74,6 +74,10 @@ def _default_doc(post_type: str) -> dict[str, t.Any]:
         }
     if post_type == "xur_location":
         return {"version": 1, "locations": []}
+    if post_type == rotation_schema.TRIALS_LOOT_SLUG:
+        # Start populated with the baked default sets + a one-loop schedule (so the
+        # editor isn't blank), matching the producer's runtime fallback.
+        return rotation_schema.trials_loot_default_doc()
     if rotation_schema.is_world_activity(post_type):
         return rotation_schema.legacy_default_doc(post_type)
     return {}
@@ -188,6 +192,33 @@ def _render_legacy_preview_html(
 # --- per-type dispatch ------------------------------------------------------------
 
 
+def _build_trials_loot(data: dict[str, t.Any]) -> list[tuple[str, list[str]]]:
+    """Expand the loot doc into its looping ``(set_name, weapons)`` schedule.
+
+    The hard gate beyond the schema: every schedule entry must name a defined set
+    (otherwise the producer would silently drop that week). Returns the expanded
+    rotation, which the preview renders."""
+    sets = {
+        str(s["name"]): list(s.get("weapons") or []) for s in data.get("sets") or []
+    }
+    schedule = [str(n) for n in data.get("schedule") or []]
+    missing = sorted({n for n in schedule if n not in sets})
+    if missing:
+        raise ValueError("schedule references undefined set(s): " + ", ".join(missing))
+    return [(n, sets[n]) for n in schedule]
+
+
+def _render_trials_loot_preview_html(rotation: list[tuple[str, list[str]]]) -> str:
+    """The looping loot schedule, one week per row (the order the producer walks)."""
+    if not rotation:
+        return "<p><em>No schedule defined yet.</em></p>"
+    items: list[str] = []
+    for name, weapons in rotation:
+        listed = ", ".join(html.escape(w) for w in weapons if w) or "—"
+        items.append(f"<li><strong>{html.escape(name)}</strong> — {listed}</li>")
+    return "<ol>" + "".join(items) + "</ol>"
+
+
 def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
     """Construct the domain object for ``post_type`` (a hard gate beyond the schema).
 
@@ -197,6 +228,8 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
     """
     if post_type == "xur_location":
         return xur_support_data.XurLocations.from_json(data)
+    if post_type == rotation_schema.TRIALS_LOOT_SLUG:
+        return _build_trials_loot(data)
     if rotation_schema.is_world_activity(post_type):
         return legacy_activities.LegacyRotation.from_json(data)
     return sector_accounting.Rotation.from_json(data)
@@ -205,6 +238,8 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
 def _render_preview(post_type: str, obj: t.Any) -> str:
     if post_type == "xur_location":
         return _render_xur_location_preview_html(obj)
+    if post_type == rotation_schema.TRIALS_LOOT_SLUG:
+        return _render_trials_loot_preview_html(obj)
     if rotation_schema.is_world_activity(post_type):
         return _render_legacy_preview_html(obj)
     return _render_preview_html(obj)
