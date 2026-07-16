@@ -14,8 +14,8 @@
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
 # DB-backed: RotationData JSON store + the lost_sector load_rotation resolution order
-# (DB-first, gspread fallback, last-known-good cache). Uses the SQLite test DB from the
-# package conftest.
+# (DB row → last-known-good cache → raise). Uses the SQLite test DB from the package
+# conftest.
 
 import datetime as dt
 import typing as t
@@ -26,7 +26,6 @@ from dd.common import (
     lost_sector as ls_mod,
     schemas,
 )
-from dd.sector_accounting import sector_accounting
 
 pytestmark = pytest.mark.asyncio
 
@@ -72,22 +71,15 @@ async def test_rotation_data_get_set_roundtrip():
     assert got2["sectors"][0]["name"] == "Replaced"
 
 
-async def test_load_rotation_prefers_db_and_skips_gspread(
-    monkeypatch: pytest.MonkeyPatch,
-):
+async def test_load_rotation_reads_from_db():
     ls_mod._rotation_cache.clear()
     await schemas.RotationData.set_data("lost_sector", _doc("FromDB"))
-
-    def _no_gspread(*_args: t.Any, **_kwargs: t.Any) -> t.NoReturn:
-        raise AssertionError("gspread fallback must not run when the DB has data")
-
-    monkeypatch.setattr(sector_accounting.Rotation, "from_gspread_url", _no_gspread)
 
     rotation = await ls_mod.load_rotation()
     assert rotation(DAY0)[0].name == "FromDB"
 
 
-async def test_load_rotation_serves_last_known_good_on_total_failure(
+async def test_load_rotation_serves_last_known_good_on_db_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
     ls_mod._rotation_cache.clear()
@@ -95,15 +87,25 @@ async def test_load_rotation_serves_last_known_good_on_total_failure(
     await schemas.RotationData.set_data("lost_sector", _doc("Cached"))
     await ls_mod.load_rotation()
 
-    # Now the DB yields nothing and the gspread fallback fails: expect the cache.
-    async def _no_row(_name: str) -> None:
-        return None
+    # Now the DB read fails: expect the last-known-good cache.
+    async def _boom(_name: str) -> t.NoReturn:
+        raise RuntimeError("db unreachable")
 
-    def _boom(*_args: t.Any, **_kwargs: t.Any) -> t.NoReturn:
-        raise RuntimeError("sheet unreachable")
-
-    monkeypatch.setattr(schemas.RotationData, "get_data", _no_row)
-    monkeypatch.setattr(sector_accounting.Rotation, "from_gspread_url", _boom)
+    monkeypatch.setattr(schemas.RotationData, "get_data", _boom)
 
     rotation = await ls_mod.load_rotation()
     assert rotation(DAY0)[0].name == "Cached"
+
+
+async def test_load_rotation_raises_without_row_or_cache(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    ls_mod._rotation_cache.clear()
+
+    async def _no_row(_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(schemas.RotationData, "get_data", _no_row)
+
+    with pytest.raises(RuntimeError):
+        await ls_mod.load_rotation()

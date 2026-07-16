@@ -32,31 +32,9 @@ invalid-argument-type = "ignore"
 include = ["dd/sector_accounting/sector_accounting.py"]
 
 [overrides.rules]
-# attrs @attr.s classes: ty doesn't understand attr.ib()-generated __init__ params
-unknown-argument = "ignore"
-too-many-positional-arguments = "ignore"
-# gspread stubs: variable type changes after reassignment from Spreadsheet → list
-invalid-assignment = "ignore"
-# gspread stubs + attrs: various argument type mismatches
+# attrs: attr.ib()-generated __init__ params trip ty's argument-type check (e.g. the
+# _parse_counts converter accepts str|int but the field is typed int).
 invalid-argument-type = "ignore"
-# defaultdict(EntityRotation) + Sector.__add__ not understood through attrs
-no-matching-overload = "ignore"
-unsupported-operator = "ignore"
-# Minutes type alias used as default; ty can't resolve it as int-compatible
-invalid-parameter-default = "ignore"
-
-[[overrides]]
-include = ["dd/sector_accounting/xur.py"]
-
-[overrides.rules]
-# attrs @attr.s classes: ty doesn't understand attr.ib()-generated __init__ params
-unknown-argument = "ignore"
-too-many-positional-arguments = "ignore"
-invalid-argument-type = "ignore"
-# SpreadsheetBackedData subclasses override from_gspread with narrower signatures
-invalid-method-override = "ignore"
-# cls() on dict subclass not seen as callable by ty
-call-non-callable = "ignore"
 
 [[overrides]]
 include = ["dd/sector_accounting/utils.py"]

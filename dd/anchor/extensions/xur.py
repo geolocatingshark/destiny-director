@@ -15,7 +15,9 @@
 
 import asyncio as aio
 import datetime as dt
+import json
 import logging
+import pathlib
 import time
 import typing as t
 
@@ -89,29 +91,70 @@ def xur_location_fragment(
     return f"## **__Location__**\n:location: **{str(location)}**\n"
 
 
-# Last-known-good Xûr location map, served only if both the DB store and the gspread
-# fallback are unreachable so a transient outage never breaks the autopost. Mirrors
+# Committed seed document for the Xûr location map, shipped with the bot so a
+# freshly-deployed bot (or a wiped row) serves data with no manual seed step. Mirrors
+# ``dd/common/seed_data/world_activity`` (see ``dd.common.legacy_activities``).
+_XUR_SEED_PATH = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "common"
+    / "seed_data"
+    / "xur_location.json"
+)
+
+# Last-known-good Xûr location map, served only if the DB store is unreachable so a
+# transient DB blip never breaks the autopost. Mirrors
 # ``dd.common.lost_sector._rotation_cache``.
 _xur_locations_cache: dict[str, xur_support_data.XurLocations] = {}
 
 _XUR_LOCATION = "xur_location"
 
 
-async def load_xur_locations() -> xur_support_data.XurLocations:
-    """Load the Xûr location map, preferring the DB JSON store.
+def _load_seed_doc() -> dict | None:
+    """The committed Xûr-location seed document, or ``None`` if absent."""
+    try:
+        raw = _XUR_SEED_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    return json.loads(raw)
 
-    Resolution order mirrors :func:`dd.common.lost_sector.load_rotation`: the
-    ``RotationData['xur_location']`` document (built via
-    :meth:`XurLocations.from_json`) → the live gspread Sheet (kept as a fallback during
-    the cutover; blocking, so offloaded to a thread) → the last-known-good cache. The DB
-    is consulted every call so editor saves take effect immediately; the cache exists
-    only for the total-outage case.
+
+async def _autoseed() -> dict | None:
+    """Populate an absent ``xur_location`` row from the committed seed doc; return it.
+
+    Self-seeds on first use so a freshly-deployed bot (or a wiped row) serves data with
+    no manual seed step. Persisting is best-effort — the doc is returned for rendering
+    even if the write fails."""
+    doc = _load_seed_doc()
+    if doc is None:
+        return None
+    try:
+        await schemas.RotationData.set_data(_XUR_LOCATION, doc)
+        logger.info("Auto-seeded xur_location from committed seed data")
+    except Exception:
+        logger.exception("Failed to persist xur_location auto-seed (serving in-memory)")
+    return doc
+
+
+async def load_xur_locations() -> xur_support_data.XurLocations:
+    """Load the Xûr location map from the DB JSON store.
+
+    Resolution order mirrors :func:`dd.common.legacy_activities.load_rotation`: the
+    ``RotationData['xur_location']`` document (built via :meth:`XurLocations.from_json`)
+    → an auto-seed from the committed seed doc on a clean absent read → the last-known-
+    good cache. If even the seed is missing, degrades to an empty map — Xûr posts still
+    render (``XurLocations.__getitem__`` falls back to the raw API location name).
     """
+    db_ok = True
     try:
         doc = await schemas.RotationData.get_data(_XUR_LOCATION)
     except Exception:
         logger.exception("Failed to read xur_location data from the DB")
-        doc = None
+        doc, db_ok = None, False
+
+    # Only auto-seed on a *clean* absent read — a transient DB error must not overwrite
+    # a row that may exist, so it falls through to the cache instead.
+    if doc is None and db_ok:
+        doc = await _autoseed()
 
     if doc is not None:
         try:
@@ -119,28 +162,14 @@ async def load_xur_locations() -> xur_support_data.XurLocations:
             _xur_locations_cache[_XUR_LOCATION] = locations
             return locations
         except Exception:
-            logger.exception(
-                "Stored xur_location JSON is malformed; falling back to gspread"
-            )
+            logger.exception("Stored xur_location JSON is malformed")
 
-    try:
-        # from_gspread_url does blocking gspread network I/O; offload it so the
-        # event loop keeps servicing other coroutines during the post.
-        locations = await aio.to_thread(
-            xur_support_data.XurLocations.from_gspread_url,
-            cfg.sheets_ls_url,
-            cfg.gsheets_credentials,
-        )
-        _xur_locations_cache[_XUR_LOCATION] = locations
-        return locations
-    except Exception:
-        cached = _xur_locations_cache.get(_XUR_LOCATION)
-        if cached is not None:
-            logger.exception(
-                "Failed to load xur_location data; serving last-known-good cache"
-            )
-            return cached
-        raise
+    cached = _xur_locations_cache.get(_XUR_LOCATION)
+    if cached is not None:
+        return cached
+
+    # No row, no seed, empty cache: an empty map still renders (raw API location names).
+    return xur_support_data.XurLocations.from_json({})
 
 
 def armor_stat_line_format(
@@ -425,11 +454,7 @@ async def format_xur_vendor(
     vendor: api.DestinyVendor,
     bot: CachedFetchBot,
 ) -> HMessage:
-    # DB JSON store first, gspread as fallback (see load_xur_locations).
     xur_locations = await load_xur_locations()
-    # xur_armor_sets = xur_support_data.XurArmorSets.from_gspread_url(
-    #     cfg.sheets_ls_url, cfg.gsheets_credentials
-    # )
 
     emoji_dict = await fetch_emoji_dict(bot)
 

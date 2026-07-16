@@ -226,10 +226,3 @@ async def test_xur_save_rejects_invalid_document_without_writing():
         _req(body={"type": "xur_location", "data": bad})
     )
     assert resp.status == 400
-
-
-async def test_xur_location_parity_matches_after_round_trip():
-    from dd.sector_accounting.xur import XurLocations
-
-    locs = XurLocations.from_json(_xur_doc())
-    assert editor._xur_location_parity(locs, locs.to_json())

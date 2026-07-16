@@ -21,8 +21,6 @@ the owner edits the document with a friendly form, previews the rendered post, a
 — the server re-validates against the JSON schema on save. Authentication for every
 page, preview and save is handled centrally by the Discord-OAuth middleware in
 ``web_auth.py`` (this module carries no auth code of its own).
-``/rotation import_from_sheet`` does the one-shot gspread → DB import with a
-rendered-parity check, for the cutover.
 """
 
 import asyncio
@@ -58,9 +56,8 @@ _EDITOR_HTML_PATH = (
 _HOME_HTML_PATH = (
     Path(__file__).resolve().parent.parent / "web_static" / "rotation_home.html"
 )
-# Days of rendered output the preview / parity check spans (covers a daily reset).
+# Days of rendered output the preview spans (covers a daily reset).
 _PREVIEW_DAYS = 4
-_PARITY_DAYS = 18
 
 
 # --- document helpers -------------------------------------------------------------
@@ -465,175 +462,6 @@ class Edit(
             ),
             ephemeral=True,
         )
-
-
-@rotation.register
-class ImportFromSheet(
-    lb.SlashCommand,
-    name="import_from_sheet",
-    description="One-shot import of the live Google Sheet into the DB JSON store",
-):
-    type = lb.string(
-        "type",
-        "Which rotation post to import (lost_sector or xur_location are sheet-backed)",
-        default="lost_sector",
-    )
-
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context) -> None:
-        post_type = str(self.type).strip()
-        if post_type == "xur_location":
-            await _import_xur_location_from_sheet(ctx)
-            return
-        if post_type != "lost_sector":
-            await respond_cv2(
-                ctx,
-                cv2_error(
-                    "Nothing to import",
-                    f"`{post_type}` is not backed by a Google Sheet.",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        initial = await ctx.respond(
-            components=[cv2_notice("Importing from the live Sheet…")],
-            flags=h.MessageFlag.IS_COMPONENTS_V2,
-            ephemeral=True,
-        )
-
-        try:
-            sheet_rotation = await asyncio.to_thread(
-                sector_accounting.Rotation.from_gspread_url,
-                cfg.sheets_ls_url,
-                cfg.gsheets_credentials,
-                buffer=5,
-            )
-        except Exception:
-            logger.exception("Sheet import failed")
-            await ctx.edit_response(
-                initial,
-                components=[
-                    cv2_error("Import failed", "Couldn't read the Sheet — see logs.")
-                ],
-            )
-            return
-
-        doc = sheet_rotation.to_json()
-        parity_ok, mismatch = _rendered_parity(sheet_rotation, doc)
-        await schemas.RotationData.set_data(post_type, doc)
-
-        note = (
-            "rendered parity check passed ✅"
-            if parity_ok
-            else f"⚠️ parity mismatch on {mismatch} — review before relying on it"
-        )
-        await ctx.edit_response(
-            initial,
-            components=[
-                cv2_notice(
-                    f"Imported **{post_type}** into the DB store "
-                    f"({len(doc['sectors'])} sectors); {note}."
-                )
-            ],
-        )
-
-
-def _rendered_parity(
-    sheet_rotation: sector_accounting.Rotation, doc: dict[str, t.Any]
-) -> tuple[bool, str | None]:
-    """Compare rendered output of the Sheet reader vs. the imported JSON over a window.
-
-    Compares the presence-level rendered fields (names/links/champions/shields),
-    not raw attrs equality, since counts intentionally collapse to a present/absent
-    sentinel on import.
-    """
-    json_rotation = sector_accounting.Rotation.from_json(doc, buffer=5)
-    base = dt.datetime.now(dt.UTC)
-
-    def render(rotation: sector_accounting.Rotation, date: dt.datetime) -> t.Any:
-        try:
-            sectors = rotation(date)
-        except KeyError:
-            return "TBC"
-        return [
-            (
-                s.name,
-                s.shortlink_gfx,
-                s.expert_data.champions_list,
-                s.expert_data.shields_list,
-                s.master_data.champions_list,
-                s.master_data.shields_list,
-            )
-            for s in sectors
-        ]
-
-    for offset in range(_PARITY_DAYS):
-        date = base + dt.timedelta(days=offset)
-        if render(sheet_rotation, date) != render(json_rotation, date):
-            return False, date.date().isoformat()
-    return True, None
-
-
-async def _import_xur_location_from_sheet(ctx: lb.Context) -> None:
-    """One-shot import of the Xûr location worksheet into ``RotationData``."""
-    initial = await ctx.respond(
-        components=[cv2_notice("Importing Xûr locations from the live Sheet…")],
-        flags=h.MessageFlag.IS_COMPONENTS_V2,
-        ephemeral=True,
-    )
-
-    try:
-        sheet_locations = await asyncio.to_thread(
-            xur_support_data.XurLocations.from_gspread_url,
-            cfg.sheets_ls_url,
-            cfg.gsheets_credentials,
-        )
-    except Exception:
-        logger.exception("Xûr location sheet import failed")
-        await ctx.edit_response(
-            initial,
-            components=[
-                cv2_error("Import failed", "Couldn't read the Sheet — see logs.")
-            ],
-        )
-        return
-
-    doc = sheet_locations.to_json()
-    parity_ok = _xur_location_parity(sheet_locations, doc)
-    await schemas.RotationData.set_data("xur_location", doc)
-
-    note = (
-        "resolved-parity check passed ✅"
-        if parity_ok
-        else "⚠️ parity mismatch — review before relying on it"
-    )
-    await ctx.edit_response(
-        initial,
-        components=[
-            cv2_notice(
-                f"Imported **xur_location** into the DB store "
-                f"({len(doc['locations'])} locations); {note}."
-            )
-        ],
-    )
-
-
-def _xur_location_parity(
-    sheet_locations: xur_support_data.XurLocations, doc: dict[str, t.Any]
-) -> bool:
-    """Round-trip the imported doc and compare the *resolved* rendering per key.
-
-    Compares ``str(location)`` (friendly name + link, exactly what the post renders)
-    rather than raw attrs, so the blank-string → ``None`` normalisation on import
-    doesn't read as a mismatch.
-    """
-    json_locations = xur_support_data.XurLocations.from_json(doc)
-    if set(sheet_locations.keys()) != set(json_locations.keys()):
-        return False
-    return all(
-        str(sheet_locations[key]) == str(json_locations[key]) for key in sheet_locations
-    )
 
 
 loader.command(rotation)
