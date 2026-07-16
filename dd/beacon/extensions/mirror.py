@@ -44,6 +44,7 @@ from ...common import cfg
 from ...common.auth import owner_only
 from ...common.bot import CachedFetchBot
 from ...common.components import build_container
+from ...common.emoji_store import AppEmojiStore
 from ...common.schemas import MirrorDelivery, MirroredChannel, ServerStatistics
 from ...common.utils import (
     ErrorClass,
@@ -716,12 +717,14 @@ async def reachability_sweep(bot: CachedFetchBot = lb.di.INJECTED):
 
 @loader.listener(h.StartedEvent)
 async def _start_mirror_worker(
-    _event: h.StartedEvent, client: lb.Client = lb.di.INJECTED
+    _event: h.StartedEvent,
+    client: lb.Client = lb.di.INJECTED,
+    store: AppEmojiStore = lb.di.INJECTED,
 ) -> None:
     global _client
     _client = client
     bot = t.cast(CachedFetchBot, _event.app)
-    await mirror_worker.start(bot)
+    await mirror_worker.start(bot, store)
     # Post a recovery card for any source with leftover work, so a post-restart backlog
     # is visible — as a background task so a slow card send can't stall startup. Keep a
     # strong reference (asyncio only holds a weak one; see ``_cards``) so the coroutine

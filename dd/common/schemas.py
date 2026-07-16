@@ -2363,7 +2363,10 @@ class AppEmojiCache(Base):
     icon_url = Column("icon_url", VARCHAR(256), nullable=False, default="")
     last_used = Column("last_used", DateTime, nullable=False)
 
-    __table_args__ = (Index("ix_app_emoji_lru", "app_id", "last_used"),)
+    __table_args__ = (
+        Index("ix_app_emoji_lru", "app_id", "last_used"),
+        Index("ix_app_emoji_emoji_id", "emoji_id"),
+    )
 
     @classmethod
     @ensure_session(db_session)
@@ -2374,6 +2377,21 @@ class AppEmojiCache(Base):
         return list(
             (await session.execute(select(cls).where(cls.app_id == app_id))).scalars()
         )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def get_by_emoji_id(
+        cls, emoji_id: int, session: AsyncSession = _UNSET
+    ) -> Self | None:
+        """The row for a rendered emoji id, across every app's store (or ``None``).
+
+        Emoji ids are Discord snowflakes (globally unique), so at most one row matches
+        even though both bots write this table. Used by the beacon mirror to tell an
+        anchor *item* emoji (rewrite to our own) from any other emoji (leave alone).
+        """
+        return (
+            await session.execute(select(cls).where(cls.emoji_id == emoji_id))
+        ).scalar_one_or_none()
 
     @classmethod
     @ensure_session(db_session)

@@ -25,7 +25,12 @@ import pytest
 from sqlalchemy import delete
 
 from dd.common import schemas
-from dd.common.emoji_store import AppEmojiStore
+from dd.common.emoji_store import (
+    AppEmojiStore,
+    rewrite_item_emoji,
+    rewrite_item_emoji_in_message,
+)
+from dd.hmessage import HMessage
 
 pytestmark = pytest.mark.asyncio
 
@@ -69,8 +74,12 @@ class _FakeRest:
         return list(self._emojis.values())
 
     async def create_application_emoji(
-        self, _app: int, name: str, _image: t.Any
+        self, _app: int, name: str, image: t.Any
     ) -> _FakeEmoji:
+        # Simulate real Discord: an empty image URL (e.g. an adopted emoji with no known
+        # icon_url) can't be uploaded and raises.
+        if not getattr(image, "url", None):
+            raise ValueError("empty image url")
         self._next += 1
         emoji = _FakeEmoji(self._next, name)
         self._emojis[self._next] = emoji
@@ -184,3 +193,95 @@ async def test_store_start_adopts_live_and_drops_dead_rows() -> None:
     names = {r.name for r in await schemas.AppEmojiCache.all_for_app(APP)}
     assert "preexisting" in names  # adopted
     assert "ghost" not in names  # dropped
+
+
+# --- get_by_emoji_id ---------------------------------------------------------------
+
+ANCHOR_APP = 9999  # a different bot's application store, sharing the same table
+
+
+async def test_get_by_emoji_id_crosses_apps() -> None:
+    await schemas.AppEmojiCache.upsert(APP, "mine", 111, "u")
+    await schemas.AppEmojiCache.upsert(ANCHOR_APP, "theirs", 222, "http://i/t.png")
+    row = await schemas.AppEmojiCache.get_by_emoji_id(222)
+    assert row is not None
+    assert row.app_id == ANCHOR_APP and row.name == "theirs"
+    assert await schemas.AppEmojiCache.get_by_emoji_id(999999) is None
+
+
+# --- rewrite_item_emoji ------------------------------------------------------------
+
+
+async def _beacon_store() -> tuple[AppEmojiStore, _FakeRest]:
+    store, rest = _store()
+    await store.start()  # sets store.app_id == APP
+    return store, rest
+
+
+async def test_rewrite_foreign_item_emoji_is_rewritten() -> None:
+    store, rest = await _beacon_store()
+    await schemas.AppEmojiCache.upsert(ANCHOR_APP, "chroma_rush", 555, "http://i/c.png")
+    out = await rewrite_item_emoji(store, "loot <:chroma_rush:555> drop")
+    assert rest.created == ["chroma_rush"]  # uploaded to beacon's own store
+    new_id = max(rest._emojis)  # the freshly-uploaded beacon emoji id (!= 555)
+    assert out == f"loot <:chroma_rush:{new_id}> drop"
+
+
+async def test_rewrite_own_emoji_left_untouched() -> None:
+    store, rest = await _beacon_store()
+    await schemas.AppEmojiCache.upsert(APP, "mine", 777, "http://i/m.png")
+    text = "x <:mine:777> y"
+    assert await rewrite_item_emoji(store, text) == text
+    assert rest.created == []  # already ours → no upload
+
+
+async def test_rewrite_unknown_emoji_left() -> None:
+    store, _ = await _beacon_store()
+    text = "guild <:some_guild_emoji:424242> here"  # no cache row for this id
+    assert await rewrite_item_emoji(store, text) == text
+
+
+async def test_rewrite_bare_token_left() -> None:
+    store, _ = await _beacon_store()
+    text = "a :hand_cannon: token"  # no id → not a rendered mention
+    assert await rewrite_item_emoji(store, text) == text
+
+
+async def test_rewrite_animated_form() -> None:
+    store, rest = await _beacon_store()
+    await schemas.AppEmojiCache.upsert(ANCHOR_APP, "spin", 888, "http://i/s.png")
+    out = await rewrite_item_emoji(store, "<a:spin:888>")
+    new_id = max(rest._emojis)
+    assert out == f"<:spin:{new_id}>"  # replaced with beacon's own mention
+
+
+async def test_rewrite_upload_failure_leaves_mention() -> None:
+    store, _ = await _beacon_store()
+    # Foreign item emoji whose icon can't be uploaded (empty url → fake raises).
+    await schemas.AppEmojiCache.upsert(ANCHOR_APP, "broken", 999, "")
+    text = "keep <:broken:999> verbatim"
+    assert await rewrite_item_emoji(store, text) == text
+
+
+async def test_rewrite_item_emoji_in_message_all_surfaces() -> None:
+    store, rest = await _beacon_store()
+    await schemas.AppEmojiCache.upsert(ANCHOR_APP, "gjallarhorn", 555, "http://i/g.png")
+
+    container = h.impl.ContainerComponentBuilder()
+    container.add_text_display("cv2 <:gjallarhorn:555>")
+    hmsg = HMessage(
+        content="content <:gjallarhorn:555>",
+        embeds=[h.Embed(description="embed <:gjallarhorn:555>")],
+        components=[container],
+    )
+
+    await rewrite_item_emoji_in_message(store, hmsg)
+
+    new_id = max(rest._emojis)  # beacon's freshly-uploaded id
+    mention = f"<:gjallarhorn:{new_id}>"
+    assert mention in hmsg.content
+    desc = hmsg.embeds[0].description
+    assert desc is not None and mention in desc
+    text_display = t.cast(t.Any, hmsg.components[0]).components[0]
+    assert mention in text_display.content
+    assert rest.created == ["gjallarhorn"]  # one upload despite three surfaces

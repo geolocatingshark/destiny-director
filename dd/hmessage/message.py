@@ -174,6 +174,31 @@ class HMessage:
             "attachments": self.attachments,
         }
 
+    def map_text(self, fn: t.Callable[[str], str]) -> HMessage:
+        """Apply ``fn`` to every text surface, mutating in place; return ``self``.
+
+        Surfaces are ``content``, every text field of each embed (title, description,
+        each field name/value, author name, footer text), and every Components V2 text
+        display (recursing containers and sections). Emoji-agnostic: the transform is
+        injected — see :func:`dd.common.utils.substitute_guild_emoji` (guild emoji) and
+        :func:`dd.common.emoji_store.rewrite_item_emoji_in_message` (item emoji)."""
+        for surface in _text_surfaces(self):
+            new = fn(surface.value)
+            if new != surface.value:
+                surface.set(new)
+        return self
+
+    async def map_text_async(
+        self, fn: t.Callable[[str], t.Awaitable[str]]
+    ) -> HMessage:
+        """Async variant of :meth:`map_text` — for transforms that ``await`` (e.g. an
+        emoji upload). Applies ``fn`` to each surface in place; returns ``self``."""
+        for surface in _text_surfaces(self):
+            new = await fn(surface.value)
+            if new != surface.value:
+                surface.set(new)
+        return self
+
     def __add__(self, other):
         if not isinstance(other, self.__class__):
             raise TypeError(f"Cannot add HMessage to {other.__class__.__name__}")
@@ -312,3 +337,95 @@ class HMessage:
         self.attachments = attachments_remaining_list
 
         return self
+
+
+# ---------------------------------------------------------------------------
+# Text-surface walk (backs HMessage.map_text / map_text_async)
+# ---------------------------------------------------------------------------
+
+
+class _Surface(t.NamedTuple):
+    """One rewritable text field: its current ``value`` and a setter to replace it."""
+
+    value: str
+    set: t.Callable[[str], None]
+
+
+def _child_components(comp: t.Any) -> list[t.Any] | None:
+    """The live child-component list of a CV2 container/section, else ``None``.
+
+    hikari builders expose ``.components`` as a *copy*, so an in-place nested rewrite
+    must reach the live backing list (``_components``). A deliberate dependency on
+    hikari's builder internals — pinned by the canary in the hmessage tests."""
+    if isinstance(
+        comp, h.impl.ContainerComponentBuilder | h.impl.SectionComponentBuilder
+    ):
+        return getattr(comp, "_components", None)
+    return None
+
+
+def _component_text_surfaces(components: list[t.Any]) -> list[_Surface]:
+    """Text surfaces for every CV2 text display, recursing containers and sections.
+
+    Text-display content is immutable, so its setter replaces the builder at its (fixed)
+    index in the live parent list, preserving the ``id``."""
+    surfaces: list[_Surface] = []
+    for index, comp in enumerate(components):
+        if isinstance(comp, h.impl.TextDisplayComponentBuilder):
+
+            def _set(new: str, lst=components, i=index, id_=comp.id) -> None:
+                lst[i] = h.impl.TextDisplayComponentBuilder(content=new, id=id_)
+
+            surfaces.append(_Surface(comp.content, _set))
+        else:
+            children = _child_components(comp)
+            if children is not None:
+                surfaces.extend(_component_text_surfaces(children))
+    return surfaces
+
+
+def _embed_text_surfaces(embed: h.Embed) -> list[_Surface]:
+    """Text surfaces for one embed: description, title, each field name/value, author
+    name and footer text (author/footer re-set to preserve their icons/urls)."""
+    surfaces: list[_Surface] = []
+    if embed.description:
+        surfaces.append(
+            _Surface(embed.description, lambda v, e=embed: setattr(e, "description", v))
+        )
+    if embed.title:
+        surfaces.append(
+            _Surface(embed.title, lambda v, e=embed: setattr(e, "title", v))
+        )
+    for field in embed.fields:
+        surfaces.append(_Surface(field.name, lambda v, f=field: setattr(f, "name", v)))
+        surfaces.append(
+            _Surface(field.value, lambda v, f=field: setattr(f, "value", v))
+        )
+    author = embed.author
+    if author and author.name:
+        icon = author.icon
+
+        def _set_author(new: str, e=embed, url=author.url, icon=icon) -> None:
+            e.set_author(name=new, url=url, icon=icon.url if icon else None)
+
+        surfaces.append(_Surface(author.name, _set_author))
+    footer = embed.footer
+    if footer and footer.text:
+        f_icon = footer.icon
+
+        def _set_footer(new: str, e=embed, icon=f_icon) -> None:
+            e.set_footer(text=new, icon=icon.url if icon else None)
+
+        surfaces.append(_Surface(footer.text, _set_footer))
+    return surfaces
+
+
+def _text_surfaces(msg: HMessage) -> list[_Surface]:
+    """Every rewritable text surface of ``msg`` — content, embeds, CV2 text displays."""
+    surfaces: list[_Surface] = []
+    if msg.content:
+        surfaces.append(_Surface(msg.content, lambda v: setattr(msg, "content", v)))
+    for embed in msg.embeds:
+        surfaces.extend(_embed_text_surfaces(embed))
+    surfaces.extend(_component_text_surfaces(msg.components))
+    return surfaces

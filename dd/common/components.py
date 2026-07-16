@@ -50,6 +50,9 @@ from lightbulb import components as lbc
 
 from . import cfg
 
+if t.TYPE_CHECKING:
+    from dd.hmessage.message import HMessage
+
 # Unicode reverse (◀) / play (▶) triangles used as the prev/next button emoji.
 # Defined as module-level constants so they are not constructed in function-argument
 # defaults (ruff B008).
@@ -262,6 +265,27 @@ async def warn_cv2_post_over_limit(
         f"{post_name} CV2 post is {length} UTF-16 units, over Discord's "
         f"{CV2_TEXT_LIMIT} cap — Discord will reject it",
     )
+
+
+async def guard_cv2_hmessage(
+    hmsg: "HMessage", *, post_name: str, budget: int = CV2_TEXT_BUDGET
+) -> "HMessage":
+    """Fit a built ``HMessage``'s CV2 text to ``budget`` in place; alert on overflow.
+
+    The single CV2 length guard for an assembled message: when its components exceed
+    ``budget`` it raises a CRITICAL owner alert and naively trims the text front-to-back
+    via :func:`fit_cv2_components` (a body-heavy post may lose its footer — the alert
+    surfaces that). Under budget it is untouched. Call *after* emoji substitution, so
+    the measured length is the final rendered length."""
+    length = cv2_text_length(hmsg.components)
+    if length > budget:
+        await _alert_cv2_overflow(
+            post_name,
+            f"{post_name} CV2 post is {length} UTF-16 units (over the {budget} "
+            "budget) — truncated, content lost",
+        )
+        hmsg.components = fit_cv2_components(hmsg.components, budget=budget)
+    return hmsg
 
 
 # ---------------------------------------------------------------------------

@@ -77,8 +77,16 @@ def _crosspost_pick(dest_ch_id, *, dest_msg_id=999, attempts=0):
 
 
 def _fake_msg():
+    # Carries the fields HMessage.from_message reads (content/embeds/attachments/
+    # components/flags/id); flags=NONE so it is treated as a plain (non-CV2) message.
     return SimpleNamespace(
-        content="hello", embeds=[], id=1, channel_id=5, flags=h.MessageFlag.NONE
+        content="hello",
+        embeds=[],
+        attachments=[],
+        components=[],
+        id=1,
+        channel_id=5,
+        flags=h.MessageFlag.NONE,
     )
 
 

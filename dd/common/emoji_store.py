@@ -19,11 +19,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import typing as t
 import unicodedata
+from functools import partial
 
 import hikari as h
 
 from dd.common import schemas
+from dd.common.utils import re_user_side_emoji
+from dd.hmessage.message import HMessage
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,11 @@ class AppEmojiStore:
         self._lock = asyncio.Lock()
         self._bg: set[asyncio.Task[None]] = set()
         _ = bot.listen(h.StartedEvent)(self._on_start)
+
+    @property
+    def app_id(self) -> int | None:
+        """This store's application id, or ``None`` until warmed (see :meth:`start`)."""
+        return self._app_id
 
     # -- lifecycle -----------------------------------------------------------------
 
@@ -201,3 +210,55 @@ class AppEmojiStore:
             await schemas.AppEmojiCache.touch(app_id, [name])
         except Exception:
             logger.exception("AppEmojiStore: failed to bump last_used for %r", name)
+
+
+async def rewrite_item_emoji(store: AppEmojiStore, text: str) -> str:
+    """Rewrite another bot's Destiny item-emoji mentions in ``text`` to ``store``'s own.
+
+    Only *Destiny item* emoji are touched — a rendered mention ``<a?:name:id>`` is one
+    iff its ``id`` has a row in :class:`~dd.common.schemas.AppEmojiCache` (that table
+    holds item icons exclusively). Guild/type emoji, unicode, bare ``:name:`` tokens,
+    and emoji already owned by this store are left verbatim. Each distinct foreign id is
+    resolved once (uploading to ``store`` on a miss), then substituted in one pass.
+    """
+    if not text:
+        return text
+
+    # group(4) == "<digits>>" and is present only for a *rendered* mention.
+    ids: set[int] = {
+        int(m.group(4)[:-1]) for m in re_user_side_emoji.finditer(text) if m.group(4)
+    }
+    if not ids:
+        return text
+
+    own = store.app_id
+    repl: dict[int, str] = {}
+    for emoji_id in ids:
+        row = await schemas.AppEmojiCache.get_by_emoji_id(emoji_id)
+        if row is None or (own is not None and row.app_id == own):
+            continue  # not an item emoji, or already ours → leave verbatim
+        emoji = await store.get(row.name, row.icon_url)
+        if emoji is not None:
+            repl[emoji_id] = str(emoji)
+
+    if not repl:
+        return text
+
+    def _sub(m: t.Any) -> str:
+        g4 = m.group(4)
+        if g4 and (new := repl.get(int(g4[:-1]))):
+            return str(new)
+        return str(m.group(0))
+
+    return re_user_side_emoji.sub(_sub, text)
+
+
+async def rewrite_item_emoji_in_message(
+    store: AppEmojiStore, hmsg: HMessage
+) -> HMessage:
+    """Rewrite another bot's item-emoji mentions across every text surface of ``hmsg``.
+
+    A thin adapter over :meth:`HMessage.map_text_async` — the rewrite runs on content,
+    embed fields, and CV2 text displays in one pass. See :func:`rewrite_item_emoji`.
+    """
+    return await hmsg.map_text_async(partial(rewrite_item_emoji, store))

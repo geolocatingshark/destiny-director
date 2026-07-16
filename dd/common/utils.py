@@ -11,6 +11,9 @@ import regex as re
 
 from . import cfg
 
+if t.TYPE_CHECKING:
+    from dd.hmessage.message import HMessage
+
 re_user_side_emoji = re.compile(r"(<a?)?:(\w+)(~\d)*:(\d+>)?")
 
 # Collapse digit runs (snowflakes, references, counts) so otherwise-identical
@@ -234,6 +237,17 @@ def construct_emoji_substituter(
         )
 
     return func
+
+
+def substitute_guild_emoji(
+    hmsg: "HMessage", emoji_dict: dict[str, h.Emoji]
+) -> "HMessage":
+    """Resolve ``:name:`` tokens to guild-emoji mentions across ``hmsg``'s surfaces.
+
+    A thin adapter over :meth:`HMessage.map_text` with ``emoji_dict``; already-qualified
+    ``<:name:id>`` mentions are left as-is (see :func:`construct_emoji_substituter`)."""
+    substituter = construct_emoji_substituter(emoji_dict)
+    return hmsg.map_text(lambda text: str(re_user_side_emoji.sub(substituter, text)))
 
 
 class space:
