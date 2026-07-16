@@ -38,6 +38,7 @@ import asyncio
 import dataclasses
 import datetime as dt
 import logging
+import re
 import typing as t
 from pathlib import Path
 
@@ -49,7 +50,7 @@ import lightbulb as lb
 
 from dd.hmessage import HMessage
 
-from ...common import cfg, schemas
+from ...common import cfg, rotation_schema, schemas
 from ...common.bot import CachedFetchBot
 from ...common.components import cv2_error, cv2_notice, respond_cv2
 from .. import hybrid_post_core, web
@@ -76,6 +77,8 @@ loader = lb.Loader()
 DRAFT_SLUG = "trials_draft"
 CONFIG_SLUG = "trials_config"
 META_SLUG = "trials_meta"
+#: The editor-managed loot pool + schedule (a rotation-editor type, Dares-style sets).
+LOOT_SLUG = rotation_schema.TRIALS_LOOT_SLUG
 
 #: The post's fixed title (a masked link with an italic "of"), verbatim from the
 #: hand-authored posts.
@@ -91,38 +94,13 @@ TRIALS_FOOTER_LINE = "### Good luck in your games!  :gscheer:"
 # The Trials bonus-focus-pool rotation: a fixed loop of curated weapon sets. Trials
 # cycles through these one per *active* weekend (Iron Banner "No Trials" weeks are
 # skipped, which falls out naturally because the cursor only advances when a post is
-# committed). Baked from the "Trials Bonus Pools" tab of the rotation spreadsheet as a
-# one-off seed — the bot never reads the sheet at runtime. Stored in (and editable via)
-# the ``trials_config`` DB row; this constant only seeds it when that row has none.
-DEFAULT_LOOT_SETS: tuple[tuple[str, ...], ...] = (
-    (
-        "The Scholar",
-        "Exile's Curse",
-        "Sola's Scar",
-        "Forgiveness",
-        "Aisha's Embrace",
-        "Corundum Hammer",
-        "Astral Horizon",
-    ),
-    (
-        "Aisha's Care",
-        "Keen Thistle",
-        "Willful Hamartia",
-        "The Immortal",
-        "Burden of Guilt",
-        "Unwavering Duty",
-        "Cataphract GL3",
-    ),
-    (
-        "Exalted Truth",
-        "Eye of Sol",
-        "Tomorrow's Answer",
-        "Everburning Glitz",
-        "Auric Disabler",
-        "Aureus Neutralizer",
-        "The Martlet",
-    ),
-)
+# committed). The loop is now edited through the rotation editor (the ``trials_loot``
+# type — a Dares-style set pool + looping schedule) and stored in its own RotationData
+# row; this baked constant is the single source of truth for the editor's starting
+# document AND this producer's fallback when that row is absent (re-exported from the
+# schema layer so the two can't drift). Seeded from the "Trials Bonus Pools" tab of the
+# rotation spreadsheet as a one-off — the bot never reads the sheet at runtime.
+DEFAULT_LOOT_SETS = rotation_schema.TRIALS_DEFAULT_LOOT_SETS
 
 
 # ---------------------------------------------------------------------------
@@ -175,41 +153,21 @@ def _default_loot_sets() -> list[list[str]]:
 class TrialsConfig:
     """Carried-over data so each Friday's fresh draft starts pre-filled, not blank.
 
-    Also holds the bonus-focus-pool rotation state: ``loot_sets`` is the fixed loop of
-    weapon sets (seeded from :data:`DEFAULT_LOOT_SETS`, then DB-authoritative) and
-    ``last_loot_set_index`` is the memory of the last set used, so the next draft
-    defaults to the following set. ``-1`` = "none used yet" — the first draft is set 0.
+    Also holds the bonus-focus-pool rotation *cursor*: ``last_loot_set_index`` is the
+    memory of the last set used, so the next draft defaults to the following set in the
+    loop. ``-1`` = "none used yet" — the first draft is set 0. The loop itself (the pool
+    of sets + the schedule) lives in the editor-managed ``trials_loot`` RotationData
+    row, not here — see :func:`load_loot_rotation`.
     """
 
     default_image_url: str | None = None
     last_featured_maps: list[str] = dataclasses.field(default_factory=list)
-    loot_sets: list[list[str]] = dataclasses.field(default_factory=_default_loot_sets)
     last_loot_set_index: int = -1
-
-    def next_loot_set(self) -> list[str]:
-        """The weapon-name list for the set the next draft should default to."""
-        if not self.loot_sets:
-            return []
-        return self.loot_sets[(self.last_loot_set_index + 1) % len(self.loot_sets)]
-
-    def match_loot_set(self, names: t.Iterable[str]) -> int | None:
-        """Index of the set whose names equal ``names`` (order-insensitive), else None.
-
-        A committed post's focus pool is matched here to decide which set was "used".
-        """
-        wanted = {n.strip().lower() for n in names if n and n.strip()}
-        if not wanted:
-            return None
-        for i, s in enumerate(self.loot_sets):
-            if {n.strip().lower() for n in s} == wanted:
-                return i
-        return None
 
     def to_dict(self) -> dict[str, t.Any]:
         return {
             "default_image_url": self.default_image_url,
             "last_featured_maps": list(self.last_featured_maps),
-            "loot_sets": [list(s) for s in self.loot_sets],
             "last_loot_set_index": self.last_loot_set_index,
         }
 
@@ -217,21 +175,76 @@ class TrialsConfig:
     def from_dict(cls, d: t.Mapping[str, t.Any] | None) -> "TrialsConfig":
         if not d:
             return cls()
-        # Seed loot_sets from the baked default (via the field factory) when the stored
-        # row has none — first run or a pre-rotation doc — so the rotation works before
-        # anyone edits the DB.
-        raw_sets = d.get("loot_sets")
-        loot_sets = (
-            [[str(n) for n in s] for s in raw_sets]
-            if raw_sets
-            else _default_loot_sets()
-        )
         return cls(
             default_image_url=d.get("default_image_url"),
             last_featured_maps=[str(m) for m in d.get("last_featured_maps") or []],
-            loot_sets=loot_sets,
             last_loot_set_index=int(d.get("last_loot_set_index", -1)),
         )
+
+
+# ---------------------------------------------------------------------------
+# Loot rotation (editor-managed pool + schedule; producer-owned cursor)
+# ---------------------------------------------------------------------------
+
+
+def _strip_weapon_type(value: str) -> str:
+    """Drop a trailing ``" (Type)"`` the rotation editor's item autocomplete appends.
+
+    The editor's set UI stores weapon values as ``"The Immortal (Submachine Gun)"``
+    (type disambiguation), but :func:`resolve_weapon` matches a bare manifest name or a
+    numeric hash. Stripping the suffix lets doc-sourced names resolve to manifest-linked
+    WeaponRefs; a bare name (e.g. the baked default) passes through unchanged.
+    """
+    return re.sub(r"\s*\([^()]*\)\s*$", "", value).strip()
+
+
+def _expand_loot_rotation(doc: t.Mapping[str, t.Any] | None) -> list[list[str]]:
+    """Expand a ``trials_loot`` doc into the looping list of weapon-name lists.
+
+    ``{sets: [{name, weapons}], schedule: [name, …]}`` → the ordered, looping list of
+    weapon-name lists the cursor walks (a schedule entry naming no set is dropped — the
+    editor's save gate blocks that, but be defensive). Falls back to the baked default
+    loop when the doc is absent/empty, so the rotation works before anyone edits it.
+    """
+    if doc:
+        by_name = {
+            str(s.get("name", "")): [
+                _strip_weapon_type(str(w)) for w in s.get("weapons") or []
+            ]
+            for s in doc.get("sets") or []
+        }
+        rotation = [by_name[n] for n in doc.get("schedule") or [] if n in by_name]
+        if rotation:
+            return rotation
+    return _default_loot_sets()
+
+
+async def load_loot_rotation() -> list[list[str]]:
+    """The current loot loop, sourced from the editor-managed ``trials_loot`` doc."""
+    return _expand_loot_rotation(await schemas.RotationData.get_data(LOOT_SLUG))
+
+
+def _next_in_rotation(rotation: list[list[str]], last_index: int) -> list[str]:
+    """The weapon-name list the next draft defaults to (set after ``last_index``)."""
+    if not rotation:
+        return []
+    return rotation[(last_index + 1) % len(rotation)]
+
+
+def _match_in_rotation(
+    rotation: list[list[str]], names: t.Iterable[str]
+) -> int | None:
+    """Index of the rotation entry equal to ``names`` (case/order-insensitive) or None.
+
+    A committed post's focus pool is matched here to decide which set was "used".
+    """
+    wanted = {n.strip().lower() for n in names if n and n.strip()}
+    if not wanted:
+        return None
+    for i, s in enumerate(rotation):
+        if {n.strip().lower() for n in s} == wanted:
+            return i
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -272,14 +285,17 @@ async def save_meta(meta: DraftMeta) -> None:
 async def build_draft_context(config: TrialsConfig | None = None) -> TrialsContext:
     """A fresh draft: the reset boundary, carried-over maps + the NEXT loot set.
 
-    The bonus focus pool defaults to the set after the last-used one (the fixed
+    The bonus focus pool defaults to the set after the last-used one (the editor-managed
     rotation loop); each name resolves to a manifest-linked :class:`WeaponRef`
     (light.gg), degrading to a plain name if the manifest is offline. Still editable.
     """
     config = config or await load_config()
+    rotation = await load_loot_rotation()
     items = await get_weapon_items()
     focus_pool = [
-        w for name in config.next_loot_set() if (w := resolve_weapon(name, items))
+        w
+        for name in _next_in_rotation(rotation, config.last_loot_set_index)
+        if (w := resolve_weapon(name, items))
     ]
     return TrialsContext(
         reset_ts=current_reset_ts(),
@@ -466,10 +482,12 @@ async def _build_bootstrap(draft: TrialsContext, meta: DraftMeta) -> dict[str, t
     }
 
 
-def _record_loot_set_used(config: TrialsConfig, ctx: TrialsContext) -> None:
+def _record_loot_set_used(
+    config: TrialsConfig, ctx: TrialsContext, rotation: list[list[str]]
+) -> None:
     """Advance the rotation cursor to the set this published post used.
 
-    Matches the post's focus pool against the known sets: a match (the usual case — the
+    Matches the post's focus pool against the loop's sets: a match (the usual case — the
     default IS a set, and a manual pick of another pool matches it) jumps the cursor to
     that set; a non-empty pool that matches nothing (a custom/edited pool) advances by
     one so the loop still progresses; an empty pool is a no-op. Called once per period
@@ -478,13 +496,11 @@ def _record_loot_set_used(config: TrialsConfig, ctx: TrialsContext) -> None:
     names = [w.name for w in ctx.focus_pool if w and w.name]
     if not names:
         return
-    matched = config.match_loot_set(names)
+    matched = _match_in_rotation(rotation, names)
     if matched is not None:
         config.last_loot_set_index = matched
-    elif config.loot_sets:
-        config.last_loot_set_index = (config.last_loot_set_index + 1) % len(
-            config.loot_sets
-        )
+    elif rotation:
+        config.last_loot_set_index = (config.last_loot_set_index + 1) % len(rotation)
 
 
 async def _advance_loot_cursor(ctx: TrialsContext) -> None:
@@ -495,7 +511,8 @@ async def _advance_loot_cursor(ctx: TrialsContext) -> None:
     advance the rotation, keeping it in sync with active weekends.
     """
     config = await load_config()
-    _record_loot_set_used(config, ctx)
+    rotation = await load_loot_rotation()
+    _record_loot_set_used(config, ctx, rotation)
     await save_config(config)
 
 

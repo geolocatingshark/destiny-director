@@ -43,6 +43,18 @@ from dd.anchor.extensions import trials as tr
 SAMPLE_RESET = 1783702800
 
 
+async def _seed_default_loot_rotation() -> None:
+    """Pin the shared-DB ``trials_loot`` row to the baked default loop.
+
+    The session DB is shared across test files; test_rotation_editor.py writes a
+    ``trials_loot`` doc, so tests here that exercise the loot cursor explicitly reset
+    the row to the default (which expands to :data:`tr.DEFAULT_LOOT_SETS`).
+    """
+    await tr.schemas.RotationData.set_data(
+        tr.LOOT_SLUG, tr.rotation_schema.trials_loot_default_doc()
+    )
+
+
 def test_live_until_is_next_reset() -> None:
     ctx = tr.TrialsContext(reset_ts=SAMPLE_RESET)
     body = tr.build_body(ctx)
@@ -105,35 +117,59 @@ def test_context_round_trip() -> None:
     assert tr.TrialsContext.from_dict(ctx.to_dict()) == ctx
 
 
-def test_config_round_trip_and_default_seeds_loot_sets() -> None:
-    # A blank config seeds the baked loot-set loop and an unused cursor.
+def test_config_round_trip_and_default_cursor() -> None:
+    # A blank config is the "none used yet" cursor; the loop itself lives in the editor
+    # doc now (not on the config), so the config carries only the cursor + carry-overs.
     fresh = tr.TrialsConfig.from_dict(None)
-    assert fresh.loot_sets == [list(s) for s in tr.DEFAULT_LOOT_SETS]
     assert fresh.last_loot_set_index == -1
+    assert not hasattr(fresh, "loot_sets")
     config = tr.TrialsConfig(
         default_image_url="https://img",
         last_featured_maps=["Burnout"],
-        loot_sets=[["A", "B"], ["C"]],
         last_loot_set_index=1,
     )
     assert tr.TrialsConfig.from_dict(config.to_dict()) == config
 
 
-def test_next_loot_set_loops_and_match() -> None:
-    config = tr.TrialsConfig(loot_sets=[["A", "B"], ["C", "D"], ["E"]])
-    config.last_loot_set_index = -1
-    assert config.next_loot_set() == ["A", "B"]  # first draft -> set 0
-    config.last_loot_set_index = 0
-    assert config.next_loot_set() == ["C", "D"]
-    config.last_loot_set_index = 2
-    assert config.next_loot_set() == ["A", "B"]  # wraps
+def test_next_and_match_in_rotation() -> None:
+    rotation = [["A", "B"], ["C", "D"], ["E"]]
+    assert tr._next_in_rotation(rotation, -1) == ["A", "B"]  # first draft -> set 0
+    assert tr._next_in_rotation(rotation, 0) == ["C", "D"]
+    assert tr._next_in_rotation(rotation, 2) == ["A", "B"]  # wraps
+    assert tr._next_in_rotation([], 0) == []  # empty loop -> no default
     # match is order-insensitive + case-insensitive; a non-set returns None.
-    assert config.match_loot_set(["d", "c"]) == 1
-    assert config.match_loot_set(["A", "X"]) is None
+    assert tr._match_in_rotation(rotation, ["d", "c"]) == 1
+    assert tr._match_in_rotation(rotation, ["A", "X"]) is None
+
+
+def test_expand_loot_rotation_from_doc_and_strips_type() -> None:
+    # A stored trials_loot doc expands schedule -> ordered weapon-name lists, dropping a
+    # schedule name that no set defines, and strips the editor's " (Type)" suffix so the
+    # names resolve as bare manifest names.
+    doc = {
+        "sets": [
+            {
+                "name": "Pool A",
+                "weapons": ["The Immortal (Submachine Gun)", "Eye of Sol"],
+            },
+            {"name": "Pool B", "weapons": ["The Scholar"]},
+        ],
+        "schedule": ["Pool B", "Pool A", "Ghost Pool"],
+    }
+    assert tr._expand_loot_rotation(doc) == [
+        ["The Scholar"],
+        ["The Immortal", "Eye of Sol"],
+    ]
+    # An absent/empty doc falls back to the baked default loop.
+    assert tr._expand_loot_rotation(None) == [list(s) for s in tr.DEFAULT_LOOT_SETS]
+    assert tr._expand_loot_rotation({"sets": [], "schedule": []}) == [
+        list(s) for s in tr.DEFAULT_LOOT_SETS
+    ]
 
 
 @pytest.mark.asyncio
 async def test_build_draft_context_defaults_to_next_loot_set(stub_weapon_items) -> None:
+    await _seed_default_loot_rotation()
     # last used = set 0 (Pool 1) -> the draft defaults to set 1 (Pool 2), linked.
     config = tr.TrialsConfig(
         default_image_url="https://img",
@@ -412,6 +448,7 @@ async def test_create_carries_maps_but_unpublished_does_not_advance_cursor(
 ) -> None:
     monkeypatch.setattr(tr, "_bot", _FakeBot())
     await tr.save_config(tr.TrialsConfig())  # reset the shared-DB rotation state (-1)
+    await _seed_default_loot_rotation()
     await tr.save_meta(tr.DraftMeta())
     # An UNCROSSPOSTED create carries the maps over but must NOT advance the loot cursor
     # (this is the Iron-Banner-seed-then-delete path — it can't consume a set).
@@ -435,6 +472,7 @@ async def test_publish_advances_cursor_to_matched_set(
 ) -> None:
     monkeypatch.setattr(tr, "_bot", _FakeBot())
     await tr.save_config(tr.TrialsConfig())  # cursor -1
+    await _seed_default_loot_rotation()
     await tr.save_meta(tr.DraftMeta())
     # Create-&-publish a post whose pool is exactly Pool 2 (index 1) — the crosspost
     # transition advances the cursor to that set, so the next draft defaults to Pool 3.
@@ -449,7 +487,10 @@ async def test_publish_advances_cursor_to_matched_set(
     )
     config = await tr.load_config()
     assert config.last_loot_set_index == 1
-    assert config.next_loot_set() == list(tr.DEFAULT_LOOT_SETS[2])
+    rotation = await tr.load_loot_rotation()
+    assert tr._next_in_rotation(rotation, config.last_loot_set_index) == list(
+        tr.DEFAULT_LOOT_SETS[2]
+    )
 
 
 @pytest.mark.asyncio
@@ -458,6 +499,7 @@ async def test_publish_custom_pool_advances_cursor_by_one(
 ) -> None:
     monkeypatch.setattr(tr, "_bot", _FakeBot())
     await tr.save_config(tr.TrialsConfig())  # cursor -1
+    await _seed_default_loot_rotation()
     await tr.save_meta(tr.DraftMeta())
     # A published pool that matches no known set advances the loop by one (-1 -> 0), so
     # the rotation keeps progressing rather than freezing on a custom week.

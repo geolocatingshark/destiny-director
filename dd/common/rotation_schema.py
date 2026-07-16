@@ -181,6 +181,115 @@ def _build_xur_location_schema() -> dict[str, t.Any]:
 XUR_LOCATION_SCHEMA: dict[str, t.Any] = _build_xur_location_schema()
 
 
+# --- Trials of Osiris bonus-focus-pool loot rotation ------------------------------
+#
+# The Trials "bonus focus pool" cycles through a fixed loop of curated weapon sets, one
+# per *active* weekend. Unlike a world-activity rotation it is **not** date-anchored:
+# the Trials producer (:mod:`dd.anchor.extensions.trials`) owns a skip-aware cursor so
+# Iron Banner "No Trials" weekends don't consume a set. So this type stays OUT of
+# ``WORLD_ACTIVITY_SLUGS`` — the editor just stores a pool of named sets + a looping
+# schedule of set names; the producer walks it. Weapons only (no armor). The set values
+# carry the same ``"Name (Type)"`` shape the editor's item autocomplete produces; the
+# producer strips the type suffix before resolving names to manifest items.
+
+#: The baked default loot loop — the single source of truth for both the editor's
+#: starting document (:func:`trials_loot_default_doc`) and the producer's fallback when
+#: the ``trials_loot`` row is absent. Seeded from the "Trials Bonus Pools" tab of the
+#: rotation spreadsheet as a one-off; the bot never reads the sheet at runtime.
+TRIALS_DEFAULT_LOOT_SETS: tuple[tuple[str, ...], ...] = (
+    (
+        "The Scholar",
+        "Exile's Curse",
+        "Sola's Scar",
+        "Forgiveness",
+        "Aisha's Embrace",
+        "Corundum Hammer",
+        "Astral Horizon",
+    ),
+    (
+        "Aisha's Care",
+        "Keen Thistle",
+        "Willful Hamartia",
+        "The Immortal",
+        "Burden of Guilt",
+        "Unwavering Duty",
+        "Cataphract GL3",
+    ),
+    (
+        "Exalted Truth",
+        "Eye of Sol",
+        "Tomorrow's Answer",
+        "Everburning Glitz",
+        "Auric Disabler",
+        "Aureus Neutralizer",
+        "The Martlet",
+    ),
+)
+
+TRIALS_LOOT_SLUG = "trials_loot"
+
+
+def _build_trials_loot_schema() -> dict[str, t.Any]:
+    """A weapons-only set pool + a looping schedule of set names (no ``reference_date``:
+    the producer owns the cursor, so there's nothing to date-anchor)."""
+    return {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "title": "Trials loot pool",
+        "required": ["schedule", "sets"],
+        "additionalProperties": False,
+        "properties": {
+            "version": {"type": "integer", "options": {"hidden": True}},
+            "schedule": {
+                "type": "array",
+                "title": "Schedule (set names, in order, looping)",
+                "items": {"type": "string"},
+            },
+            "sets": {
+                "type": "array",
+                "title": "Sets",
+                "format": "tabs",
+                "headerTemplate": "{{ self.name }}",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "title": "Set",
+                    "required": ["name", "weapons"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string", "title": "Set name"},
+                        "weapons": {
+                            "type": "array",
+                            "title": "Weapons",
+                            "items": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+TRIALS_LOOT_SCHEMA: dict[str, t.Any] = _build_trials_loot_schema()
+
+
+def trials_loot_default_doc() -> dict[str, t.Any]:
+    """The editor's starting document: the baked default sets + a one-loop schedule.
+
+    Also the shape the producer expects. Sets are named ``Pool 1``/``Pool 2``/… and the
+    schedule lists them once, in order; the producer loops it. Matches the producer's
+    ``TRIALS_DEFAULT_LOOT_SETS`` fallback so an unsaved editor and the runtime agree."""
+    names = [f"Pool {i + 1}" for i in range(len(TRIALS_DEFAULT_LOOT_SETS))]
+    return {
+        "version": 1,
+        "schedule": list(names),
+        "sets": [
+            {"name": name, "weapons": list(weapons)}
+            for name, weapons in zip(names, TRIALS_DEFAULT_LOOT_SETS, strict=True)
+        ],
+    }
+
+
 # --- legacy world-activity rotations ----------------------------------------------
 #
 # Each Destiny "legacy" destination (Neomuna, the Moon, Dares of Eternity, …) is one
@@ -482,6 +591,9 @@ def legacy_default_doc(post_type: str) -> dict[str, t.Any]:
 ROTATION_SCHEMAS: dict[str, dict[str, t.Any]] = {
     "lost_sector": LOST_SECTOR_SCHEMA,
     "xur_location": XUR_LOCATION_SCHEMA,
+    # A standalone weapons-only set pool; NOT a world activity (see WORLD_ACTIVITY_SLUGS
+    # below) — the Trials producer owns its cursor, so no date-anchoring/bake/reset.
+    TRIALS_LOOT_SLUG: TRIALS_LOOT_SCHEMA,
     # Each destination registers under its own ``world_activity_<key>`` slug, so it
     # appears automatically at /rotation edit and gets its own DB row (no migration).
     **{

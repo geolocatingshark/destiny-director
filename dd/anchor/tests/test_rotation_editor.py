@@ -226,3 +226,77 @@ async def test_xur_save_rejects_invalid_document_without_writing():
         _req(body={"type": "xur_location", "data": bad})
     )
     assert resp.status == 400
+
+
+# --- trials_loot (standalone weapons-only set pool) ------------------------------
+
+
+def _trials_loot_doc() -> dict[str, t.Any]:
+    return {
+        "version": 1,
+        "schedule": ["Pool B", "Pool A"],
+        "sets": [
+            {"name": "Pool A", "weapons": ["Astral Horizon", "The Scholar"]},
+            {"name": "Pool B", "weapons": ["The Immortal (Submachine Gun)"]},
+        ],
+    }
+
+
+async def test_default_doc_for_trials_loot_is_the_baked_default():
+    doc = editor._default_doc("trials_loot")
+    assert doc == rs.trials_loot_default_doc()
+    # It's populated (not blank), so the editor opens with the current loop.
+    assert doc["sets"] and doc["schedule"]
+
+
+async def test_trials_loot_is_not_a_world_activity():
+    # Must stay out of the world-activity machinery (no bake/reset/date-anchor).
+    assert not rs.is_world_activity("trials_loot")
+    assert "trials_loot" in rs.ROTATION_SCHEMAS
+
+
+async def test_trials_loot_preview_expands_the_schedule():
+    resp = await editor._handle_preview(
+        _req(body={"type": "trials_loot", "data": _trials_loot_doc()})
+    )
+    assert resp.status == 200
+    body = resp.text or ""
+    # The schedule renders in order (Pool B first), listing each set's weapons.
+    assert body.index("Pool B") < body.index("Pool A")
+    assert "The Immortal (Submachine Gun)" in body
+    assert "Astral Horizon" in body
+
+
+async def test_trials_loot_save_persists():
+    resp = await editor._handle_edit_post(
+        _req(body={"type": "trials_loot", "data": _trials_loot_doc()})
+    )
+    assert resp.status == 200
+    stored = await schemas.RotationData.get_data("trials_loot")
+    assert stored is not None
+    assert stored["schedule"] == ["Pool B", "Pool A"]
+    # Not a world activity → no item_links baking on save.
+    assert "item_links" not in stored
+
+
+async def test_trials_loot_save_rejects_schedule_naming_unknown_set():
+    bad = _trials_loot_doc()
+    bad["schedule"] = ["Pool A", "Ghost Pool"]
+    resp = await editor._handle_edit_post(
+        _req(body={"type": "trials_loot", "data": bad})
+    )
+    assert resp.status == 400
+    assert "Ghost Pool" in (resp.text or "")
+    # The hard gate blocked the write.
+    stored = await schemas.RotationData.get_data("trials_loot")
+    assert stored is None or stored.get("schedule") != ["Pool A", "Ghost Pool"]
+
+
+async def test_trials_loot_save_rejects_set_with_armor_key():
+    # The schema is weapons-only (additionalProperties: false) — armor must not slip in.
+    bad = _trials_loot_doc()
+    bad["sets"][0]["armor"] = ["Some Helmet"]
+    resp = await editor._handle_edit_post(
+        _req(body={"type": "trials_loot", "data": bad})
+    )
+    assert resp.status == 400
