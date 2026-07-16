@@ -435,6 +435,12 @@ class HybridPostSpec:
     form_html_path: Path
     #: Serialises read-modify-write of the shared draft doc (single bot process).
     draft_lock: asyncio.Lock
+    #: Optional async ``(ctx) -> None`` fired ONCE when a post transitions to
+    #: crossposted (published to followers) — i.e. it actually went live this period.
+    #: Producers use it for "on publish" side effects (Trials advances its loot-set
+    #: rotation here); NOT fired for uncrossposted posts/edits or the seeding cron, so a
+    #: draft that is never published (or is deleted) has no effect.
+    on_published: t.Callable[..., t.Awaitable[None]] | None = None
 
     @property
     def channel_id(self) -> int:
@@ -578,6 +584,7 @@ async def post_action(
         await spec.save_draft(ctx)
 
         note: str | None = None
+        was_crossposted = meta.crossposted
         if publish:
             # Publishing validates strictly and crossposts; problems block the send.
             try:
@@ -588,6 +595,11 @@ async def post_action(
                 )
             except Exception as exc:  # Discord rejected the post/crosspost (bad image…)
                 logger.warning("%s: publish failed", spec.followable_key, exc_info=True)
+                # ``publish_draft`` may have already SENT the message (stamping
+                # ``meta.message_id``) and only failed on the crosspost — persist the
+                # meta so that live post isn't orphaned (a next Create would duplicate
+                # it). Safe when nothing was sent: message_id is still 0.
+                await spec.save_meta(meta)
                 return aiohttp.web.json_response(
                     {"problems": [_discord_error_note(exc)]}, status=502
                 )
@@ -603,7 +615,9 @@ async def post_action(
                 meta = await post_or_edit_unpublished(spec, bot, ctx, meta)
             except Exception as exc:
                 logger.warning(
-                    "%s: in-channel post update failed", spec.followable_key
+                    "%s: in-channel post update failed",
+                    spec.followable_key,
+                    exc_info=True,
                 )
                 return aiohttp.web.json_response(
                     {"problems": [_discord_error_note(exc)]}, status=502
@@ -612,6 +626,11 @@ async def post_action(
         # Optionally persist this period's image as the carried-over default for future
         # drafts. An empty image URL with the box ticked clears the default.
         await spec.persist_default_image(payload, ctx)
+        # Fire the "on publish" hook ONCE, only when this action actually took the post
+        # live (uncrossposted -> crossposted). Uncrossposted posts/edits and the seeding
+        # cron never reach here, so a draft that's never published has no side effect.
+        if not was_crossposted and meta.crossposted and spec.on_published is not None:
+            await spec.on_published(ctx)
     logger.info(
         "%s: %s via web form (publish=%s)",
         spec.followable_key,

@@ -217,11 +217,15 @@ class TrialsConfig:
     def from_dict(cls, d: t.Mapping[str, t.Any] | None) -> "TrialsConfig":
         if not d:
             return cls()
-        # Seed loot_sets from the baked default when the stored row has none (first run
-        # or a pre-rotation doc), so the rotation works before anyone edits the DB.
-        loot_sets = [
-            [str(n) for n in s] for s in d.get("loot_sets") or DEFAULT_LOOT_SETS
-        ]
+        # Seed loot_sets from the baked default (via the field factory) when the stored
+        # row has none — first run or a pre-rotation doc — so the rotation works before
+        # anyone edits the DB.
+        raw_sets = d.get("loot_sets")
+        loot_sets = (
+            [[str(n) for n in s] for s in raw_sets]
+            if raw_sets
+            else _default_loot_sets()
+        )
         return cls(
             default_image_url=d.get("default_image_url"),
             last_featured_maps=[str(m) for m in d.get("last_featured_maps") or []],
@@ -273,11 +277,10 @@ async def build_draft_context(config: TrialsConfig | None = None) -> TrialsConte
     (light.gg), degrading to a plain name if the manifest is offline. Still editable.
     """
     config = config or await load_config()
-    focus_pool: list[WeaponRef] = []
-    for name in config.next_loot_set():
-        weapon = await _resolve_focus(name)
-        if weapon is not None:
-            focus_pool.append(weapon)
+    items = await get_weapon_items()
+    focus_pool = [
+        w for name in config.next_loot_set() if (w := resolve_weapon(name, items))
+    ]
     return TrialsContext(
         reset_ts=current_reset_ts(),
         featured_maps=list(config.last_featured_maps),
@@ -392,11 +395,6 @@ async def get_weapon_items() -> list[tuple[str, int, str, int, str]]:
         return _weapon_items
 
 
-async def _resolve_focus(value: str) -> WeaponRef | None:
-    """A submitted focus-pool value (a manifest hash or a typed name) -> WeaponRef."""
-    return resolve_weapon(value, await get_weapon_items())
-
-
 # ---------------------------------------------------------------------------
 # Web form — server-side context + bootstrap
 # ---------------------------------------------------------------------------
@@ -416,8 +414,8 @@ async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> TrialsContext
     """Build a :class:`TrialsContext` from the form JSON, entirely server-side.
 
     The client is never trusted for security-relevant transforms: each focus-pool value
-    is re-resolved from its submitted value (a manifest hash or a typed name) via
-    :func:`_resolve_focus`, and the maps/notes are split per-line and trimmed.
+    is re-resolved server-side (a manifest hash or typed name -> WeaponRef) against the
+    weapon pool, and the maps/notes are split per-line and trimmed.
     """
     ctx = TrialsContext(reset_ts=int(payload.get("reset_ts") or current_reset_ts()))
     ctx.featured_maps = [
@@ -425,12 +423,12 @@ async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> TrialsContext
         for line in str(payload.get("maps_text", "")).splitlines()
         if line.strip()
     ]
-    pool: list[WeaponRef] = []
-    for value in payload.get("focus_pool") or []:
-        weapon = await _resolve_focus(str(value))
-        if weapon is not None:
-            pool.append(weapon)
-    ctx.focus_pool = pool
+    items = await get_weapon_items()
+    ctx.focus_pool = [
+        w
+        for value in payload.get("focus_pool") or []
+        if (w := resolve_weapon(str(value), items))
+    ]
     ctx.image_url = str(payload.get("image_url", "")).strip() or None
     ctx.notes = [
         line.strip()
@@ -469,16 +467,36 @@ async def _build_bootstrap(draft: TrialsContext, meta: DraftMeta) -> dict[str, t
 
 
 def _record_loot_set_used(config: TrialsConfig, ctx: TrialsContext) -> None:
-    """Advance the rotation cursor to the set this committed post used.
+    """Advance the rotation cursor to the set this published post used.
 
-    If the post's focus pool matches a known loot set (the usual case — the default IS a
-    set, and a manual pick of another pool matches it), record that set's index so the
-    next draft defaults to the following set. A custom/edited pool that matches nothing
-    leaves the cursor untouched (the loop pauses rather than jumping arbitrarily).
+    Matches the post's focus pool against the known sets: a match (the usual case — the
+    default IS a set, and a manual pick of another pool matches it) jumps the cursor to
+    that set; a non-empty pool that matches nothing (a custom/edited pool) advances by
+    one so the loop still progresses; an empty pool is a no-op. Called once per period
+    (on the crosspost transition), so ``+ 1`` is from the previous period's set.
     """
-    matched = config.match_loot_set(w.name for w in ctx.focus_pool if w and w.name)
+    names = [w.name for w in ctx.focus_pool if w and w.name]
+    if not names:
+        return
+    matched = config.match_loot_set(names)
     if matched is not None:
         config.last_loot_set_index = matched
+    elif config.loot_sets:
+        config.last_loot_set_index = (config.last_loot_set_index + 1) % len(
+            config.loot_sets
+        )
+
+
+async def _advance_loot_cursor(ctx: TrialsContext) -> None:
+    """``HybridPostSpec.on_published`` hook: record the published set as last-used.
+
+    Fires once, only when a post goes live (uncrossposted -> crossposted) — so Iron
+    Banner "No Trials" weekends (a cron draft that's deleted, never published) never
+    advance the rotation, keeping it in sync with active weekends.
+    """
+    config = await load_config()
+    _record_loot_set_used(config, ctx)
+    await save_config(config)
 
 
 async def _persist_carryover(
@@ -486,14 +504,13 @@ async def _persist_carryover(
 ) -> None:
     """Persist carried-over config on every committed post (Create/Edit).
 
-    Stores this week's maps as the carry-over, advances the loot-set rotation cursor to
-    the set actually used (see :func:`_record_loot_set_used`), and stores the image as
-    the default when the form's "use as default" box is ticked (an empty URL with the
-    box ticked clears the default).
+    Stores this week's maps as the carry-over and the image as the default when the
+    form's "use as default" box is ticked (an empty URL with the box ticked clears the
+    default). The loot-set rotation cursor is advanced separately, only on publish, by
+    :func:`_advance_loot_cursor` (the ``on_published`` hook).
     """
     config = await load_config()
     config.last_featured_maps = list(ctx.featured_maps)
-    _record_loot_set_used(config, ctx)
     if payload.get("set_default_image"):
         config.default_image_url = ctx.image_url
     await save_config(config)
@@ -550,6 +567,7 @@ _SPEC = HybridPostSpec(
     set_autopost=schemas.AutoPostSettings.set_trials,
     form_html_path=_FORM_HTML_PATH,
     draft_lock=_draft_lock,
+    on_published=_advance_loot_cursor,
 )
 
 
@@ -600,10 +618,9 @@ async def run_trials_draft(bot: CachedFetchBot) -> None:
         await save_draft(ctx)
         meta = await hybrid_post_core.post_or_edit_unpublished(_SPEC, bot, ctx, meta)
         await save_meta(meta)
-        # The cron just committed this weekend's post using the next loot set — advance
-        # the rotation cursor so a later manual Edit (or next weekend) starts from here.
-        _record_loot_set_used(config, ctx)
-        await save_config(config)
+        # NB: the cron posts UNCROSSPOSTED and does NOT advance the loot-set cursor —
+        # the rotation only advances on an actual publish (_advance_loot_cursor), so a
+        # weekend seeded then deleted (e.g. Iron Banner) doesn't consume a set.
 
     logger.info("trials: fresh draft posted (uncrossposted) for the new weekend")
 

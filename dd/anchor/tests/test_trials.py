@@ -407,14 +407,14 @@ async def test_handle_edit_refuses_when_absent(monkeypatch, stub_weapon_items) -
 
 
 @pytest.mark.asyncio
-async def test_handle_create_carries_maps_and_advances_loot_cursor(
+async def test_create_carries_maps_but_unpublished_does_not_advance_cursor(
     monkeypatch, fake_publish_env, stub_weapon_items
 ) -> None:
     monkeypatch.setattr(tr, "_bot", _FakeBot())
-    await tr.save_config(tr.TrialsConfig())  # reset the shared-DB rotation state
-    await tr.save_meta(tr.DraftMeta())  # cursor starts unused (-1)
-    # Commit a post whose focus pool is exactly Pool 2 (index 1) — the cursor advances
-    # to that set so the next draft defaults to Pool 3.
+    await tr.save_config(tr.TrialsConfig())  # reset the shared-DB rotation state (-1)
+    await tr.save_meta(tr.DraftMeta())
+    # An UNCROSSPOSTED create carries the maps over but must NOT advance the loot cursor
+    # (this is the Iron-Banner-seed-then-delete path — it can't consume a set).
     await tr._handle_create(
         _req(
             body={
@@ -426,22 +426,51 @@ async def test_handle_create_carries_maps_and_advances_loot_cursor(
     )
     config = await tr.load_config()
     assert config.last_featured_maps == ["Burnout"]
+    assert config.last_loot_set_index == -1
+
+
+@pytest.mark.asyncio
+async def test_publish_advances_cursor_to_matched_set(
+    monkeypatch, fake_publish_env, stub_weapon_items
+) -> None:
+    monkeypatch.setattr(tr, "_bot", _FakeBot())
+    await tr.save_config(tr.TrialsConfig())  # cursor -1
+    await tr.save_meta(tr.DraftMeta())
+    # Create-&-publish a post whose pool is exactly Pool 2 (index 1) — the crosspost
+    # transition advances the cursor to that set, so the next draft defaults to Pool 3.
+    await tr._handle_create(
+        _req(
+            body={
+                "reset_ts": SAMPLE_RESET,
+                "focus_pool": list(tr.DEFAULT_LOOT_SETS[1]),
+                "publish": True,
+            }
+        )
+    )
+    config = await tr.load_config()
     assert config.last_loot_set_index == 1
     assert config.next_loot_set() == list(tr.DEFAULT_LOOT_SETS[2])
 
 
 @pytest.mark.asyncio
-async def test_handle_create_custom_pool_leaves_cursor(
+async def test_publish_custom_pool_advances_cursor_by_one(
     monkeypatch, fake_publish_env, stub_weapon_items
 ) -> None:
     monkeypatch.setattr(tr, "_bot", _FakeBot())
-    await tr.save_config(tr.TrialsConfig())  # reset the shared-DB rotation state (-1)
+    await tr.save_config(tr.TrialsConfig())  # cursor -1
     await tr.save_meta(tr.DraftMeta())
-    # A focus pool that matches no known set leaves the rotation cursor untouched.
+    # A published pool that matches no known set advances the loop by one (-1 -> 0), so
+    # the rotation keeps progressing rather than freezing on a custom week.
     await tr._handle_create(
-        _req(body={"reset_ts": SAMPLE_RESET, "focus_pool": ["The Scholar"]})
+        _req(
+            body={
+                "reset_ts": SAMPLE_RESET,
+                "focus_pool": ["The Scholar", "Some Custom Weapon"],
+                "publish": True,
+            }
+        )
     )
-    assert (await tr.load_config()).last_loot_set_index == -1
+    assert (await tr.load_config()).last_loot_set_index == 0
 
 
 @pytest.mark.asyncio
