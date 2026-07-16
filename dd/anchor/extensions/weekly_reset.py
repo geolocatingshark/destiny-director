@@ -59,7 +59,13 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
-from ...common.components import cv2_error, cv2_notice, respond_cv2
+from ...common.components import (
+    cv2_error,
+    cv2_notice,
+    guard_cv2_hmessage,
+    respond_cv2,
+)
+from ...common.utils import fetch_emoji_dict, substitute_guild_emoji
 
 # ``utils`` is re-exported (not used directly here now): the publish path moved to
 # ``hybrid_post_core``, but the tests patch ``wr.utils`` — the same module object the
@@ -69,7 +75,6 @@ from .. import (
     utils as utils,
     web,
 )
-from ..embeds import substitute_user_side_emoji
 from ..hybrid_post_core import (
     DraftMeta,
     HybridPostSpec,
@@ -686,8 +691,11 @@ def build_body(ctx: WeeklyResetContext) -> str:
 
 async def format_weekly_reset(ctx: WeeklyResetContext, bot: CachedFetchBot) -> HMessage:
     """Render the context to a Components V2 :class:`HMessage`."""
-    body = await substitute_user_side_emoji(bot, build_body(ctx))
-    return build_cv2(body, ctx.image_url)
+    hmsg = build_cv2(build_body(ctx), ctx.image_url)
+    # Resolve :emoji: on the assembled message, then cap CV2 text (naive front-to-back
+    # truncate + CRITICAL alert on overflow).
+    substitute_guild_emoji(hmsg, await fetch_emoji_dict(bot))
+    return await guard_cv2_hmessage(hmsg, post_name="Weekly Reset")
 
 
 async def weekly_reset_message_constructor(bot: CachedFetchBot) -> HMessage:

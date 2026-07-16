@@ -51,9 +51,8 @@ from dd.hmessage import HMessage
 
 from ..common import cfg
 from ..common.bot import CachedFetchBot
-from ..common.utils import re_user_side_emoji
+from ..common.utils import fetch_emoji_dict, re_user_side_emoji
 from . import utils
-from .embeds import _kyber_emoji_dict
 from .extensions import bungie_api as api
 
 logger = logging.getLogger(__name__)
@@ -477,7 +476,7 @@ async def preview_emoji_dict(bot: CachedFetchBot | None) -> dict[str, h.Emoji]:
     ):
         return _emoji_cache
     try:
-        _emoji_cache = await _kyber_emoji_dict(bot)
+        _emoji_cache = await fetch_emoji_dict(bot)
         _emoji_cache_at = now
     except Exception:
         logger.warning("hybrid_post_core: preview emoji fetch failed", exc_info=True)

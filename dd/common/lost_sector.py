@@ -10,14 +10,9 @@ import hikari as h
 from dd.hmessage import HMessage
 
 from ..common import cfg, components, schemas
-from ..common.utils import fetch_emoji_dict
+from ..common.utils import fetch_emoji_dict, substitute_guild_emoji
 from ..sector_accounting import sector_accounting
-from .utils import (
-    construct_emoji_substituter,
-    follow_link_single_step,
-    re_user_side_emoji,
-    space,
-)
+from .utils import follow_link_single_step, space
 
 _elements = ["solar", "void", "arc", "stasis", "strand"]
 
@@ -169,28 +164,19 @@ async def format_post(
         "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
     )
 
-    def _sub(text: str) -> str:
-        return re_user_side_emoji.sub(construct_emoji_substituter(emoji_dict), text)
-
-    header, body, footer = _sub(header), _sub(body), _sub(footer)
-
-    # Components V2 caps total text at 4000. Reserve the header and the rewards/links
-    # footer and truncate only the sectors/details body, so they always survive a
-    # detail-heavy day; an over-budget body raises a CRITICAL (owner-pinging) alert.
-    description = await components.guard_cv2_post_sections(
-        header, body, footer, post_name="Lost Sector"
-    )
-
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)
     )
-    container.add_text_display(description)
+    container.add_text_display(header + body + footer)
     if ls_gif_url:
         # URL-referenced (Discord fetches it) rather than uploaded — the gif is ~15 MB,
         # which would 413 on upload and re-download from the host on every send.
         container.add_component(components.url_media_gallery(ls_gif_url))
 
-    return HMessage(components=[container])
+    # Resolve :emoji: on the assembled message, then cap CV2 text (naive front-to-back
+    # truncate + CRITICAL alert on overflow — measured on the final rendered length).
+    hmsg = substitute_guild_emoji(HMessage(components=[container]), emoji_dict)
+    return await components.guard_cv2_hmessage(hmsg, post_name="Lost Sector")
 
 
 async def format_sector(sector: sector_accounting.Sector) -> str:

@@ -18,6 +18,7 @@
 import logging
 import typing as t
 
+import hikari as h
 import pytest
 
 from dd.common import cfg, utils
@@ -31,7 +32,9 @@ from dd.common.utils import (
     get_ordinal_suffix,
     guild_scope,
     re_user_side_emoji,
+    substitute_guild_emoji,
 )
+from dd.hmessage import HMessage
 
 # --- guild_scope ---------------------------------------------------------------
 
@@ -145,6 +148,22 @@ def test_emoji_substituter_is_case_insensitive_fallback():
 def test_emoji_substituter_leaves_unknown_untouched():
     sub = construct_emoji_substituter({"smile": "<:smile:1>"})
     assert re_user_side_emoji.sub(sub, ":unknown:") == ":unknown:"
+
+
+# --- substitute_guild_emoji (adapter over HMessage.map_text) --------------------
+
+
+def test_substitute_guild_emoji_resolves_across_surfaces():
+    hmsg = HMessage(content="hi :smile:", embeds=[h.Embed(description="d :smile:")])
+    assert substitute_guild_emoji(hmsg, {"smile": "<:smile:1>"}) is hmsg
+    assert hmsg.content == "hi <:smile:1>"
+    assert hmsg.embeds[0].description == "d <:smile:1>"
+
+
+def test_substitute_guild_emoji_leaves_qualified_mention():
+    hmsg = HMessage(content="already <:smile:99>")
+    substitute_guild_emoji(hmsg, {"smile": "<:smile:1>"})
+    assert hmsg.content == "already <:smile:99>"
 
 
 # --- ensure_session ------------------------------------------------------------
