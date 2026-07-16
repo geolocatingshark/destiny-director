@@ -13,11 +13,9 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-# Pure tests for the Xur location/armour data structures — no gspread/network.
+# Pure tests for the Xûr location data structures — no network.
 
 from dd.sector_accounting.xur import (
-    XurArmorSet,
-    XurArmorSets,
     XurLocation,
     XurLocations,
 )
@@ -54,7 +52,7 @@ def test_locations_unknown_key_returns_default():
     assert default.friendly_location_name is None
 
 
-# --- XurLocations.from_json / to_json ------------------------------------------
+# --- XurLocations.from_json ----------------------------------------------------
 
 
 def _doc(**overrides):
@@ -102,37 +100,3 @@ def test_from_json_blank_strings_normalised_to_none():
 
 def test_from_json_tolerates_absent_locations_key():
     assert XurLocations.from_json({"version": 1}) == {}
-
-
-def test_to_json_round_trips_via_from_json():
-    original = XurLocations.from_json(_doc())
-    doc = original.to_json()
-    assert doc["version"] == 1
-    rebuilt = XurLocations.from_json(doc)
-    assert str(rebuilt["Nessus, Watcher's Grave"]) == str(
-        original["Nessus, Watcher's Grave"]
-    )
-
-
-def test_to_json_omits_blank_friendly_and_link():
-    locs = XurLocations()
-    locs["edz"] = XurLocation("edz")
-    assert locs.to_json()["locations"] == [{"api_location_name": "edz"}]
-
-
-# --- XurArmorSet / XurArmorSets ------------------------------------------------
-
-
-def test_armor_set_str_wraps_in_markdown_link():
-    armor = XurArmorSet(friendly_name="Set", link="https://example.com")
-    assert str(armor) == "[Set](https://example.com)"
-
-
-def test_armor_set_str_without_link():
-    assert str(XurArmorSet(friendly_name="Set")) == "Set"
-
-
-def test_armor_sets_unknown_key_returns_default():
-    sets = XurArmorSets()
-    default = sets["unknown"]
-    assert default.friendly_name == "unknown"

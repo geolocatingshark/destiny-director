@@ -87,8 +87,9 @@ DB layer, or building a message/embed, read it.** Quick orientation:
 - ruff removes **unused imports** (F401 fails CI, and the developer's editor strips them
   on save). When you add an import, add its usage in the **same edit**.
 - ty: prefer fixing types over suppressing. When ty genuinely can't model a pattern
-  (attrs-generated `__init__`, gspread stubs, dict subclasses), suppress it in **`ty.toml`
-  overrides with an explanatory comment** — see the existing per-file blocks. Avoid bare
+  (attrs-generated `__init__`, the SQLAlchemy Core/ORM query layer, dict subclasses),
+  suppress it in **`ty.toml` overrides with an explanatory comment** — see the existing
+  per-file blocks. Avoid bare
   inline `# type: ignore`; if you must, include the error code.
 
 ## CI

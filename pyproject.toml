@@ -16,7 +16,6 @@ dependencies = [
     "attrs>=25.4.0",
     "dateparser>=1.4.1",
     "fastjsonschema>=2.21.2",
-    "gspread>=6.2.1",
     "hikari-lightbulb>=3.2.4",
     "hikari-toolbox>=0.1.7",
     "hikari>=2.5.0,<3",

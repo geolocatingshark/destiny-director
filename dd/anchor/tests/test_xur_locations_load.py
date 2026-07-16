@@ -13,9 +13,10 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-# DB-backed: the xur_location load resolution order (DB-first, gspread fallback,
-# last-known-good cache), mirroring dd/beacon/tests/test_rotation_data_and_load.py.
-# Uses the SQLite test DB from the package conftest.
+# DB-backed: the xur_location load resolution order (DB row → committed-seed auto-seed →
+# last-known-good cache → empty-map degrade), mirroring
+# dd/beacon/tests/test_rotation_data_and_load.py. Uses the SQLite test DB from the
+# package conftest.
 
 import typing as t
 
@@ -23,7 +24,6 @@ import pytest
 
 from dd.anchor.extensions import xur as xur_ext
 from dd.common import schemas
-from dd.sector_accounting import xur as xur_data
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,20 +41,29 @@ def _doc(name: str = "Nessus, Watcher's Grave") -> dict[str, t.Any]:
     }
 
 
-async def test_load_prefers_db_and_skips_gspread(monkeypatch: pytest.MonkeyPatch):
+async def test_load_reads_from_db():
     xur_ext._xur_locations_cache.clear()
     await schemas.RotationData.set_data("xur_location", _doc("FromDB"))
-
-    def _no_gspread(*_args: t.Any, **_kwargs: t.Any) -> t.NoReturn:
-        raise AssertionError("gspread fallback must not run when the DB has data")
-
-    monkeypatch.setattr(xur_data.XurLocations, "from_gspread_url", _no_gspread)
 
     locations = await xur_ext.load_xur_locations()
     assert locations["FromDB"].friendly_location_name == "Watcher's Grave, Nessus"
 
 
-async def test_load_serves_last_known_good_on_total_failure(
+async def test_load_auto_seeds_absent_row(monkeypatch: pytest.MonkeyPatch):
+    xur_ext._xur_locations_cache.clear()
+    # No DB row; the committed seed doc supplies the mapping and is persisted.
+    monkeypatch.setattr(xur_ext, "_load_seed_doc", lambda: _doc("Seeded"))
+
+    async def _no_row(_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(schemas.RotationData, "get_data", _no_row)
+
+    locations = await xur_ext.load_xur_locations()
+    assert locations["Seeded"].friendly_location_name == "Watcher's Grave, Nessus"
+
+
+async def test_load_serves_last_known_good_on_db_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
     xur_ext._xur_locations_cache.clear()
@@ -62,15 +71,27 @@ async def test_load_serves_last_known_good_on_total_failure(
     await schemas.RotationData.set_data("xur_location", _doc("Cached"))
     await xur_ext.load_xur_locations()
 
-    # Now the DB yields nothing and the gspread fallback fails: expect the cache.
-    async def _no_row(_name: str) -> None:
-        return None
+    # A transient DB error (not a clean absent read) must serve the cache, not re-seed.
+    async def _boom(_name: str) -> t.NoReturn:
+        raise RuntimeError("db unreachable")
 
-    def _boom(*_args: t.Any, **_kwargs: t.Any) -> t.NoReturn:
-        raise RuntimeError("sheet unreachable")
-
-    monkeypatch.setattr(schemas.RotationData, "get_data", _no_row)
-    monkeypatch.setattr(xur_data.XurLocations, "from_gspread_url", _boom)
+    monkeypatch.setattr(schemas.RotationData, "get_data", _boom)
 
     locations = await xur_ext.load_xur_locations()
     assert "Cached" in locations
+
+
+async def test_load_degrades_to_empty_map_without_row_or_seed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    xur_ext._xur_locations_cache.clear()
+    monkeypatch.setattr(xur_ext, "_load_seed_doc", lambda: None)
+
+    async def _no_row(_name: str) -> None:
+        return None
+
+    monkeypatch.setattr(schemas.RotationData, "get_data", _no_row)
+
+    locations = await xur_ext.load_xur_locations()
+    # Empty map still renders — __getitem__ falls back to the raw API location name.
+    assert str(locations["Tower, Hangar"]) == "Tower, Hangar"

@@ -1,6 +1,5 @@
 """Shared rendering of the Lost Sector post used by both bots."""
 
-import asyncio
 import datetime as dt
 import logging
 import typing as t
@@ -23,21 +22,21 @@ from .utils import (
 _elements = ["solar", "void", "arc", "stasis", "strand"]
 
 # Last-known-good rotation, keyed by post type. Populated on every successful load and
-# served only if both the DB store and the gspread fallback are unreachable, so a
-# transient outage never breaks an autopost.
+# served only if the DB store is unreachable, so a transient DB blip never breaks an
+# autopost.
 _rotation_cache: dict[str, sector_accounting.Rotation] = {}
 
 _LOST_SECTOR = "lost_sector"
 
 
 async def load_rotation(buffer: int = 5) -> sector_accounting.Rotation:
-    """Load the ``lost_sector`` rotation, preferring the DB JSON store.
+    """Load the ``lost_sector`` rotation from the DB JSON store.
 
     Resolution order: the ``RotationData['lost_sector']`` document (built via
-    :meth:`Rotation.from_json`) → the live gspread Sheet (kept as a fallback during the
-    cutover; blocking, so offloaded to a thread) → the last-known-good cache. The DB is
-    consulted every call (it is cheap and lets editor saves take effect immediately);
-    the cache exists only for the total-outage case. Raises only if every source fails
+    :meth:`Rotation.from_json`) → the last-known-good cache. The DB is consulted every
+    call (it is cheap and lets editor saves take effect immediately); the cache exists
+    only for the total-outage case. Unlike Xûr, an absent row cannot degrade gracefully
+    (there is no schedule to render), so this raises if the DB row is missing/malformed
     and nothing was ever cached.
     """
     try:
@@ -52,29 +51,14 @@ async def load_rotation(buffer: int = 5) -> sector_accounting.Rotation:
             _rotation_cache[_LOST_SECTOR] = rotation
             return rotation
         except Exception:
-            logging.exception(
-                "Stored lost_sector rotation JSON is malformed; falling back to gspread"
-            )
+            logging.exception("Stored lost_sector rotation JSON is malformed")
 
-    try:
-        # from_gspread_url does blocking gspread network I/O; offload it so the event
-        # loop keeps servicing other coroutines during the autopost.
-        rotation = await asyncio.to_thread(
-            sector_accounting.Rotation.from_gspread_url,
-            cfg.sheets_ls_url,
-            cfg.gsheets_credentials,
-            buffer=buffer,
-        )
-        _rotation_cache[_LOST_SECTOR] = rotation
-        return rotation
-    except Exception:
-        cached = _rotation_cache.get(_LOST_SECTOR)
-        if cached is not None:
-            logging.exception(
-                "Failed to load lost_sector rotation; serving last-known-good cache"
-            )
-            return cached
-        raise
+    cached = _rotation_cache.get(_LOST_SECTOR)
+    if cached is not None:
+        return cached
+    raise RuntimeError(
+        "No lost_sector rotation available (no usable DB row and empty cache)"
+    )
 
 
 def _elements_to_emoji(elements: str):

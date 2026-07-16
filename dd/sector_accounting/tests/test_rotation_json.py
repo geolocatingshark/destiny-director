@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-# Pure mapping logic for the DB-JSON rotation store — Rotation.from_json / to_json.
+# Pure mapping logic for the DB-JSON rotation store — Rotation.from_json.
 # No DB or network.
 
 import datetime as dt
@@ -94,43 +94,7 @@ def test_from_json_cycles_to_next_day():
 
 
 def test_scheduled_name_absent_from_sectors_raises_keyerror():
-    # Mirrors from_gspread's "TBC" path: __call__ raises KeyError, handled upstream.
+    # A scheduled name absent from `sectors`: __call__ raises KeyError, caught upstream.
     rot = Rotation.from_json(_doc(schedule={z: ["Ghost"] for z in ZONES}))
     with pytest.raises(KeyError):
         rot(DAY0)
-
-
-def _render(rot: Rotation, date: dt.datetime) -> list[t.Any]:
-    return [
-        (
-            s.name,
-            s.shortlink_gfx,
-            s.expert_data.champions_list,
-            s.expert_data.shields_list,
-            s.master_data.champions_list,
-            s.master_data.shields_list,
-        )
-        for s in rot(date)
-    ]
-
-
-def test_to_json_from_json_rendered_parity_across_cycle():
-    rot = Rotation.from_json(_doc())
-    back = Rotation.from_json(rot.to_json())
-    for k in range(8):
-        date = DAY0 + dt.timedelta(days=k)
-        assert _render(rot, date) == _render(back, date)
-
-
-def test_to_json_shape():
-    out = Rotation.from_json(_doc()).to_json()
-    assert out["version"] == 1
-    assert out["reference_date"] == "2023-07-20"
-    assert set(out["schedule"]) == set(ZONES)
-    assert "surge_cycle" not in out
-    assert out["sectors"][0]["expert"] == {"champions": ["Barrier"], "shields": ["Arc"]}
-    assert "threat" not in out["sectors"][0]
-    assert out["sectors"][1]["master"] == {
-        "champions": ["Unstoppable"],
-        "shields": ["Strand"],
-    }

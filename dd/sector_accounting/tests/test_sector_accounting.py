@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-# Pure parsing/rotation logic — driven from fixture data, no gspread/network.
+# Pure parsing/rotation logic — driven from fixture data, no network.
 
 import datetime as dt
 
@@ -23,7 +23,6 @@ from dd.sector_accounting.sector_accounting import (
     DifficultySpecificSectorData,
     Rotation,
     Sector,
-    SectorData,
 )
 from dd.sector_accounting.utils import EntityRotation, _parse_counts
 
@@ -52,13 +51,6 @@ def test_entity_rotation_cycles_modulo_length():
     assert rot[3] == "a"
     assert rot[4] == "b"
     assert rot[-1] == "c"
-
-
-def test_entity_rotation_from_gspread_strips_header_and_trailing_blanks():
-    # Column-major values; column 1, row 0 is the header, trailing "" dropped.
-    values = [["h0", "x"], ["h1", "a", "b", ""]]
-    rot = EntityRotation.from_gspread(values, 1)
-    assert list(rot) == ["a", "b"]
 
 
 # --- DifficultySpecificSectorData ----------------------------------------------
@@ -103,26 +95,6 @@ def test_sector_add_fills_blanks_from_other():
 def test_sector_add_requires_matching_name():
     with pytest.raises(ValueError):
         _ = Sector(name="A") + Sector(name="B")
-
-
-# --- SectorData.gspread_data_row_to_sector -------------------------------------
-
-
-def test_gspread_data_row_to_sector_maps_columns():
-    general_row = ["Name", "Threat", "Weapon", "gfx"]
-    #              [_,    void, solar, arc, stasis, strand, barrier, over, unstop, mods]
-    legend_row = ["x", "0", "0", "1", "0", "0", "1", "0", "0", "Mods"]
-    master_row = ["x", "0", "0", "0", "0", "0", "0", "0", "0", ""]
-
-    sector = SectorData.gspread_data_row_to_sector(general_row, legend_row, master_row)
-
-    assert sector.name == "Name"
-    assert sector.threat == "Threat"
-    assert sector.overcharged_weapon == "Weapon"
-    assert sector.shortlink_gfx == "gfx"
-    assert sector.expert_data.shields == "Arc"
-    assert sector.expert_data.champions == "Barrier"
-    assert bool(sector.master_data) is False
 
 
 # --- Rotation.__call__ ---------------------------------------------------------

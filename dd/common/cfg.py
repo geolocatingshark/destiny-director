@@ -150,31 +150,6 @@ def _db_config() -> tuple[
     return db_session_kwargs, db_session_kwargs_sync, db_connect_args, db_engine_args
 
 
-def _sheets_credentials(
-    proj_id: str,
-    priv_key_id: str,
-    priv_key: str,
-    client_email: str,
-    client_id: str,
-    client_x509_cert_url: str,
-) -> dict[str, str]:
-    priv_key = _getenv(priv_key)
-    priv_key = priv_key.replace("\\n", "\n")
-    gsheets_credentials = {
-        "type": "service_account",
-        "project_id": _getenv(proj_id),
-        "private_key_id": _getenv(priv_key_id),
-        "private_key": priv_key,
-        "client_email": _getenv(client_email),
-        "client_id": _getenv(client_id),
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": _getenv(client_x509_cert_url),
-    }
-    return gsheets_credentials
-
-
 ######### loglevel config #########
 
 logging.basicConfig(
@@ -257,17 +232,6 @@ embed_critical_color = h.Color(0x992D22)
 
 # Database URLs
 db_url, db_url_async = _db_urls("MYSQL_PRIVATE_URL", "MYSQL_URL")
-
-# Sheets credentials & URLs
-gsheets_credentials = _sheets_credentials(
-    "SHEETS_PROJECT_ID",
-    "SHEETS_PRIVATE_KEY_ID",
-    "SHEETS_PRIVATE_KEY",
-    "SHEETS_CLIENT_EMAIL",
-    "SHEETS_CLIENT_ID",
-    "SHEETS_CLIENT_X509_CERT_URL",
-)
-sheets_ls_url = _getenv("SHEETS_LS_URL")
 
 # Static Images / Resources
 lost_sector_gif_url = _getenv("LOST_SECTOR_GIF_URL")
