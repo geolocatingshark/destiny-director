@@ -143,6 +143,9 @@ dmypy.json
 # Bungie api files
 world_sql_content*
 manifest.zip
+# The extracted manifest sqlite dir (downloaded at runtime, ~340M). Untracked and huge,
+# so keep it out of `railway up` build contexts and `git status`.
+manifest/
 
 # Local DB dumps (`make dump-prod-db` / `dump-dev-db`) — but keep Atlas migrations,
 # so a new migrations/*.sql isn't silently ignored.
