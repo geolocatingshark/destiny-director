@@ -1,0 +1,118 @@
+<!doctype html>
+<!--
+  Trials of Osiris form — a self-contained form for editing the trials draft. Reached
+  from the control-panel card or the link minted by `/trials create`; served by
+  dd.anchor.extensions.trials, whose GET handler substitutes the __BOOTSTRAP__
+  placeholder with {draft, options, autopost_enabled, default_image_url, accent_color,
+  post_this_period, crossposted}. The page edits the draft client-side and POSTs it to
+  /trials/{preview,create,edit,delete,auto}. Auth is the central Discord-OAuth session
+  cookie (web_auth.py), sent automatically on the same-origin fetch, so no token is
+  embedded here. The server re-resolves the focus-pool weapons and re-validates on save,
+  so this form is a convenience, not a trust boundary.
+
+  Widgets: the bonus focus pool is a Tom Select multi-select (vendored under /static/
+  vendor/, no build step) over the manifest weapon pool (option value = manifest hash,
+  free-typed names allowed); maps/notes/image stay native. Tom Select's stylesheet loads
+  before trials_form.css so the dark-theme overrides there win.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Trials of Osiris</title>
+    <link rel="stylesheet" href="/static/shared.css" />
+    <link rel="stylesheet" href="/static/vendor/tom-select.min.css" />
+    <link rel="stylesheet" href="/static/trials_form.css" />
+  </head>
+  <body>
+    <header>
+      <p class="nav"><a href="/" class="backlink">← Control panel</a></p>
+      <h1>Trials of Osiris</h1>
+      <p class="muted" id="authNote"></p>
+    </header>
+
+    <main class="layout">
+      <form id="form" class="form-col">
+        <fieldset>
+          <legend>Weekend</legend>
+          <div class="field">
+            <label for="resetAt">Live-until boundary (UTC — Tuesday 17:00)</label>
+            <input type="datetime-local" id="resetAt" />
+            <span class="muted">Leave blank to use the current week's reset.</span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Featured Maps</legend>
+          <div class="field">
+            <label for="mapsText">Maps (one per line, in post order)</label>
+            <textarea id="mapsText" rows="4" placeholder="Burnout&#10;Widow's Court&#10;Endless Vale"></textarea>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Bonus Focus Pool</legend>
+          <div class="field">
+            <label for="focusPool">This week's focus-pool weapons</label>
+            <select id="focusPool" multiple></select>
+            <span class="muted">Search the manifest; type a name and press enter to add one that isn't listed.</span>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Notes</legend>
+          <div class="field">
+            <label for="notesText">Info notes (one per line, optional)</label>
+            <textarea id="notesText" placeholder="Optional ad-hoc notes."></textarea>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Image</legend>
+          <div class="field">
+            <label for="imageUrl">Image URL (shown at the bottom of the post)</label>
+            <input type="url" id="imageUrl" placeholder="https://…" />
+          </div>
+          <label class="inline"><input type="checkbox" id="imageDefault" /> Use this as the default image for future weekends</label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Autopost</legend>
+          <label class="inline"><input type="checkbox" id="autopost" /> Auto-build a fresh draft every Friday reset</label>
+        </fieldset>
+      </form>
+
+      <aside class="preview-col">
+        <div class="preview-head">
+          <h2>Preview</h2>
+          <button id="refreshBtn" class="secondary tiny" type="button">↻ Refresh</button>
+        </div>
+        <ul id="problems" class="hidden"></ul>
+        <pre id="previewBox">Loading preview…</pre>
+      </aside>
+    </main>
+
+    <div class="toolbar">
+      <button id="createBtn" type="button" hidden>➕ Create post</button>
+      <button id="createPublishBtn" class="secondary" type="button" hidden>📣 Create post &amp; publish</button>
+      <button id="editBtn" type="button" hidden>✏️ Edit post</button>
+      <button id="editPublishBtn" class="secondary" type="button" hidden>📣 Edit &amp; publish</button>
+      <button id="deleteBtn" class="danger" type="button" hidden>🗑 Delete post</button>
+      <span class="grow"></span>
+      <span id="status"></span>
+    </div>
+
+    <!--
+      The server (dd.anchor.extensions.trials) injects the bootstrap JSON by
+      .replace()-ing the __BOOTSTRAP__ placeholder in the inline script below. That
+      placeholder MUST stay inline here (this page is templated per request). This tiny
+      non-deferred script runs at parse time — before the deferred vendor / shared.js /
+      trials_form.js — so the global is set first.
+    -->
+    <script>window.__BOOTSTRAP__ = /*__BOOTSTRAP__*/ null;</script>
+    <script defer src="/static/vendor/tom-select.complete.min.js"></script>
+    <script defer src="/static/shared.js"></script>
+    <script defer src="/static/trials_form.js"></script>
+  </body>
+</html>
