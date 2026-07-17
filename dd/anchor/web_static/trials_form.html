@@ -54,6 +54,15 @@
         <fieldset>
           <legend>Bonus Focus Pool</legend>
           <div class="field">
+            <label for="lootSet">Load a set from the rotation</label>
+            <select id="lootSet"></select>
+            <span class="muted">
+              Fills the weapons below with a set from the
+              <a href="/rotation/edit?type=trials_loot" target="_blank" rel="noopener">loot-pool rotation</a>.
+              Edit the pool &amp; schedule there.
+            </span>
+          </div>
+          <div class="field">
             <label for="focusPool">This week's focus-pool weapons</label>
             <select id="focusPool" multiple></select>
             <span class="muted">Search the manifest; type a name and press enter to add one that isn't listed.</span>

@@ -183,6 +183,35 @@ async def test_build_draft_context_defaults_to_next_loot_set(stub_weapon_items) 
     assert ctx.image_url == "https://img"
 
 
+@pytest.mark.asyncio
+async def test_form_loot_sets_resolves_and_marks_current(stub_weapon_items) -> None:
+    # The form's "load a set" picker: named sets resolved to manifest weapons (type
+    # suffix stripped, hash linked when known), plus the set the cursor points at as
+    # "current" — mirroring the schedule filtering the producer's default uses.
+    await tr.schemas.RotationData.set_data(
+        tr.LOOT_SLUG,
+        {
+            "sets": [
+                {
+                    "name": "Pool A",
+                    "weapons": ["The Scholar (Scout Rifle)", "Sola's Scar"],
+                },
+                {"name": "Pool B", "weapons": ["Exile's Curse"]},
+            ],
+            "schedule": ["Pool A", "Pool B"],
+        },
+    )
+    await tr.save_config(tr.TrialsConfig(last_loot_set_index=0))  # next = schedule[1]
+    sets, current = await tr._form_loot_sets()
+    assert current == "Pool B"
+    by_name = {s["name"]: s for s in sets}
+    a = by_name["Pool A"]["weapons"]
+    assert a[0]["name"] == "The Scholar" and a[0]["hash"] == 123  # stripped + linked
+    assert a[1]["name"] == "Sola's Scar" and a[1]["hash"] is None  # hand-typed, no link
+    assert by_name["Pool B"]["weapons"][0]["hash"] == 456
+    await _seed_default_loot_rotation()  # shared DB — restore for cursor tests
+
+
 # ---------------------------------------------------------------------------
 # validation
 # ---------------------------------------------------------------------------
