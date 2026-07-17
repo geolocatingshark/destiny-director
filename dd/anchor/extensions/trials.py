@@ -381,7 +381,8 @@ def build_body(ctx: TrialsContext) -> str:
     pool = [w for w in ctx.focus_pool if w and w.name]
     if pool:
         lines += ["", "**This Week's Bonus Focus Pool**"]
-        lines += [f"- :{_weapon_emoji(w)}: {w.markdown()}" for w in pool]
+        # No "- " bullet: the leading weapon-type emoji is the marker.
+        lines += [f":{_weapon_emoji(w)}: {w.markdown()}" for w in pool]
 
     for note in ctx.notes:
         if note:

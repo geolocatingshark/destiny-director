@@ -84,9 +84,10 @@ def test_build_body_exact_format(monkeypatch) -> None:
     assert "All Trials weapons available" in lines
     assert "Weapon Attunement available" in lines
     assert "**This Week's Bonus Focus Pool**" in lines
-    # Type emoji when the guild has it (+ light.gg link); generic :weapon: otherwise.
-    assert "- :scout_rifle: [The Scholar](https://light.gg/db/items/123)" in lines
-    assert "- :weapon: Exile's Curse" in lines
+    # Type emoji when the guild has it (+ light.gg link); generic :weapon: otherwise. No
+    # "- " bullet — the emoji is the marker.
+    assert ":scout_rifle: [The Scholar](https://light.gg/db/items/123)" in lines
+    assert ":weapon: Exile's Curse" in lines
     assert lines[-1] == "### Good luck in your games!  :gscheer:"
 
 
@@ -123,9 +124,9 @@ def test_focus_pool_emoji_bow_aliases_to_combat_bow(monkeypatch) -> None:
         ],
     )
     body = tr.build_body(ctx)
-    assert "- :combat_bow: [Wish-Keeper](https://light.gg/db/items/7)" in body
-    assert "- :weapon: [Edge of Action](https://light.gg/db/items/8)" in body
-    assert "- :scout_rifle: [The Scholar](https://light.gg/db/items/9)" in body
+    assert ":combat_bow: [Wish-Keeper](https://light.gg/db/items/7)" in body
+    assert ":weapon: [Edge of Action](https://light.gg/db/items/8)" in body
+    assert ":scout_rifle: [The Scholar](https://light.gg/db/items/9)" in body
 
 
 # ---------------------------------------------------------------------------
