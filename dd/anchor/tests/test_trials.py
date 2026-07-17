@@ -185,7 +185,7 @@ async def test_build_draft_context_defaults_to_next_loot_set(stub_weapon_items) 
 
 @pytest.mark.asyncio
 async def test_form_loot_sets_resolves_and_marks_current(stub_weapon_items) -> None:
-    # The form's "load a set" picker: named sets resolved to manifest weapons (type
+    # The form's set-card picker: named sets resolved to manifest weapons (type
     # suffix stripped, hash linked when known), plus the set the cursor points at as
     # "current" — mirroring the schedule filtering the producer's default uses.
     await tr.schemas.RotationData.set_data(

@@ -1,18 +1,18 @@
 // Trials of Osiris form script. A self-contained form for editing the trials draft,
 // served statically from /static/trials_form.js (no build step). The page
 // (trials_form.html) is served by dd.anchor.extensions.trials, which substitutes
-// {draft, options, autopost_enabled, default_image_url, accent_color, post_this_period,
-// crossposted} into a small inline <script> as window.__BOOTSTRAP__ before this runs.
-// This reads that global, edits the draft client-side and POSTs it (via the shared api()
-// helper) to /trials/{preview,create,edit,delete,auto} — auth is the central
-// Discord-OAuth session cookie (sent automatically on the same-origin fetch). The server
-// re-resolves the focus-pool weapons and re-validates, so this form is a convenience,
+// {draft, loot_sets, current_loot_set, autopost_enabled, default_image_url, accent_color,
+// post_this_period, crossposted} into a small inline <script> as window.__BOOTSTRAP__
+// before this runs. This reads that global, edits the draft client-side and POSTs it (via
+// the shared api() helper) to /trials/{preview,create,edit,delete,auto} — auth is the
+// central Discord-OAuth session cookie (sent automatically on the same-origin fetch). The
+// bonus focus pool is a set-card picker (one card per named rotation set); the server
+// re-resolves the picked set's weapons and re-validates, so this form is a convenience,
 // not a trust boundary.
 
 const BOOT = window.__BOOTSTRAP__;
 const {
   draft,
-  options,
   loot_sets: lootSets = [],
   current_loot_set: currentLootSet = null,
 } = BOOT;
@@ -30,73 +30,82 @@ const el = (tag, props = {}, kids = []) => {
 $("authNote").textContent =
   "Signed in via Discord (about 30 days). Save writes straight to the draft.";
 
-// item hash (string) -> item record, for hydrating a focus weapon from its saved hash.
-const itemByHash = new Map(options.items.map((i) => [String(i.hash), i]));
-// The full weapon pool as Tom Select options. Value is the manifest hash (as a string)
-// so a pick submits the hash for the light.gg deep link; searching spans name/type/rarity.
-const weaponOptions = options.items.map((i) => ({
-  value: String(i.hash),
-  name: i.name,
-  type: i.type,
-  rarity: i.rarity,
-  label: `${i.name} — ${i.type} · ${i.rarity}`,
-}));
+// --- bonus focus pool: pick one named set (card picker) ----------------
+// The pool is always one curated set from the editor-managed rotation (shipped resolved in
+// `lootSets`); the operator picks which card. Selecting a card makes its weapons the focus
+// pool, submitted (readForm) as the same hash/name value array the server already resolves.
+// A "No bonus pool" card posts an empty pool. The pool + schedule are edited in the
+// rotation editor (linked from the fieldset), not here.
 
-// --- bonus focus pool: a Tom Select multi over the weapon pool ----------
-// create:true lets the team add a weapon that isn't in the manifest pool as plain text
-// (value = the typed name); the server resolves either a hash or a name via resolve_weapon.
-const focusTS = new TomSelect($("focusPool"), {
-  options: weaponOptions,
-  valueField: "value",
-  labelField: "label",
-  searchField: ["name", "type", "rarity"],
-  maxOptions: 50,
-  plugins: ["remove_button"],
-  hideSelected: true,
-  create: true,
-  placeholder: "Search weapons…",
-  onChange: onEdit,
-  render: {
-    option: (d, esc) => `<div>${esc(d.label || d.value)}</div>`,
-    item: (d, esc) => `<div>${esc(d.label || d.value)}</div>`,
-    option_create: (d, esc) => `<div class="create">Add <strong>${esc(d.input)}</strong>…</div>`,
-  },
-});
-// Add one {hash, name} weapon ref into the focus picker: by manifest hash when we have
-// one that's in the pool, else inject the plain name as a one-off option so an unlinked
-// / hand-typed weapon survives. Silent (no onChange) — callers fire onEdit once per batch.
-function addFocusWeapon(w) {
-  const hash = w.hash != null ? String(w.hash) : "";
-  if (hash && itemByHash.has(hash)) {
-    focusTS.addItem(hash, true);
-  } else if (w.name) {
-    focusTS.addOption({ value: w.name, label: w.name, name: w.name });
-    focusTS.addItem(w.name, true);
-  }
+// Normalised identity of a weapon-ref list, so the saved draft pool can be matched to a set
+// by hash (when linked) or lower-cased name, regardless of order.
+const poolKey = (weapons) =>
+  (weapons || [])
+    .map((w) => (w.hash != null ? "#" + w.hash : (w.name || "").toLowerCase()))
+    .sort()
+    .join("|");
+
+const draftPool = draft.focus_pool || [];
+const draftKey = poolKey(draftPool);
+const matchingSet = lootSets.find((s) => poolKey(s.weapons) === draftKey);
+
+// The cards: "No bonus pool", then each set. If the saved draft pool is non-empty but
+// matches no set (a legacy hand-edited draft), prepend a transient card that re-posts it
+// verbatim so we never silently drop an existing pool — not a way to author new pools.
+const cards = [{ value: "", label: "No bonus pool", weapons: [], empty: true }];
+if (draftPool.length && !matchingSet) {
+  cards.push({
+    value: "__custom__",
+    label: "Current custom pool (not in rotation)",
+    weapons: draftPool,
+  });
 }
-// Hydrate from the saved focus pool.
-for (const w of draft.focus_pool || []) addFocusWeapon(w);
-
-// --- "load a set" picker: fill the focus pool from a named rotation set -
-// A convenience over the editor-managed loot loop (server-resolved to manifest weapons):
-// picking a set REPLACES the focus-pool selection with that set's weapons, which the
-// operator can still tweak. The pool + schedule are edited in the rotation editor (linked
-// from the form); the server re-resolves the focus pool on save either way.
-const lootSetByName = new Map(lootSets.map((s) => [s.name, s]));
-const lootSetSel = $("lootSet");
-lootSetSel.append(el("option", { value: "", textContent: "— Load a set from the rotation —" }));
 for (const s of lootSets) {
-  const label = s.name === currentLootSet ? `${s.name} (this week)` : s.name;
-  lootSetSel.append(el("option", { value: s.name, textContent: label }));
+  cards.push({
+    value: s.name,
+    label: s.name,
+    weapons: s.weapons,
+    thisWeek: s.name === currentLootSet,
+  });
 }
-lootSetSel.disabled = !lootSets.length;
-lootSetSel.addEventListener("change", () => {
-  const set = lootSetByName.get(lootSetSel.value);
-  if (!set) return;
-  focusTS.clear(true); // silent — one onEdit() fires after the batch below
-  for (const w of set.weapons) addFocusWeapon(w);
-  onEdit();
-});
+
+// Which card starts checked: the set matching the saved pool, else the custom card, else
+// "No bonus pool" (an empty pool).
+const checkedValue = draftPool.length ? (matchingSet ? matchingSet.name : "__custom__") : "";
+// value -> weapons, for readForm.
+const weaponsByValue = new Map(cards.map((c) => [c.value, c.weapons]));
+
+const setGrid = $("setGrid");
+for (const c of cards) {
+  const radio = el("input", {
+    type: "radio",
+    name: "focusSet",
+    className: "set-radio",
+    value: c.value,
+    checked: c.value === checkedValue,
+  });
+  const head = el("div", { className: "set-card-head" }, c.label);
+  if (c.thisWeek) head.append(el("span", { className: "set-tag" }, "This week"));
+  const kids = [radio, head];
+  if (c.weapons.length) {
+    kids.push(
+      el(
+        "ul",
+        { className: "set-weapons" },
+        c.weapons.map((w) => el("li", { textContent: w.name })),
+      ),
+    );
+  } else if (c.empty) {
+    kids.push(el("p", { className: "set-empty" }, "Post without a bonus pool."));
+  }
+  setGrid.append(el("label", { className: "set-card" }, kids));
+}
+
+// The selected card's set weapons (drives readForm + preview).
+const selectedWeapons = () => {
+  const checked = setGrid.querySelector(".set-radio:checked");
+  return (checked && weaponsByValue.get(checked.value)) || [];
+};
 
 // --- populate the native fields ----------------------------------------
 $("resetAt").value = draft.reset_ts
@@ -116,7 +125,8 @@ function readForm() {
   return {
     reset_ts: at ? Math.floor(Date.parse(at + "Z") / 1000) : draft.reset_ts,
     maps_text: $("mapsText").value,
-    focus_pool: focusTS.getValue(), // array of hash strings and/or typed names
+    // The selected set's weapons as hash strings (linked) and/or names (server resolves).
+    focus_pool: selectedWeapons().map((w) => (w.hash != null ? String(w.hash) : w.name)),
     image_url: $("imageUrl").value.trim(),
     set_default_image: $("imageDefault").checked,
     notes_text: $("notesText").value,

@@ -10,10 +10,11 @@
   embedded here. The server re-resolves the focus-pool weapons and re-validates on save,
   so this form is a convenience, not a trust boundary.
 
-  Widgets: the bonus focus pool is a Tom Select multi-select (vendored under /static/
-  vendor/, no build step) over the manifest weapon pool (option value = manifest hash,
-  free-typed names allowed); maps/notes/image stay native. Tom Select's stylesheet loads
-  before trials_form.css so the dark-theme overrides there win.
+  Widgets: the bonus focus pool is a card picker — one selectable card per named set from
+  the editor-managed loot rotation (shipped resolved in the bootstrap's `loot_sets`),
+  prefilled to this week's set. The card the operator picks becomes the focus pool; a "No
+  bonus pool" card posts none. Maps/notes/image stay native. The pool + schedule are edited
+  in the rotation editor (linked from the fieldset), not here.
 -->
 <html lang="en">
   <head>
@@ -22,7 +23,6 @@
     <meta name="robots" content="noindex, nofollow" />
     <title>Trials of Osiris</title>
     <link rel="stylesheet" href="/static/shared.css" />
-    <link rel="stylesheet" href="/static/vendor/tom-select.min.css" />
     <link rel="stylesheet" href="/static/trials_form.css" />
   </head>
   <body>
@@ -54,18 +54,11 @@
         <fieldset>
           <legend>Bonus Focus Pool</legend>
           <div class="field">
-            <label for="lootSet">Load a set from the rotation</label>
-            <select id="lootSet"></select>
             <span class="muted">
-              Fills the weapons below with a set from the
+              Pick this week's set. Manage the pool &amp; schedule in the
               <a href="/rotation/edit?type=trials_loot" target="_blank" rel="noopener">loot-pool rotation</a>.
-              Edit the pool &amp; schedule there.
             </span>
-          </div>
-          <div class="field">
-            <label for="focusPool">This week's focus-pool weapons</label>
-            <select id="focusPool" multiple></select>
-            <span class="muted">Search the manifest; type a name and press enter to add one that isn't listed.</span>
+            <div id="setGrid" class="set-grid" role="radiogroup" aria-label="Bonus focus pool set"></div>
           </div>
         </fieldset>
 
@@ -120,7 +113,6 @@
       trials_form.js — so the global is set first.
     -->
     <script>window.__BOOTSTRAP__ = /*__BOOTSTRAP__*/ null;</script>
-    <script defer src="/static/vendor/tom-select.complete.min.js"></script>
     <script defer src="/static/shared.js"></script>
     <script defer src="/static/trials_form.js"></script>
   </body>

@@ -1,10 +1,9 @@
 /*
-  Trials of Osiris form styles. Layered on /static/shared.css (base reset + theme) and
-  /static/vendor/tom-select.min.css (loaded before this file, so the dark-theme overrides
-  at the bottom win). Served statically from /static/trials_form.css — no build step.
-  Mirrors weekly_reset_form.css (same layout/preview/toolbar/Tom-Select theme) minus the
-  weekly-reset-only widgets, plus the .md-h3 / .md-bullet preview rules the Trials post's
-  '### ' headers and '- ' bullets need.
+  Trials of Osiris form styles. Layered on /static/shared.css (base reset + theme).
+  Served statically from /static/trials_form.css — no build step. Mirrors
+  weekly_reset_form.css (same layout/preview/toolbar) minus the weekly-reset-only widgets,
+  plus the .md-h3 / .md-bullet preview rules the Trials post's '### ' headers and '- '
+  bullets need, and the .set-* card picker for the bonus focus pool.
 */
 
 /* Form on the left, sticky preview on the right (desktop); stacked on narrow screens. */
@@ -97,40 +96,36 @@ button.tiny { padding: .25rem .6rem; font-size: .8rem; }
 #status.ok { color: #7ee787; }
 #status.err { color: #ff7b72; white-space: pre-wrap; }
 
-/* --- Tom Select dark theme (overrides the vendored light stylesheet) --- */
-.ts-wrapper { width: 100%; min-width: 0; }
-.ts-wrapper.single .ts-control, .ts-wrapper.multi .ts-control,
-.ts-wrapper.single.input-active .ts-control, .ts-wrapper.multi.input-active .ts-control,
-.ts-wrapper.single.dropdown-active .ts-control, .ts-wrapper.multi.dropdown-active .ts-control {
-  background: #24272e; color: #e6e6e6;
-  border: 1px solid #3a3f47; border-radius: 6px;
-  box-shadow: none; padding: .35rem .5rem;
+/* --- bonus focus pool: set-card picker --- */
+/* Wrapping grid: cards stack on mobile, sit 2–3 across when wide; page scrolls vertically. */
+.set-grid {
+  display: grid; gap: .6rem;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
 }
-.ts-control, .ts-control input, .ts-control input::placeholder { color: #e6e6e6; }
-.ts-control input {
-  background: transparent; color: #e6e6e6; -webkit-text-fill-color: #e6e6e6;
+.set-card {
+  position: relative; display: flex; flex-direction: column; gap: .35rem;
+  padding: .6rem .7rem; cursor: pointer;
+  background: #24272e; border: 1px solid #3a3f47; border-radius: 8px;
 }
-.ts-control input::placeholder, .ts-control > .ts-placeholder { color: #8b9096; }
-.ts-wrapper.focus .ts-control, .ts-control.focus { border-color: #2e5bff; box-shadow: none; }
-.ts-wrapper.disabled .ts-control { opacity: .55; }
-
-.ts-dropdown {
-  background: #1f2229; color: #e6e6e6;
-  border: 1px solid #3a3f47; border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .45); margin-top: .2rem; z-index: 30;
+.set-card:hover { border-color: #4a5670; }
+/* The radio drives selection; hidden but kept focusable for keyboard use. */
+.set-radio { position: absolute; width: 1px; height: 1px; opacity: 0; margin: 0; }
+.set-card:has(.set-radio:checked) {
+  border-color: var(--accent, #2e5bff); background: #1c2333;
 }
-.ts-dropdown .option { padding: .4rem .55rem; }
-.ts-dropdown .active { background: #2a2f37; color: #fff; }
-.ts-dropdown .option.selected { color: #9fb4ff; }
-.ts-dropdown .create { color: #cfd3d6; }
-.ts-dropdown .no-results { color: #9aa0a6; padding: .4rem .55rem; }
-
-/* Multi-select chips (the focus pool). */
-.ts-wrapper.multi .ts-control > .item {
-  background: #2e5bff; color: #fff; border: 0; border-radius: 4px;
-  padding: .12rem .45rem;
+.set-card:has(.set-radio:focus-visible) {
+  outline: 2px solid var(--accent, #2e5bff); outline-offset: 2px;
 }
-.ts-wrapper.multi .ts-control > .item .remove {
-  border-left-color: rgba(255, 255, 255, .4); color: #fff;
+.set-card-head {
+  display: flex; align-items: center; gap: .4rem;
+  font-weight: 600; color: #e6e6e6;
 }
-.ts-wrapper.multi .ts-control > .item .remove:hover { background: rgba(255, 255, 255, .18); }
+.set-tag {
+  font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em;
+  color: #cfe0ff; background: #2e5bff; border-radius: 999px; padding: .05rem .45rem;
+}
+.set-weapons {
+  margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: .1rem;
+  color: #b9bec4; font-size: .84rem;
+}
+.set-empty { margin: 0; color: #8b9096; font-size: .84rem; }
