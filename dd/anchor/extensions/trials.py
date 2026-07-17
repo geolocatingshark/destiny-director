@@ -313,9 +313,40 @@ async def build_draft_context(config: TrialsConfig | None = None) -> TrialsConte
 # Renderer
 # ---------------------------------------------------------------------------
 
+#: Weapon-type emoji names present in the Kyber guild. :func:`build_body` prefixes each
+#: focus-pool weapon with its type emoji when the guild has one, falling back to the
+#: generic ``:weapon:`` otherwise (the guild has no ``bow`` emoji, for instance) —
+#: mirroring xûr's ``emoji_include_list`` gate so a missing type never leaks a literal
+#: ``:bow:`` into the post. Populated once at startup from the guild emoji dict (see
+#: :func:`_schedule_trials`); defaults to just ``{"weapon"}`` so a not-yet-warmed
+#: process shows the generic icon.
+_weapon_emoji_names: frozenset[str] = frozenset({"weapon"})
+
+
+def _weapon_emoji(w: WeaponRef) -> str:
+    """The weapon's type-emoji name if the guild has it, else the generic ``weapon``."""
+    return w.emoji_name if w.emoji_name in _weapon_emoji_names else "weapon"
+
+
+async def _prewarm_weapon_emoji(bot: CachedFetchBot) -> None:
+    """Populate :data:`_weapon_emoji_names` from the guild emoji dict (once at startup).
+
+    Reuses the shared short-TTL preview-emoji cache. On failure the dict is empty and
+    the module keeps its ``{"weapon"}`` default, so posts degrade to the generic icon.
+    """
+    global _weapon_emoji_names
+    emoji = await hybrid_post_core.preview_emoji_dict(bot)
+    if emoji:
+        _weapon_emoji_names = frozenset(emoji) | {"weapon"}
+
 
 def build_body(ctx: TrialsContext) -> str:
-    """The full post markdown, with ``:emoji:`` tokens still un-substituted."""
+    """The full post markdown, with ``:emoji:`` tokens still un-substituted.
+
+    Each focus-pool weapon is prefixed with its weapon-type emoji (``:scout_rifle:`` …),
+    falling back to the generic ``:weapon:`` for a type the guild has no emoji for — see
+    :data:`_weapon_emoji_names`.
+    """
     lines: list[str] = [
         f"# {TRIALS_TITLE}",
         "",
@@ -332,7 +363,7 @@ def build_body(ctx: TrialsContext) -> str:
     pool = [w for w in ctx.focus_pool if w and w.name]
     if pool:
         lines += ["", "**This Week's Bonus Focus Pool**"]
-        lines += [f"- {w.markdown()}" for w in pool]
+        lines += [f"- :{_weapon_emoji(w)}: {w.markdown()}" for w in pool]
 
     for note in ctx.notes:
         if note:
@@ -496,6 +527,29 @@ async def _form_loot_sets() -> tuple[list[dict[str, t.Any]], str | None]:
     return sets, current
 
 
+async def _card_emoji_urls(
+    loot_sets: list[dict[str, t.Any]], draft: TrialsContext
+) -> dict[str, str]:
+    """Guild emoji URLs (by emoji name) for the weapon-type icons on the set cards.
+
+    Only the emoji names actually referenced by the sets + the current draft, plus the
+    generic ``weapon`` fallback, so the payload stays tiny. Empty if the guild dict is
+    not available yet — the cards then render names without icons.
+    """
+    emoji = await hybrid_post_core.preview_emoji_dict(_bot)
+    if not emoji:
+        return {}
+    names: set[str] = {"weapon"}
+    names |= {
+        str(w["emoji_name"])
+        for s in loot_sets
+        for w in s["weapons"]
+        if w.get("emoji_name")
+    }
+    names |= {w.emoji_name for w in draft.focus_pool if w.emoji_name}
+    return {n: str(emoji[n].url) for n in names if n in emoji}
+
+
 async def _build_bootstrap(draft: TrialsContext, meta: DraftMeta) -> dict[str, t.Any]:
     """The page bootstrap JSON: the draft, loot sets, toggles and lifecycle flags."""
     config = await load_config()
@@ -507,6 +561,8 @@ async def _build_bootstrap(draft: TrialsContext, meta: DraftMeta) -> dict[str, t
         # (linked from the form); the form only picks the set for this weekend.
         "loot_sets": loot_sets,
         "current_loot_set": current_loot_set,
+        # emoji name -> guild emoji URL, for the weapon-type icons on the cards.
+        "emoji_urls": await _card_emoji_urls(loot_sets, draft),
         "autopost_enabled": bool(await schemas.AutoPostSettings.get_trials_enabled()),
         "default_image_url": config.default_image_url or "",
         "accent_color": str(cfg.embed_default_color),
@@ -731,6 +787,9 @@ async def _schedule_trials(
 
     # Prewarm the manifest weapon pool so the first form load is fast.
     asyncio.create_task(get_weapon_items())
+    # Learn which weapon-type emoji the guild has, so build_body can prefix each focus
+    # weapon with its type icon (and fall back to :weapon: for a missing type).
+    asyncio.create_task(_prewarm_weapon_emoji(bot))
 
     # Friday 17:00 UTC — Trials returns at the Friday reset. Enable/disable lives on the
     # web form's autopost toggle (POST /trials/auto -> AutoPostSettings.set_trials).
