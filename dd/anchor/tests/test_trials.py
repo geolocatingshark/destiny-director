@@ -62,11 +62,17 @@ def test_live_until_is_the_reset_ts() -> None:
     assert f"Live until <t:{SAMPLE_RESET}:f>" in body
 
 
-def test_build_body_exact_format() -> None:
+def test_build_body_exact_format(monkeypatch) -> None:
+    # The guild has a scout_rifle emoji but not (say) a fusion one, so the linked scout
+    # gets its type icon and the other weapon falls back to :weapon:.
+    monkeypatch.setattr(tr, "_weapon_emoji_names", frozenset({"scout_rifle", "weapon"}))
     ctx = tr.TrialsContext(
         reset_ts=SAMPLE_RESET,
         featured_maps=["Burnout", "Widow's Court", "Endless Vale"],
-        focus_pool=[tr.WeaponRef("The Scholar", 123), tr.WeaponRef("Exile's Curse")],
+        focus_pool=[
+            tr.WeaponRef("The Scholar", 123, "scout_rifle"),
+            tr.WeaponRef("Exile's Curse"),
+        ],
     )
     lines = tr.build_body(ctx).split("\n")
     assert lines[0] == "# [Trials *of* Osiris](https://kyber3000.com/Trialspost)"
@@ -78,9 +84,9 @@ def test_build_body_exact_format() -> None:
     assert "All Trials weapons available" in lines
     assert "Weapon Attunement available" in lines
     assert "**This Week's Bonus Focus Pool**" in lines
-    # Manifest-linked weapon -> light.gg deep link; hash-less weapon -> plain name.
-    assert "- [The Scholar](https://light.gg/db/items/123)" in lines
-    assert "- Exile's Curse" in lines
+    # Type emoji when the guild has it (+ light.gg link); generic :weapon: otherwise.
+    assert "- :scout_rifle: [The Scholar](https://light.gg/db/items/123)" in lines
+    assert "- :weapon: Exile's Curse" in lines
     assert lines[-1] == "### Good luck in your games!  :gscheer:"
 
 
@@ -100,6 +106,22 @@ def test_build_body_hides_empty_optional_sections() -> None:
     both_empty = tr.build_body(tr.TrialsContext(reset_ts=1))
     assert "### Rewards" in both_empty
     assert both_empty.rstrip().endswith("### Good luck in your games!  :gscheer:")
+
+
+def test_focus_pool_emoji_gates_unknown_type_to_weapon(monkeypatch) -> None:
+    # A weapon type the guild has no emoji for (bow) falls back to :weapon: rather than
+    # leaking a literal ":bow:" into the post; a known type keeps its icon.
+    monkeypatch.setattr(tr, "_weapon_emoji_names", frozenset({"scout_rifle", "weapon"}))
+    ctx = tr.TrialsContext(
+        reset_ts=1,
+        focus_pool=[
+            tr.WeaponRef("Keen Thistle", 7, "bow"),
+            tr.WeaponRef("The Scholar", 8, "scout_rifle"),
+        ],
+    )
+    body = tr.build_body(ctx)
+    assert "- :weapon: [Keen Thistle](https://light.gg/db/items/7)" in body
+    assert "- :scout_rifle: [The Scholar](https://light.gg/db/items/8)" in body
 
 
 # ---------------------------------------------------------------------------

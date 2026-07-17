@@ -1,8 +1,8 @@
 // Trials of Osiris form script. A self-contained form for editing the trials draft,
 // served statically from /static/trials_form.js (no build step). The page
 // (trials_form.html) is served by dd.anchor.extensions.trials, which substitutes
-// {draft, loot_sets, current_loot_set, autopost_enabled, default_image_url, accent_color,
-// post_this_period, crossposted} into a small inline <script> as window.__BOOTSTRAP__
+// {draft, loot_sets, current_loot_set, emoji_urls, autopost_enabled, default_image_url,
+// accent_color, post_this_period, crossposted} into a small inline <script> as __BOOTSTRAP__
 // before this runs. This reads that global, edits the draft client-side and POSTs it (via
 // the shared api() helper) to /trials/{preview,create,edit,delete,auto} — auth is the
 // central Discord-OAuth session cookie (sent automatically on the same-origin fetch). The
@@ -15,6 +15,7 @@ const {
   draft,
   loot_sets: lootSets = [],
   current_loot_set: currentLootSet = null,
+  emoji_urls: emojiUrls = {},
 } = BOOT;
 // Mirror the post's CV2 accent colour as the preview's left bar (see #previewBox CSS).
 if (BOOT.accent_color) {
@@ -92,7 +93,14 @@ for (const c of cards) {
       el(
         "ul",
         { className: "set-weapons" },
-        c.weapons.map((w) => el("li", { textContent: w.name })),
+        c.weapons.map((w) => {
+          const li = el("li", {}, w.name);
+          // Prefix with the weapon-type emoji (icon), falling back to the generic weapon
+          // icon; matches the emoji shown in the post/preview.
+          const url = emojiUrls[w.emoji_name] || emojiUrls.weapon;
+          if (url) li.prepend(el("img", { className: "emoji", src: url, alt: "" }));
+          return li;
+        }),
       ),
     );
   } else if (c.empty) {
