@@ -55,10 +55,11 @@ async def _seed_default_loot_rotation() -> None:
     )
 
 
-def test_live_until_is_next_reset() -> None:
+def test_live_until_is_the_reset_ts() -> None:
+    # reset_ts IS the live-until boundary now — rendered directly, not next_reset_ts.
     ctx = tr.TrialsContext(reset_ts=SAMPLE_RESET)
     body = tr.build_body(ctx)
-    assert f"Live until <t:{hpc.next_reset_ts(SAMPLE_RESET)}:f>" in body
+    assert f"Live until <t:{SAMPLE_RESET}:f>" in body
 
 
 def test_build_body_exact_format() -> None:
@@ -70,7 +71,7 @@ def test_build_body_exact_format() -> None:
     lines = tr.build_body(ctx).split("\n")
     assert lines[0] == "# [Trials *of* Osiris](https://kyber3000.com/Trialspost)"
     assert lines[1] == ""
-    assert lines[2] == f"Live until <t:{hpc.next_reset_ts(SAMPLE_RESET)}:f>"
+    assert lines[2] == f"Live until <t:{SAMPLE_RESET}:f>"
     assert lines[3] == "### Featured Maps"
     assert "- Burnout" in lines and "- Widow's Court" in lines
     assert "### Rewards" in lines
@@ -177,7 +178,7 @@ async def test_build_draft_context_defaults_to_next_loot_set(stub_weapon_items) 
         last_loot_set_index=0,
     )
     ctx = await tr.build_draft_context(config)
-    assert ctx.reset_ts == hpc.current_reset_ts()
+    assert ctx.reset_ts == hpc.next_reset_ts(hpc.current_reset_ts())
     assert ctx.featured_maps == ["Burnout"]
     assert [w.name for w in ctx.focus_pool] == list(tr.DEFAULT_LOOT_SETS[1])
     assert ctx.image_url == "https://img"
@@ -280,7 +281,7 @@ async def test_context_from_payload_splits_and_resolves(stub_weapon_items) -> No
 @pytest.mark.asyncio
 async def test_context_from_payload_defaults_reset(stub_weapon_items) -> None:
     ctx = await tr._context_from_payload({"maps_text": "Burnout"})
-    assert ctx.reset_ts == hpc.current_reset_ts()
+    assert ctx.reset_ts == hpc.next_reset_ts(hpc.current_reset_ts())
 
 
 # ---------------------------------------------------------------------------
