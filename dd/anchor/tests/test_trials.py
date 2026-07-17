@@ -108,20 +108,24 @@ def test_build_body_hides_empty_optional_sections() -> None:
     assert both_empty.rstrip().endswith("### Good luck in your games!  :gscheer:")
 
 
-def test_focus_pool_emoji_gates_unknown_type_to_weapon(monkeypatch) -> None:
-    # A weapon type the guild has no emoji for (bow) falls back to :weapon: rather than
-    # leaking a literal ":bow:" into the post; a known type keeps its icon.
-    monkeypatch.setattr(tr, "_weapon_emoji_names", frozenset({"scout_rifle", "weapon"}))
+def test_focus_pool_emoji_bow_aliases_to_combat_bow(monkeypatch) -> None:
+    # The guild has no "bow" emoji but has "combat_bow": a bow slug uses that alias, and
+    # a type with neither its slug nor an alias falls back to the generic :weapon:.
+    monkeypatch.setattr(
+        tr, "_weapon_emoji_names", frozenset({"combat_bow", "scout_rifle", "weapon"})
+    )
     ctx = tr.TrialsContext(
         reset_ts=1,
         focus_pool=[
-            tr.WeaponRef("Keen Thistle", 7, "bow"),
-            tr.WeaponRef("The Scholar", 8, "scout_rifle"),
+            tr.WeaponRef("Wish-Keeper", 7, "bow"),  # alias -> combat_bow
+            tr.WeaponRef("Edge of Action", 8, "glaive"),  # absent, no alias -> weapon
+            tr.WeaponRef("The Scholar", 9, "scout_rifle"),  # present -> itself
         ],
     )
     body = tr.build_body(ctx)
-    assert "- :weapon: [Keen Thistle](https://light.gg/db/items/7)" in body
-    assert "- :scout_rifle: [The Scholar](https://light.gg/db/items/8)" in body
+    assert "- :combat_bow: [Wish-Keeper](https://light.gg/db/items/7)" in body
+    assert "- :weapon: [Edge of Action](https://light.gg/db/items/8)" in body
+    assert "- :scout_rifle: [The Scholar](https://light.gg/db/items/9)" in body
 
 
 # ---------------------------------------------------------------------------

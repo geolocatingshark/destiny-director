@@ -322,10 +322,28 @@ async def build_draft_context(config: TrialsConfig | None = None) -> TrialsConte
 #: process shows the generic icon.
 _weapon_emoji_names: frozenset[str] = frozenset({"weapon"})
 
+#: Ordered emoji-name aliases tried when a weapon type's primary slug isn't a guild
+#: emoji, before falling through to the generic ``:weapon:``. The manifest calls a bow a
+#: "Combat Bow" (→ ``combat_bow``, which the guild has), but a stray ``bow`` slug should
+#: still land on the bow icon rather than the generic one.
+_EMOJI_FALLBACKS: dict[str, tuple[str, ...]] = {"bow": ("combat_bow",)}
+
+
+def _emoji_name_for(emoji_name: str | None, available: t.Container[str]) -> str:
+    """The best emoji name for a weapon type: its own slug, an alias, else ``weapon``.
+
+    Tries the type's slug, then :data:`_EMOJI_FALLBACKS` aliases, then the generic
+    ``weapon`` — returning the first that ``available`` (the guild emoji names) has.
+    """
+    for name in (emoji_name, *_EMOJI_FALLBACKS.get(emoji_name or "", ())):
+        if name and name in available:
+            return name
+    return "weapon"
+
 
 def _weapon_emoji(w: WeaponRef) -> str:
-    """The weapon's type-emoji name if the guild has it, else the generic ``weapon``."""
-    return w.emoji_name if w.emoji_name in _weapon_emoji_names else "weapon"
+    """The guild emoji name to prefix ``w`` with (see :func:`_emoji_name_for`)."""
+    return _emoji_name_for(w.emoji_name, _weapon_emoji_names)
 
 
 async def _prewarm_weapon_emoji(bot: CachedFetchBot) -> None:
@@ -539,15 +557,22 @@ async def _card_emoji_urls(
     emoji = await hybrid_post_core.preview_emoji_dict(_bot)
     if not emoji:
         return {}
-    names: set[str] = {"weapon"}
-    names |= {
+    names: set[str] = {
         str(w["emoji_name"])
         for s in loot_sets
         for w in s["weapons"]
         if w.get("emoji_name")
     }
     names |= {w.emoji_name for w in draft.focus_pool if w.emoji_name}
-    return {n: str(emoji[n].url) for n in names if n in emoji}
+    # Key each weapon's own slug to the URL of the emoji it should show (type icon, a
+    # bow-style alias, or the generic weapon), so the client looks up by emoji_name and
+    # gets the same fallback chain the post uses. Always include the "weapon" fallback.
+    urls = {"weapon": str(emoji["weapon"].url)} if "weapon" in emoji else {}
+    for name in names:
+        resolved = emoji.get(_emoji_name_for(name, emoji))
+        if resolved:
+            urls[name] = str(resolved.url)
+    return urls
 
 
 async def _build_bootstrap(draft: TrialsContext, meta: DraftMeta) -> dict[str, t.Any]:
