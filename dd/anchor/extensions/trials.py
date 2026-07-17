@@ -116,6 +116,10 @@ class TrialsContext:
     survives restarts and can be resumed by any owner.
     """
 
+    #: The "Live until" boundary shown in the post (a Tuesday 17:00 UTC reset). A Trials
+    #: weekend runs Fri→Tue, so a fresh draft defaults this to the *upcoming* reset (the
+    #: next Tuesday), not the one that just passed. Purely the display boundary — the
+    #: post's lifecycle period key is stamped separately (see ``_now_reset_ts``).
     reset_ts: int
     #: Featured map names, in post order (human-entered free text).
     featured_maps: list[str] = dataclasses.field(default_factory=list)
@@ -281,7 +285,7 @@ async def save_meta(meta: DraftMeta) -> None:
 
 
 async def build_draft_context(config: TrialsConfig | None = None) -> TrialsContext:
-    """A fresh draft: the reset boundary, carried-over maps + the NEXT loot set.
+    """A fresh draft: the upcoming reset, carried-over maps + the NEXT loot set.
 
     The bonus focus pool defaults to the set after the last-used one (the editor-managed
     rotation loop); each name resolves to a manifest-linked :class:`WeaponRef`
@@ -296,7 +300,9 @@ async def build_draft_context(config: TrialsConfig | None = None) -> TrialsConte
         if (w := resolve_weapon(name, items))
     ]
     return TrialsContext(
-        reset_ts=current_reset_ts(),
+        # Live until the *upcoming* reset — the weekend runs Fri→Tue, so once this
+        # Tuesday's reset has passed the live window ends at the next Tuesday.
+        reset_ts=next_reset_ts(current_reset_ts()),
         featured_maps=list(config.last_featured_maps),
         focus_pool=focus_pool,
         image_url=config.default_image_url,
@@ -313,7 +319,7 @@ def build_body(ctx: TrialsContext) -> str:
     lines: list[str] = [
         f"# {TRIALS_TITLE}",
         "",
-        f"Live until <t:{next_reset_ts(ctx.reset_ts)}:f>",
+        f"Live until <t:{ctx.reset_ts}:f>",
     ]
 
     maps = [m for m in ctx.featured_maps if m]
@@ -431,7 +437,9 @@ async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> TrialsContext
     is re-resolved server-side (a manifest hash or typed name -> WeaponRef) against the
     weapon pool, and the maps/notes are split per-line and trimmed.
     """
-    ctx = TrialsContext(reset_ts=int(payload.get("reset_ts") or current_reset_ts()))
+    ctx = TrialsContext(
+        reset_ts=int(payload.get("reset_ts") or next_reset_ts(current_reset_ts()))
+    )
     ctx.featured_maps = [
         line.strip()
         for line in str(payload.get("maps_text", "")).splitlines()
