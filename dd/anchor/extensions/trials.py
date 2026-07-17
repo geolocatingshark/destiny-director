@@ -452,21 +452,10 @@ async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> TrialsContext
     return ctx
 
 
-async def _build_options() -> dict[str, t.Any]:
-    """Option pools shipped in the page bootstrap and filtered client-side."""
-    items = await get_weapon_items()
-    return {
-        "items": [
-            {"name": name, "hash": hash_, "type": type_name, "rarity": rarity}
-            for (name, hash_, type_name, _item_type, rarity) in items
-        ],
-    }
-
-
 async def _form_loot_sets() -> tuple[list[dict[str, t.Any]], str | None]:
     """The named loot sets (resolved to manifest weapons) + this week's set name.
 
-    Powers the form's "load a set" picker: sourced from the editor-managed
+    Powers the form's set-card picker: sourced from the editor-managed
     ``trials_loot`` doc (falling back to the baked default doc), each set's weapon names
     are stripped of the editor's ``" (Type)"`` suffix and resolved to manifest-linked
     weapon refs so the client can hydrate them straight into the focus-pool picker.
@@ -500,15 +489,14 @@ async def _form_loot_sets() -> tuple[list[dict[str, t.Any]], str | None]:
 
 
 async def _build_bootstrap(draft: TrialsContext, meta: DraftMeta) -> dict[str, t.Any]:
-    """The page bootstrap JSON: the draft, weapon pool, toggles and lifecycle flags."""
+    """The page bootstrap JSON: the draft, loot sets, toggles and lifecycle flags."""
     config = await load_config()
     loot_sets, current_loot_set = await _form_loot_sets()
     return {
         "draft": draft.to_dict(),
-        "options": await _build_options(),
         # The editor-managed loot sets (resolved weapons) + which one is this weekend's,
-        # for the form's "load a set" picker. Editing the pool itself happens in the
-        # rotation editor (linked from the form); this is a convenience shortcut.
+        # for the form's set-card picker. The pool is edited in the rotation editor
+        # (linked from the form); the form only picks the set for this weekend.
         "loot_sets": loot_sets,
         "current_loot_set": current_loot_set,
         "autopost_enabled": bool(await schemas.AutoPostSettings.get_trials_enabled()),
