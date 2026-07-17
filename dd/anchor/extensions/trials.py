@@ -231,9 +231,7 @@ def _next_in_rotation(rotation: list[list[str]], last_index: int) -> list[str]:
     return rotation[(last_index + 1) % len(rotation)]
 
 
-def _match_in_rotation(
-    rotation: list[list[str]], names: t.Iterable[str]
-) -> int | None:
+def _match_in_rotation(rotation: list[list[str]], names: t.Iterable[str]) -> int | None:
     """Index of the rotation entry equal to ``names`` (case/order-insensitive) or None.
 
     A committed post's focus pool is matched here to decide which set was "used".
@@ -465,12 +463,54 @@ async def _build_options() -> dict[str, t.Any]:
     }
 
 
+async def _form_loot_sets() -> tuple[list[dict[str, t.Any]], str | None]:
+    """The named loot sets (resolved to manifest weapons) + this week's set name.
+
+    Powers the form's "load a set" picker: sourced from the editor-managed
+    ``trials_loot`` doc (falling back to the baked default doc), each set's weapon names
+    are stripped of the editor's ``" (Type)"`` suffix and resolved to manifest-linked
+    weapon refs so the client can hydrate them straight into the focus-pool picker.
+    ``current`` is the set the cursor points at for this weekend — the one a fresh
+    draft's focus pool defaults to — mirroring :func:`_expand_loot_rotation`'s schedule
+    filtering so the "(this week)" hint matches the set the producer would pick.
+    """
+    doc = (
+        await schemas.RotationData.get_data(LOOT_SLUG)
+        or rotation_schema.trials_loot_default_doc()
+    )
+    items = await get_weapon_items()
+    sets = [
+        {
+            "name": str(s.get("name", "")),
+            "weapons": [
+                w.to_dict()
+                for name in s.get("weapons") or []
+                if (w := resolve_weapon(_strip_weapon_type(str(name)), items))
+            ],
+        }
+        for s in doc.get("sets") or []
+    ]
+    names = {s["name"] for s in sets}
+    schedule = [str(n) for n in doc.get("schedule") or [] if str(n) in names]
+    current = None
+    if schedule:
+        nxt = ((await load_config()).last_loot_set_index + 1) % len(schedule)
+        current = schedule[nxt]
+    return sets, current
+
+
 async def _build_bootstrap(draft: TrialsContext, meta: DraftMeta) -> dict[str, t.Any]:
     """The page bootstrap JSON: the draft, weapon pool, toggles and lifecycle flags."""
     config = await load_config()
+    loot_sets, current_loot_set = await _form_loot_sets()
     return {
         "draft": draft.to_dict(),
         "options": await _build_options(),
+        # The editor-managed loot sets (resolved weapons) + which one is this weekend's,
+        # for the form's "load a set" picker. Editing the pool itself happens in the
+        # rotation editor (linked from the form); this is a convenience shortcut.
+        "loot_sets": loot_sets,
+        "current_loot_set": current_loot_set,
         "autopost_enabled": bool(await schemas.AutoPostSettings.get_trials_enabled()),
         "default_image_url": config.default_image_url or "",
         "accent_color": str(cfg.embed_default_color),

@@ -10,7 +10,12 @@
 // not a trust boundary.
 
 const BOOT = window.__BOOTSTRAP__;
-const { draft, options } = BOOT;
+const {
+  draft,
+  options,
+  loot_sets: lootSets = [],
+  current_loot_set: currentLootSet = null,
+} = BOOT;
 // Mirror the post's CV2 accent colour as the preview's left bar (see #previewBox CSS).
 if (BOOT.accent_color) {
   document.documentElement.style.setProperty("--accent", BOOT.accent_color);
@@ -57,9 +62,10 @@ const focusTS = new TomSelect($("focusPool"), {
     option_create: (d, esc) => `<div class="create">Add <strong>${esc(d.input)}</strong>…</div>`,
   },
 });
-// Hydrate from the saved focus pool: by hash when we have one (and it's in the pool),
-// else inject the plain name as a one-off option so a carried-over unlinked name survives.
-for (const w of draft.focus_pool || []) {
+// Add one {hash, name} weapon ref into the focus picker: by manifest hash when we have
+// one that's in the pool, else inject the plain name as a one-off option so an unlinked
+// / hand-typed weapon survives. Silent (no onChange) — callers fire onEdit once per batch.
+function addFocusWeapon(w) {
   const hash = w.hash != null ? String(w.hash) : "";
   if (hash && itemByHash.has(hash)) {
     focusTS.addItem(hash, true);
@@ -68,6 +74,29 @@ for (const w of draft.focus_pool || []) {
     focusTS.addItem(w.name, true);
   }
 }
+// Hydrate from the saved focus pool.
+for (const w of draft.focus_pool || []) addFocusWeapon(w);
+
+// --- "load a set" picker: fill the focus pool from a named rotation set -
+// A convenience over the editor-managed loot loop (server-resolved to manifest weapons):
+// picking a set REPLACES the focus-pool selection with that set's weapons, which the
+// operator can still tweak. The pool + schedule are edited in the rotation editor (linked
+// from the form); the server re-resolves the focus pool on save either way.
+const lootSetByName = new Map(lootSets.map((s) => [s.name, s]));
+const lootSetSel = $("lootSet");
+lootSetSel.append(el("option", { value: "", textContent: "— Load a set from the rotation —" }));
+for (const s of lootSets) {
+  const label = s.name === currentLootSet ? `${s.name} (this week)` : s.name;
+  lootSetSel.append(el("option", { value: s.name, textContent: label }));
+}
+lootSetSel.disabled = !lootSets.length;
+lootSetSel.addEventListener("change", () => {
+  const set = lootSetByName.get(lootSetSel.value);
+  if (!set) return;
+  focusTS.clear(true); // silent — one onEdit() fires after the batch below
+  for (const w of set.weapons) addFocusWeapon(w);
+  onEdit();
+});
 
 // --- populate the native fields ----------------------------------------
 $("resetAt").value = draft.reset_ts
