@@ -26,7 +26,7 @@
         border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-3);
         overflow: hidden;
       }
-      .group:hover { border-color: var(--accent); }
+      .group:hover { border-color: var(--border-hover); }
       .row {
         display: flex; align-items: center; justify-content: space-between; gap: 1rem;
         padding: .7rem .9rem;
@@ -57,7 +57,8 @@
         border-radius: 50%; background: var(--text-1); transition: transform .15s ease;
       }
       .switch input:checked + .slider { background: var(--accent); }
-      .switch input:checked + .slider::before { transform: translateX(18px); }
+      /* Pure white knob on the pink fill (>=3:1 non-text contrast; #e6e6e6 would be 2.9). */
+      .switch input:checked + .slider::before { transform: translateX(18px); background: #fff; }
       .switch input:focus-visible + .slider {
         outline: 2px solid var(--accent); outline-offset: 2px;
       }
@@ -65,8 +66,8 @@
         display: flex; align-items: center; gap: .8rem; margin-top: 1rem;
       }
       button#save {
-        border: 1px solid var(--accent); border-radius: var(--radius); padding: .5rem 1.1rem;
-        background: var(--accent); color: #fff; font-size: .95rem; cursor: pointer;
+        border: 1px solid var(--accent-strong); border-radius: var(--radius); padding: .5rem 1.1rem;
+        background: var(--accent-strong); color: #fff; font-size: .95rem; cursor: pointer;
       }
       button#save:disabled { opacity: .6; cursor: default; }
       #status { color: var(--text-faint); font-size: .85rem; }

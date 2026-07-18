@@ -18,15 +18,19 @@
   --surface-3: #24272e;   /* inputs, secondary buttons, control chrome */
 
   --border: #3a3f47;
-  --border-hover: #4a5670;
+  --border-hover: #8a5a72;   /* muted Kyber-pink hover border */
 
-  /* Fixed UI accent — buttons, chips, tags, focus rings. Does NOT change per post. */
-  --accent: #2e5bff;
-  --accent-tint: #1c2333;         /* selected-row background wash */
-  --accent-text: #9fb4ff;         /* links, selected dropdown option */
-  /* accent-on-accent text (set-tag pill). Kept a soft blue-white but lightened from
-     #cfe0ff so the small bold uppercase tag clears WCAG AA (4.6:1 on --accent). */
-  --accent-text-strong: #eaf2ff;
+  /* Fixed UI accent — Kyber brand pink (#EC42A5, the post/embed accent colour). A
+     three-shade scale of one hue, split by WCAG need: the bright pink is too light for
+     white text (3.6:1) so it drives borders, focus rings and toggle fills (no text on
+     them); solid fills that carry white text use the deeper --accent-strong; link/label
+     text uses the lighter --accent-text so it clears AA on the card surfaces too. Does
+     NOT change per post. */
+  --accent: #EC42A5;              /* borders, focus rings, toggle fill */
+  --accent-strong: #c9187e;       /* button/chip/tag fills (white text passes AA) */
+  --accent-tint: #2b1420;         /* selected-row background wash */
+  --accent-text: #f26bb8;         /* link + selected-option text (AA on every surface) */
+  --accent-text-strong: #ffffff;  /* text on --accent-strong fills */
   /* Per-post accent — mirrors the current post's CV2 embed colour. Set at runtime by the
      form JS (setProperty on <html>); only the preview bar + set-card selection consume it,
      so page chrome stays stable across posts. Defaults to the fixed accent. */
