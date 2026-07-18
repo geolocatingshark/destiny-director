@@ -33,6 +33,13 @@ _SEED_DIR = pathlib.Path(__file__).resolve().parent / "seed_data" / "world_activ
 # transient DB blip doesn't break a command mid-session.
 _rotation_cache: dict[str, LegacyRotation] = {}
 
+# Render-mode partitions, shared by the beacon read commands + the anchor preview wall:
+# - single: short cycles → one non-paginated current+upcoming post.
+# - week-daily: a weekly navigator with a per-day breakdown of the daily activities.
+# - navigator (everything else): one page per day (daily) or per week (weekly).
+SINGLE_DESTINATIONS = frozenset({"rahool", "pale_heart", "kepler"})
+WEEK_DAILY_DESTINATIONS = frozenset({"neomuna", "moon"})
+
 
 def load_seed_doc(destination_key: str) -> dict | None:
     """The committed seed document for a destination key, or ``None`` if absent.
@@ -463,3 +470,66 @@ def render_dares_sections(
 
     sections.append(_FOOTER)
     return _subbed(sections, emoji_dict)
+
+
+# --- preview wall -----------------------------------------------------------------
+
+# Forward-window sizes for the anchor preview wall (independent of the beacon
+# navigator's own page counts).
+_WALL_DAILY_COUNT = 14  # navigator, daily destination (two weeks)
+_WALL_WEEKLY_COUNT = 8  # navigator / week-daily destination (two months)
+_WALL_SINGLE_DAILY_ROWS = 7  # single mode, daily destination
+_WALL_SINGLE_WEEKLY_ROWS = 5  # single mode, weekly destination
+
+
+def iter_wall_posts(
+    destination_key: str, rotation: LegacyRotation, now: dt.datetime
+) -> list[tuple[str, str]]:
+    """Preview-wall entries for a legacy destination: ``(period label, body markdown)``.
+
+    Mirrors the beacon read command's per-mode paging (single / week-daily / navigator)
+    but returns raw-``:emoji:`` markdown bodies (each post's sections joined with a
+    blank line) for :func:`dd.anchor.hybrid_post_core.render_post_spec`. The renderers
+    are called with an EMPTY ``emoji_dict`` on purpose so ``:name:`` tokens survive for
+    the HTML previewer to turn into ``<img>`` (``construct_emoji_substituter`` leaves
+    names it doesn't know untouched). Single-mode destinations yield ONE entry (current
+    + upcoming); navigator / week-daily yield the forward window of per-period posts.
+    """
+    links = rotation.item_links
+    weekly = rotation.step.days == 7
+
+    if destination_key in SINGLE_DESTINATIONS:
+        rows = _WALL_SINGLE_WEEKLY_ROWS if weekly else _WALL_SINGLE_DAILY_ROWS
+        # +1: the aligned window's first entry is the current period.
+        dates = period_starts(rotation, now, rows + 1)
+        sections = render_upcoming_sections(
+            destination_key, rotation, dates, emoji_dict={}, links=links
+        )
+        return [("Current + upcoming", "\n\n".join(sections))]
+
+    if destination_key in WEEK_DAILY_DESTINATIONS:
+        week0 = reset_week_start(rotation, now)
+        week_posts: list[tuple[str, str]] = []
+        for offset in range(_WALL_WEEKLY_COUNT):
+            week_start = week0 + dt.timedelta(days=7 * offset)
+            sections = render_week_sections(
+                destination_key, rotation, week_start, emoji_dict={}, links=links
+            )
+            week_posts.append((f"Week of {_fmt(week_start)}", "\n\n".join(sections)))
+        return week_posts
+
+    # navigator (daily or weekly): one post per reset-aligned period.
+    count = _WALL_WEEKLY_COUNT if weekly else _WALL_DAILY_COUNT
+    posts: list[tuple[str, str]] = []
+    for date in period_starts(rotation, now, count):
+        if destination_key == "dares":
+            sections = render_dares_sections(
+                rotation(date), date, emoji_dict={}, links=links
+            )
+        else:
+            sections = render_date_sections(
+                destination_key, rotation(date), date, emoji_dict={}, links=links
+            )
+        label = f"Week of {_fmt(date)}" if weekly else _fmt(date)
+        posts.append((label, "\n\n".join(sections)))
+    return posts

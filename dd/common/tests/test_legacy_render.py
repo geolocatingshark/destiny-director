@@ -23,6 +23,7 @@ import hikari as h
 
 from dd.common import components
 from dd.common.legacy_activities import (
+    iter_wall_posts,
     period_starts,
     render_dares_sections,
     render_date_sections,
@@ -102,6 +103,36 @@ def _rahool_rotation() -> LegacyRotation:
         ],
     }
     return LegacyRotation.from_json(doc)
+
+
+def test_iter_wall_posts_single_yields_one_current_and_upcoming():
+    # Single-mode (rahool) → one post: the current-focus + upcoming list.
+    posts = iter_wall_posts("rahool", _rahool_rotation(), DATE)
+    assert len(posts) == 1
+    label, body = posts[0]
+    assert label == "Current + upcoming"
+    assert "Rahool's Armor Focus" in body
+    assert "Upcoming" in body
+
+
+def test_iter_wall_posts_week_daily_yields_a_forward_window():
+    # Week-daily (neomuna) → 8 weekly posts, each labelled "Week of …".
+    posts = iter_wall_posts("neomuna", _neomuna_rotation(), DATE)
+    assert len(posts) == 8
+    label, body = posts[0]
+    assert label.startswith("Week of ")
+    assert "Terminal Overload" in body
+    # Emoji tokens survive RAW (emoji_dict={}) so the HTML previewer makes them <img>.
+    assert ":auto_rifle:" in body
+
+
+def test_iter_wall_posts_navigator_dares_keeps_raw_emoji():
+    # Navigator (dares, weekly) → 8 posts; armor/weapon tokens stay raw.
+    posts = iter_wall_posts("dares", _dares_rotation(), DATE)
+    assert len(posts) == 8
+    label, body = posts[0]
+    assert label.startswith("Week of ")
+    assert ":armor:" in body
 
 
 def test_dates_are_year_less_and_static():

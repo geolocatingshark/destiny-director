@@ -39,6 +39,8 @@ from ...common import cfg, components
 from ...common.bot import ServerEmojiEnabledBot
 from ...common.components import cv2_error, respond_cv2
 from ...common.legacy_activities import (
+    SINGLE_DESTINATIONS as _SINGLE,
+    WEEK_DAILY_DESTINATIONS as _WEEK_DAILY,
     load_rotation,
     period_starts,
     render_dares_sections,
@@ -52,10 +54,8 @@ from ...sector_accounting.legacy_activities import LegacyRotation
 
 loader = lb.Loader()
 
-# Destinations whose short cycles fit their whole upcoming schedule in one post.
-_SINGLE = frozenset({"rahool", "pale_heart", "kepler"})
-# Mixed daily+weekly destinations shown as a weekly navigator with a daily breakdown.
-_WEEK_DAILY = frozenset({"neomuna", "moon"})
+# _SINGLE / _WEEK_DAILY (the render-mode partitions) now live in
+# dd.common.legacy_activities so the anchor preview wall shares them; imported above.
 
 # How many pages / rows each mode shows.
 _DAILY_PAGE_COUNT = 14  # navigator, daily destination (two weeks)

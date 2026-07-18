@@ -65,6 +65,45 @@ def _elements_to_emoji(elements: str):
     return present_elements
 
 
+# Static header/footer of the Lost Sector post (raw :emoji: tokens). Split out so both
+# ``format_post`` (the live CV2 post) and ``build_body`` (the preview wall) share one
+# layout.
+_HEADER = (
+    "**Destiny 2**\n"
+    "## [World Lost Sectors](https://kyber3000.com/LS)\n"
+    "\n"
+    "Changes daily at <t:1753894800:t> local time.\n"
+    "\n"
+)
+_FOOTER = (
+    "Rewards:\n"
+    ":enhancement_core: Enhancement Core\n"
+    ":exotic_engram: Exotic Engram (If-Solo)\n"
+    ":legendary_weap: Legendary Weapon (If-Solo)\n"
+    "\n"
+    "[View more details](https://lostsectortoday.com) ↗\n"
+    "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
+)
+
+
+def build_body(sectors: list[sector_accounting.Sector], details_enabled: bool) -> str:
+    """The Lost Sector post body markdown (raw ``:emoji:`` tokens) for a day's sectors.
+
+    The same header + per-sector lines + footer ``format_post`` renders into the CV2
+    text display, factored out so the web preview wall can render any day's post via
+    :func:`dd.anchor.hybrid_post_core.render_post_spec` without duplicating the layout.
+    ``details_enabled`` mirrors the ``AutoPostSettings`` champions/shields toggle.
+    """
+    body = ""
+    for sector in sectors:
+        body += f":LS: **[{sector.name}]({sector.shortlink_gfx})**\n"
+        if details_enabled:
+            body += format_data(sector)
+    if not details_enabled:
+        body += "\n"
+    return _HEADER + body + _FOOTER
+
+
 def format_data(sector: sector_accounting.Sector) -> str:
     expert_data = sector.expert_data
     master_data = sector.master_data
@@ -136,38 +175,12 @@ async def format_post(
 
     # Components V2: the former embed's title + description become one text display and
     # the trailing image a full-width media gallery (mirroring the old set_image). The
-    # markdown is unchanged so the rendered post looks the same as the embed did.
-    header = (
-        "**Destiny 2**\n"
-        "## [World Lost Sectors](https://kyber3000.com/LS)\n"
-        "\n"
-        "Changes daily at <t:1753894800:t> local time.\n"
-        "\n"
-    )
-
-    body = ""
-    for sector in sectors:
-        sector: sector_accounting.Sector
-        body += f":LS: **[{sector.name}]({sector.shortlink_gfx})**\n"
-        if ls_extra_details_enabled:
-            body += format_data(sector)
-    if not ls_extra_details_enabled:
-        body += "\n"
-
-    footer = (
-        "Rewards:\n"
-        ":enhancement_core: Enhancement Core\n"
-        ":exotic_engram: Exotic Engram (If-Solo)\n"
-        ":legendary_weap: Legendary Weapon (If-Solo)\n"
-        "\n"
-        "[View more details](https://lostsectortoday.com) ↗\n"
-        "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
-    )
-
+    # markdown (build_body) is unchanged so the post looks the same as the old embed did
+    # — and is shared with the web preview wall.
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)
     )
-    container.add_text_display(header + body + footer)
+    container.add_text_display(build_body(sectors, bool(ls_extra_details_enabled)))
     if ls_gif_url:
         # URL-referenced (Discord fetches it) rather than uploaded — the gif is ~15 MB,
         # which would 413 on upload and re-download from the host on every send.

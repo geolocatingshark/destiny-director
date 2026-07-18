@@ -252,13 +252,17 @@ def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
 def _render_line(line: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
     """Render one body line, handling the heading, small-text and bullet prefixes.
 
-    ``### `` (H3) and ``- `` (bullet) render as spans (never ``<ul>``/``<li>``), so the
-    emitted tags stay within the ``{span, strong, em, a, img}`` whitelist the preview is
-    trusted against. ``### `` is tested before ``# `` and ``-# `` before ``- `` so the
-    longer prefix wins; the bullet marker is supplied by CSS ``.md-bullet::before``.
+    The heading (``# ``/``## ``/``### ``), small (``-# ``) and bullet (``- ``) prefixes
+    render as spans (never ``<ul>``/``<li>``), so the emitted tags stay within the
+    ``{span, strong, em, a, img}`` whitelist the preview is trusted against. Longer
+    prefixes are tested first (``### `` before ``## `` before ``# ``; ``-# `` before
+    ``- ``) so the longest wins; the bullet marker is supplied by CSS
+    ``.md-bullet::before``.
     """
     if line.startswith("### "):
         return f'<span class="md-h3">{_render_inline(line[4:], emoji_sub)}</span>'
+    if line.startswith("## "):
+        return f'<span class="md-h2">{_render_inline(line[3:], emoji_sub)}</span>'
     if line.startswith("# "):
         return f'<span class="md-h1">{_render_inline(line[2:], emoji_sub)}</span>'
     if line.startswith("-# "):

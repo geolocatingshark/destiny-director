@@ -64,6 +64,18 @@ def test_render_post_spec_cv2_matches_render_post_html() -> None:
     assert '<img class="post-image" src="https://ex.com/a.png"' in out
 
 
+def test_render_post_spec_renders_h2_heading() -> None:
+    # '## ' is an H2 heading (used by the Lost Sector post); rendered as an md-h2 span
+    # with the inline link, not left as literal '## ' text.
+    spec = hpc.PostSpec.cv2("## [World Lost Sectors](https://kyber3000.com/LS)")
+    out = hpc.render_post_spec(spec, t.cast("dict[str, h.Emoji]", {}))
+    assert (
+        '<span class="md-h2"><a href="https://kyber3000.com/LS">World Lost Sectors</a>'
+        in out
+    )
+    assert "## " not in out
+
+
 def test_render_post_spec_embed_kind_not_yet_supported() -> None:
     # Reserved for the user-commands work; must not silently render as empty.
     spec = hpc.PostSpec(kind="embed", body="")
