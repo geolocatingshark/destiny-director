@@ -1,15 +1,16 @@
 /*
-  Rotation-editor-specific styles. Base/reset/theme lives in shared.css (linked first).
-  Served statically from /static/editor.css — no build step.
+  Rotation-editor-specific styles. Base/reset/theme + design tokens live in shared.css
+  (linked first). Served statically from /static/editor.css — no build step. Colours come
+  from the shared tokens (var(--…)); this page was normalised onto the Trials palette.
 */
-h2 { font-size: 1.05rem; margin: .4rem 0 .5rem; border-bottom: 1px solid #333; padding-bottom: .25rem; }
+h2 { font-size: 1.05rem; margin: .4rem 0 .5rem; border-bottom: 1px solid var(--border); padding-bottom: .25rem; }
 h3 { font-size: .95rem; margin: .2rem 0; }
-fieldset { border: 1px solid #333; border-radius: 8px; margin: .6rem 0; padding: .7rem .9rem; }
+fieldset { border: 1px solid var(--border); border-radius: var(--radius); margin: .6rem 0; padding: .7rem .9rem; }
 legend { padding: 0 .4rem; font-weight: 600; }
 label { display: inline-block; }
 input[type="text"], input[type="url"], input[type="date"], select {
-  background: #24262c; color: #e6e6e6; border: 1px solid #3a3d44;
-  border-radius: 6px; padding: .35rem .5rem; font: inherit; width: 100%;
+  background: var(--surface-3); color: var(--text-1); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: .35rem .5rem; font: inherit; width: 100%;
 }
 .row { display: flex; gap: .5rem; align-items: center; margin: .25rem 0; }
 .row > * { flex: 0 0 auto; }
@@ -19,39 +20,42 @@ input[type="text"], input[type="url"], input[type="date"], select {
 .field { margin: .5rem 0; }
 .field > label { font-weight: 600; display: block; margin-bottom: .2rem; }
 button {
-  background: #2f81f7; color: #fff; border: 0; border-radius: 6px;
+  background: var(--accent); color: #fff; border: 0; border-radius: var(--radius-sm);
   padding: .45rem .8rem; font: inherit; cursor: pointer;
 }
-button.secondary { background: #3a3d44; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.secondary { background: var(--surface-3); }
 button.tiny { padding: .15rem .5rem; font-size: .8rem; }
-button.danger { background: #6e2b2b; }
+button.danger { background: var(--danger-surface); }
 /* Tab bar: horizontally scrollable pill row, pinned to the top. */
 .tabs {
   display: flex; gap: .4rem; overflow-x: auto; -webkit-overflow-scrolling: touch;
-  position: sticky; top: 0; z-index: 5; background: #1b1d22;
-  padding: .6rem 0; margin-bottom: .4rem; border-bottom: 1px solid #333;
+  position: sticky; top: 0; z-index: 5; background: var(--surface-1);
+  padding: .6rem 0; margin-bottom: .4rem; border-bottom: 1px solid var(--border);
 }
 .tabs button {
-  background: #24262c; color: #cfd3d8; border: 1px solid #3a3d44;
+  background: var(--surface-3); color: var(--text-2); border: 1px solid var(--border);
   border-radius: 999px; padding: .45rem 1rem; white-space: nowrap; flex: 0 0 auto;
 }
-.tabs button.active { background: #2f81f7; color: #fff; border-color: #2f81f7; }
+.tabs button:hover { border-color: var(--border-hover); }
+.tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .panel { display: none; }
 .panel.active { display: block; }
-details > summary { cursor: pointer; color: #9aa0a6; margin: .3rem 0; }
-.card { border: 1px solid #3a3d44; border-radius: 8px; padding: .6rem .8rem; margin: .5rem 0; }
+details > summary { cursor: pointer; color: var(--text-faint); margin: .3rem 0; }
+.card { border: 1px solid var(--border); border-radius: var(--radius); padding: .6rem .8rem; margin: .5rem 0; }
+.card:hover { border-color: var(--border-hover); }
 .card .card-head { display: flex; gap: .5rem; align-items: center; }
 .toolbar { display: flex; gap: .6rem; align-items: center; margin-top: 1rem;
-  position: sticky; bottom: 0; background: #1b1d22; padding: .8rem 0; border-top: 1px solid #333; }
+  position: sticky; bottom: 0; background: var(--surface-1); padding: .8rem 0; border-top: 1px solid var(--border); }
 .grow { flex: 1 1 auto; }
 #status { font-size: .9rem; }
-#status.ok { color: #6cc070; }
-#status.err { color: #e5736f; white-space: pre-wrap; }
-#previewBox { border: 1px solid #333; border-radius: 8px; padding: .8rem;
-  margin-top: .6rem; background: #15171b; white-space: pre-wrap; }
+#status.ok { color: var(--ok); }
+#status.err { color: var(--err); white-space: pre-wrap; }
+#previewBox { border: 1px solid var(--border); border-radius: var(--radius); padding: .8rem;
+  margin-top: .6rem; background: var(--surface-0); white-space: pre-wrap; }
 .zone { margin: .4rem 0; }
 .diff-cols { display: flex; gap: 1rem; flex-wrap: wrap; }
 .diff-cols > div { flex: 1 1 240px; }
 /* .backlink lives in shared.css so every page's header nav can reuse it. */
 /* A blank/duplicate sector name, or a schedule entry with no matching sector. */
-input.invalid { border-color: #e5736f; background: #2a1e1e; }
+input.invalid { border-color: var(--err); background: var(--danger-bg); }

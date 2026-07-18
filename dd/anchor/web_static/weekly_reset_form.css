@@ -1,7 +1,8 @@
 /*
-  Weekly Reset Overview form styles. Layered on /static/shared.css (base reset + theme) and
-  /static/vendor/tom-select.min.css (loaded before this file, so the dark-theme overrides at
-  the bottom win). Served statically from /static/weekly_reset_form.css — no build step.
+  Weekly Reset Overview form styles. Layered on /static/shared.css (base reset + theme +
+  design tokens) and /static/vendor/tom-select.min.css (loaded before this file, so the
+  dark-theme overrides at the bottom win). Served statically from
+  /static/weekly_reset_form.css — no build step. Colours come from the shared tokens.
 */
 
 /* This form is denser than the rotation editor, so it gets a wider page and, on desktop, a
@@ -23,25 +24,25 @@ main.layout {
 
 /* Each build_body section is a card. */
 fieldset {
-  border: 1px solid #333; border-radius: 8px; padding: .7rem 1rem 1rem;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: .7rem 1rem 1rem;
   display: flex; flex-direction: column; gap: .5rem; margin: 0;
-  background: #202329;
+  background: var(--surface-2);
 }
 legend {
-  font-weight: 600; padding: 0 .45rem; color: #cfd3d6;
+  font-weight: 600; padding: 0 .45rem; color: var(--text-2);
   text-transform: uppercase; letter-spacing: .03em; font-size: .8rem;
 }
 
 .field { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
-.field > label { font-size: .85rem; color: #cfd3d6; }
+.field > label { font-size: .85rem; color: var(--text-2); }
 
 .row { display: flex; gap: .8rem; flex-wrap: wrap; }
 .row .field { flex: 1 1 14rem; }
 
 input[type="text"], input[type="url"], input[type="datetime-local"], textarea {
   width: 100%; padding: .45rem .55rem; font: inherit;
-  background: #24272e; color: #e6e6e6;
-  border: 1px solid #3a3f47; border-radius: 6px;
+  background: var(--surface-3); color: var(--text-1);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 textarea { min-height: 4.5rem; resize: vertical; }
 
@@ -59,10 +60,10 @@ label.inline { flex-direction: row; align-items: center; gap: .4rem; }
 
 #previewBox {
   white-space: pre-wrap; word-break: break-word;
-  background: #14161a; border: 1px solid #333;
-  /* Mirror the CV2 container's left accent bar (colour set from the bootstrap). */
-  border-left: 4px solid var(--accent, #5865F2);
-  border-radius: 8px; padding: 1rem; font: inherit;
+  background: var(--surface-0); border: 1px solid var(--border);
+  /* Mirror the CV2 container's left accent bar (colour set per post from the bootstrap). */
+  border-left: 4px solid var(--post-accent);
+  border-radius: var(--radius); padding: 1rem; font: inherit;
 }
 /* Rich-preview markup (render_post_html emits only these tags). Custom emoji render as
    inline images; the H1 and the -# footer get their Discord-like weight/size. */
@@ -71,16 +72,17 @@ label.inline { flex-direction: row; align-items: center; gap: .4rem; }
   margin: 0 .05em; object-fit: contain;
 }
 #previewBox .md-h1 { font-weight: 700; font-size: 1.3em; }
-#previewBox .md-small { color: #8b9096; font-size: .82em; }
-#previewBox a { color: #9fb4ff; }
+#previewBox .md-small { color: var(--text-muted); font-size: .82em; }
+#previewBox a { color: var(--accent-text); }
 #previewBox .post-image {
   display: block; max-width: 100%; height: auto;
-  border-radius: 8px; margin: .5rem 0;
+  border-radius: var(--radius); margin: .5rem 0;
 }
 
 #problems {
-  color: #ff7b72; margin: 0; padding: .5rem .5rem .5rem 1.6rem;
-  border: 1px solid #5a2a2a; border-radius: 8px; background: #2a1e1e;
+  color: var(--err); margin: 0; padding: .5rem .5rem .5rem 1.6rem;
+  border: 1px solid var(--danger-border); border-radius: var(--radius);
+  background: var(--danger-bg);
 }
 #problems.hidden { display: none; }
 
@@ -89,20 +91,24 @@ label.inline { flex-direction: row; align-items: center; gap: .4rem; }
   position: sticky; bottom: 0; z-index: 20;
   display: flex; gap: .6rem; align-items: center;
   padding: .7rem 0; margin-top: 1rem;
-  background: #1b1d22; border-top: 1px solid #333;
+  background: var(--surface-1); border-top: 1px solid var(--border);
 }
 button {
   padding: .5rem .9rem; font: inherit; cursor: pointer;
-  border: 1px solid #3a3f47; border-radius: 6px; background: #2e5bff; color: #fff;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--accent); color: #fff;
 }
-button.secondary { background: #24272e; color: #e6e6e6; }
-button.danger { background: #3a1e1e; color: #ff9d97; border-color: #5a2a2a; }
+button.secondary { background: var(--surface-3); color: var(--text-1); }
+button.danger {
+  background: var(--danger-surface); color: var(--danger-text);
+  border-color: var(--danger-border);
+}
 button.danger:disabled { opacity: .5; cursor: not-allowed; }
 button.tiny { padding: .25rem .6rem; font-size: .8rem; }
 .grow { flex: 1; }
 
-#status.ok { color: #7ee787; }
-#status.err { color: #ff7b72; white-space: pre-wrap; }
+#status.ok { color: var(--ok); }
+#status.err { color: var(--err); white-space: pre-wrap; }
 
 /* --- Tom Select dark theme (overrides the vendored light stylesheet) --- */
 .ts-wrapper { width: 100%; min-width: 0; }
@@ -112,33 +118,33 @@ button.tiny { padding: .25rem .6rem; font-size: .8rem; }
    `.single .ts-control` rule — match it so the control stays dark, not white-on-light. */
 .ts-wrapper.single.input-active .ts-control, .ts-wrapper.multi.input-active .ts-control,
 .ts-wrapper.single.dropdown-active .ts-control, .ts-wrapper.multi.dropdown-active .ts-control {
-  background: #24272e; color: #e6e6e6;
-  border: 1px solid #3a3f47; border-radius: 6px;
+  background: var(--surface-3); color: var(--text-1);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
   box-shadow: none; padding: .35rem .5rem;
 }
 /* Pin the inner typing input too (transparent bg over the dark control; -webkit-text-fill
    overrides forced/night-mode text recolouring on Chromium/Samsung Internet). */
-.ts-control, .ts-control input, .ts-control input::placeholder { color: #e6e6e6; }
+.ts-control, .ts-control input, .ts-control input::placeholder { color: var(--text-1); }
 .ts-control input {
-  background: transparent; color: #e6e6e6; -webkit-text-fill-color: #e6e6e6;
+  background: transparent; color: var(--text-1); -webkit-text-fill-color: #e6e6e6;
 }
-.ts-control input::placeholder, .ts-control > .ts-placeholder { color: #8b9096; }
-.ts-wrapper.focus .ts-control, .ts-control.focus { border-color: #2e5bff; box-shadow: none; }
+.ts-control input::placeholder, .ts-control > .ts-placeholder { color: var(--text-muted); }
+.ts-wrapper.focus .ts-control, .ts-control.focus { border-color: var(--accent); box-shadow: none; }
 .ts-wrapper.disabled .ts-control { opacity: .55; }
 
 .ts-dropdown {
-  background: #1f2229; color: #e6e6e6;
-  border: 1px solid #3a3f47; border-radius: 6px;
+  background: var(--surface-2); color: var(--text-1);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
   box-shadow: 0 8px 24px rgba(0, 0, 0, .45); margin-top: .2rem; z-index: 30;
 }
 .ts-dropdown .option { padding: .4rem .55rem; }
 .ts-dropdown .active { background: #2a2f37; color: #fff; }
-.ts-dropdown .option.selected { color: #9fb4ff; }
-.ts-dropdown .no-results { color: #9aa0a6; padding: .4rem .55rem; }
+.ts-dropdown .option.selected { color: var(--accent-text); }
+.ts-dropdown .no-results { color: var(--text-faint); padding: .4rem .55rem; }
 
 /* Multi-select chips. */
 .ts-wrapper.multi .ts-control > .item {
-  background: #2e5bff; color: #fff; border: 0; border-radius: 4px;
+  background: var(--accent); color: #fff; border: 0; border-radius: 4px;
   padding: .12rem .45rem;
 }
 .ts-wrapper.multi .ts-control > .item .remove {
@@ -147,5 +153,5 @@ button.tiny { padding: .25rem .6rem; font-size: .8rem; }
 .ts-wrapper.multi .ts-control > .item .remove:hover { background: rgba(255, 255, 255, .18); }
 
 /* clear_button plugin (single-selects). */
-.ts-wrapper .clear-button { color: #9aa0a6; opacity: .8; }
-.ts-wrapper .clear-button:hover { color: #e6e6e6; opacity: 1; }
+.ts-wrapper .clear-button { color: var(--text-faint); opacity: .8; }
+.ts-wrapper .clear-button:hover { color: var(--text-1); opacity: 1; }

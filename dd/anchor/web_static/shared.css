@@ -1,19 +1,65 @@
 /*
-  Shared base / reset / theme for the anchor web editors (the rotation editor today; a
-  weekly-reset form later). Page-specific styles live alongside each page (e.g.
-  editor.css). Served statically from /static/shared.css — no build step.
+  Shared base / reset / theme for the anchor web editors (rotation editor, weekly-reset
+  form, Trials form, control panel, autopost settings). Page-specific styles live
+  alongside each page (e.g. editor.css). Served statically from /static/shared.css — no
+  build step.
+
+  Design tokens live in :root below — every page consumes these instead of re-hardcoding
+  the palette, so the whole web UI reads as one system. Seeded from the Trials set-card
+  look. Dark-only for now (color-scheme: dark).
 */
-:root { color-scheme: dark; }
+:root {
+  color-scheme: dark;
+
+  /* Layered dark surfaces, back (page) to front (controls). */
+  --surface-0: #14161a;   /* inset: preview boxes */
+  --surface-1: #1b1d22;   /* page background, sticky toolbars/tabs */
+  --surface-2: #202329;   /* fieldsets, cards, dropdowns */
+  --surface-3: #24272e;   /* inputs, secondary buttons, control chrome */
+
+  --border: #3a3f47;
+  --border-hover: #4a5670;
+
+  /* Fixed UI accent — buttons, chips, tags, focus rings. Does NOT change per post. */
+  --accent: #2e5bff;
+  --accent-tint: #1c2333;         /* selected-row background wash */
+  --accent-text: #9fb4ff;         /* links, selected dropdown option */
+  /* accent-on-accent text (set-tag pill). Kept a soft blue-white but lightened from
+     #cfe0ff so the small bold uppercase tag clears WCAG AA (4.6:1 on --accent). */
+  --accent-text-strong: #eaf2ff;
+  /* Per-post accent — mirrors the current post's CV2 embed colour. Set at runtime by the
+     form JS (setProperty on <html>); only the preview bar + set-card selection consume it,
+     so page chrome stays stable across posts. Defaults to the fixed accent. */
+  --post-accent: var(--accent);
+
+  /* Text tiers, brightest to faintest. */
+  --text-1: #e6e6e6;      /* primary */
+  --text-2: #cfd3d6;      /* labels, legends */
+  --text-3: #b9bec4;      /* tertiary body */
+  --text-muted: #8b9096;  /* placeholders, bullets, small print */
+  --text-faint: #9aa0a6;  /* muted captions, backlinks, descriptions */
+
+  /* Feedback. */
+  --ok: #7ee787;
+  --err: #ff7b72;
+  --danger-surface: #3a1e1e;  /* danger button fill */
+  --danger-text: #ff9d97;
+  --danger-border: #5a2a2a;
+  --danger-bg: #2a1e1e;       /* problem panels, invalid inputs */
+
+  --radius: 8px;      /* cards, fieldsets, preview */
+  --radius-sm: 6px;   /* inputs, buttons */
+}
 * { box-sizing: border-box; }
 body {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   margin: 0; padding: 0 1.2rem 1.2rem; max-width: 880px; margin-inline: auto;
-  background: #1b1d22; color: #e6e6e6; line-height: 1.4;
+  background: var(--surface-1); color: var(--text-1); line-height: 1.4;
 }
 header { padding-top: 1.2rem; }
 h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
-.muted { color: #9aa0a6; font-size: .85rem; }
+.muted { color: var(--text-faint); font-size: .85rem; }
 /* Header nav links (e.g. "← Control panel") — one place so every page matches. */
-.backlink { color: #9aa0a6; text-decoration: none; font-size: .85rem; }
+.backlink { color: var(--text-faint); text-decoration: none; font-size: .85rem; }
 .backlink:hover { text-decoration: underline; }
 p.nav { margin: 0 0 .4rem; }

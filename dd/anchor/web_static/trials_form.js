@@ -18,8 +18,10 @@ const {
   emoji_urls: emojiUrls = {},
 } = BOOT;
 // Mirror the post's CV2 accent colour as the preview's left bar (see #previewBox CSS).
+// Only --post-accent (preview bar + set-card selection) tracks the post; --accent (page
+// chrome) stays fixed.
 if (BOOT.accent_color) {
-  document.documentElement.style.setProperty("--accent", BOOT.accent_color);
+  document.documentElement.style.setProperty("--post-accent", BOOT.accent_color);
 }
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, kids = []) => {

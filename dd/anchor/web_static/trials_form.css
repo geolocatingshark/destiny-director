@@ -1,9 +1,10 @@
 /*
-  Trials of Osiris form styles. Layered on /static/shared.css (base reset + theme).
-  Served statically from /static/trials_form.css — no build step. Mirrors
+  Trials of Osiris form styles. Layered on /static/shared.css (base reset + theme +
+  design tokens). Served statically from /static/trials_form.css — no build step. Mirrors
   weekly_reset_form.css (same layout/preview/toolbar) minus the weekly-reset-only widgets,
   plus the .md-h3 / .md-bullet preview rules the Trials post's '### ' headers and '- '
-  bullets need, and the .set-* card picker for the bonus focus pool.
+  bullets need, and the .set-* card picker for the bonus focus pool. Colours come from the
+  shared tokens (var(--…)); this file is the reference the token palette was seeded from.
 */
 
 /* Form on the left, sticky preview on the right (desktop); stacked on narrow screens. */
@@ -21,22 +22,22 @@ main.layout {
 #form { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 
 fieldset {
-  border: 1px solid #333; border-radius: 8px; padding: .7rem 1rem 1rem;
+  border: 1px solid var(--border); border-radius: var(--radius); padding: .7rem 1rem 1rem;
   display: flex; flex-direction: column; gap: .5rem; margin: 0;
-  background: #202329;
+  background: var(--surface-2);
 }
 legend {
-  font-weight: 600; padding: 0 .45rem; color: #cfd3d6;
+  font-weight: 600; padding: 0 .45rem; color: var(--text-2);
   text-transform: uppercase; letter-spacing: .03em; font-size: .8rem;
 }
 
 .field { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
-.field > label { font-size: .85rem; color: #cfd3d6; }
+.field > label { font-size: .85rem; color: var(--text-2); }
 
 input[type="url"], input[type="datetime-local"], textarea {
   width: 100%; padding: .45rem .55rem; font: inherit;
-  background: #24272e; color: #e6e6e6;
-  border: 1px solid #3a3f47; border-radius: 6px;
+  background: var(--surface-3); color: var(--text-1);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 textarea { min-height: 4.5rem; resize: vertical; }
 label.inline { flex-direction: row; align-items: center; gap: .4rem; font-size: .88rem; }
@@ -49,10 +50,10 @@ label.inline input { margin: 0; }
 
 #previewBox {
   white-space: pre-wrap; word-break: break-word;
-  background: #14161a; border: 1px solid #333;
-  /* Mirror the CV2 container's left accent bar (colour set from the bootstrap). */
-  border-left: 4px solid var(--accent, #5865F2);
-  border-radius: 8px; padding: 1rem; font: inherit;
+  background: var(--surface-0); border: 1px solid var(--border);
+  /* Mirror the CV2 container's left accent bar (colour set per post from the bootstrap). */
+  border-left: 4px solid var(--post-accent);
+  border-radius: var(--radius); padding: 1rem; font: inherit;
 }
 /* Rich-preview markup (render_post_html emits only these tags). Custom emoji render as
    inline images; the headings/footer/bullets get their Discord-like weight/size. */
@@ -62,17 +63,18 @@ label.inline input { margin: 0; }
 }
 #previewBox .md-h1 { font-weight: 700; font-size: 1.3em; }
 #previewBox .md-h3 { font-weight: 700; font-size: 1.05em; }
-#previewBox .md-bullet::before { content: "• "; color: #8b9096; }
-#previewBox .md-small { color: #8b9096; font-size: .82em; }
-#previewBox a { color: #9fb4ff; }
+#previewBox .md-bullet::before { content: "• "; color: var(--text-muted); }
+#previewBox .md-small { color: var(--text-muted); font-size: .82em; }
+#previewBox a { color: var(--accent-text); }
 #previewBox .post-image {
   display: block; max-width: 100%; height: auto;
-  border-radius: 8px; margin: .5rem 0;
+  border-radius: var(--radius); margin: .5rem 0;
 }
 
 #problems {
-  color: #ff7b72; margin: 0; padding: .5rem .5rem .5rem 1.6rem;
-  border: 1px solid #5a2a2a; border-radius: 8px; background: #2a1e1e;
+  color: var(--err); margin: 0; padding: .5rem .5rem .5rem 1.6rem;
+  border: 1px solid var(--danger-border); border-radius: var(--radius);
+  background: var(--danger-bg);
 }
 #problems.hidden { display: none; }
 
@@ -81,20 +83,24 @@ label.inline input { margin: 0; }
   position: sticky; bottom: 0; z-index: 20;
   display: flex; gap: .6rem; align-items: center;
   padding: .7rem 0; margin-top: 1rem;
-  background: #1b1d22; border-top: 1px solid #333;
+  background: var(--surface-1); border-top: 1px solid var(--border);
 }
 button {
   padding: .5rem .9rem; font: inherit; cursor: pointer;
-  border: 1px solid #3a3f47; border-radius: 6px; background: #2e5bff; color: #fff;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--accent); color: #fff;
 }
-button.secondary { background: #24272e; color: #e6e6e6; }
-button.danger { background: #3a1e1e; color: #ff9d97; border-color: #5a2a2a; }
+button.secondary { background: var(--surface-3); color: var(--text-1); }
+button.danger {
+  background: var(--danger-surface); color: var(--danger-text);
+  border-color: var(--danger-border);
+}
 button.danger:disabled { opacity: .5; cursor: not-allowed; }
 button.tiny { padding: .25rem .6rem; font-size: .8rem; }
 .grow { flex: 1; }
 
-#status.ok { color: #7ee787; }
-#status.err { color: #ff7b72; white-space: pre-wrap; }
+#status.ok { color: var(--ok); }
+#status.err { color: var(--err); white-space: pre-wrap; }
 
 /* --- bonus focus pool: set-card picker --- */
 /* Wrapping grid: cards stack on mobile, sit 2–3 across when wide; page scrolls vertically. */
@@ -105,30 +111,31 @@ button.tiny { padding: .25rem .6rem; font-size: .8rem; }
 .set-card {
   position: relative; display: flex; flex-direction: column; gap: .35rem;
   padding: .6rem .7rem; cursor: pointer;
-  background: #24272e; border: 1px solid #3a3f47; border-radius: 8px;
+  background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius);
 }
-.set-card:hover { border-color: #4a5670; }
+.set-card:hover { border-color: var(--border-hover); }
 /* The radio drives selection; hidden but kept focusable for keyboard use. */
 .set-radio { position: absolute; width: 1px; height: 1px; opacity: 0; margin: 0; }
 .set-card:has(.set-radio:checked) {
-  border-color: var(--accent, #2e5bff); background: #1c2333;
+  border-color: var(--post-accent); background: var(--accent-tint);
 }
 .set-card:has(.set-radio:focus-visible) {
-  outline: 2px solid var(--accent, #2e5bff); outline-offset: 2px;
+  outline: 2px solid var(--post-accent); outline-offset: 2px;
 }
 .set-card-head {
   display: flex; align-items: center; gap: .4rem;
-  font-weight: 600; color: #e6e6e6;
+  font-weight: 600; color: var(--text-1);
 }
 .set-tag {
   font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em;
-  color: #cfe0ff; background: #2e5bff; border-radius: 999px; padding: .05rem .45rem;
+  color: var(--accent-text-strong); background: var(--accent); border-radius: 999px;
+  padding: .05rem .45rem;
 }
 .set-weapons {
   margin: 0; padding: 0; list-style: none;
   display: flex; flex-direction: column; gap: .15rem;
-  color: #b9bec4; font-size: .84rem;
+  color: var(--text-3); font-size: .84rem;
 }
 .set-weapons li { display: flex; align-items: center; gap: .35rem; }
 .set-weapons .emoji { height: 1.15em; width: auto; flex: none; object-fit: contain; }
-.set-empty { margin: 0; color: #8b9096; font-size: .84rem; }
+.set-empty { margin: 0; color: var(--text-muted); font-size: .84rem; }
