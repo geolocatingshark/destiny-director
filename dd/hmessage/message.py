@@ -230,9 +230,7 @@ class HMessage:
                 surface.set(new)
         return self
 
-    async def map_text_async(
-        self, fn: t.Callable[[str], t.Awaitable[str]]
-    ) -> HMessage:
+    async def map_text_async(self, fn: t.Callable[[str], t.Awaitable[str]]) -> HMessage:
         """Async variant of :meth:`map_text` — for transforms that ``await`` (e.g. an
         emoji upload). Applies ``fn`` to each surface in place; returns ``self``."""
         for surface in _text_surfaces(self):
@@ -261,6 +259,17 @@ class HMessage:
         length = cv2_text_length(self.components)
         if length > budget:
             self.components = fit_cv2_components(self.components, budget=budget)
+        return length
+
+    def fit_content(self, budget: int) -> int:
+        """Truncate plain ``content`` to ``budget`` characters (front-to-back) in place;
+        return its length *before* trimming so a caller can tell whether it overflowed.
+
+        The plain-message analogue of :meth:`fit_cv2_text` (which caps a Components V2
+        message's text instead). A no-op when already within budget."""
+        length = len(self.content)
+        if length > budget:
+            self.content = self.content[:budget]
         return length
 
     def __add__(self, other):
