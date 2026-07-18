@@ -77,13 +77,16 @@ deferred to its first real consumer (Part C), and Part B adds its own feed endpo
    render path (no external behavior change). **Manual smoke both forms after.**
 4. `PostSpec.from_payload` (for the future spec-POST endpoint) + unit tests for the dispatch.
 
-## Part B — "scrolling wall of upcoming posts" (read-only, server-generated)  ← DONE (lost_sector + legacy_activities)
+## Part B — Discord-message previews IN the rotation editor  ← DONE (lost_sector + legacy_activities)
 
-> Shipped on `anchor/generic-post-previewer`: `GET /preview` (tab bar per rotation),
-> server-rendered, no client JS. lost_sector (next 14 days) + every legacy destination
-> wired via `iter_wall_posts`; Xûr/weekly_reset/trials excluded as planned. Follow-up polish
-> DONE: `.post-preview` render CSS lifted into one shared block (shared with the form
-> previews); `<t:…:X>` timestamps now render per format letter (`:R` relative, `:t`/`:d`/…).
+> Shipped on `anchor/generic-post-previewer`. **Correction:** these previews live IN the
+> rotation editor (replacing its old date→data tables), NOT a separate page — the standalone
+> `/preview` wall was a misread and was removed. The editor's lost_sector + legacy previews
+> now render the actual next-few Discord posts via `render_post_spec` + the shared
+> `render_post_wall`; xur_location/trials_loot keep data previews (not standalone posts).
+> lost_sector reuses `build_body`; legacy reuses `iter_wall_posts` (with a `count` cap).
+> Polish DONE: `.post-preview`/`.post-wall` render CSS lives once in shared.css (shared with
+> the form previews); `<t:…:X>` timestamps render per format letter (`:R` relative, etc.).
 
 **Not** date-wise editors of the underlying rotation data — a **forward-looking preview
 feed**: for each rotation, a page showing several upcoming posts (this week, next week, …)
