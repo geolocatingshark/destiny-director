@@ -325,23 +325,10 @@ async def build_draft_context(config: TrialsConfig | None = None) -> TrialsConte
 #: process shows the generic icon.
 _weapon_emoji_names: frozenset[str] = frozenset({"weapon"})
 
-#: Ordered emoji-name aliases tried when a weapon type's primary slug isn't a guild
-#: emoji, before falling through to the generic ``:weapon:``. The manifest calls a bow a
-#: "Combat Bow" (→ ``combat_bow``, which the guild has), but a stray ``bow`` slug should
-#: still land on the bow icon rather than the generic one.
-_EMOJI_FALLBACKS: dict[str, tuple[str, ...]] = {"bow": ("combat_bow",)}
-
-
 def _emoji_name_for(emoji_name: str | None, available: t.Container[str]) -> str:
-    """The best emoji name for a weapon type: its own slug, an alias, else ``weapon``.
-
-    Tries the type's slug, then :data:`_EMOJI_FALLBACKS` aliases, then the generic
-    ``weapon`` — returning the first that ``available`` (the guild emoji names) has.
-    """
-    for name in (emoji_name, *_EMOJI_FALLBACKS.get(emoji_name or "", ())):
-        if name and name in available:
-            return name
-    return "weapon"
+    """The best emoji name for a weapon type — delegates to the shared
+    :func:`hybrid_post_core.weapon_emoji_name` (the same helper Iron Banner uses)."""
+    return hybrid_post_core.weapon_emoji_name(emoji_name, available)
 
 
 def _weapon_emoji(w: WeaponRef) -> str:

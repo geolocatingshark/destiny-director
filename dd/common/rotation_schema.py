@@ -290,6 +290,159 @@ def trials_loot_default_doc() -> dict[str, t.Any]:
     }
 
 
+# --- Iron Banner bonus-focus-pool + schedule --------------------------------------
+#
+# Iron Banner runs one week roughly every 4 weeks — on the weeks Trials is NOT live. Its
+# post is fully automatic (the ``iron_banner`` anchor producer), so unlike Trials there
+# is no cursor and no web form: the schedule is **date-anchored**. Each schedule entry
+# is one Iron Banner week (a Tuesday-reset start date) naming the bonus focus pool
+# active that week; the producer looks up the event whose window contains "now". Pools
+# are named weapon lists (weapons only — the bonus focus pool weapons from the "Iron
+# Banner Bonus Pools" tab of the rotation spreadsheet). Like Trials, weapon values carry
+# the editor autocomplete's ``"Name (Type)"`` shape; the producer strips the type suffix
+# and resolves names to manifest items at render time (light.gg links + weapon-type
+# emoji), so this type needs no ``item_links`` baking and stays OUT of
+# ``WORLD_ACTIVITY_SLUGS``.
+
+IRON_BANNER_SLUG = "iron_banner"
+
+#: Default game modes shown when a schedule entry names none. Kyber reports Iron Banner
+#: has run Control / Eruption every event; editable per-week in case that changes.
+IRON_BANNER_DEFAULT_MODES = "Control / Eruption"
+
+#: The two bonus focus pools, seeded from the "Iron Banner Bonus Pools" tab as a one-off
+#: (the bot never reads the sheet at runtime). Weapons only; bare names resolve to
+#: manifest items at render time.
+IRON_BANNER_DEFAULT_POOLS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Pool 1",
+        (
+            "The Forward Path",
+            "The Time-Worn Spire",
+            "The Wizened Rebuke",
+            "Crimil's Dagger",
+            "Gunnora's Axe",
+            "Felwinter's Lie",
+            "Reghusk's Pledge",
+        ),
+    ),
+    (
+        "Pool 2",
+        (
+            "Multimach CCX",
+            "Finite Impactor",
+            "Occluded Finality",
+            "Lethal Abundance",
+            "Pressurized Precision",
+            "Point of the Stag",
+            "Roar of the Bear",
+        ),
+    ),
+)
+
+#: The Iron Banner week schedule, seeded from the "Iron Banner Schedule" tab: one
+#: ``(start_date, pool_name)`` per event. Start dates are Tuesday resets; the producer
+#: derives the end (start + 7 days). Pools alternate Pool 1 / Pool 2. The list is a
+#: starting point the team extends/edits in the rotation editor as Bungie confirms them.
+IRON_BANNER_DEFAULT_SCHEDULE: tuple[tuple[str, str], ...] = (
+    ("2026-06-30", "Pool 1"),
+    ("2026-07-28", "Pool 2"),
+    ("2026-08-25", "Pool 1"),
+    ("2026-09-22", "Pool 2"),
+    ("2026-10-20", "Pool 1"),
+    ("2026-11-17", "Pool 2"),
+    ("2026-12-15", "Pool 1"),
+    ("2027-01-12", "Pool 2"),
+    ("2027-02-09", "Pool 1"),
+    ("2027-03-09", "Pool 2"),
+    ("2027-04-06", "Pool 1"),
+    ("2027-05-04", "Pool 2"),
+    ("2027-06-01", "Pool 1"),
+    ("2027-06-29", "Pool 2"),
+)
+
+
+def _build_iron_banner_schema() -> dict[str, t.Any]:
+    """A date-anchored schedule of Iron Banner weeks + a pool of named weapon lists.
+
+    No ``reference_date``/``item_links``: each schedule entry carries its own start
+    date, and weapon light.gg links are resolved at render time (not baked)."""
+    return {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "title": "Iron Banner",
+        "required": ["schedule", "pools"],
+        "additionalProperties": False,
+        "properties": {
+            "version": {"type": "integer", "options": {"hidden": True}},
+            "schedule": {
+                "type": "array",
+                "title": "Schedule (one entry per Iron Banner week)",
+                "format": "tabs",
+                "headerTemplate": "{{ self.start }} · {{ self.pool }}",
+                "items": {
+                    "type": "object",
+                    "title": "Iron Banner week",
+                    "required": ["start", "pool"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "start": {
+                            "type": "string",
+                            "format": "date",
+                            "title": "Start date (a weekly-reset Tuesday)",
+                        },
+                        "pool": {"type": "string", "title": "Bonus focus pool"},
+                        "modes": {
+                            "type": "string",
+                            "title": "Game modes (blank = Control / Eruption)",
+                        },
+                    },
+                },
+            },
+            "pools": {
+                "type": "array",
+                "title": "Bonus focus pools",
+                "format": "tabs",
+                "headerTemplate": "{{ self.name }}",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "title": "Pool",
+                    "required": ["name", "weapons"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string", "title": "Pool name"},
+                        "weapons": {
+                            "type": "array",
+                            "title": "Weapons",
+                            "items": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+IRON_BANNER_SCHEMA: dict[str, t.Any] = _build_iron_banner_schema()
+
+
+def iron_banner_default_doc() -> dict[str, t.Any]:
+    """The editor's starting document (and the producer's fallback when the row is
+    absent): the seeded schedule + the two default pools."""
+    return {
+        "version": 1,
+        "schedule": [
+            {"start": start, "pool": pool, "modes": IRON_BANNER_DEFAULT_MODES}
+            for start, pool in IRON_BANNER_DEFAULT_SCHEDULE
+        ],
+        "pools": [
+            {"name": name, "weapons": list(weapons)}
+            for name, weapons in IRON_BANNER_DEFAULT_POOLS
+        ],
+    }
+
+
 # --- legacy world-activity rotations ----------------------------------------------
 #
 # Each Destiny "legacy" destination (Neomuna, the Moon, Dares of Eternity, …) is one
@@ -594,6 +747,9 @@ ROTATION_SCHEMAS: dict[str, dict[str, t.Any]] = {
     # A standalone weapons-only set pool; NOT a world activity (see WORLD_ACTIVITY_SLUGS
     # below) — the Trials producer owns its cursor, so no date-anchoring/bake/reset.
     TRIALS_LOOT_SLUG: TRIALS_LOOT_SCHEMA,
+    # Iron Banner: a date-anchored schedule of weeks + bonus focus pools. Also NOT a
+    # world activity — links resolve at render time, so no item_links baking/reset.
+    IRON_BANNER_SLUG: IRON_BANNER_SCHEMA,
     # Each destination registers under its own ``world_activity_<key>`` slug, so it
     # appears automatically at /rotation edit and gets its own DB row (no migration).
     **{

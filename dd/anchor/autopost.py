@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+import asyncio as aio
 import logging
 import typing as t
 
@@ -23,8 +24,59 @@ from dd.hmessage import HMessage
 
 from ..common.bot import CachedFetchBot
 from ..common.components import cv2_error, cv2_notice, cv2_success
+from . import utils
 
 logger = logging.getLogger(__name__)
+
+
+async def discord_announcer(
+    bot: CachedFetchBot,
+    channel_id: int,
+    construct_message_coro: t.Callable[..., t.Awaitable[HMessage]],
+    check_enabled: bool = False,
+    enabled_check_coro: t.Callable[[], t.Awaitable[bool | None]] | None = None,
+    publish_message: bool = True,
+    cv2: bool = False,
+):
+    """Build a message and send (optionally crossposting) it to ``channel_id``.
+
+    The shared announce path for the automatic followable producers (Lost Sector, Iron
+    Banner, …) and the ``send`` subcommand of :func:`make_autopost_control_commands`.
+    ``check_enabled`` gates on ``enabled_check_coro`` (the producer's autopost getter);
+    message construction retries with capped exponential backoff so a transient error
+    (manifest/Discord blip) doesn't drop the post.
+    """
+    # ``cv2`` is accepted for parity with ``make_autopost_control_commands`` (its
+    # ``send`` passes it through); this announcer creates a fresh message rather than
+    # editing a placeholder, so the sent format is whatever ``construct_message_coro``
+    # returns — no flag-toggle constraint to honour here.
+    hmessage: HMessage | None = None
+    # ``retries`` lives outside the loop so the backoff actually grows on a sustained
+    # failure (a reset-each-iteration counter stays pinned at 2s).
+    retries = 0
+    while True:
+        try:
+            if check_enabled and (
+                enabled_check_coro is None or not await enabled_check_coro()
+            ):
+                return
+            hmessage = await construct_message_coro(bot=bot)
+        except Exception as e:
+            logger.exception(e)
+            retries += 1
+            await aio.sleep(min(2**retries, 300))
+        else:
+            break
+
+    logger.info("Announcing post to channel %s", channel_id)
+    await utils.send_message(
+        bot,
+        hmessage,
+        channel_id=channel_id,
+        crosspost=publish_message,
+        deduplicate=True,
+    )
+    logger.info("Announced post to channel %s", channel_id)
 
 
 def make_autopost_control_commands(

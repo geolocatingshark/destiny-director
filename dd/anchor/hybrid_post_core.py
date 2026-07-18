@@ -279,9 +279,7 @@ def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
             else:  # non-http(s): not a real link — render the raw text, escaped.
                 out.append(html.escape(m.group("link")))
         elif m.group("ts") is not None:
-            out.append(
-                html.escape(_format_ts(int(m.group("tsval")), m.group("tsfmt")))
-            )
+            out.append(html.escape(_format_ts(int(m.group("tsval")), m.group("tsfmt"))))
         else:  # emoji
             out.append(re_user_side_emoji.sub(emoji_sub, m.group("emoji")))
         pos = m.end()
@@ -984,6 +982,66 @@ async def get_weapon_pool() -> list[WeaponItem]:
                 logger.warning("manifest weapon-pool build failed", exc_info=True)
                 return []
         return _weapon_pool
+
+
+#: Ordered emoji-name aliases tried when a weapon type's primary slug isn't a guild
+#: emoji, before falling through to the generic ``:weapon:``. The manifest calls a bow a
+#: "Combat Bow" (→ ``combat_bow``, which the guild has), but a stray ``bow`` slug should
+#: still land on the bow icon rather than the generic one.
+WEAPON_EMOJI_FALLBACKS: dict[str, tuple[str, ...]] = {"bow": ("combat_bow",)}
+
+
+def weapon_emoji_name(emoji_name: str | None, available: t.Container[str]) -> str:
+    """The best guild emoji name for a weapon type: its slug, an alias, else ``weapon``.
+
+    Tries the type's own slug, then :data:`WEAPON_EMOJI_FALLBACKS` aliases, then the
+    generic ``weapon`` — returning the first that ``available`` (the guild emoji names)
+    has. Shared by the Trials and Iron Banner producers so the ``bow`` → ``combat_bow``
+    fallback (and the ``weapon`` default) isn't duplicated.
+    """
+    for name in (emoji_name, *WEAPON_EMOJI_FALLBACKS.get(emoji_name or "", ())):
+        if name and name in available:
+            return name
+    return "weapon"
+
+
+#: A trailing ``" (Type)"`` the rotation editor's item autocomplete appends to a stored
+#: weapon value (``"Felwinter's Lie (Shotgun)"``) for disambiguation.
+_WEAPON_TYPE_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def strip_weapon_type(value: str) -> str:
+    """Drop the editor's trailing ``" (Type)"`` so a value resolves to a manifest name.
+
+    :func:`resolve_weapon` matches a bare manifest name or a numeric hash; a bare
+    (baked-default) name passes through unchanged. Shared by the Trials/Iron Banner
+    producers and the rotation-editor preview.
+    """
+    return _WEAPON_TYPE_SUFFIX.sub("", value).strip()
+
+
+async def resolve_weapon_lines(
+    names: t.Iterable[str], available: t.Container[str]
+) -> list[str]:
+    """Resolve weapon names to ``":emoji: [name](light.gg)"`` post lines.
+
+    Each name is stripped of the editor's type suffix, resolved against the shared
+    manifest pool (light.gg deep link + weapon-type emoji), and prefixed with its type
+    emoji — falling back to the generic ``:weapon:`` for a type the guild has no emoji
+    for. ``available`` is the set of guild emoji names for the surface being rendered
+    (the live post's emoji dict, or the editor preview's cached one). Empty/unresolvable
+    names are dropped. Used by the Iron Banner producer and its editor preview.
+    """
+    items = await get_weapon_pool()
+    lines: list[str] = []
+    for name in names:
+        weapon = resolve_weapon(strip_weapon_type(str(name)), items)
+        if weapon is None or not weapon.name:
+            continue
+        lines.append(
+            f":{weapon_emoji_name(weapon.emoji_name, available)}: {weapon.markdown()}"
+        )
+    return lines
 
 
 def resolve_weapon(value: str, items: t.Sequence[WeaponItem]) -> WeaponRef | None:

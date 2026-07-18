@@ -2290,6 +2290,14 @@ class AutoPostSettings(Base):
     async def set_trials(cls, enabled: bool) -> None:
         return await cls.set_enabled("trials", enabled)
 
+    @classmethod
+    async def get_iron_banner_enabled(cls) -> bool | None:
+        return await cls.get_enabled("iron_banner")
+
+    @classmethod
+    async def set_iron_banner(cls, enabled: bool) -> None:
+        return await cls.set_enabled("iron_banner", enabled)
+
 
 class RotationData(Base):
     """Whole-document JSON store for rotation-based posts (one row per post type).
