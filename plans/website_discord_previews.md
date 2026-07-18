@@ -81,9 +81,9 @@ deferred to its first real consumer (Part C), and Part B adds its own feed endpo
 
 > Shipped on `anchor/generic-post-previewer`: `GET /preview` (tab bar per rotation),
 > server-rendered, no client JS. lost_sector (next 14 days) + every legacy destination
-> wired via `iter_wall_posts`; Xûr/weekly_reset/trials excluded as planned. Deferred niceties:
-> lifting the `.post-preview` render CSS into one shared block (it's duplicated from the form
-> preview today), and `<t:…:R>` relative timestamps render as absolute dates in preview.
+> wired via `iter_wall_posts`; Xûr/weekly_reset/trials excluded as planned. Follow-up polish
+> DONE: `.post-preview` render CSS lifted into one shared block (shared with the form
+> previews); `<t:…:X>` timestamps now render per format letter (`:R` relative, `:t`/`:d`/…).
 
 **Not** date-wise editors of the underlying rotation data — a **forward-looking preview
 feed**: for each rotation, a page showing several upcoming posts (this week, next week, …)
