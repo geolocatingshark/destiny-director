@@ -117,6 +117,21 @@ async def start(port: int | None = None) -> None:
     # OAuth callback), so it can't collide.
     app.router.add_static("/static/", _WEB_STATIC_DIR)
 
+    # Force browsers to revalidate the static assets on every load. aiohttp's static
+    # handler sends only ETag/Last-Modified (no Cache-Control), so browsers apply
+    # heuristic caching and can hold a stale /static/shared.css across a deploy. The
+    # page HTML now depends on the CSS custom properties defined in shared.css, so a
+    # stale copy silently breaks every var() reference (missing borders/toggles).
+    # "no-cache" keeps the file cached but requires a conditional GET each load — the
+    # ETag makes the common case a cheap 304, and a deploy is picked up immediately.
+    async def _revalidate_static(
+        request: aiohttp.web.Request, response: aiohttp.web.StreamResponse
+    ) -> None:
+        if request.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+
+    app.on_response_prepare.append(_revalidate_static)
+
     # access_log=None disables aiohttp's default request-line access log. The editor
     # entry links and the OAuth callback carry secrets in the query string
     # (?token=…, ?code=/?state=…); the default log records the full request line, which
