@@ -768,10 +768,11 @@ def test_render_post_html_bottom_image() -> None:
     out = wr.render_post_html(
         "# Title", t.cast("dict[str, h.Emoji]", emoji), "https://ex.com/a.png?x=1&y"
     )
-    # Image rendered at the bottom, above the footer, with the src escaped.
+    # Image rendered at the bottom, with the src escaped.
     assert '<img class="post-image" src="https://ex.com/a.png?x=1&amp;y"' in out
-    # Image sits above the footer (which renders into an md-small span).
-    assert out.index("post-image") < out.index("md-small")
+    # The old "via Destiny Director (Kyber)" credit line is gone (buttons replaced it).
+    assert "md-small" not in out
+    assert "via Destiny Director" not in out
     # No image URL -> no <img>.
     assert "post-image" not in wr.render_post_html(
         "# Title", t.cast("dict[str, h.Emoji]", emoji), None
@@ -780,8 +781,6 @@ def test_render_post_html_bottom_image() -> None:
     assert "post-image" not in wr.render_post_html(
         "# Title", t.cast("dict[str, h.Emoji]", emoji), "javascript:alert(1)"
     )
-    # Footer appended as small text.
-    assert '<span class="md-small">via Destiny Director (Kyber)</span>' in out
     # ONLY the whitelisted tags are ever emitted.
     tags = set(re.findall(r"</?([a-zA-Z]+)", out))
     assert tags <= {"span", "strong", "em", "a", "img"}, tags

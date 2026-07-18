@@ -90,14 +90,9 @@ async def format_post(bot: CachedFetchBot) -> HMessage:
         accent_color=h.Color(cfg.embed_default_color)
     )
     container.add_text_display(ib.build_body(event, pool_lines))
-    # A link button to the full guide (a CV2 action-row accessory; the same shape the
-    # Trials command uses). finalize_cv2_post only substitutes emoji + trims text, so
-    # the button row is preserved.
-    row = h.impl.MessageActionRowBuilder()
-    row.add_component(
-        h.impl.LinkButtonBuilder(url=ib.GUIDE_URL, label="Full Iron Banner Guide")
-    )
-    container.add_component(row)
+    # The standard footer button row (Iron Banner Guide + Support + Kyber's Corner).
+    # finalize_cv2_post only substitutes emoji + trims text, so the row is preserved.
+    container.add_component(components.footer_buttons_row(guides=ib.GUIDES))
 
     return await components.finalize_cv2_post(
         HMessage(components=[container]), emoji_dict, post_name="Iron Banner"

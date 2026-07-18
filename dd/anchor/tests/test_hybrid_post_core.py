@@ -106,6 +106,49 @@ def test_normalize_heading_spacing_leaves_leading_heading_and_collapses() -> Non
     ]
 
 
+def test_footer_button_specs() -> None:
+    from dd.common import components as c
+
+    # Guides first, then the standard Support + Kyber's Corner buttons.
+    assert c.footer_button_specs(guides=[("Guide", "https://g.example")]) == [
+        ("Guide", "https://g.example"),
+        ("Support Us", c.KOFI_URL),
+        ("Kyber's Corner", c.KYBERS_CORNER_URL),
+    ]
+    # No guides -> just the two shared buttons (e.g. Portal Ops / Weekly Reset).
+    assert c.footer_button_specs() == [
+        ("Support Us", c.KOFI_URL),
+        ("Kyber's Corner", c.KYBERS_CORNER_URL),
+    ]
+    # A row caps at 5 buttons, so at most 3 guides.
+    with pytest.raises(ValueError):
+        c.footer_button_specs(guides=[("a", "https://x")] * 4)
+
+
+def test_render_post_html_renders_footer_buttons() -> None:
+    # Footer link buttons render as a post-buttons div of styled <a>s, in order; a
+    # non-http(s) url is dropped (never rendered as a link).
+    out = hpc.render_post_html(
+        "# Title",
+        t.cast("dict[str, h.Emoji]", {}),
+        None,
+        buttons=[("Guide", "https://g.example"), ("Support Us", "https://ko-fi.com/x")],
+    )
+    assert '<div class="post-buttons">' in out
+    assert (
+        '<a class="post-button" href="https://g.example" '
+        'target="_blank" rel="noopener noreferrer">Guide</a>' in out
+    )
+    assert ">Support Us</a>" in out
+    dropped = hpc.render_post_html(
+        "# Title",
+        t.cast("dict[str, h.Emoji]", {}),
+        None,
+        buttons=[("Bad", "javascript:alert(1)")],
+    )
+    assert "post-button" not in dropped
+
+
 def test_render_post_spec_renders_h2_heading() -> None:
     # '## ' is an H2 heading (used by the Lost Sector post); rendered as an md-h2 span
     # with the inline link, not left as literal '## ' text.

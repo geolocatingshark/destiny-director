@@ -40,9 +40,11 @@ logger = logging.getLogger(__name__)
 
 _IRON_BANNER = rotation_schema.IRON_BANNER_SLUG
 
-#: The full guide the post highlights and links out to (button + footer).
+#: The full guide the post highlights and links out to (title link + footer button).
 GUIDE_URL = "https://kyberscorner.com/destiny2/iron-banner/"
-_SUPPORT_URL = "https://ko-fi.com/Kyber3000"
+#: Post-specific footer guide button(s); the shared Support + Kyber's Corner buttons
+#: are appended by ``components.footer_button_specs``. Shared by post + preview.
+GUIDES: tuple[tuple[str, str], ...] = (("Iron Banner Guide", GUIDE_URL),)
 
 #: Iron Banner begins at the weekly Tuesday reset — 17:00 UTC.
 _RESET_HOUR_UTC = 17
@@ -217,8 +219,6 @@ def build_body(event: Event, pool_lines: list[str]) -> str:
         # No "- " bullet: the leading weapon-type emoji is the marker (as in Trials).
         lines += pool
 
-    lines += [
-        "",
-        f"-# [Iron Banner Guide]({GUIDE_URL}) · [Support]({_SUPPORT_URL})",
-    ]
+    # The guide + Support links live in the footer button row (added by the producer /
+    # preview), not the markdown body — so nothing more is appended here.
     return "\n".join(lines)

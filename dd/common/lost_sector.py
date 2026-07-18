@@ -80,10 +80,11 @@ _FOOTER = (
     ":enhancement_core: Enhancement Core\n"
     ":exotic_engram: Exotic Engram (If-Solo)\n"
     ":legendary_weap: Legendary Weapon (If-Solo)\n"
-    "\n"
-    "[View more details](https://lostsectortoday.com) ↗\n"
-    "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
 )
+
+#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: ``components.footer_button_specs``. The "more details" page that was a markdown link.
+GUIDES: tuple[tuple[str, str], ...] = (("More Details", "https://lostsectortoday.com"),)
 
 
 def build_body(sectors: list[sector_accounting.Sector], details_enabled: bool) -> str:
@@ -185,6 +186,7 @@ async def format_post(
         # URL-referenced (Discord fetches it) rather than uploaded — the gif is ~15 MB,
         # which would 413 on upload and re-download from the host on every send.
         container.add_component(components.url_media_gallery(ls_gif_url))
+    container.add_component(components.footer_buttons_row(guides=GUIDES))
 
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
     # on overflow, measured on the final rendered length).

@@ -52,6 +52,7 @@ from dd.hmessage import HMessage
 
 from ..common import cfg, schemas
 from ..common.bot import CachedFetchBot
+from ..common.components import footer_button_specs
 from ..common.utils import fetch_emoji_dict, re_user_side_emoji
 from . import utils
 from .extensions import bungie_api as api
@@ -65,9 +66,6 @@ logger = logging.getLogger(__name__)
 #: A known Tuesday 17:00 UTC weekly-reset boundary (matches beacon's weekly_reset ref).
 REFERENCE_RESET = dt.datetime(2023, 7, 18, 17, tzinfo=dt.UTC)
 WEEK = dt.timedelta(days=7)
-
-#: Small-text footer appended below every hybrid post's body by :func:`build_cv2`.
-FOOTER = "-# via Destiny Director (Kyber)"
 
 
 def current_reset_ts(now: dt.datetime | None = None) -> int:
@@ -146,16 +144,31 @@ class WeaponRef:
 # ---------------------------------------------------------------------------
 
 
-def build_cv2(body: str, image_url: str | None) -> HMessage:
-    """Wrap an already-emoji-substituted body + optional image in a CV2 HMessage."""
+def build_cv2(
+    body: str,
+    image_url: str | None,
+    *,
+    buttons: t.Sequence[tuple[str, str]] = (),
+) -> HMessage:
+    """Wrap an emoji-substituted body + image + footer button row in a CV2 HMessage.
+
+    ``buttons`` are ``(label, url)`` link-button specs (from
+    :func:`dd.common.components.footer_button_specs`); when given, a divider + a single
+    action row of link buttons is appended. The old ``-# via Destiny Director (Kyber)``
+    credit line is gone — the button row is the footer now.
+    """
     container = h.impl.ContainerComponentBuilder(accent_color=cfg.embed_default_color)
     container.add_text_display(body)
     if image_url:
         gallery = h.impl.MediaGalleryComponentBuilder()
         gallery.add_media_gallery_item(image_url)
         container.add_component(gallery)
-    container.add_separator(divider=True)
-    container.add_text_display(FOOTER)
+    if buttons:
+        container.add_separator(divider=True)
+        row = h.impl.MessageActionRowBuilder()
+        for label, url in buttons:
+            row.add_component(h.impl.LinkButtonBuilder(url=url, label=label))
+        container.add_component(row)
     return HMessage(components=[container])
 
 
@@ -342,13 +355,39 @@ def _normalize_heading_spacing(lines: list[str]) -> list[str]:
     return out
 
 
+def _render_buttons_html(buttons: t.Sequence[tuple[str, str]]) -> str:
+    """Render the footer link buttons as a safe ``<div>`` of ``<a>`` button links.
+
+    Mirrors the CV2 post's footer button row (:func:`build_cv2`) so the preview matches
+    the publish. Each label is escaped and each URL http(s)-validated (a non-http(s)
+    URL is dropped, not rendered as a link) — safe for the ``innerHTML`` sink even for
+    the future client-supplied ``PostSpec.from_payload`` buttons.
+    """
+    items: list[str] = []
+    for label, url in buttons:
+        if not str(url).startswith(("http://", "https://")):
+            continue
+        href = html.escape(str(url), quote=True)
+        text = html.escape(str(label))
+        items.append(
+            f'<a class="post-button" href="{href}" target="_blank" '
+            f'rel="noopener noreferrer">{text}</a>'
+        )
+    if not items:
+        return ""
+    return '\n<div class="post-buttons">' + "".join(items) + "</div>"
+
+
 def render_post_html(
-    body: str, emoji_dict: dict[str, h.Emoji], image_url: str | None = None
+    body: str,
+    emoji_dict: dict[str, h.Emoji],
+    image_url: str | None = None,
+    buttons: t.Sequence[tuple[str, str]] = (),
 ) -> str:
-    """Render a ``build_body`` string (plus the ``-#`` FOOTER) to safe preview HTML.
+    """Render a ``build_body`` string (+ image + footer buttons) to safe preview HTML.
 
     Mirrors what Discord renders for the published post: the same markdown subset,
-    custom emoji as images, and the small-text footer ``build_cv2`` appends. Newlines
+    custom emoji as images, and the footer button row ``build_cv2`` appends. Newlines
     are preserved for the <pre> preview (heading spacing normalised to Discord's via
     :func:`_normalize_heading_spacing`). Only whitelisted tags (strong / em / span / a /
     img) are emitted; every text leaf is escaped and every URL is http(s)-validated, so
@@ -360,14 +399,12 @@ def render_post_html(
         _render_line(line, emoji_sub)
         for line in _normalize_heading_spacing(body.split("\n"))
     ]
-    # Image sits below the body and above the footer — mirroring build_cv2's media
-    # gallery placement — so the preview shows it exactly where the post does.
+    # Image sits below the body and above the footer buttons — mirroring build_cv2's
+    # media gallery placement — so the preview shows it exactly where the post does.
     if image_url and image_url.startswith(("http://", "https://")):
         src = html.escape(image_url, quote=True)
         lines += ["", f'<img class="post-image" src="{src}" alt="post image">']
-    # Append the footer build_cv2 adds to the real post, for parity with the publish.
-    lines += ["", _render_line(FOOTER, emoji_sub)]
-    return "\n".join(lines)
+    return "\n".join(lines) + _render_buttons_html(buttons)
 
 
 # ---------------------------------------------------------------------------
@@ -391,11 +428,24 @@ class PostSpec:
     kind: str
     body: str = ""
     image_url: str | None = None
+    #: Footer link buttons as ``(label, url)`` pairs (tuple so the frozen dataclass
+    #: stays hashable) — rendered below the body/image in place of the old credit line.
+    buttons: tuple[tuple[str, str], ...] = ()
 
     @classmethod
-    def cv2(cls, body: str, image_url: str | None = None) -> "PostSpec":
-        """A Components-V2 post: a markdown body + optional image (build_body shape)."""
-        return cls(kind="cv2", body=body, image_url=image_url)
+    def cv2(
+        cls,
+        body: str,
+        image_url: str | None = None,
+        buttons: t.Sequence[tuple[str, str]] = (),
+    ) -> "PostSpec":
+        """A Components-V2 post: a markdown body + optional image + footer buttons."""
+        return cls(
+            kind="cv2",
+            body=body,
+            image_url=image_url,
+            buttons=tuple((str(label), str(url)) for label, url in buttons),
+        )
 
     @classmethod
     def from_payload(cls, payload: t.Mapping[str, t.Any]) -> "PostSpec":
@@ -403,14 +453,22 @@ class PostSpec:
 
         Defaults to the ``cv2`` kind. Raises :class:`ValueError` on an unknown kind so a
         route can 422 it — the ``embed`` kind isn't renderable until its branch lands
-        with the user-commands work.
+        with the user-commands work. Buttons are coerced to ``(str, str)`` pairs here;
+        non-http(s) URLs are dropped at render time (see :func:`_render_buttons_html`).
         """
         kind = payload.get("kind", "cv2")
         if kind != "cv2":
             raise ValueError(f"Unsupported post kind: {kind!r}")
+        raw_buttons = payload.get("buttons") or []
+        buttons = [
+            (str(b.get("label", "")), str(b.get("url", "")))
+            for b in raw_buttons
+            if isinstance(b, t.Mapping)
+        ]
         return cls.cv2(
             body=str(payload.get("body", "")),
             image_url=(payload.get("image_url") or None),
+            buttons=buttons,
         )
 
 
@@ -424,7 +482,7 @@ def render_post_spec(spec: PostSpec, emoji_dict: dict[str, h.Emoji]) -> str:
     :func:`render_post_html`.
     """
     if spec.kind == "cv2":
-        return render_post_html(spec.body, emoji_dict, spec.image_url)
+        return render_post_html(spec.body, emoji_dict, spec.image_url, spec.buttons)
     raise ValueError(f"Cannot render post kind {spec.kind!r} yet")
 
 
@@ -598,6 +656,11 @@ class HybridPostSpec:
     #: rotation here); NOT fired for uncrossposted posts/edits or the seeding cron, so a
     #: draft that is never published (or is deleted) has no effect.
     on_published: t.Callable[..., t.Awaitable[None]] | None = None
+    #: Post-specific footer "guide" links (``(label, url)``); the shared Support +
+    #: Kyber's Corner buttons are appended by
+    #: :func:`~dd.common.components.footer_button_specs`. Drives both the published
+    #: button row and the preview's rendered buttons.
+    footer_guides: tuple[tuple[str, str], ...] = ()
 
     @property
     def channel_id(self) -> int:
@@ -820,7 +883,11 @@ async def preview(
     # through render_post_spec — the one render path shared with the coming rotation
     # preview wall and user-commands manager.
     emoji_dict = await preview_emoji_dict(bot)
-    post = PostSpec.cv2(spec.build_body(ctx), ctx.image_url)
+    post = PostSpec.cv2(
+        spec.build_body(ctx),
+        ctx.image_url,
+        buttons=footer_button_specs(guides=spec.footer_guides),
+    )
     return aiohttp.web.Response(
         text=render_post_spec(post, emoji_dict),
         content_type="text/html",

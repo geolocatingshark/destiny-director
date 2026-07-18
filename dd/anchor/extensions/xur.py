@@ -37,6 +37,7 @@ from ...common.components import (
     cv2_notice,
     cv2_success,
     finalize_cv2_post,
+    footer_buttons_row,
     respond_cv2,
     url_media_gallery,
 )
@@ -444,9 +445,11 @@ def legendary_armor_sets_fragment(
     return "\n".join(subfragments) + "\n"
 
 
-XUR_FOOTER = """\n\n[**View More**](https://kyber3000.com/D2-Xur) ↗
+XUR_FOOTER = "\n\nHave a great weekend! :gscheer:"
 
-Have a great weekend! :gscheer:"""
+#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: ``footer_button_specs``. The "View More" page that was a markdown link in the footer.
+XUR_GUIDES: tuple[tuple[str, str], ...] = (("Xûr Guide", "https://kyber3000.com/D2-Xur"),)
 
 
 async def format_xur_vendor(
@@ -501,6 +504,7 @@ async def format_xur_vendor(
 
     if await schemas.AutoPostSettings.get_xur_default_image_enabled():
         container.add_component(url_media_gallery(cfg.xur_image_url))
+    container.add_component(footer_buttons_row(guides=XUR_GUIDES))
 
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
     # on overflow, measured on the final rendered length).

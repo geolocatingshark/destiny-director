@@ -55,6 +55,7 @@ from ...common.components import (
     cv2_error,
     cv2_notice,
     finalize_cv2_post,
+    footer_button_specs,
     respond_cv2,
 )
 from ...common.utils import fetch_emoji_dict
@@ -91,8 +92,15 @@ TRIALS_REWARDS: tuple[str, ...] = (
     "All Trials weapons available",
     "Weapon Attunement available",
 )
-#: The static sign-off line (an ``### `` H3 header + the Kyber cheer emoji).
+#: The static sign-off line (an ``### `` H3 header + the Kyber cheer emoji). Kept as
+#: body text; the link footer is now the button row (see TRIALS_GUIDES).
 TRIALS_FOOTER_LINE = "### Good luck in your games!  :gscheer:"
+
+#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: ``footer_button_specs``. Drives both the live post and the web-form preview.
+TRIALS_GUIDES: tuple[tuple[str, str], ...] = (
+    ("Trials Report", "https://kyber3000.com/Trialspost"),
+)
 
 # The Trials bonus-focus-pool rotation: a fixed loop of curated weapon sets. Trials
 # cycles through these one per *active* weekend (Iron Banner "No Trials" weeks are
@@ -325,6 +333,7 @@ async def build_draft_context(config: TrialsConfig | None = None) -> TrialsConte
 #: process shows the generic icon.
 _weapon_emoji_names: frozenset[str] = frozenset({"weapon"})
 
+
 def _emoji_name_for(emoji_name: str | None, available: t.Container[str]) -> str:
     """The best emoji name for a weapon type — delegates to the shared
     :func:`hybrid_post_core.weapon_emoji_name` (the same helper Iron Banner uses)."""
@@ -384,7 +393,11 @@ def build_body(ctx: TrialsContext) -> str:
 
 async def format_trials(ctx: TrialsContext, bot: CachedFetchBot) -> HMessage:
     """Render the context to a Components V2 :class:`HMessage`."""
-    hmsg = build_cv2(build_body(ctx), ctx.image_url)
+    hmsg = build_cv2(
+        build_body(ctx),
+        ctx.image_url,
+        buttons=footer_button_specs(guides=TRIALS_GUIDES),
+    )
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert).
     return await finalize_cv2_post(
         hmsg, await fetch_emoji_dict(bot), post_name="Trials"
@@ -681,6 +694,7 @@ _SPEC = HybridPostSpec(
     form_html_path=_FORM_HTML_PATH,
     draft_lock=_draft_lock,
     on_published=_advance_loot_cursor,
+    footer_guides=TRIALS_GUIDES,
 )
 
 

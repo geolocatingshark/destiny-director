@@ -37,7 +37,12 @@ import lightbulb as lb
 
 from ...common import cfg, iron_banner, lost_sector, rotation_schema, schemas
 from ...common.bot import CachedFetchBot
-from ...common.components import cv2_error, cv2_notice, respond_cv2
+from ...common.components import (
+    cv2_error,
+    cv2_notice,
+    footer_button_specs,
+    respond_cv2,
+)
 from ...common.legacy_activities import iter_wall_posts, load_seed_doc, weapon_values
 from ...sector_accounting import (
     legacy_activities,
@@ -125,7 +130,14 @@ def _render_lost_sector_preview(
             continue
         body = lost_sector.build_body(sectors, details_enabled)
         posts.append(
-            (label, hybrid_post_core.PostSpec.cv2(body, cfg.lost_sector_gif_url))
+            (
+                label,
+                hybrid_post_core.PostSpec.cv2(
+                    body,
+                    cfg.lost_sector_gif_url,
+                    buttons=footer_button_specs(guides=lost_sector.GUIDES),
+                ),
+            )
         )
     return hybrid_post_core.render_post_wall(posts, emoji_dict)
 
@@ -229,7 +241,8 @@ async def _render_iron_banner_preview(
             (
                 label,
                 hybrid_post_core.PostSpec.cv2(
-                    iron_banner.build_body(event, pool_lines)
+                    iron_banner.build_body(event, pool_lines),
+                    buttons=footer_button_specs(guides=iron_banner.GUIDES),
                 ),
             )
         )

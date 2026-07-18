@@ -185,17 +185,15 @@ def test_build_body_layout() -> None:
     assert "- Control" in lines and "- Eruption" in lines
     assert "### Bonus Focus Pool" in lines
     assert ":auto_rifle: [The Forward Path](https://light.gg/db/items/1)" in lines
-    # Footer links the guide + support (small text).
-    assert (
-        lines[-1]
-        == f"-# [Iron Banner Guide]({ib.GUIDE_URL}) · [Support](https://ko-fi.com/Kyber3000)"
-    )
+    # The guide + Support links are footer buttons now, not markdown body text.
+    assert not any("Iron Banner Guide" in ln or "Support" in ln for ln in lines)
+    assert lines[-1] == ":shotgun: [Felwinter's Lie](https://light.gg/db/items/2)"
 
 
 def test_build_body_hides_empty_pool() -> None:
     rot = ib.IronBannerRotation.from_json(_DOC)
     body = ib.build_body(rot.events[0], [])
     assert "### Bonus Focus Pool" not in body
-    # Modes + guide still render.
+    # Modes still render; the guide/support links are the footer buttons, not body text.
     assert "### Game Modes" in body
-    assert "Iron Banner Guide" in body
+    assert "Iron Banner Guide" not in body

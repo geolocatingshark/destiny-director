@@ -142,8 +142,13 @@ async def test_format_post_builds_body_and_guide_button(monkeypatch) -> None:
     assert "[The Forward Path](https://light.gg/db/items/999)" in body
     assert "Unknown Gun" in body
 
-    buttons = _link_buttons(hmsg)
-    assert [b.url for b in buttons] == [ib.GUIDE_URL]
+    # The standard 3-button footer row: Iron Banner Guide + Support + Kyber's Corner.
+    urls = [b.url for b in _link_buttons(hmsg)]
+    assert urls == [
+        ib.GUIDE_URL,
+        "https://ko-fi.com/Kyber3000",
+        "https://kyberscorner.com/",
+    ]
 
 
 @pytest.mark.asyncio

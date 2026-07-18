@@ -63,6 +63,7 @@ from ...common.components import (
     cv2_error,
     cv2_notice,
     finalize_cv2_post,
+    footer_button_specs,
     respond_cv2,
 )
 from ...common.utils import fetch_emoji_dict
@@ -691,7 +692,8 @@ def build_body(ctx: WeeklyResetContext) -> str:
 
 async def format_weekly_reset(ctx: WeeklyResetContext, bot: CachedFetchBot) -> HMessage:
     """Render the context to a Components V2 :class:`HMessage`."""
-    hmsg = build_cv2(build_body(ctx), ctx.image_url)
+    # No dedicated weekly-reset page — just the shared Support + Kyber's Corner buttons.
+    hmsg = build_cv2(build_body(ctx), ctx.image_url, buttons=footer_button_specs())
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert).
     return await finalize_cv2_post(
         hmsg, await fetch_emoji_dict(bot), post_name="Weekly Reset"

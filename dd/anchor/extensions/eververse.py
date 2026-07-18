@@ -21,6 +21,12 @@ from . import (
 
 loader = lb.Loader()
 
+#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: ``components.footer_button_specs``.
+EVERVERSE_GUIDES: tuple[tuple[str, str], ...] = (
+    ("Eververse Guide", "https://kyber3000.com/Eververse"),
+)
+
 # Exotic ornaments carry the exotic they reskin only in their description, as
 # "...change the appearance of <Exotic Name>." This pulls that name out so the
 # daily-offerings line can show "for <Exotic>".
@@ -365,6 +371,9 @@ async def format_eververse_vendor(
         container.add_text_display(
             _render_offering_groups(silver_groups, manifest_table, "Silver")
         )
+
+    container.add_separator(divider=True)
+    container.add_component(components.footer_buttons_row(guides=EVERVERSE_GUIDES))
 
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
     # on overflow — an oversized day trims Silver first, then drops the tail).
