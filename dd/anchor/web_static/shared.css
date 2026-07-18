@@ -73,3 +73,110 @@ h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
 .backlink { color: var(--text-faint); text-decoration: none; font-size: .85rem; }
 .backlink:hover { text-decoration: underline; }
 p.nav { margin: 0 0 .4rem; }
+
+/* ---------------------------------------------------------------------------
+   Hybrid-post form layout (weekly_reset + trials forms)
+   ---------------------------------------------------------------------------
+   Both hybrid-post forms share this whole skeleton: a `<main class="layout">` holding the
+   form on the left and a sticky live-preview `<aside class="preview-col">` on the right
+   (stacked on narrow screens), with a `.toolbar` of action buttons below. Everything here
+   is scoped under `body.form-page` (only the two forms carry that class) so it never
+   touches the other pages that also load shared.css — the rotation editor, control panel
+   and autopost settings, which keep their own button/toolbar/preview styling. Each
+   form.css keeps ONLY its unique widgets (trials' set-card picker, weekly_reset's Tom
+   Select pickers + conquest/check rows). */
+
+/* These forms are denser than the other pages, so they widen the shared 880px body. */
+.form-page { max-width: 1180px; }
+
+.form-page main.layout {
+  display: grid; grid-template-columns: 1fr; gap: 1.2rem;
+  align-items: start; margin-top: 1rem;
+}
+@media (min-width: 1000px) {
+  .form-page main.layout { grid-template-columns: minmax(0, 1fr) minmax(20rem, 26rem); }
+  .form-page .preview-col { position: sticky; top: 1rem; max-height: calc(100vh - 6rem); }
+  .form-page .preview-col #previewBox { overflow: auto; }
+}
+
+.form-page #form { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+
+.form-page fieldset {
+  border: 1px solid var(--border); border-radius: var(--radius); padding: .7rem 1rem 1rem;
+  display: flex; flex-direction: column; gap: .5rem; margin: 0;
+  background: var(--surface-2);
+}
+.form-page legend {
+  font-weight: 600; padding: 0 .45rem; color: var(--text-2);
+  text-transform: uppercase; letter-spacing: .03em; font-size: .8rem;
+}
+
+.form-page .field { display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+.form-page .field > label { font-size: .85rem; color: var(--text-2); }
+
+.form-page input[type="text"], .form-page input[type="url"],
+.form-page input[type="datetime-local"], .form-page textarea {
+  width: 100%; padding: .45rem .55rem; font: inherit;
+  background: var(--surface-3); color: var(--text-1);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.form-page textarea { min-height: 4.5rem; resize: vertical; }
+.form-page label.inline { flex-direction: row; align-items: center; gap: .4rem; }
+
+/* --- preview pane --- */
+.form-page .preview-col { display: flex; flex-direction: column; gap: .5rem; }
+.form-page .preview-head { display: flex; align-items: center; gap: .6rem; }
+.form-page .preview-head h2 { font-size: 1.05rem; margin: 0; flex: 1 1 auto; }
+
+.form-page #previewBox {
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--surface-0); border: 1px solid var(--border);
+  /* Mirror the CV2 container's left accent bar (colour set per post from the bootstrap). */
+  border-left: 4px solid var(--post-accent);
+  border-radius: var(--radius); padding: 1rem; font: inherit;
+}
+/* Rich-preview markup (render_post_html emits only these tags): custom emoji as inline
+   images, the H1 and the -# footer at Discord-like weight/size. The Trials-only '### '
+   heading and '- ' bullet rules (.md-h3 / .md-bullet) stay in trials_form.css. */
+.form-page #previewBox .emoji {
+  height: 1.2em; width: auto; vertical-align: middle;
+  margin: 0 .05em; object-fit: contain;
+}
+.form-page #previewBox .md-h1 { font-weight: 700; font-size: 1.3em; }
+.form-page #previewBox .md-small { color: var(--text-muted); font-size: .82em; }
+.form-page #previewBox a { color: var(--link); }
+.form-page #previewBox .post-image {
+  display: block; max-width: 100%; height: auto;
+  border-radius: var(--radius); margin: .5rem 0;
+}
+
+.form-page #problems {
+  color: var(--err); margin: 0; padding: .5rem .5rem .5rem 1.6rem;
+  border: 1px solid var(--danger-border); border-radius: var(--radius);
+  background: var(--danger-bg);
+}
+.form-page #problems.hidden { display: none; }
+
+/* --- action toolbar (a sibling below main.layout) --- */
+.form-page .toolbar {
+  position: sticky; bottom: 0; z-index: 20;
+  display: flex; gap: .6rem; align-items: center;
+  padding: .7rem 0; margin-top: 1rem;
+  background: var(--surface-1); border-top: 1px solid var(--border);
+}
+.form-page button {
+  padding: .5rem .9rem; font: inherit; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--accent-strong); color: #fff;
+}
+.form-page button.secondary { background: var(--surface-3); color: var(--text-1); }
+.form-page button.danger {
+  background: var(--danger-surface); color: var(--danger-text);
+  border-color: var(--danger-border);
+}
+.form-page button.danger:disabled { opacity: .5; cursor: not-allowed; }
+.form-page button.tiny { padding: .25rem .6rem; font-size: .8rem; }
+.form-page .grow { flex: 1; }
+
+.form-page #status.ok { color: var(--ok); }
+.form-page #status.err { color: var(--err); white-space: pre-wrap; }
