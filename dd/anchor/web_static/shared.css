@@ -61,6 +61,10 @@ body {
   margin: 0; padding: 0 1.2rem 1.2rem; max-width: 880px; margin-inline: auto;
   background: var(--surface-1); color: var(--text-1); line-height: 1.4;
 }
+/* Native checkboxes/radios adopt the brand pink when checked. The autopost toggle's
+   hidden checkbox and the set-card's hidden radio are visually hidden, so this only
+   colours the real, visible checkboxes (weekly/Trials forms, editor sector picker). */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 header { padding-top: 1.2rem; }
 h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
 .muted { color: var(--text-faint); font-size: .85rem; }
