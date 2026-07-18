@@ -15,6 +15,8 @@
 
 # Pure data-transformation tests for HMessage — no Discord I/O.
 
+import typing as t
+
 import hikari as h
 import pytest
 
@@ -209,3 +211,143 @@ def test_add_concatenates_cv2_components():
     a = HMessage(components=["a"])
     b = HMessage(components=["b"])
     assert (a + b).components == ["a", "b"]
+
+
+# --- map_text / map_text_async -------------------------------------------------
+
+_IN, _OUT = "<:x:1>", "<:x:2>"
+
+
+def _sub(text: str) -> str:
+    return text.replace(_IN, _OUT)
+
+
+async def _asub(text: str) -> str:
+    return text.replace(_IN, _OUT)
+
+
+def _cv2_message() -> HMessage:
+    container = h.impl.ContainerComponentBuilder()
+    container.add_component(
+        h.impl.TextDisplayComponentBuilder(content=f"top {_IN}", id=7)
+    )
+    section = h.impl.SectionComponentBuilder(
+        accessory=h.impl.ThumbnailComponentBuilder(media="http://i/y.png")
+    )
+    section.add_text_display(f"sec {_IN}")
+    container.add_component(section)
+    container.add_separator()  # non-text child: must survive untouched
+    return HMessage(components=[container])
+
+
+def _all_cv2_text(hmsg: HMessage) -> list[str]:
+    out: list[str] = []
+
+    def walk(comps):
+        for c in comps:
+            if isinstance(c, h.impl.TextDisplayComponentBuilder):
+                out.append(c.content)
+            elif isinstance(
+                c, h.impl.ContainerComponentBuilder | h.impl.SectionComponentBuilder
+            ):
+                walk(c.components)
+
+    walk(hmsg.components)
+    return out
+
+
+def test_map_text_walks_content_and_all_embed_surfaces():
+    embed = h.Embed(title=f"T {_IN}", description=f"D {_IN}")
+    embed.add_field(name=f"FN {_IN}", value=f"FV {_IN}")
+    embed.set_author(name=f"A {_IN}", icon="http://i/a.png")
+    embed.set_footer(text=f"F {_IN}", icon="http://i/f.png")
+    hmsg = HMessage(content=f"C {_IN}", embeds=[embed])
+
+    assert hmsg.map_text(_sub) is hmsg  # returns self
+    assert hmsg.content == f"C {_OUT}"
+    e = hmsg.embeds[0]
+    assert e.description == f"D {_OUT}"
+    assert e.title == f"T {_OUT}"
+    assert e.fields[0].name == f"FN {_OUT}"
+    assert e.fields[0].value == f"FV {_OUT}"
+    assert e.author is not None and e.author.name == f"A {_OUT}"
+    assert e.footer is not None and e.footer.text == f"F {_OUT}"
+    # author/footer icons preserved through the re-set
+    assert e.author.icon is not None and e.author.icon.url == "http://i/a.png"
+    assert e.footer.icon is not None and e.footer.icon.url == "http://i/f.png"
+
+
+def test_map_text_walks_cv2_preserving_id_and_non_text():
+    hmsg = _cv2_message()
+    hmsg.map_text(_sub)
+    texts = _all_cv2_text(hmsg)
+    assert f"top {_OUT}" in texts
+    assert f"sec {_OUT}" in texts
+    assert all(_IN not in t for t in texts)
+    # the replaced top text display kept its id, and the separator survived
+    children = t.cast(t.Any, hmsg.components[0]).components
+    top = next(c for c in children if getattr(c, "content", None) == f"top {_OUT}")
+    assert top.id == 7
+    assert any(isinstance(c, h.impl.SeparatorComponentBuilder) for c in children)
+
+
+def test_map_text_leaves_unmatched_surfaces_untouched():
+    hmsg = HMessage(content="no tokens here")
+    hmsg.map_text(_sub)
+    assert hmsg.content == "no tokens here"
+
+
+@pytest.mark.asyncio
+async def test_map_text_async_matches_sync():
+    hmsg = _cv2_message()
+    assert await hmsg.map_text_async(_asub) is hmsg
+    assert all(_IN not in t for t in _all_cv2_text(hmsg))
+
+
+def test_fit_cv2_text_truncates_over_budget_and_returns_pre_length() -> None:
+    from dd.common.components import cv2_text_length
+
+    container = h.impl.ContainerComponentBuilder()
+    container.add_text_display("y" * 8000)
+    hmsg = HMessage(components=[container])
+
+    length = hmsg.fit_cv2_text(budget=100)
+    assert length == 8000  # pre-trim length returned so a caller can alert
+    assert cv2_text_length(hmsg.components) <= 100  # trimmed in place
+
+
+def test_fit_cv2_text_noop_within_budget() -> None:
+    container = h.impl.ContainerComponentBuilder()
+    container.add_text_display("small")
+    hmsg = HMessage(components=[container])
+    before = hmsg.components
+
+    assert hmsg.fit_cv2_text(budget=1000) == 5
+    assert hmsg.components == before  # untouched
+
+
+def test_hikari_component_internals_canary():
+    """Pin the hikari builder internals the CV2 walk depends on.
+
+    If this fails after a hikari bump, revisit the ``_component_text_surfaces`` /
+    ``_child_components`` walk in message.py: it reaches the *private* ``_components``
+    backing list because the public ``.components`` getter returns a copy, and replaces
+    a matched text display with a fresh builder preserving its ``id``. The mirror's
+    per-dest container clone also reads ``accent_color`` / ``is_spoiler``.
+    """
+    container = h.impl.ContainerComponentBuilder(
+        accent_color=h.Color(0x123456), spoiler=True
+    )
+    container.add_text_display("hi")
+    # `.components` is a *copy*; `_components` is the live backing list.
+    assert container.components is not container.components
+    live = getattr(container, "_components", None)
+    assert isinstance(live, list)
+    live.append(h.impl.TextDisplayComponentBuilder(content="added"))
+    assert len(container.components) == 2
+    # public getters the container clone relies on
+    assert container.accent_color == h.Color(0x123456)
+    assert container.is_spoiler is True
+    # a replaced text display round-trips content + id
+    td = h.impl.TextDisplayComponentBuilder(content="x", id=7)
+    assert td.content == "x" and td.id == 7

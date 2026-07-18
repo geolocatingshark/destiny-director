@@ -30,24 +30,20 @@ import hikari as h
 import lightbulb as lb
 from lightbulb import components as lbc
 
+from dd.hmessage import HMessage
+
 from ..common import cfg
 from ..common.utils import (
     construct_emoji_substituter,
+    fetch_emoji_dict,
     follow_link_single_step,
     re_user_side_emoji,
+    substitute_guild_emoji,
 )
 
 # (label, current value, required, multi-line) for one modal text input.
 _FieldSpec = tuple[str, str, bool, bool]
 _Mutate = t.Callable[[h.Embed, list[str]], t.Awaitable[h.Embed | None]]
-
-
-async def _kyber_emoji_dict(bot: h.GatewayBot) -> dict[str, h.Emoji]:
-    """Fetch the Kyber server's emoji keyed by name."""
-    guild = bot.cache.get_guild(
-        cfg.kyber_discord_server_id
-    ) or await bot.rest.fetch_guild(cfg.kyber_discord_server_id)
-    return {emoji.name: emoji for emoji in await guild.fetch_emojis()}
 
 
 async def substitute_user_side_emoji(
@@ -58,7 +54,7 @@ async def substitute_user_side_emoji(
     Accepts a resolved emoji dict (no I/O) or a bot (fetches the Kyber emoji first).
     """
     emoji_dict = (
-        await _kyber_emoji_dict(bot_or_emoji_dict)
+        await fetch_emoji_dict(bot_or_emoji_dict)
         if isinstance(bot_or_emoji_dict, h.GatewayBot)
         else bot_or_emoji_dict
     )
@@ -208,13 +204,16 @@ async def build_embed_with_user(
     # the modal ack path. A failure here just disables emoji substitution.
     bot = t.cast(h.GatewayBot, ctx.client.app)
     try:
-        emoji_dict = await _kyber_emoji_dict(bot)
+        emoji_dict = await fetch_emoji_dict(bot)
     except Exception as e:
         logging.warning("Embed builder: could not pre-resolve emoji dict: %r", e)
         emoji_dict = {}
 
     async def _mutate_description(embed_: h.Embed, values: list[str]) -> h.Embed | None:
-        embed_.description = await substitute_user_side_emoji(emoji_dict, values[0])
+        embed_.description = values[0]
+        # Resolve :emoji: across every field of the embed (title/description/fields/
+        # author/footer), mutating ``embed_`` in place.
+        substitute_guild_emoji(HMessage(embeds=[embed_]), emoji_dict)
         return embed_
 
     menu = lbc.Menu()

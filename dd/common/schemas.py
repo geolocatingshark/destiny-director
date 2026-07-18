@@ -2344,6 +2344,142 @@ class RotationData(Base):
             )
 
 
+class AppEmojiCache(Base):
+    """Per-bot cache of lazily-uploaded application emojis for Destiny item icons.
+
+    Application emojis are per-app and only render inline in messages the owning app
+    posts, so the composite PK ``(app_id, name)`` scopes each row to one bot's store.
+    ``last_used`` drives LRU eviction (safe: a deleted emoji's CDN image persists, so
+    posted messages keep rendering); ``icon_url`` lets the store detect a name reused
+    for a different icon. See :mod:`dd.common.emoji_store`.
+    """
+
+    __tablename__ = "app_emoji_cache"
+    __mapper_args__ = {"eager_defaults": True}
+
+    app_id = Column("app_id", BigInteger, primary_key=True)
+    name = Column("name", VARCHAR(32), primary_key=True)
+    emoji_id = Column("emoji_id", BigInteger, nullable=False)
+    icon_url = Column("icon_url", VARCHAR(256), nullable=False, default="")
+    last_used = Column("last_used", DateTime, nullable=False)
+
+    __table_args__ = (
+        Index("ix_app_emoji_lru", "app_id", "last_used"),
+        Index("ix_app_emoji_emoji_id", "emoji_id"),
+    )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def all_for_app(
+        cls, app_id: int, session: AsyncSession = _UNSET
+    ) -> list[Self]:
+        """All cached rows for one application store."""
+        return list(
+            (await session.execute(select(cls).where(cls.app_id == app_id))).scalars()
+        )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def get_by_emoji_id(
+        cls, emoji_id: int, session: AsyncSession = _UNSET
+    ) -> Self | None:
+        """The row for a rendered emoji id, across every app's store (or ``None``).
+
+        Emoji ids are Discord snowflakes (globally unique), so at most one row matches
+        even though both bots write this table. Used by the beacon mirror to tell an
+        anchor *item* emoji (rewrite to our own) from any other emoji (leave alone).
+        """
+        return (
+            await session.execute(select(cls).where(cls.emoji_id == emoji_id))
+        ).scalar_one_or_none()
+
+    @classmethod
+    @ensure_session(db_session)
+    async def upsert(
+        cls,
+        app_id: int,
+        name: str,
+        emoji_id: int,
+        icon_url: str,
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        """Insert or refresh a cache row, stamping ``last_used`` = now.
+
+        Uses a portable select-then-write (like :meth:`RotationData.set_data`) so the
+        SQLite test engine and prod MySQL behave identically.
+        """
+        now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
+        exists_ = (
+            await session.execute(
+                select(cls.name).where(
+                    and_(cls.app_id == app_id, cls.name == name)
+                )
+            )
+        ).scalar()
+        if exists_ is None:
+            await session.execute(
+                insert(cls).values(
+                    {
+                        cls.app_id: app_id,
+                        cls.name: name,
+                        cls.emoji_id: emoji_id,
+                        cls.icon_url: icon_url,
+                        cls.last_used: now,
+                    }
+                )
+            )
+        else:
+            await session.execute(
+                update(cls)
+                .where(and_(cls.app_id == app_id, cls.name == name))
+                .values(
+                    {cls.emoji_id: emoji_id, cls.icon_url: icon_url, cls.last_used: now}
+                )
+            )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def touch(
+        cls, app_id: int, names: list[str], session: AsyncSession = _UNSET
+    ) -> None:
+        """Bump ``last_used`` = now for the given names (LRU recency)."""
+        if not names:
+            return
+        now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
+        await session.execute(
+            update(cls)
+            .where(and_(cls.app_id == app_id, cls.name.in_(names)))
+            .values({cls.last_used: now})
+        )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def oldest(
+        cls, app_id: int, limit: int, session: AsyncSession = _UNSET
+    ) -> list[str]:
+        """The ``limit`` least-recently-used emoji names for this app (LRU victims)."""
+        return list(
+            (
+                await session.execute(
+                    select(cls.name)
+                    .where(cls.app_id == app_id)
+                    .order_by(cls.last_used.asc())
+                    .limit(limit)
+                )
+            ).scalars()
+        )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def remove(
+        cls, app_id: int, name: str, session: AsyncSession = _UNSET
+    ) -> None:
+        """Delete a single cache row."""
+        await session.execute(
+            delete(cls).where(and_(cls.app_id == app_id, cls.name == name))
+        )
+
+
 class BungieCredentials(Base):
     __tablename__ = "bungie_credentials"
     __mapper_args__ = {"eager_defaults": True}

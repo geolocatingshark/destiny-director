@@ -50,7 +50,6 @@ from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
 from ..autopost import make_autopost_control_commands
-from ..embeds import substitute_user_side_emoji
 from . import (
     bungie_api as api,
     xur,
@@ -453,19 +452,19 @@ async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
         description += "\n"
 
     description += PORTAL_OPS_FOOTER
-    description = await substitute_user_side_emoji(emoji_dict, description)
-    # Truncate to the CV2 cap with a CRITICAL (owner-pinging) alert on overflow.
-    description = await components.guard_cv2_post_text(
-        description, post_name="Portal Ops"
-    )
 
     # Components V2: the whole post is one text display (no image/fields), matching
-    # the Eververse/Ada layout.
+    # the Eververse/Ada layout — raw :emoji: tokens, resolved on the message below.
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)
     )
     container.add_text_display(description)
-    return HMessage(components=[container])
+
+    # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
+    # on overflow).
+    return await components.finalize_cv2_post(
+        HMessage(components=[container]), emoji_dict, post_name="Portal Ops"
+    )
 
 
 def _next_daily_reset_unix() -> int:

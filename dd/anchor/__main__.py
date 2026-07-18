@@ -32,6 +32,7 @@ from ..common.discord_logging import (
     install_command_error_reporting,
     install_discord_logging,
 )
+from ..common.emoji_store import AppEmojiStore
 from ..common.extension_loader import load_extensions_strict
 from ..common.lifecycle import consume_exit_code
 from . import web
@@ -58,6 +59,12 @@ client = lb.client_from_app(
 # Make the bot injectable as CachedFetchBot in addition to the hikari.GatewayBot
 # registration lightbulb adds automatically.
 client.di.registry_for(lb.di.Contexts.DEFAULT).register_value(CachedFetchBot, bot)
+# The pure-lazy application-emoji store for Destiny item icons (uploaded on first use,
+# LRU-evicted near the 2000/app cap). Self-warms on StartedEvent; injectable so posts
+# can resolve an item to an inline ``<:emoji:id>`` from this bot's own app store.
+client.di.registry_for(lb.di.Contexts.DEFAULT).register_value(
+    AppEmojiStore, AppEmojiStore(bot)
+)
 
 # Render owner-gate rejections ephemerally, ahead of the catch-all alert reporter so
 # they never page the alerts channel.

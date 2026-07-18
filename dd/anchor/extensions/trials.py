@@ -52,9 +52,14 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, rotation_schema, schemas
 from ...common.bot import CachedFetchBot
-from ...common.components import cv2_error, cv2_notice, respond_cv2
+from ...common.components import (
+    cv2_error,
+    cv2_notice,
+    finalize_cv2_post,
+    respond_cv2,
+)
+from ...common.utils import fetch_emoji_dict
 from .. import hybrid_post_core, web
-from ..embeds import substitute_user_side_emoji
 from ..hybrid_post_core import (
     DraftMeta,
     HybridPostSpec,
@@ -394,8 +399,11 @@ def build_body(ctx: TrialsContext) -> str:
 
 async def format_trials(ctx: TrialsContext, bot: CachedFetchBot) -> HMessage:
     """Render the context to a Components V2 :class:`HMessage`."""
-    body = await substitute_user_side_emoji(bot, build_body(ctx))
-    return build_cv2(body, ctx.image_url)
+    hmsg = build_cv2(build_body(ctx), ctx.image_url)
+    # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert).
+    return await finalize_cv2_post(
+        hmsg, await fetch_emoji_dict(bot), post_name="Trials"
+    )
 
 
 async def _render_for_spec(ctx: TrialsContext, bot: CachedFetchBot) -> HMessage:

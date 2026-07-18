@@ -36,6 +36,7 @@ is a pure ledger processor and knows nothing about either.
 import asyncio as aio
 import collections.abc
 import contextlib
+import copy
 import datetime as dt
 import logging
 import typing as t
@@ -46,7 +47,7 @@ import hikari as h
 
 from ..common import cfg
 from ..common.bot import CachedFetchBot
-from ..common.components import rebuild_components
+from ..common.emoji_store import AppEmojiStore, rewrite_item_emoji_in_message
 from ..common.schemas import (
     CrosspostState,
     DeliveryOutcome,
@@ -62,6 +63,7 @@ from ..common.utils import (
     identity_for_exc,
     reference_code,
 )
+from ..hmessage import HMessage
 from . import utils
 from .mirror_core import rate_limiter
 
@@ -88,7 +90,7 @@ _RoleMap = collections.abc.Mapping[int, int | None]
 
 
 def _is_cv2(msg: h.Message) -> bool:
-    """Whether a message was sent as a Components V2 message."""
+    """Whether the source message was sent as a Components V2 message."""
     return h.MessageFlag.IS_COMPONENTS_V2 in (msg.flags or h.MessageFlag.NONE)
 
 
@@ -105,23 +107,39 @@ def add_role_ping_to_msg(
     return msg_content
 
 
+def _container_with_ping(
+    container: h.impl.ContainerComponentBuilder, suffix: str
+) -> h.impl.ContainerComponentBuilder:
+    """A shallow clone of ``container`` with ``suffix`` appended as a text display.
+
+    Shares the original's child builders (never mutates them), so the cached, once-
+    rewritten source components are reused across destinations while each dest gets its
+    own role-ping copy. Uses ``copy.copy`` so *every* container field (accent colour,
+    spoiler, id, and any future one) is preserved — only the child list is replaced with
+    a fresh list carrying the ping, leaving the shared source container untouched."""
+    clone = copy.copy(container)
+    ping = h.impl.TextDisplayComponentBuilder(content=suffix)
+    clone._components = [*container._components, ping]
+    return clone
+
+
 def _cv2_components_for(
-    msg: h.Message,
+    hmsg: HMessage,
     dest_channel_id: int,
     role_ping_per_ch_id: collections.abc.Mapping[int, int | None],
 ) -> list[h.api.ComponentBuilder]:
-    """Rebuild a CV2 source message's components for re-sending to a destination.
+    """The CV2 components to send to one destination: the source's (shared, already
+    rewritten) components with this dest's spoilered role ping appended.
 
-    A CV2 message has no content field, so the dest's spoilered role ping is appended as
-    a text display inside the (first) container rather than to message content.
-    """
-    components = rebuild_components(msg.components)
+    A CV2 message has no content field, so the ping goes in a text display inside the
+    first container — shallow-cloned so the shared source components aren't mutated."""
+    components = list(hmsg.components)
     role_ping = int(role_ping_per_ch_id.get(dest_channel_id) or 0)
     if role_ping:
         suffix = f"||<@&{role_ping}>||"
-        for component in components:
+        for i, component in enumerate(components):
             if isinstance(component, h.impl.ContainerComponentBuilder):
-                component.add_text_display(suffix)
+                components[i] = _container_with_ping(component, suffix)
                 break
         else:
             components.append(h.impl.TextDisplayComponentBuilder(content=suffix))
@@ -129,39 +147,39 @@ def _cv2_components_for(
 
 
 def _send_payload(
-    msg: h.Message,
+    hmsg: HMessage,
     ch_id: int,
     role_ping_per_ch_id: collections.abc.Mapping[int, int | None],
 ) -> dict[str, t.Any]:
     """Build the ``channel.send`` / ``message.edit`` kwargs for one destination.
 
-    The single source of truth for how a mirrored message is shaped, shared by the send
-    and edit paths so they can never drift: a CV2 source is re-sent as rebuilt
-    components (the dest role ping appended inside the container); a plain message is
-    re-sent as content + attachments + embeds (components are intentionally dropped so
-    the main server's admin buttons are not carried to destinations).
+    The single source of truth for how a mirrored message is shaped, read from the once-
+    per-source rewritten ``HMessage`` (see ``_source_for``): a CV2 source is re-sent as
+    its components with the dest role ping appended in the first container; a plain
+    message is re-sent as content + attachments + embeds (``HMessage.from_message``
+    already dropped a non-CV2 source's components, so admin buttons never carry over).
     """
-    if _is_cv2(msg):
+    if hmsg.components:
         return {
-            "components": _cv2_components_for(msg, ch_id, role_ping_per_ch_id),
+            "components": _cv2_components_for(hmsg, ch_id, role_ping_per_ch_id),
             "flags": h.MessageFlag.IS_COMPONENTS_V2,
             "role_mentions": True,
         }
     return {
-        "content": add_role_ping_to_msg(msg.content, ch_id, role_ping_per_ch_id),
-        "attachments": msg.attachments,
-        "embeds": msg.embeds,
+        "content": add_role_ping_to_msg(hmsg.content, ch_id, role_ping_per_ch_id),
+        "attachments": hmsg.attachments,
+        "embeds": hmsg.embeds,
         "role_mentions": True,
     }
 
 
 async def _send_one(
     bot: CachedFetchBot,
-    msg: h.Message,
+    hmsg: HMessage,
     ch_id: int,
     role_ping_per_ch_id: collections.abc.Mapping[int, int | None],
 ) -> tuple[int, bool]:
-    """Send ``msg`` to channel ``ch_id`` (rate-limited); return ``(new_id, is_news)``.
+    """Send ``hmsg`` to channel ``ch_id`` (rate-limited); return ``(new_id, is_news)``.
 
     ``is_news`` tells the caller a crosspost is warranted — recorded on the ledger as a
     durable ``crosspost_state = PENDING`` and done by a later pick, never inline.
@@ -170,21 +188,20 @@ async def _send_one(
         channel = await bot.fetch_channel(ch_id)
     if not isinstance(channel, h.TextableChannel):
         raise ValueError("Channel is not textable")
+    payload = _send_payload(hmsg, ch_id, role_ping_per_ch_id)
     async with rate_limiter:
-        mirrored_msg = await channel.send(
-            **_send_payload(msg, ch_id, role_ping_per_ch_id)
-        )
+        mirrored_msg = await channel.send(**payload)
     return mirrored_msg.id, isinstance(channel, h.GuildNewsChannel)
 
 
 async def edit_one(
     bot: CachedFetchBot,
-    msg: h.Message,
+    hmsg: HMessage,
     ch_id: int,
     dest_msg_id: int,
     role_ping_per_ch_id: collections.abc.Mapping[int, int | None],
 ) -> int:
-    """Edit the recorded dest message in ``ch_id`` to match ``msg``; return its id.
+    """Edit the recorded dest message in ``ch_id`` to match ``hmsg``; return its id.
 
     Uses the same :func:`_send_payload` shape as the send path, so an edit can never
     render a mirrored message differently from how it was first sent.
@@ -192,7 +209,7 @@ async def edit_one(
     async with rate_limiter:
         dest_msg = await bot.fetch_message(ch_id, dest_msg_id)
     async with rate_limiter:
-        await dest_msg.edit(**_send_payload(msg, ch_id, role_ping_per_ch_id))
+        await dest_msg.edit(**_send_payload(hmsg, ch_id, role_ping_per_ch_id))
     return dest_msg_id
 
 
@@ -232,19 +249,23 @@ class MirrorWorker:
 
     def __init__(self) -> None:
         self._bot: CachedFetchBot | None = None
+        self._store: AppEmojiStore | None = None
         self._running = False
         self._wake: aio.Event | None = None
         self._main_task: aio.Task[None] | None = None
-        # Per-src_msg_id cache of the fetched source message + role map, so a fan-out
-        # that spans many pick batches fetches each source only once. Cleared whenever
-        # the loop goes idle (no pending work), bounding it to one fan-out's sources.
-        self._source_cache: dict[int, tuple[int, h.Message, _RoleMap]] = {}
+        # Per-src_msg_id cache of the item-emoji-rewritten source HMessage + role map,
+        # so a fan-out over many pick batches fetches + rewrites each source once.
+        # Cleared whenever the loop goes idle, bounding it to one fan-out's sources.
+        self._source_cache: dict[int, tuple[int, HMessage, _RoleMap]] = {}
 
     # -- lifecycle ---------------------------------------------------------
 
-    async def start(self, bot: CachedFetchBot) -> None:
-        """Wire the worker to ``bot`` and spin up the loop."""
+    async def start(
+        self, bot: CachedFetchBot, store: AppEmojiStore | None = None
+    ) -> None:
+        """Wire the worker to ``bot`` + item-emoji ``store`` and spin up the loop."""
         self._bot = bot
+        self._store = store
         self._wake = aio.Event()
         self._running = True
         self._main_task = aio.create_task(self._main_loop())
@@ -366,32 +387,33 @@ class MirrorWorker:
         src_msg_id = rows[0].src_msg_id
         src_ch_id = rows[0].src_ch_id
         needs_source = any(not r.deleted for r in rows)
-        msg: h.Message | None = None
+        hmsg: HMessage | None = None
         role_map: _RoleMap = {}
         outcomes: list[DeliveryOutcome] = []
         if needs_source:
             version = rows[0].desired_version
             try:
-                msg, role_map = await self._source_for(src_ch_id, src_msg_id, version)
+                hmsg, role_map = await self._source_for(src_ch_id, src_msg_id, version)
             except Exception as e:
                 outcomes.extend(self._handle_group_source_failure(rows, e))
                 rows = [r for r in rows if r.deleted]  # deleted rows need no source
                 if not rows:
                     return outcomes
-                msg = None
+                hmsg = None
         outcomes.extend(
-            await aio.gather(*(self._deliver_row(sem, r, msg, role_map) for r in rows))
+            await aio.gather(*(self._deliver_row(sem, r, hmsg, role_map) for r in rows))
         )
         return outcomes
 
     async def _source_for(
         self, src_ch_id: int, src_msg_id: int, version: int
-    ) -> tuple[h.Message, _RoleMap]:
-        """Fetch (+ cache per ``(src_msg_id, version)``) the source message + role map.
+    ) -> tuple[HMessage, _RoleMap]:
+        """Fetch, item-emoji-rewrite and cache the source as an :class:`HMessage` + role
+        map, keyed by ``(src_msg_id, version)``.
 
-        Content is fetched fresh once per *version*: an edit bumps the version, so this
-        still converges edited content, but a large multi-batch fan-out fetches each
-        source only once.
+        The rewrite runs once per source version — an edit bumps the version, so edited
+        content still converges, but a multi-batch fan-out reuses the one rewrite for
+        every destination (the per-dest role ping is added at send time).
         """
         cached = self._source_cache.get(src_msg_id)
         if cached is not None and cached[0] == version:
@@ -400,9 +422,21 @@ class MirrorWorker:
         async with rate_limiter:
             msg = await bot.rest.fetch_message(src_ch_id, src_msg_id)
         msg.embeds = utils.filter_discord_autoembeds(msg)
+        hmsg = HMessage.from_message(msg)
+        if _is_cv2(msg) and not hmsg.components:
+            # A CV2 source whose components did not rebuild (from_message swallows the
+            # NotImplementedError → empty HMessage, and a CV2 message has no content or
+            # embeds either). Sending it would mirror a blank / ping-only message; fail
+            # loudly instead so the row retries/terminalises, matching the old
+            # rebuild_components-raises path rather than silently losing the post.
+            raise ValueError(
+                f"CV2 source message {src_msg_id} has no rebuildable components"
+            )
+        if self._store is not None:
+            await rewrite_item_emoji_in_message(self._store, hmsg)
         role_map = await MirroredChannel.fetch_mirror_and_role_mention_id(src_ch_id)
-        self._source_cache[src_msg_id] = (version, msg, role_map)
-        return msg, role_map
+        self._source_cache[src_msg_id] = (version, hmsg, role_map)
+        return hmsg, role_map
 
     async def _evict_resolved_sources(self, batch: list[PickedRow]) -> None:
         """Drop cached source content for any batch source whose fan-out has resolved.
@@ -473,13 +507,13 @@ class MirrorWorker:
         self,
         sem: aio.Semaphore,
         row: PickedRow,
-        msg: h.Message | None,
+        hmsg: HMessage | None,
         role_map: _RoleMap,
     ) -> DeliveryOutcome:
         """Converge one destination row; return its outcome (never raises)."""
         async with sem:
             try:
-                return await self._do_delivery(row, msg, role_map)
+                return await self._do_delivery(row, hmsg, role_map)
             except Exception as e:
                 failure = e
         return self._handle_row_failure(row, failure)
@@ -487,7 +521,7 @@ class MirrorWorker:
     async def _do_delivery(
         self,
         row: PickedRow,
-        msg: h.Message | None,
+        hmsg: HMessage | None,
         role_map: _RoleMap,
     ) -> DeliveryOutcome:
         """Perform one row's Discord op and return its outcome.
@@ -502,13 +536,13 @@ class MirrorWorker:
                 return self._outcome(OutcomeKind.CANCELLED, row)
             await _delete_one(bot, row.dest_ch_id, row.dest_msg_id)
             return self._outcome(OutcomeKind.DELETE_SUCCESS, row)
-        assert msg is not None
+        assert hmsg is not None
         if row.dest_msg_id is None:
-            new_id, is_news = await _send_one(bot, msg, row.dest_ch_id, role_map)
+            new_id, is_news = await _send_one(bot, hmsg, row.dest_ch_id, role_map)
             return self._outcome(
                 OutcomeKind.SUCCESS, row, dest_msg_id=new_id, crosspost_pending=is_news
             )
-        await edit_one(bot, msg, row.dest_ch_id, row.dest_msg_id, role_map)
+        await edit_one(bot, hmsg, row.dest_ch_id, row.dest_msg_id, role_map)
         return self._outcome(OutcomeKind.SUCCESS, row, dest_msg_id=row.dest_msg_id)
 
     async def _crosspost_row(

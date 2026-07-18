@@ -21,6 +21,7 @@ import hikari as h
 import pytest
 
 from dd.common import components
+from dd.hmessage import HMessage
 
 # --- cv2_utf16_len / cap_cv2_text (pure) -----------------------------------------
 
@@ -84,6 +85,36 @@ async def test_guard_cv2_post_text_is_silent_within_budget(monkeypatch):
     calls = _record_alerts(monkeypatch)
     out = await components.guard_cv2_post_text("small body", post_name="Xûr")
     assert out == "small body"
+    assert calls == []
+
+
+# --- guard_cv2_hmessage (naive truncate + CRITICAL alert on an assembled HMessage) --
+
+
+def _cv2_hmsg(text: str) -> HMessage:
+    container = h.impl.ContainerComponentBuilder()
+    container.add_text_display(text)
+    comps: list[h.api.ComponentBuilder] = [container]
+    return HMessage(components=comps)
+
+
+@pytest.mark.asyncio
+async def test_guard_cv2_hmessage_truncates_and_alerts(monkeypatch):
+    calls = _record_alerts(monkeypatch)
+    hmsg = _cv2_hmsg("y" * 8000)
+    out = await components.guard_cv2_hmessage(hmsg, post_name="Xûr")
+    assert out is hmsg
+    assert components.cv2_text_length(hmsg.components) <= components.CV2_TEXT_BUDGET
+    assert calls == [("Xûr autopost", logging.CRITICAL)]
+
+
+@pytest.mark.asyncio
+async def test_guard_cv2_hmessage_silent_within_budget(monkeypatch):
+    calls = _record_alerts(monkeypatch)
+    hmsg = _cv2_hmsg("small body")
+    before = list(hmsg.components)
+    await components.guard_cv2_hmessage(hmsg, post_name="Xûr")
+    assert hmsg.components == before  # untouched
     assert calls == []
 
 

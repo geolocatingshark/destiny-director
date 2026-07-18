@@ -77,8 +77,16 @@ def _crosspost_pick(dest_ch_id, *, dest_msg_id=999, attempts=0):
 
 
 def _fake_msg():
+    # Carries the fields HMessage.from_message reads (content/embeds/attachments/
+    # components/flags/id); flags=NONE so it is treated as a plain (non-CV2) message.
     return SimpleNamespace(
-        content="hello", embeds=[], id=1, channel_id=5, flags=h.MessageFlag.NONE
+        content="hello",
+        embeds=[],
+        attachments=[],
+        components=[],
+        id=1,
+        channel_id=5,
+        flags=h.MessageFlag.NONE,
     )
 
 
@@ -147,6 +155,23 @@ async def test_all_deleted_group_skips_source_fetch(monkeypatch):
     w = _worker(monkeypatch, fetch_message=fetch)
     await w._process([_row(10, dest_msg_id=100, deleted=True)])
     fetch.assert_not_awaited()
+
+
+async def test_source_for_raises_for_unrebuildable_cv2(monkeypatch):
+    # A CV2-flagged source whose components don't rebuild → HMessage.from_message yields
+    # empty components; _source_for must fail loudly rather than mirror a blank message.
+    cv2_empty = SimpleNamespace(
+        content="",
+        embeds=[],
+        attachments=[],
+        components=[],  # CV2 flag set but nothing rebuildable
+        id=1,
+        channel_id=5,
+        flags=h.MessageFlag.IS_COMPONENTS_V2,
+    )
+    w = _worker(monkeypatch, fetch_message=AsyncMock(return_value=cv2_empty))
+    with pytest.raises(ValueError):
+        await w._source_for(5, 1, 1)
 
 
 # -- failure classification --------------------------------------------------

@@ -36,7 +36,7 @@ from ...common.components import (
     build_container,
     cv2_notice,
     cv2_success,
-    guard_cv2_post_sections,
+    finalize_cv2_post,
     respond_cv2,
     url_media_gallery,
 )
@@ -44,7 +44,6 @@ from ...common.utils import accumulate, fetch_emoji_dict
 from ...sector_accounting import xur as xur_support_data
 from .. import utils
 from ..autopost import make_autopost_control_commands
-from ..embeds import substitute_user_side_emoji
 from . import bungie_api as api
 
 logger = logging.getLogger(__name__)
@@ -493,27 +492,21 @@ async def format_xur_vendor(
         emoji_include_list=emoji_dict.keys(),
     )
 
-    header = await substitute_user_side_emoji(emoji_dict, header)
-    body = await substitute_user_side_emoji(emoji_dict, body)
-    footer = await substitute_user_side_emoji(emoji_dict, XUR_FOOTER)
-
-    # Components V2 caps total text at 4000 chars (tighter than an embed's 4096). Xûr is
-    # the longest post, so reserve the fixed header/footer and truncate only the
-    # inventory body (with a CRITICAL owner-pinging alert) — the "View More"/sign-off
-    # footer always survives rather than being tail-cut off an oversized post.
-    description = await guard_cv2_post_sections(header, body, footer, post_name="Xûr")
-
     # Components V2: the whole post is one text display, with the optional default
     # image as a trailing full-width media gallery (mirroring the old set_image).
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)
     )
-    container.add_text_display(description)
+    container.add_text_display(header + body + XUR_FOOTER)
 
     if await schemas.AutoPostSettings.get_xur_default_image_enabled():
         container.add_component(url_media_gallery(cfg.xur_image_url))
 
-    return HMessage(components=[container])
+    # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
+    # on overflow, measured on the final rendered length).
+    return await finalize_cv2_post(
+        HMessage(components=[container]), emoji_dict, post_name="Xûr"
+    )
 
 
 async def fetch_vendor_data(

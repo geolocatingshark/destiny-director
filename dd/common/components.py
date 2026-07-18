@@ -50,6 +50,9 @@ from lightbulb import components as lbc
 
 from . import cfg
 
+if t.TYPE_CHECKING:
+    from dd.hmessage.message import HMessage
+
 # Unicode reverse (◀) / play (▶) triangles used as the prev/next button emoji.
 # Defined as module-level constants so they are not constructed in function-argument
 # defaults (ruff B008).
@@ -262,6 +265,41 @@ async def warn_cv2_post_over_limit(
         f"{post_name} CV2 post is {length} UTF-16 units, over Discord's "
         f"{CV2_TEXT_LIMIT} cap — Discord will reject it",
     )
+
+
+async def guard_cv2_hmessage(
+    hmsg: "HMessage", *, post_name: str, budget: int = CV2_TEXT_BUDGET
+) -> "HMessage":
+    """Fit a built ``HMessage``'s CV2 text to ``budget`` in place; alert on overflow.
+
+    The single CV2 length guard for an assembled message: it caps the text in place via
+    :meth:`HMessage.fit_cv2_text` (a naive front-to-back trim — a body-heavy post may
+    lose its footer) and, on overflow, raises a CRITICAL owner alert so the truncation
+    is surfaced. Under budget it is untouched. Call *after* emoji substitution, so the
+    measured length is the final rendered length."""
+    length = hmsg.fit_cv2_text(budget)
+    if length > budget:
+        await _alert_cv2_overflow(
+            post_name,
+            f"{post_name} CV2 post is {length} UTF-16 units (over the {budget} "
+            "budget) — truncated, content lost",
+        )
+    return hmsg
+
+
+async def finalize_cv2_post(
+    hmsg: "HMessage", emoji_dict: dict[str, h.Emoji], *, post_name: str
+) -> "HMessage":
+    """Resolve guild ``:emoji:`` then cap CV2 text — the shared tail of every CV2 post.
+
+    Every CV2 autopost builds its container(s) with raw ``:name:`` tokens and ends here:
+    substitute the guild emoji across the assembled message, then guard it with
+    :func:`guard_cv2_hmessage` (which measures the final rendered length)."""
+    # Local import avoids a components<->utils module-load cycle.
+    from .utils import substitute_guild_emoji
+
+    substitute_guild_emoji(hmsg, emoji_dict)
+    return await guard_cv2_hmessage(hmsg, post_name=post_name)
 
 
 # ---------------------------------------------------------------------------

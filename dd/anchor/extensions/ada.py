@@ -38,7 +38,6 @@ from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
 from ..autopost import make_autopost_control_commands
-from ..embeds import substitute_user_side_emoji
 from . import (
     bungie_api as api,
     xur,
@@ -124,35 +123,23 @@ async def format_ada_vendor(
     emoji_dict = await fetch_emoji_dict(bot)
     shaders = _shaders(vendor.sale_items)
 
-    async def _sub(content: str) -> str:
-        return await substitute_user_side_emoji(emoji_dict, content)
-
-    title = await _sub(ADA_TITLE + "\n" + _inventory_changes_line())
-    footer = await _sub(ADA_FOOTER)
-    # The title and footer are fixed; only the shader block grows. Reserve their budget
-    # and truncate just the shader block (with a CRITICAL alert) so an oversized
-    # inventory never drops the post or loses the footer.
-    reserve = components.cv2_utf16_len(title) + components.cv2_utf16_len(footer)
-    shader_block = await components.guard_cv2_post_text(
-        await _sub(_render_shader_block(shaders)),
-        post_name="Ada",
-        budget=max(components.CV2_TEXT_BUDGET - reserve, 0),
-    )
-
-    # Components V2 container with a linked title over a divider, matching Eververse.
+    # Components V2 container with a linked title over a divider, matching Eververse
+    # (raw :emoji: tokens — resolved on the assembled message below).
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)
     )
-    container.add_text_display(title)
+    container.add_text_display(ADA_TITLE + "\n" + _inventory_changes_line())
     container.add_separator(divider=True)
-    container.add_text_display(shader_block)
+    container.add_text_display(_render_shader_block(shaders))
     container.add_separator(divider=True)
-    container.add_text_display(footer)
+    container.add_text_display(ADA_FOOTER)
 
-    # Backstop: CRITICAL-alert if the built post still exceeds the CV2 cap (e.g. the
-    # fixed title/footer alone overflow — the truncation above cannot help then).
-    await components.warn_cv2_post_over_limit([container], post_name="Ada")
-    return HMessage(components=[container])
+    # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
+    # on overflow — the trailing footer is dropped first, then the shader block; the
+    # title is kept whole).
+    return await components.finalize_cv2_post(
+        HMessage(components=[container]), emoji_dict, post_name="Ada"
+    )
 
 
 async def ada_message_constructor(bot: CachedFetchBot) -> HMessage:

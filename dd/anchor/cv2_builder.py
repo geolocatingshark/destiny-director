@@ -39,9 +39,10 @@ import hikari as h
 import lightbulb as lb
 from lightbulb import components as lbc
 
+from ..common.utils import fetch_emoji_dict
 from . import cv2_nodes as cn
 from .cv2_raw import RawComponentBuilder
-from .embeds import _kyber_emoji_dict, substitute_user_side_emoji
+from .embeds import substitute_user_side_emoji
 
 # Fixed router custom ids. The menu matches incoming interactions on these regardless of
 # where the identical-custom_id control is rendered, so the controls can live inside the
@@ -136,7 +137,7 @@ async def build_components_with_user(
     # emoji substitution), exactly as the embed builder does.
     bot = t.cast(h.GatewayBot, ctx.client.app)
     try:
-        emoji_dict = await _kyber_emoji_dict(bot)
+        emoji_dict = await fetch_emoji_dict(bot)
     except Exception as e:
         logging.warning("CV2 builder: could not pre-resolve emoji dict: %r", e)
         emoji_dict = {}
