@@ -20,14 +20,15 @@
   --border: #3a3f47;
   --border-hover: #8a5a72;   /* muted rose hover border */
 
-  /* UI accent — a muted, restrained take on the Kyber brand pink. Deliberately a light
-     touch: small fills and interaction states (toggles, focus rings, selection), not the
-     dominant colour. Links use the blue --link instead. The bright, saturated brand pink
-     is reserved for the actual post colour (--post-accent, set at runtime from the post's
-     embed accent). Two shades split by WCAG need — the rose is too light for white text,
-     so text-bearing fills use the deeper --accent-strong. Does NOT change per post. */
-  --accent: #c76a99;              /* toggle fill, focus rings, form-control focus, selection */
-  --accent-strong: #8f3f66;       /* button/chip/tag fills (white text passes AA) */
+  /* Accent split by role:
+     - --accent: the full-strength Kyber brand pink (#EC42A5), used bright on small
+       interaction states — the toggle fill, focus rings and selection borders — so it
+       pops as a brand accent without dominating the chrome.
+     - --accent-strong: the original blue (#2e5bff) for solid button/chip/tag fills that
+       carry white text, so primary actions read as they always did.
+     Links use the blue --link. Does NOT change per post. */
+  --accent: #EC42A5;              /* toggle fill, focus rings, form-control focus, selection */
+  --accent-strong: #2e5bff;       /* button/chip/tag fills (original blue; white text AA) */
   --accent-tint: #2b1420;         /* selected-row background wash */
   --accent-text-strong: #ffffff;  /* text on --accent-strong fills */
   --link: #9fb4ff;                /* link + selected-option text (the original blue) */
