@@ -22,6 +22,7 @@ announcing).
 
 from __future__ import annotations
 
+import copy
 import logging
 import typing as t
 
@@ -159,20 +160,61 @@ class HMessage:
             id=message.id,
         )
 
-    def to_message_kwargs(self) -> dict[str, t.Any]:
+    def to_message_kwargs(
+        self, *, role_mentions: bool | h.UndefinedType = h.UNDEFINED
+    ) -> dict[str, t.Any]:
         """Convert the HMessage instance into a dict of kwargs to be passed to
-        `hikari.Messageable.send`."""
+        `hikari.Messageable.send` / `hikari.PartialMessage.edit`.
+
+        ``role_mentions`` is passed through to the send kwargs only when set (default
+        undefined leaves it out, so callers that don't care get hikari's default
+        allowed-mentions behaviour)."""
+        mentions = (
+            {}
+            if isinstance(role_mentions, h.UndefinedType)
+            else {"role_mentions": role_mentions}
+        )
         if self.components:
             # A Components V2 message uses components exclusively — no content/embeds.
             return {
                 "components": self.components,
                 "flags": h.MessageFlag.IS_COMPONENTS_V2,
+                **mentions,
             }
         return {
             "content": self.content,
             "embeds": self.embeds,
             "attachments": self.attachments,
+            **mentions,
         }
+
+    def with_appended_text(self, text: str) -> HMessage:
+        """A shallow copy of this message with ``text`` appended as a trailing text run.
+
+        For a Components V2 message (``components`` present, no content field) the
+        text is added as a :class:`hikari.impl.TextDisplayComponentBuilder` inside the
+        **first** container — shallow-cloned via ``copy.copy`` so the container's accent
+        colour / spoiler / id are preserved and the shared source builders are never
+        mutated (safe to reuse one rewritten source across many destinations); if there
+        is no container, it is appended as a top-level text display. For a plain message
+        the text is appended after ``content``, separated by a blank line (no leading
+        newline when content is empty). Never mutates ``self``."""
+        if self.components:
+            components = list(self.components)
+            for i, component in enumerate(components):
+                if isinstance(component, h.impl.ContainerComponentBuilder):
+                    clone = copy.copy(component)
+                    clone._components = [
+                        *component._components,
+                        h.impl.TextDisplayComponentBuilder(content=text),
+                    ]
+                    components[i] = clone
+                    break
+            else:
+                components.append(h.impl.TextDisplayComponentBuilder(content=text))
+            return attr.evolve(self, components=components)
+        content = self.content.strip("\n") + "\n\n" + text if self.content else text
+        return attr.evolve(self, content=content)
 
     def map_text(self, fn: t.Callable[[str], str]) -> HMessage:
         """Apply ``fn`` to every text surface, mutating in place; return ``self``.

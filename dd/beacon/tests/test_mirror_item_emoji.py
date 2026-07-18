@@ -15,9 +15,10 @@
 
 """Mirror payload-shaping tests: the item-emoji rewrite itself is covered by
 HMessage.map_text (dd/hmessage/tests) and rewrite_item_emoji_in_message
-(dd/anchor/tests/test_emoji_store.py); here we pin that ``_send_payload`` /
-``_cv2_components_for`` add the per-destination role ping WITHOUT mutating the shared,
-once-rewritten source HMessage cached in ``_source_for``."""
+(dd/anchor/tests/test_emoji_store.py); here we pin the exact ``_send_payload`` kwargs
+it builds per destination (the role-ping placement / non-mutation of the shared source
+now lives on ``HMessage.with_appended_text`` — see
+dd/hmessage/tests/test_message.py)."""
 
 import typing as t
 
@@ -44,29 +45,6 @@ def _ping_texts(container: t.Any) -> list[str]:
         for c in container.components
         if isinstance(c, h.impl.TextDisplayComponentBuilder)
     ]
-
-
-def test_cv2_ping_cloned_without_mutating_source() -> None:
-    hmsg = _cv2_hmsg()
-    src = t.cast(t.Any, hmsg.components[0])
-    src_children = len(src.components)
-
-    out = mw._cv2_components_for(hmsg, 123, ROLE)
-
-    out_container = t.cast(t.Any, out[0])
-    assert any("<@&999>" in text for text in _ping_texts(out_container))  # ping added
-    assert out_container is not src  # a clone, not the shared source
-    assert out_container.accent_color == h.Color(0xABCDEF)  # clone keeps accent
-    assert out_container.is_spoiler is True  # ...and spoiler
-    # the shared source container is untouched
-    assert len(src.components) == src_children
-    assert not any("<@&999>" in text for text in _ping_texts(src))
-
-
-def test_cv2_no_ping_shares_source_component() -> None:
-    hmsg = _cv2_hmsg()
-    out = mw._cv2_components_for(hmsg, 123, {})  # no role for this dest
-    assert out[0] is hmsg.components[0]  # no clone, shared verbatim
 
 
 def test_send_payload_cv2_branch() -> None:
@@ -146,7 +124,7 @@ def test_send_payload_cv2_ping_lands_in_first_container() -> None:
     assert payload["flags"] == h.MessageFlag.IS_COMPONENTS_V2
     assert payload["role_mentions"] is True
     assert "content" not in payload
-    first_container = t.cast(t.Any, payload["components"][0])
+    first_container = payload["components"][0]
     assert any("<@&999>" in text for text in _ping_texts(first_container))
 
 
