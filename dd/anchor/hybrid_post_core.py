@@ -179,7 +179,7 @@ _INLINE_MD = re.compile(
     r"|(?P<b>\*\*(?P<b_inner>.+?)\*\*)"
     r"|(?P<i>\*(?P<i_inner>.+?)\*)"
     r"|(?P<link>\[(?P<label>[^\]]+)\]\((?P<url>[^)\s]+)\))"
-    r"|(?P<ts><t:(?P<tsval>\d+):[A-Za-z]>)"
+    r"|(?P<ts><t:(?P<tsval>\d+):(?P<tsfmt>[A-Za-z])>)"
     r"|(?P<emoji>" + re_user_side_emoji.pattern + r")"
 )
 
@@ -194,6 +194,45 @@ def _format_reset_ts(unix: int) -> str:
     hour12 = d.hour % 12 or 12
     ampm = "AM" if d.hour < 12 else "PM"
     return f"{d.strftime('%b')} {d.day}, {d.year} {hour12}:{d.minute:02d} {ampm} (UTC)"
+
+
+def _relative_ts(seconds: int) -> str:
+    """A coarse ``:R`` relative string, largest whole unit (e.g. "in 3 days")."""
+    future = seconds >= 0
+    seconds = abs(seconds)
+    name, n = "second", seconds
+    for unit_name, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if seconds >= size:
+            name, n = unit_name, seconds // size
+            break
+    label = f"{n} {name}" + ("s" if n != 1 else "")
+    return f"in {label}" if future else f"{label} ago"
+
+
+def _format_ts(unix: int, fmt: str, now: dt.datetime | None = None) -> str:
+    """Render a ``<t:UNIX:X>`` token per its format letter, in UTC.
+
+    ``R`` is Discord's *relative* time (a live countdown in Discord) — rendered here as
+    a coarse "in N units" / "N units ago" string from the render-time clock (``now``,
+    injectable for tests). ``t``/``T`` render the time-of-day, ``d``/``D`` the date;
+    ``f``/``F`` (and anything else) fall back to :func:`_format_reset_ts`'s long-date
+    short-time. Discord shows these in the viewer's local zone; the preview can't know
+    it, so times/dates carry an explicit ``(UTC)``.
+    """
+    if fmt == "R":
+        now = now or dt.datetime.now(tz=dt.UTC)
+        return _relative_ts(int(unix - now.timestamp()))
+    d = dt.datetime.fromtimestamp(unix, tz=dt.UTC)
+    hour12 = d.hour % 12 or 12
+    ampm = "AM" if d.hour < 12 else "PM"
+    if fmt in ("t", "T"):
+        secs = f":{d.second:02d}" if fmt == "T" else ""
+        return f"{hour12}:{d.minute:02d}{secs} {ampm} (UTC)"
+    if fmt == "d":
+        return f"{d.month:02d}/{d.day:02d}/{d.year}"
+    if fmt == "D":
+        return f"{d.strftime('%B')} {d.day}, {d.year}"
+    return _format_reset_ts(unix)
 
 
 def _html_emoji_substituter(
@@ -240,7 +279,9 @@ def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
             else:  # non-http(s): not a real link — render the raw text, escaped.
                 out.append(html.escape(m.group("link")))
         elif m.group("ts") is not None:
-            out.append(html.escape(_format_reset_ts(int(m.group("tsval")))))
+            out.append(
+                html.escape(_format_ts(int(m.group("tsval")), m.group("tsfmt")))
+            )
         else:  # emoji
             out.append(re_user_side_emoji.sub(emoji_sub, m.group("emoji")))
         pos = m.end()

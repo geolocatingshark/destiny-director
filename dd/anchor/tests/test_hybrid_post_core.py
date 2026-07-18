@@ -15,6 +15,7 @@
 
 """Tests for the shared post-preview core (PostSpec + render_post_spec)."""
 
+import datetime as dt
 import typing as t
 
 import hikari as h
@@ -74,6 +75,31 @@ def test_render_post_spec_renders_h2_heading() -> None:
         in out
     )
     assert "## " not in out
+
+
+def test_format_ts_relative_and_per_letter() -> None:
+    now = dt.datetime(2026, 7, 14, 17, tzinfo=dt.UTC)
+    base = 1784048400  # == now
+    # ':R' relative countdown, from the render-time clock (largest whole unit).
+    assert hpc._format_ts(base + 3 * 86400, "R", now=now) == "in 3 days"
+    assert hpc._format_ts(base - 2 * 3600, "R", now=now) == "2 hours ago"
+    assert hpc._format_ts(base + 86400, "R", now=now) == "in 1 day"  # singular
+    # Other letters: time / date variants, all UTC-noted where relevant.
+    assert hpc._format_ts(base, "t", now=now) == "5:00 PM (UTC)"
+    assert hpc._format_ts(base, "T", now=now) == "5:00:00 PM (UTC)"
+    assert hpc._format_ts(base, "d", now=now) == "07/14/2026"
+    assert hpc._format_ts(base, "D", now=now) == "July 14, 2026"
+    # 'f' (and anything else) keep the long-date short-time (unchanged behaviour).
+    assert hpc._format_ts(base, "f", now=now) == "Jul 14, 2026 5:00 PM (UTC)"
+
+
+def test_render_post_spec_relative_ts_is_not_literal() -> None:
+    # A '<t:…:R>' countdown (used by legacy 'resets <t:…:R>') renders as a relative
+    # phrase, never left as literal '<t:…:R>' text.
+    spec = hpc.PostSpec.cv2("resets <t:9999999999:R>")
+    out = hpc.render_post_spec(spec, t.cast("dict[str, h.Emoji]", {}))
+    assert "<t:" not in out
+    assert "in " in out or "ago" in out
 
 
 def test_render_post_spec_embed_kind_not_yet_supported() -> None:
