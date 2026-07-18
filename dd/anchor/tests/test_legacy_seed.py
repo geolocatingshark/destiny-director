@@ -131,7 +131,9 @@ def test_editor_builds_and_previews_legacy_type():
     doc = json.loads((_SEED_DIR / "throne_world.json").read_text(encoding="utf-8"))
     obj = editor._build_domain_object("world_activity_throne_world", doc)
     assert isinstance(obj, LegacyRotation)
-    html = editor._render_preview("world_activity_throne_world", obj)
+    html = editor._render_preview(
+        "world_activity_throne_world", obj, emoji_dict={}, details_enabled=False
+    )
     assert "Wellspring" in html
 
 

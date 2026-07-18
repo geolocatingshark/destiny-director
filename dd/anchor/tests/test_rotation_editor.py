@@ -146,7 +146,12 @@ async def test_preview_renders_valid_document():
         _req(body={"type": "lost_sector", "data": _doc()})
     )
     assert resp.status == 200
-    assert "Alpha" in (resp.text or "")
+    body = resp.text or ""
+    # The preview now renders the actual Discord post (a wall of .post-preview cards),
+    # not the old data table — the sector name appears as a :LS: masked link.
+    assert "Alpha" in body
+    assert "post-preview" in body
+    assert "World Lost Sectors" in body  # the post header, from lost_sector.build_body
 
 
 async def test_preview_rejects_invalid_document():

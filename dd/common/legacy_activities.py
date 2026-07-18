@@ -483,7 +483,10 @@ _WALL_SINGLE_WEEKLY_ROWS = 5  # single mode, weekly destination
 
 
 def iter_wall_posts(
-    destination_key: str, rotation: LegacyRotation, now: dt.datetime
+    destination_key: str,
+    rotation: LegacyRotation,
+    now: dt.datetime,
+    count: int | None = None,
 ) -> list[tuple[str, str]]:
     """Preview-wall entries for a legacy destination: ``(period label, body markdown)``.
 
@@ -493,7 +496,8 @@ def iter_wall_posts(
     are called with an EMPTY ``emoji_dict`` on purpose so ``:name:`` tokens survive for
     the HTML previewer to turn into ``<img>`` (``construct_emoji_substituter`` leaves
     names it doesn't know untouched). Single-mode destinations yield ONE entry (current
-    + upcoming); navigator / week-daily yield the forward window of per-period posts.
+    + upcoming); navigator / week-daily yield the forward window of per-period posts,
+    capped at ``count`` when given (e.g. the rotation editor's compact preview).
     """
     links = rotation.item_links
     weekly = rotation.step.days == 7
@@ -510,7 +514,7 @@ def iter_wall_posts(
     if destination_key in WEEK_DAILY_DESTINATIONS:
         week0 = reset_week_start(rotation, now)
         week_posts: list[tuple[str, str]] = []
-        for offset in range(_WALL_WEEKLY_COUNT):
+        for offset in range(count or _WALL_WEEKLY_COUNT):
             week_start = week0 + dt.timedelta(days=7 * offset)
             sections = render_week_sections(
                 destination_key, rotation, week_start, emoji_dict={}, links=links
@@ -519,9 +523,9 @@ def iter_wall_posts(
         return week_posts
 
     # navigator (daily or weekly): one post per reset-aligned period.
-    count = _WALL_WEEKLY_COUNT if weekly else _WALL_DAILY_COUNT
+    n = count or (_WALL_WEEKLY_COUNT if weekly else _WALL_DAILY_COUNT)
     posts: list[tuple[str, str]] = []
-    for date in period_starts(rotation, now, count):
+    for date in period_starts(rotation, now, n):
         if destination_key == "dares":
             sections = render_dares_sections(
                 rotation(date), date, emoji_dict={}, links=links

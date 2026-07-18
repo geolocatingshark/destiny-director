@@ -395,6 +395,27 @@ def render_post_spec(spec: PostSpec, emoji_dict: dict[str, h.Emoji]) -> str:
     raise ValueError(f"Cannot render post kind {spec.kind!r} yet")
 
 
+def render_post_wall(
+    posts: t.Sequence[tuple[str, PostSpec]], emoji_dict: dict[str, h.Emoji]
+) -> str:
+    """Render ``(label, PostSpec)`` entries as stacked, labelled cards (safe HTML).
+
+    The shared "wall of posts" presentation: each entry is a labelled card whose body is
+    :func:`render_post_spec`. Used by the rotation editor's live preview to show the
+    next few posts a rotation will publish. Empty list → an empty-state note.
+    """
+    if not posts:
+        return '<p class="post-wall-empty">No upcoming posts to show.</p>'
+    cards = [
+        f'<article class="post-wall-item">'
+        f'<h3 class="post-wall-label">{html.escape(label)}</h3>'
+        f'<div class="post-preview">{render_post_spec(spec, emoji_dict)}</div>'
+        f"</article>"
+        for label, spec in posts
+    ]
+    return '<div class="post-wall">' + "".join(cards) + "</div>"
+
+
 # ---------------------------------------------------------------------------
 # Draft metadata (post message id, publish status, "needs attention" flags)
 # ---------------------------------------------------------------------------

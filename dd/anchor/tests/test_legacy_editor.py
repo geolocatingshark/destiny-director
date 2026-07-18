@@ -159,8 +159,10 @@ async def test_save_and_preview_set_based_dares():
     )
     assert preview.status == 200
     body = preview.text or ""
-    assert "Set 1" in body
-    assert "Wild Hunt, Scatterhorn (all classes)" in body
+    # The preview now renders the actual Discord (Dares) message, not a data table.
+    assert "Set 1" in body  # the loot set name (in the armor/weapons section headers)
+    assert "Wild Hunt" in body and "Scatterhorn" in body  # each armor on its own line
+    assert "available for all classes" in body
 
 
 def _full_neomuna() -> dict[str, t.Any]:

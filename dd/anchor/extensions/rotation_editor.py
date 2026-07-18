@@ -35,15 +35,16 @@ import aiohttp.web
 import hikari as h
 import lightbulb as lb
 
-from ...common import cfg, rotation_schema, schemas
+from ...common import cfg, lost_sector, rotation_schema, schemas
+from ...common.bot import CachedFetchBot
 from ...common.components import cv2_error, cv2_notice, respond_cv2
-from ...common.legacy_activities import load_seed_doc, weapon_values
+from ...common.legacy_activities import iter_wall_posts, load_seed_doc, weapon_values
 from ...sector_accounting import (
     legacy_activities,
     sector_accounting,
     xur as xur_support_data,
 )
-from .. import web
+from .. import hybrid_post_core, web
 from .bungie_api import item_index
 
 logger = logging.getLogger(__name__)
@@ -91,50 +92,37 @@ def _vocab() -> dict[str, t.Any]:
     }
 
 
-def _render_preview_html(rotation: sector_accounting.Rotation) -> str:
-    """A compact HTML rendering of the next few days of the rotation."""
-    today = dt.datetime.now(dt.UTC)
-    blocks: list[str] = []
+def _render_lost_sector_preview(
+    rotation: sector_accounting.Rotation,
+    emoji_dict: dict[str, h.Emoji],
+    details_enabled: bool,
+) -> str:
+    """The next few days of Lost Sector posts, rendered as Discord messages.
+
+    Uses the SAME body builder the live post uses (``lost_sector.build_body``) so the
+    editor previews exactly what will post; ``details_enabled`` mirrors the live
+    champions/shields toggle.
+    """
+    now = dt.datetime.now(dt.UTC)
+    # Align to the daily 17:00 UTC reset so entry 0 is the currently-live post.
+    base = now.replace(hour=17, minute=0, second=0, microsecond=0)
+    if now < base:
+        base -= dt.timedelta(days=1)
+    posts: list[tuple[str, hybrid_post_core.PostSpec]] = []
     for offset in range(_PREVIEW_DAYS):
-        date = today + dt.timedelta(days=offset)
-        blocks.append(f"<h4>{date.date().isoformat()}</h4>")
+        date = base + dt.timedelta(days=offset)
+        label = date.strftime("%a, %b %d") + (" · now" if offset == 0 else "")
         try:
             sectors = rotation(date)
-        except KeyError:
-            blocks.append("<p><em>No data (TBC) for this day.</em></p>")
+        except Exception:
+            # A TBC day with no scheduled/known sector — show a placeholder card.
+            posts.append((label, hybrid_post_core.PostSpec.cv2("*No data (TBC).*")))
             continue
-        items = []
-        for sector in sectors:
-            champions = (
-                ", ".join(
-                    sorted(
-                        set(
-                            sector.expert_data.champions_list
-                            + sector.master_data.champions_list
-                        )
-                    )
-                )
-                or "None"
-            )
-            shields = (
-                ", ".join(
-                    sorted(
-                        set(
-                            sector.expert_data.shields_list
-                            + sector.master_data.shields_list
-                        )
-                    )
-                )
-                or "None"
-            )
-            name = html.escape(sector.name)
-            link = html.escape(sector.shortlink_gfx, quote=True)
-            items.append(
-                f"<li><a href='{link}' target='_blank' rel='noopener'>{name}</a>"
-                f" — champions: {champions}; shields: {shields}</li>"
-            )
-        blocks.append("<ul>" + "".join(items) + "</ul>")
-    return "".join(blocks)
+        body = lost_sector.build_body(sectors, details_enabled)
+        posts.append(
+            (label, hybrid_post_core.PostSpec.cv2(body, cfg.lost_sector_gif_url))
+        )
+    return hybrid_post_core.render_post_wall(posts, emoji_dict)
 
 
 def _render_xur_location_preview_html(
@@ -156,37 +144,25 @@ def _render_xur_location_preview_html(
     return "<ul>" + "".join(items) + "</ul>"
 
 
-def _render_legacy_preview_html(
+def _render_legacy_preview(
+    destination_key: str,
     rotation: legacy_activities.LegacyRotation,
+    emoji_dict: dict[str, h.Emoji],
 ) -> str:
-    """A compact HTML rendering of the next few periods of a legacy destination."""
-    today = dt.datetime.now(dt.UTC)
-    step = rotation.step
-    blocks: list[str] = []
-    for offset in range(_PREVIEW_DAYS):
-        date = today + step * offset
-        blocks.append(f"<h4>{date.date().isoformat()}</h4>")
-        items: list[str] = []
-        for activity in rotation(date):
-            title = html.escape(activity.title)
-            if activity.set is not None:
-                s = activity.set
-                weapons = ", ".join(s.weapons) or "—"
-                armor = ", ".join(s.armor)
-                detail = f"{html.escape(s.name)} — weapons: {html.escape(weapons)}" + (
-                    f"; armor: {html.escape(armor)} (all classes)" if armor else ""
-                )
-                items.append(f"<li>{title} — {detail}</li>")
-                continue
-            parts: list[str] = []
-            for name, value in activity.values.items():
-                if not value:
-                    continue
-                parts.append(f"{html.escape(name)}: {html.escape(value)}")
-            detail = "; ".join(parts) or "<em>TBC</em>"
-            items.append(f"<li>{title} — {detail}</li>")
-        blocks.append("<ul>" + "".join(items) + "</ul>")
-    return "".join(blocks)
+    """The next few legacy posts for a destination, rendered as Discord messages.
+
+    Reuses ``dd.common.legacy_activities.iter_wall_posts`` — the same per-mode paging
+    the beacon read commands use — so the editor previews exactly what the
+    ``/<destination>`` command posts, capped to a few periods for a compact editor pane.
+    """
+    now = dt.datetime.now(dt.UTC)
+    posts = [
+        (label, hybrid_post_core.PostSpec.cv2(body, None))
+        for label, body in iter_wall_posts(
+            destination_key, rotation, now, count=_PREVIEW_DAYS
+        )
+    ]
+    return hybrid_post_core.render_post_wall(posts, emoji_dict)
 
 
 # --- per-type dispatch ------------------------------------------------------------
@@ -235,14 +211,24 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
     return sector_accounting.Rotation.from_json(data)
 
 
-def _render_preview(post_type: str, obj: t.Any) -> str:
+def _render_preview(
+    post_type: str,
+    obj: t.Any,
+    *,
+    emoji_dict: dict[str, h.Emoji],
+    details_enabled: bool,
+) -> str:
+    # xur_location (a location-name map) and trials_loot (a set schedule) aren't
+    # standalone Discord posts, so they keep their compact data previews; lost_sector +
+    # legacy render as the actual Discord messages they produce.
     if post_type == "xur_location":
         return _render_xur_location_preview_html(obj)
     if post_type == rotation_schema.TRIALS_LOOT_SLUG:
         return _render_trials_loot_preview_html(obj)
     if rotation_schema.is_world_activity(post_type):
-        return _render_legacy_preview_html(obj)
-    return _render_preview_html(obj)
+        key = post_type.removeprefix(rotation_schema.ROTATION_SLUG_PREFIX)
+        return _render_legacy_preview(key, obj, emoji_dict)
+    return _render_lost_sector_preview(obj, emoji_dict, details_enabled)
 
 
 # --- route handlers ---------------------------------------------------------------
@@ -321,7 +307,11 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
     try:
         obj = _build_domain_object(post_type, data)
-        body = _render_preview(post_type, obj)
+        emoji_dict = await hybrid_post_core.preview_emoji_dict(_bot)
+        details = bool(await schemas.AutoPostSettings.get_lost_sector_details_enabled())
+        body = _render_preview(
+            post_type, obj, emoji_dict=emoji_dict, details_enabled=details
+        )
     except Exception as e:
         return aiohttp.web.Response(status=400, text=f"Could not render preview:\n{e}")
     return aiohttp.web.Response(text=body, content_type="text/html")
@@ -443,11 +433,20 @@ web.register_routes(register_rotation_routes)
 # and cancelled — mid-download, leaving the index cold for the whole process.
 _warm_tasks: set[asyncio.Task[None]] = set()
 
+#: The live bot, stashed by the StartedEvent listener so the preview can fetch guild
+#: emoji for the render (``preview_emoji_dict`` degrades to escaped ``:name:`` if None).
+_bot: CachedFetchBot | None = None
+
 
 @loader.listener(h.StartedEvent)
-async def _warm_item_index(_event: h.StartedEvent) -> None:
+async def _warm_item_index(
+    _event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
+) -> None:
     """Build the manifest weapon/armor index in the background (for autocomplete + link
-    baking), so requests never block on the (large) manifest download."""
+    baking), so requests never block on the (large) manifest download; also stash the
+    live bot so the preview can fetch guild emoji for the rendered post."""
+    global _bot
+    _bot = bot
     task = asyncio.create_task(item_index.warm(schemas.BungieCredentials.api_key))
     _warm_tasks.add(task)
     task.add_done_callback(_warm_tasks.discard)
