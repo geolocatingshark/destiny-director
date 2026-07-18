@@ -114,8 +114,10 @@ def _render_lost_sector_preview(
         label = date.strftime("%a, %b %d") + (" · now" if offset == 0 else "")
         try:
             sectors = rotation(date)
-        except Exception:
-            # A TBC day with no scheduled/known sector — show a placeholder card.
+        except (KeyError, IndexError):
+            # A TBC day: the schedule names a sector with no data, or has no entry for
+            # this day. Narrow on purpose — a different error is a real bug, so let it
+            # surface (the handler 400s it with the message) rather than hide as "TBC".
             posts.append((label, hybrid_post_core.PostSpec.cv2("*No data (TBC).*")))
             continue
         body = lost_sector.build_body(sectors, details_enabled)
@@ -211,24 +213,23 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
     return sector_accounting.Rotation.from_json(data)
 
 
-def _render_preview(
-    post_type: str,
-    obj: t.Any,
-    *,
-    emoji_dict: dict[str, h.Emoji],
-    details_enabled: bool,
+async def _render_preview(
+    post_type: str, obj: t.Any, bot: CachedFetchBot | None
 ) -> str:
-    # xur_location (a location-name map) and trials_loot (a set schedule) aren't
-    # standalone Discord posts, so they keep their compact data previews; lost_sector +
-    # legacy render as the actual Discord messages they produce.
+    # Each branch fetches only what it needs: xur_location (a location map) and
+    # trials_loot (a set schedule) aren't standalone Discord posts, so they render a
+    # compact data preview with no emoji/DB lookups; lost_sector + legacy render the
+    # actual Discord message (needing guild emoji), and only lost_sector reads the DB.
     if post_type == "xur_location":
         return _render_xur_location_preview_html(obj)
     if post_type == rotation_schema.TRIALS_LOOT_SLUG:
         return _render_trials_loot_preview_html(obj)
+    emoji_dict = await hybrid_post_core.preview_emoji_dict(bot)
     if rotation_schema.is_world_activity(post_type):
         key = post_type.removeprefix(rotation_schema.ROTATION_SLUG_PREFIX)
         return _render_legacy_preview(key, obj, emoji_dict)
-    return _render_lost_sector_preview(obj, emoji_dict, details_enabled)
+    details = bool(await schemas.AutoPostSettings.get_lost_sector_details_enabled())
+    return _render_lost_sector_preview(obj, emoji_dict, details)
 
 
 # --- route handlers ---------------------------------------------------------------
@@ -307,11 +308,7 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
     try:
         obj = _build_domain_object(post_type, data)
-        emoji_dict = await hybrid_post_core.preview_emoji_dict(_bot)
-        details = bool(await schemas.AutoPostSettings.get_lost_sector_details_enabled())
-        body = _render_preview(
-            post_type, obj, emoji_dict=emoji_dict, details_enabled=details
-        )
+        body = await _render_preview(post_type, obj, _bot)
     except Exception as e:
         return aiohttp.web.Response(status=400, text=f"Could not render preview:\n{e}")
     return aiohttp.web.Response(text=body, content_type="text/html")

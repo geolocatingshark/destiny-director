@@ -127,13 +127,13 @@ def test_dares_seed_is_set_based_and_spotchecks():
     assert loot.set.weapons and loot.set.armor
 
 
-def test_editor_builds_and_previews_legacy_type():
+@pytest.mark.asyncio
+async def test_editor_builds_and_previews_legacy_type():
     doc = json.loads((_SEED_DIR / "throne_world.json").read_text(encoding="utf-8"))
     obj = editor._build_domain_object("world_activity_throne_world", doc)
     assert isinstance(obj, LegacyRotation)
-    html = editor._render_preview(
-        "world_activity_throne_world", obj, emoji_dict={}, details_enabled=False
-    )
+    # bot=None → preview_emoji_dict returns {} (raw :emoji: tokens survive).
+    html = await editor._render_preview("world_activity_throne_world", obj, None)
     assert "Wellspring" in html
 
 

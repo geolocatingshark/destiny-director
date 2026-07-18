@@ -514,7 +514,7 @@ def iter_wall_posts(
     if destination_key in WEEK_DAILY_DESTINATIONS:
         week0 = reset_week_start(rotation, now)
         week_posts: list[tuple[str, str]] = []
-        for offset in range(count or _WALL_WEEKLY_COUNT):
+        for offset in range(_WALL_WEEKLY_COUNT if count is None else count):
             week_start = week0 + dt.timedelta(days=7 * offset)
             sections = render_week_sections(
                 destination_key, rotation, week_start, emoji_dict={}, links=links
@@ -523,7 +523,8 @@ def iter_wall_posts(
         return week_posts
 
     # navigator (daily or weekly): one post per reset-aligned period.
-    n = count or (_WALL_WEEKLY_COUNT if weekly else _WALL_DAILY_COUNT)
+    default_n = _WALL_WEEKLY_COUNT if weekly else _WALL_DAILY_COUNT
+    n = default_n if count is None else count
     posts: list[tuple[str, str]] = []
     for date in period_starts(rotation, now, n):
         if destination_key == "dares":
