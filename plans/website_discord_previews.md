@@ -63,7 +63,7 @@ speculative `/post/preview` up front:
 So Part A builds the reusable core; the standalone `/post/preview` spec-POST endpoint is
 deferred to its first real consumer (Part C), and Part B adds its own feed endpoint.
 
-## Part A — generic PostSpec + shared render path (CV2 only)  ← IN PROGRESS
+## Part A — generic PostSpec + shared render path (CV2 only)  ← DONE (branch anchor/generic-post-previewer)
 
 1. Define a JSON-safe **`PostSpec`** tagged union (CV2 now): `{kind:"cv2", body:str,
    image_url:str|None}`, with an `embed` variant reserved for Part C. Lives in
@@ -77,7 +77,13 @@ deferred to its first real consumer (Part C), and Part B adds its own feed endpo
    render path (no external behavior change). **Manual smoke both forms after.**
 4. `PostSpec.from_payload` (for the future spec-POST endpoint) + unit tests for the dispatch.
 
-## Part B — "scrolling wall of upcoming posts" (read-only, server-generated)
+## Part B — "scrolling wall of upcoming posts" (read-only, server-generated)  ← DONE (lost_sector + legacy_activities)
+
+> Shipped on `anchor/generic-post-previewer`: `GET /preview` (tab bar per rotation),
+> server-rendered, no client JS. lost_sector (next 14 days) + every legacy destination
+> wired via `iter_wall_posts`; Xûr/weekly_reset/trials excluded as planned. Deferred niceties:
+> lifting the `.post-preview` render CSS into one shared block (it's duplicated from the form
+> preview today), and `<t:…:R>` relative timestamps render as absolute dates in preview.
 
 **Not** date-wise editors of the underlying rotation data — a **forward-looking preview
 feed**: for each rotation, a page showing several upcoming posts (this week, next week, …)
