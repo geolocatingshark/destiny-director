@@ -1,13 +1,9 @@
 /*
   Preview-wall styles. Layered on /static/shared.css (base reset + theme + design tokens).
   Served statically from /static/preview_wall.css — no build step. The page is read-only
-  (no forms/buttons), so this is just the rotation tab bar, the vertical scroll of period
-  cards, and the .post-preview render markup (the safe HTML that render_post_spec emits —
-  the same markdown subset the web-form previews show). Colours come from the shared tokens.
-
-  NB: .post-preview intentionally duplicates the form preview's #previewBox render rules
-  (shared.css scopes those under .form-page). A later cleanup could lift the shared
-  render-markup into one un-scoped .post-preview block consumed by both surfaces.
+  (no forms/buttons), so this file is just the rotation tab bar and the vertical scroll of
+  period cards. The rendered-post appearance is the shared `.post-preview` block in
+  shared.css (also used by the web-form previews). Colours come from the shared tokens.
 */
 
 /* Rotation switcher: a horizontally-scrollable pill row pinned below the header. */
@@ -37,25 +33,5 @@
 }
 .wall-empty { color: var(--text-faint); }
 
-/* --- rendered post markup (render_post_spec output) --- */
-.post-preview {
-  white-space: pre-wrap; word-break: break-word;
-  background: var(--surface-0); border: 1px solid var(--border);
-  /* Mirror the CV2 container's left accent bar. */
-  border-left: 4px solid var(--post-accent);
-  border-radius: var(--radius); padding: 1rem; font: inherit;
-}
-.post-preview .emoji {
-  height: 1.2em; width: auto; vertical-align: middle;
-  margin: 0 .05em; object-fit: contain;
-}
-.post-preview .md-h1 { font-weight: 700; font-size: 1.3em; }
-.post-preview .md-h2 { font-weight: 700; font-size: 1.15em; }
-.post-preview .md-h3 { font-weight: 700; font-size: 1.05em; }
-.post-preview .md-small { color: var(--text-muted); font-size: .82em; }
-.post-preview .md-bullet::before { content: "• "; color: var(--text-muted); }
-.post-preview a { color: var(--link); }
-.post-preview .post-image {
-  display: block; max-width: 100%; height: auto;
-  border-radius: var(--radius); margin: .5rem 0;
-}
+/* The rendered post markup (.post-preview) lives in shared.css — shared with the form
+   previews. */

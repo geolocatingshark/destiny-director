@@ -1,15 +1,11 @@
 /*
   Trials of Osiris form styles. The full form skeleton — page layout, fieldsets, inputs,
-  the preview pane (#previewBox + the shared .md-h1/.emoji/.post-image rules), the toolbar
-  and its buttons — lives in shared.css under `.form-page` (this page's <body> carries that
-  class). Served statically from /static/trials_form.css — no build step. This file holds
-  only what's unique to Trials: the '### '/'- ' preview rules the Trials post body needs,
-  and the .set-* card picker for the bonus focus pool. Colours come from the shared tokens.
+  the toolbar and its buttons — lives in shared.css under `.form-page` (this page's <body>
+  carries that class); the rendered-post markup (incl. the '### '/'- ' rules) is the shared
+  `.post-preview` block in shared.css. Served statically from /static/trials_form.css — no
+  build step. This file holds only what's unique to Trials: the .set-* card picker for the
+  bonus focus pool. Colours come from the shared tokens.
 */
-
-/* Trials-only preview markup: the '### ' sub-headings and '- ' bullets in the post body. */
-#previewBox .md-h3 { font-weight: 700; font-size: 1.05em; }
-#previewBox .md-bullet::before { content: "• "; color: var(--text-muted); }
 
 /* --- bonus focus pool: set-card picker --- */
 /* Wrapping grid: cards stack on mobile, sit 2–3 across when wide; page scrolls vertically. */
