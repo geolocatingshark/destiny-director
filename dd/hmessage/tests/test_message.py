@@ -59,6 +59,84 @@ def test_to_message_kwargs_round_trips_fields():
     assert kwargs == {"content": "hi", "embeds": [embed], "attachments": []}
 
 
+def test_to_message_kwargs_role_mentions_passthrough():
+    # Default omits the key entirely, so existing callers are unaffected.
+    assert "role_mentions" not in HMessage(content="hi").to_message_kwargs()
+    # Explicit value flows through in the plain branch...
+    plain = HMessage(content="hi").to_message_kwargs(role_mentions=True)
+    assert plain["role_mentions"] is True
+    # ...and in the CV2 branch.
+    cv2 = HMessage(components=[h.impl.ContainerComponentBuilder()])
+    kwargs = cv2.to_message_kwargs(role_mentions=True)
+    assert kwargs["flags"] == h.MessageFlag.IS_COMPONENTS_V2
+    assert kwargs["role_mentions"] is True
+
+
+# --- with_appended_text --------------------------------------------------------
+
+
+def _cv2_container_hmsg() -> HMessage:
+    container = h.impl.ContainerComponentBuilder(
+        accent_color=h.Color(0xABCDEF), spoiler=True
+    )
+    container.add_text_display("body")
+    comps: list[h.api.ComponentBuilder] = [container]
+    return HMessage(components=comps)
+
+
+def _text_display_contents(container: t.Any) -> list[str]:
+    return [
+        c.content
+        for c in container.components
+        if isinstance(c, h.impl.TextDisplayComponentBuilder)
+    ]
+
+
+def test_with_appended_text_plain_adds_blank_line():
+    assert HMessage(content="hi").with_appended_text("ping").content == "hi\n\nping"
+
+
+def test_with_appended_text_plain_empty_content_is_bare_text():
+    assert HMessage(content="").with_appended_text("ping").content == "ping"
+
+
+def test_with_appended_text_plain_strips_trailing_newlines():
+    out = HMessage(content="hi\n\n\n").with_appended_text("ping")
+    assert out.content == "hi\n\nping"
+
+
+def test_with_appended_text_does_not_mutate_source():
+    src = HMessage(content="hi")
+    src.with_appended_text("ping")
+    assert src.content == "hi"  # original untouched
+
+
+def test_with_appended_text_cv2_clones_first_container_without_mutation():
+    hmsg = _cv2_container_hmsg()
+    src = t.cast(t.Any, hmsg.components[0])
+    src_children = len(src.components)
+
+    out_container = t.cast(t.Any, hmsg.with_appended_text("ping").components[0])
+
+    assert out_container is not src  # a clone, not the shared source
+    assert "ping" in _text_display_contents(out_container)  # ping added to the clone
+    assert out_container.accent_color == h.Color(0xABCDEF)  # accent preserved
+    assert out_container.is_spoiler is True  # ...and spoiler
+    # the shared source container is untouched
+    assert len(src.components) == src_children
+    assert "ping" not in _text_display_contents(src)
+
+
+def test_with_appended_text_cv2_no_container_appends_top_level():
+    comps: list[h.api.ComponentBuilder] = [
+        h.impl.TextDisplayComponentBuilder(content="body")
+    ]
+    out = HMessage(components=comps).with_appended_text("ping")
+    assert len(out.components) == 2  # original text display + appended ping
+    assert isinstance(out.components[-1], h.impl.TextDisplayComponentBuilder)
+    assert out.components[-1].content == "ping"
+
+
 # --- __add__ -------------------------------------------------------------------
 
 

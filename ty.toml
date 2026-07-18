@@ -52,11 +52,15 @@ include = ["dd/common/tests/test_utils.py"]
 invalid-argument-type = "ignore"
 
 [[overrides]]
-include = ["dd/hmessage/tests/test_message.py"]
+include = [
+    "dd/hmessage/tests/test_message.py",
+    "dd/beacon/tests/test_mirror_item_emoji.py",
+]
 
 [overrides.rules]
 # HMessage.attachments stores URLs (str) but is typed list[Attachment] by design
-# (mirrors the override on dd/hmessage/message.py).
+# (mirrors the override on dd/hmessage/message.py). The mirror golden tests build the
+# same URL-string attachments to pin the send payload.
 invalid-argument-type = "ignore"
 
 [[overrides]]

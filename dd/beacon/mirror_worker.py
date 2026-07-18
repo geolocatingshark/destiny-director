@@ -36,7 +36,6 @@ is a pure ledger processor and knows nothing about either.
 import asyncio as aio
 import collections.abc
 import contextlib
-import copy
 import datetime as dt
 import logging
 import typing as t
@@ -94,58 +93,6 @@ def _is_cv2(msg: h.Message) -> bool:
     return h.MessageFlag.IS_COMPONENTS_V2 in (msg.flags or h.MessageFlag.NONE)
 
 
-def add_role_ping_to_msg(
-    msg_content: str | None,
-    dest_channel_id: int,
-    role_ping_per_ch_id: collections.abc.Mapping[int, int | None],
-) -> str | None:
-    """Append this dest's spoilered role ping to the content (no-op when unset)."""
-    role_ping = int(role_ping_per_ch_id.get(dest_channel_id) or 0)
-    if role_ping:
-        msg_content = msg_content.strip("\n") + "\n\n" if msg_content else ""
-        msg_content += f"||<@&{role_ping}>||"
-    return msg_content
-
-
-def _container_with_ping(
-    container: h.impl.ContainerComponentBuilder, suffix: str
-) -> h.impl.ContainerComponentBuilder:
-    """A shallow clone of ``container`` with ``suffix`` appended as a text display.
-
-    Shares the original's child builders (never mutates them), so the cached, once-
-    rewritten source components are reused across destinations while each dest gets its
-    own role-ping copy. Uses ``copy.copy`` so *every* container field (accent colour,
-    spoiler, id, and any future one) is preserved — only the child list is replaced with
-    a fresh list carrying the ping, leaving the shared source container untouched."""
-    clone = copy.copy(container)
-    ping = h.impl.TextDisplayComponentBuilder(content=suffix)
-    clone._components = [*container._components, ping]
-    return clone
-
-
-def _cv2_components_for(
-    hmsg: HMessage,
-    dest_channel_id: int,
-    role_ping_per_ch_id: collections.abc.Mapping[int, int | None],
-) -> list[h.api.ComponentBuilder]:
-    """The CV2 components to send to one destination: the source's (shared, already
-    rewritten) components with this dest's spoilered role ping appended.
-
-    A CV2 message has no content field, so the ping goes in a text display inside the
-    first container — shallow-cloned so the shared source components aren't mutated."""
-    components = list(hmsg.components)
-    role_ping = int(role_ping_per_ch_id.get(dest_channel_id) or 0)
-    if role_ping:
-        suffix = f"||<@&{role_ping}>||"
-        for i, component in enumerate(components):
-            if isinstance(component, h.impl.ContainerComponentBuilder):
-                components[i] = _container_with_ping(component, suffix)
-                break
-        else:
-            components.append(h.impl.TextDisplayComponentBuilder(content=suffix))
-    return components
-
-
 def _send_payload(
     hmsg: HMessage,
     ch_id: int,
@@ -154,23 +101,16 @@ def _send_payload(
     """Build the ``channel.send`` / ``message.edit`` kwargs for one destination.
 
     The single source of truth for how a mirrored message is shaped, read from the once-
-    per-source rewritten ``HMessage`` (see ``_source_for``): a CV2 source is re-sent as
-    its components with the dest role ping appended in the first container; a plain
-    message is re-sent as content + attachments + embeds (``HMessage.from_message``
-    already dropped a non-CV2 source's components, so admin buttons never carry over).
+    per-source rewritten ``HMessage`` (see ``_source_for``): this dest's spoilered role
+    ping (when set) is appended — into the first CV2 container, or after plain content —
+    by ``HMessage.with_appended_text``, and ``HMessage.to_message_kwargs`` selects the
+    send shape (CV2 components + flag, or content + attachments + embeds;
+    ``from_message`` already dropped a non-CV2 source's components so admin buttons
+    never carry over). ``role_mentions=True`` lets the inline role ping actually fire.
     """
-    if hmsg.components:
-        return {
-            "components": _cv2_components_for(hmsg, ch_id, role_ping_per_ch_id),
-            "flags": h.MessageFlag.IS_COMPONENTS_V2,
-            "role_mentions": True,
-        }
-    return {
-        "content": add_role_ping_to_msg(hmsg.content, ch_id, role_ping_per_ch_id),
-        "attachments": hmsg.attachments,
-        "embeds": hmsg.embeds,
-        "role_mentions": True,
-    }
+    role_ping = int(role_ping_per_ch_id.get(ch_id) or 0)
+    dest = hmsg.with_appended_text(f"||<@&{role_ping}>||") if role_ping else hmsg
+    return dest.to_message_kwargs(role_mentions=True)
 
 
 async def _send_one(
