@@ -45,11 +45,12 @@ import typing as t
 from pathlib import Path
 
 import aiohttp.web
+import aiosqlite
 import hikari as h
 
 from dd.hmessage import HMessage
 
-from ..common import cfg
+from ..common import cfg, schemas
 from ..common.bot import CachedFetchBot
 from ..common.utils import fetch_emoji_dict, re_user_side_emoji
 from . import utils
@@ -823,6 +824,39 @@ async def iter_weapon_items(cursor: t.Any) -> list[WeaponItem]:
         if existing is None or hash_ > existing[1]:  # keep the newest hash
             item_by_key[key] = (name, hash_, type_name, item_type, rarity)
     return sorted(item_by_key.values(), key=lambda e: e[0].lower())
+
+
+#: Process-wide cache of the manifest weapon/armour pool + its build lock. Every
+#: producer's reward pickers search the SAME pool, so the ~4166-row
+#: DestinyInventoryItemDefinition scan + JSON decode runs once and is held in a single
+#: list, not one copy per producer.
+_weapon_pool: list[WeaponItem] | None = None
+_weapon_pool_lock = asyncio.Lock()
+
+
+async def get_weapon_pool() -> list[WeaponItem]:
+    """Build (once) and cache the manifest weapon/armour pool, shared process-wide.
+
+    Opens its own short-lived manifest connection and runs :func:`iter_weapon_items`;
+    the result is cached so subsequent callers (every producer + its prewarm) reuse it
+    rather than re-scanning the item table. On any failure returns ``[]`` **without
+    caching**: the caller degrades to a manifest-less form and a later call retries, so
+    a transient manifest error doesn't permanently disable the reward pickers.
+    """
+    global _weapon_pool
+    if _weapon_pool is not None:
+        return _weapon_pool
+    async with _weapon_pool_lock:
+        if _weapon_pool is None:
+            try:
+                path = await api._get_latest_manifest(schemas.BungieCredentials.api_key)
+                async with aiosqlite.connect(path) as con:
+                    cur = await con.cursor()
+                    _weapon_pool = await iter_weapon_items(cur)
+            except Exception:
+                logger.warning("manifest weapon-pool build failed", exc_info=True)
+                return []
+        return _weapon_pool
 
 
 def resolve_weapon(value: str, items: t.Sequence[WeaponItem]) -> WeaponRef | None:

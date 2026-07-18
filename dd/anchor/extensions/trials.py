@@ -44,7 +44,6 @@ from pathlib import Path
 
 import aiocron
 import aiohttp.web
-import aiosqlite
 import hikari as h
 import lightbulb as lb
 
@@ -69,7 +68,6 @@ from ..hybrid_post_core import (
     next_reset_ts,
     resolve_weapon,
 )
-from . import bungie_api as api
 
 logger = logging.getLogger(__name__)
 loader = lb.Loader()
@@ -447,30 +445,15 @@ def validate_post(ctx: TrialsContext) -> list[str]:
 # Manifest weapon pool (for the focus-pool picker + resolver)
 # ---------------------------------------------------------------------------
 
-_weapon_items: list[tuple[str, int, str, int, str]] | None = None
-_weapon_items_lock = asyncio.Lock()
-
-
-async def _build_weapon_items() -> list[tuple[str, int, str, int, str]]:
-    try:
-        path = await api._get_latest_manifest(schemas.BungieCredentials.api_key)
-        async with aiosqlite.connect(path) as con:
-            cur = await con.cursor()
-            return await hybrid_post_core.iter_weapon_items(cur)
-    except Exception:
-        logger.warning("trials: manifest weapon-pool build failed", exc_info=True)
-        return []
-
 
 async def get_weapon_items() -> list[tuple[str, int, str, int, str]]:
-    """Build (once) and cache the manifest weapon pool the focus picker searches."""
-    global _weapon_items
-    if _weapon_items is not None:
-        return _weapon_items
-    async with _weapon_items_lock:
-        if _weapon_items is None:
-            _weapon_items = await _build_weapon_items()
-        return _weapon_items
+    """The manifest weapon pool the focus picker searches.
+
+    A thin delegate to the process-wide :func:`hybrid_post_core.get_weapon_pool`, which
+    builds (once) and caches the pool shared with every other producer, so the item scan
+    isn't repeated per extension.
+    """
+    return await hybrid_post_core.get_weapon_pool()
 
 
 # ---------------------------------------------------------------------------

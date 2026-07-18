@@ -85,7 +85,7 @@ from ..hybrid_post_core import (
     build_cv2,
     compute_rotator,
     current_reset_ts,
-    iter_weapon_items,
+    get_weapon_pool,
     next_reset_ts,
     render_post_html as render_post_html,
     resolve_weapon,
@@ -1035,10 +1035,12 @@ def _clean_activity_name(name: str, category: str) -> str:
 
 
 async def _build_indexes() -> _Indexes:
-    # One row per named weapon/armour (deduped, newest hash wins) — the weapon pool is
-    # generic, so building it lives in hybrid_post_core.iter_weapon_items. Seed with an
-    # empty list so a manifest failure still yields a usable (strike/conquest) index.
-    items: list[tuple[str, int, str, int, str]] = []
+    # One row per named weapon/armour (deduped, newest hash wins). The weapon pool is
+    # generic and identical across producers, so it comes from the process-wide, cached
+    # get_weapon_pool() (shared with trials) rather than being re-scanned here; a
+    # manifest failure there yields [] so the strike/conquest index below still builds
+    # from this extension's own connection.
+    items = await get_weapon_pool()
     # Only GM strikes need manifest autocomplete now; raids/dungeons/pantheon/crucible
     # are bounded Choice selectors (see the *_CHOICES constants).
     strikes: set[str] = set()
@@ -1049,8 +1051,6 @@ async def _build_indexes() -> _Indexes:
         path = await api._get_latest_manifest(schemas.BungieCredentials.api_key)
         async with aiosqlite.connect(path) as con:
             cur = await con.cursor()
-
-            items = await iter_weapon_items(cur)
 
             # Activity type names are the authoritative raid/dungeon/nightfall signal.
             await cur.execute("SELECT json FROM DestinyActivityTypeDefinition")

@@ -275,13 +275,15 @@ def test_validate_flags_overlong_post() -> None:
 
 @pytest.fixture
 def stub_weapon_items():
-    saved = tr._weapon_items
-    tr._weapon_items = [
+    # get_weapon_items() now delegates to the shared, process-wide hybrid_post_core
+    # cache; seed that so resolve_weapon sees a known pool.
+    saved = hpc._weapon_pool
+    hpc._weapon_pool = [
         ("The Scholar", 123, "Scout Rifle", 3, "Legendary"),
         ("Exile's Curse", 456, "Fusion Rifle", 3, "Legendary"),
     ]
     yield
-    tr._weapon_items = saved
+    hpc._weapon_pool = saved
 
 
 @pytest.mark.asyncio
