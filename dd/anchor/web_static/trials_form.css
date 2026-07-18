@@ -65,7 +65,7 @@ label.inline input { margin: 0; }
 #previewBox .md-h3 { font-weight: 700; font-size: 1.05em; }
 #previewBox .md-bullet::before { content: "• "; color: var(--text-muted); }
 #previewBox .md-small { color: var(--text-muted); font-size: .82em; }
-#previewBox a { color: var(--accent-text); }
+#previewBox a { color: var(--link); }
 #previewBox .post-image {
   display: block; max-width: 100%; height: auto;
   border-radius: var(--radius); margin: .5rem 0;
