@@ -36,6 +36,7 @@ is a pure ledger processor and knows nothing about either.
 import asyncio as aio
 import collections.abc
 import contextlib
+import copy
 import datetime as dt
 import logging
 import typing as t
@@ -88,6 +89,11 @@ _RoleMap = collections.abc.Mapping[int, int | None]
 # --- Discord delivery primitives ----------------------------------------------------
 
 
+def _is_cv2(msg: h.Message) -> bool:
+    """Whether the source message was sent as a Components V2 message."""
+    return h.MessageFlag.IS_COMPONENTS_V2 in (msg.flags or h.MessageFlag.NONE)
+
+
 def add_role_ping_to_msg(
     msg_content: str | None,
     dest_channel_id: int,
@@ -108,15 +114,12 @@ def _container_with_ping(
 
     Shares the original's child builders (never mutates them), so the cached, once-
     rewritten source components are reused across destinations while each dest gets its
-    own role-ping copy. Reads the original only via public getters."""
-    clone = h.impl.ContainerComponentBuilder(
-        id=container.id,
-        accent_color=container.accent_color,
-        spoiler=container.is_spoiler,
-    )
-    for child in container.components:  # a copy of the shared child references
-        clone.add_component(child)
-    clone.add_text_display(suffix)
+    own role-ping copy. Uses ``copy.copy`` so *every* container field (accent colour,
+    spoiler, id, and any future one) is preserved — only the child list is replaced with
+    a fresh list carrying the ping, leaving the shared source container untouched."""
+    clone = copy.copy(container)
+    ping = h.impl.TextDisplayComponentBuilder(content=suffix)
+    clone._components = [*container._components, ping]
     return clone
 
 
@@ -420,6 +423,15 @@ class MirrorWorker:
             msg = await bot.rest.fetch_message(src_ch_id, src_msg_id)
         msg.embeds = utils.filter_discord_autoembeds(msg)
         hmsg = HMessage.from_message(msg)
+        if _is_cv2(msg) and not hmsg.components:
+            # A CV2 source whose components did not rebuild (from_message swallows the
+            # NotImplementedError → empty HMessage, and a CV2 message has no content or
+            # embeds either). Sending it would mirror a blank / ping-only message; fail
+            # loudly instead so the row retries/terminalises, matching the old
+            # rebuild_components-raises path rather than silently losing the post.
+            raise ValueError(
+                f"CV2 source message {src_msg_id} has no rebuildable components"
+            )
         if self._store is not None:
             await rewrite_item_emoji_in_message(self._store, hmsg)
         role_map = await MirroredChannel.fetch_mirror_and_role_mention_id(src_ch_id)

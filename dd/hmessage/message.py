@@ -199,6 +199,28 @@ class HMessage:
                 surface.set(new)
         return self
 
+    def fit_cv2_text(self, budget: int | None = None) -> int:
+        """Truncate this message's Components V2 text to ``budget`` UTF-16 units.
+
+        Front-to-back: the earliest text is kept whole and the tail is trimmed then
+        dropped (a text display trimmed to nothing is removed; a section left with no
+        text is dropped). Returns the CV2 text length *before* trimming, so a caller can
+        tell whether it overflowed. A no-op when already within budget or when there are
+        no components. ``budget`` defaults to the shared CV2 text budget."""
+        # Local import mirrors from_message — avoids an hmessage<->common load cycle.
+        from ..common.components import (
+            CV2_TEXT_BUDGET,
+            cv2_text_length,
+            fit_cv2_components,
+        )
+
+        if budget is None:
+            budget = CV2_TEXT_BUDGET
+        length = cv2_text_length(self.components)
+        if length > budget:
+            self.components = fit_cv2_components(self.components, budget=budget)
+        return length
+
     def __add__(self, other):
         if not isinstance(other, self.__class__):
             raise TypeError(f"Cannot add HMessage to {other.__class__.__name__}")

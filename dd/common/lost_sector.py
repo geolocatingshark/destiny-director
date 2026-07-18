@@ -10,7 +10,7 @@ import hikari as h
 from dd.hmessage import HMessage
 
 from ..common import cfg, components, schemas
-from ..common.utils import fetch_emoji_dict, substitute_guild_emoji
+from ..common.utils import fetch_emoji_dict
 from ..sector_accounting import sector_accounting
 from .utils import follow_link_single_step, space
 
@@ -173,10 +173,11 @@ async def format_post(
         # which would 413 on upload and re-download from the host on every send.
         container.add_component(components.url_media_gallery(ls_gif_url))
 
-    # Resolve :emoji: on the assembled message, then cap CV2 text (naive front-to-back
-    # truncate + CRITICAL alert on overflow — measured on the final rendered length).
-    hmsg = substitute_guild_emoji(HMessage(components=[container]), emoji_dict)
-    return await components.guard_cv2_hmessage(hmsg, post_name="Lost Sector")
+    # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
+    # on overflow, measured on the final rendered length).
+    return await components.finalize_cv2_post(
+        HMessage(components=[container]), emoji_dict, post_name="Lost Sector"
+    )
 
 
 async def format_sector(sector: sector_accounting.Sector) -> str:

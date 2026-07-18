@@ -67,7 +67,10 @@ class AppEmojiStore:
         self._emoji: dict[str, h.KnownCustomEmoji] = {}
         self._icon_url: dict[str, str] = {}
         self._lock = asyncio.Lock()
-        self._bg: set[asyncio.Task[None]] = set()
+        # LRU bumps are batched: hits accumulate here and a single background task
+        # flushes them in one UPDATE (evictions are rare, so exact ordering is fine).
+        self._pending_touch: set[str] = set()
+        self._touch_task: asyncio.Task[None] | None = None
         _ = bot.listen(h.StartedEvent)(self._on_start)
 
     @property
@@ -198,18 +201,25 @@ class AppEmojiStore:
             await self._delete(victims[0])
 
     def _touch(self, name: str) -> None:
-        """Fire-and-forget LRU bump; exact ordering is non-critical (evictions rare)."""
+        """Queue an LRU bump; one background task flushes the accumulated batch."""
         if self._app_id is None:
             return
-        task = asyncio.create_task(self._touch_db(self._app_id, name))
-        self._bg.add(task)
-        task.add_done_callback(self._bg.discard)
+        self._pending_touch.add(name)
+        if self._touch_task is None or self._touch_task.done():
+            self._touch_task = asyncio.create_task(self._flush_touches())
 
-    async def _touch_db(self, app_id: int, name: str) -> None:
+    async def _flush_touches(self) -> None:
+        # Yield once so a same-tick burst of hits (a fan-out resolving many item emoji)
+        # coalesces into a single UPDATE rather than one per name.
+        await asyncio.sleep(0)
+        if self._app_id is None or not self._pending_touch:
+            return
+        names = sorted(self._pending_touch)
+        self._pending_touch.clear()
         try:
-            await schemas.AppEmojiCache.touch(app_id, [name])
+            await schemas.AppEmojiCache.touch(self._app_id, names)
         except Exception:
-            logger.exception("AppEmojiStore: failed to bump last_used for %r", name)
+            logger.exception("AppEmojiStore: failed to bump last_used for %r", names)
 
 
 async def rewrite_item_emoji(store: AppEmojiStore, text: str) -> str:

@@ -36,7 +36,7 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
-from ...common.utils import fetch_emoji_dict, substitute_guild_emoji
+from ...common.utils import fetch_emoji_dict
 from ..autopost import make_autopost_control_commands
 from . import (
     bungie_api as api,
@@ -134,10 +134,12 @@ async def format_ada_vendor(
     container.add_separator(divider=True)
     container.add_text_display(ADA_FOOTER)
 
-    # Resolve :emoji: on the assembled message, then cap CV2 text (naive front-to-back
-    # truncate + CRITICAL alert on overflow — the shader block trims first).
-    hmsg = substitute_guild_emoji(HMessage(components=[container]), emoji_dict)
-    return await components.guard_cv2_hmessage(hmsg, post_name="Ada")
+    # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
+    # on overflow — the trailing footer is dropped first, then the shader block; the
+    # title is kept whole).
+    return await components.finalize_cv2_post(
+        HMessage(components=[container]), emoji_dict, post_name="Ada"
+    )
 
 
 async def ada_message_constructor(bot: CachedFetchBot) -> HMessage:

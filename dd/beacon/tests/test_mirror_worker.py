@@ -157,6 +157,23 @@ async def test_all_deleted_group_skips_source_fetch(monkeypatch):
     fetch.assert_not_awaited()
 
 
+async def test_source_for_raises_for_unrebuildable_cv2(monkeypatch):
+    # A CV2-flagged source whose components don't rebuild → HMessage.from_message yields
+    # empty components; _source_for must fail loudly rather than mirror a blank message.
+    cv2_empty = SimpleNamespace(
+        content="",
+        embeds=[],
+        attachments=[],
+        components=[],  # CV2 flag set but nothing rebuildable
+        id=1,
+        channel_id=5,
+        flags=h.MessageFlag.IS_COMPONENTS_V2,
+    )
+    w = _worker(monkeypatch, fetch_message=AsyncMock(return_value=cv2_empty))
+    with pytest.raises(ValueError):
+        await w._source_for(5, 1, 1)
+
+
 # -- failure classification --------------------------------------------------
 
 

@@ -48,7 +48,7 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
-from ...common.utils import fetch_emoji_dict, substitute_guild_emoji
+from ...common.utils import fetch_emoji_dict
 from ..autopost import make_autopost_control_commands
 from . import (
     bungie_api as api,
@@ -460,10 +460,11 @@ async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
     )
     container.add_text_display(description)
 
-    # Resolve :emoji: on the assembled message, then cap CV2 text (naive front-to-back
-    # truncate + CRITICAL alert on overflow).
-    hmsg = substitute_guild_emoji(HMessage(components=[container]), emoji_dict)
-    return await components.guard_cv2_hmessage(hmsg, post_name="Portal Ops")
+    # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
+    # on overflow).
+    return await components.finalize_cv2_post(
+        HMessage(components=[container]), emoji_dict, post_name="Portal Ops"
+    )
 
 
 def _next_daily_reset_unix() -> int:

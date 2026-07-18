@@ -12,7 +12,7 @@ from dd.hmessage import HMessage
 
 from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
-from ...common.utils import fetch_emoji_dict, substitute_guild_emoji
+from ...common.utils import fetch_emoji_dict
 from ..autopost import make_autopost_control_commands
 from . import (
     bungie_api as api,
@@ -366,10 +366,11 @@ async def format_eververse_vendor(
             _render_offering_groups(silver_groups, manifest_table, "Silver")
         )
 
-    # Resolve :emoji: on the assembled message, then cap CV2 text (naive front-to-back
-    # truncate + CRITICAL alert on overflow — an oversized day trims Silver first).
-    hmsg = substitute_guild_emoji(HMessage(components=[container]), emoji_dict)
-    return await components.guard_cv2_hmessage(hmsg, post_name="Eververse")
+    # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
+    # on overflow — an oversized day trims Silver first, then drops the tail).
+    return await components.finalize_cv2_post(
+        HMessage(components=[container]), emoji_dict, post_name="Eververse"
+    )
 
 
 @loader.listener(h.StartedEvent)

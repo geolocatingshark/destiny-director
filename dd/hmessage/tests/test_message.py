@@ -304,6 +304,28 @@ async def test_map_text_async_matches_sync():
     assert all(_IN not in t for t in _all_cv2_text(hmsg))
 
 
+def test_fit_cv2_text_truncates_over_budget_and_returns_pre_length() -> None:
+    from dd.common.components import cv2_text_length
+
+    container = h.impl.ContainerComponentBuilder()
+    container.add_text_display("y" * 8000)
+    hmsg = HMessage(components=[container])
+
+    length = hmsg.fit_cv2_text(budget=100)
+    assert length == 8000  # pre-trim length returned so a caller can alert
+    assert cv2_text_length(hmsg.components) <= 100  # trimmed in place
+
+
+def test_fit_cv2_text_noop_within_budget() -> None:
+    container = h.impl.ContainerComponentBuilder()
+    container.add_text_display("small")
+    hmsg = HMessage(components=[container])
+    before = hmsg.components
+
+    assert hmsg.fit_cv2_text(budget=1000) == 5
+    assert hmsg.components == before  # untouched
+
+
 def test_hikari_component_internals_canary():
     """Pin the hikari builder internals the CV2 walk depends on.
 

@@ -36,11 +36,11 @@ from ...common.components import (
     build_container,
     cv2_notice,
     cv2_success,
-    guard_cv2_hmessage,
+    finalize_cv2_post,
     respond_cv2,
     url_media_gallery,
 )
-from ...common.utils import accumulate, fetch_emoji_dict, substitute_guild_emoji
+from ...common.utils import accumulate, fetch_emoji_dict
 from ...sector_accounting import xur as xur_support_data
 from .. import utils
 from ..autopost import make_autopost_control_commands
@@ -502,10 +502,11 @@ async def format_xur_vendor(
     if await schemas.AutoPostSettings.get_xur_default_image_enabled():
         container.add_component(url_media_gallery(cfg.xur_image_url))
 
-    # Resolve :emoji: on the assembled message, then cap CV2 text (naive front-to-back
-    # truncate + CRITICAL alert on overflow — measured on the final rendered length).
-    hmsg = substitute_guild_emoji(HMessage(components=[container]), emoji_dict)
-    return await guard_cv2_hmessage(hmsg, post_name="Xûr")
+    # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
+    # on overflow, measured on the final rendered length).
+    return await finalize_cv2_post(
+        HMessage(components=[container]), emoji_dict, post_name="Xûr"
+    )
 
 
 async def fetch_vendor_data(
