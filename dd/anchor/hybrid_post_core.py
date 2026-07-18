@@ -311,6 +311,37 @@ def _render_line(line: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
     return _render_inline(line, emoji_sub)
 
 
+def _normalize_heading_spacing(lines: list[str]) -> list[str]:
+    """Rework blank lines around ``##``/``###`` headings to match Discord's spacing.
+
+    Discord gives a sub-heading margin *above* and renders the content right below it
+    tight — but a producer's ``build_body`` conventionally puts the blank line *after*
+    the heading (``["### Foo", ""]``). In the ``white-space: pre-wrap`` preview that
+    literal blank lands *below* the heading, so the preview reads differently from the
+    posted message. Normalise here (shared by every producer's preview, not per-post):
+    collapse to exactly one blank line *before* each ``##``/``###`` heading (none if
+    it's the first line) and drop any blank directly after it. ``#`` (the H1 title) is
+    left as-is — its body-authored trailing blank already matches Discord's title.
+    """
+
+    def is_sub(line: str) -> bool:
+        return line.startswith("## ") or line.startswith("### ")
+
+    out: list[str] = []
+    for line in lines:
+        if is_sub(line):
+            while out and out[-1] == "":  # collapse any blanks the body put above
+                out.pop()
+            if out:  # a gap above the heading, unless it's the very first line
+                out.append("")
+            out.append(line)
+        elif line == "" and out and is_sub(out[-1]):
+            continue  # drop a blank right below a sub-heading (Discord renders tight)
+        else:
+            out.append(line)
+    return out
+
+
 def render_post_html(
     body: str, emoji_dict: dict[str, h.Emoji], image_url: str | None = None
 ) -> str:
@@ -318,13 +349,17 @@ def render_post_html(
 
     Mirrors what Discord renders for the published post: the same markdown subset,
     custom emoji as images, and the small-text footer ``build_cv2`` appends. Newlines
-    are preserved for the <pre> preview. Only whitelisted tags (strong / em / span / a /
+    are preserved for the <pre> preview (heading spacing normalised to Discord's via
+    :func:`_normalize_heading_spacing`). Only whitelisted tags (strong / em / span / a /
     img) are emitted; every text leaf is escaped and every URL is http(s)-validated, so
     it is safe to drop into the form's ``innerHTML`` sink despite the owner-authored
     input.
     """
     emoji_sub = _html_emoji_substituter(emoji_dict)
-    lines = [_render_line(line, emoji_sub) for line in body.split("\n")]
+    lines = [
+        _render_line(line, emoji_sub)
+        for line in _normalize_heading_spacing(body.split("\n"))
+    ]
     # Image sits below the body and above the footer — mirroring build_cv2's media
     # gallery placement — so the preview shows it exactly where the post does.
     if image_url and image_url.startswith(("http://", "https://")):

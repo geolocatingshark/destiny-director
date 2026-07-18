@@ -65,6 +65,47 @@ def test_render_post_spec_cv2_matches_render_post_html() -> None:
     assert '<img class="post-image" src="https://ex.com/a.png"' in out
 
 
+def test_normalize_heading_spacing_matches_discord() -> None:
+    # Discord gives ##/### sub-headings a gap ABOVE and tight content below, but bodies
+    # author the blank AFTER the heading. Normalise to one blank before, none after — so
+    # the pre-wrap preview reads like the posted message. The # (H1) title keeps its own
+    # trailing blank.
+    body = [
+        "# Title",
+        "",
+        "Live until X",
+        "### Game Modes",
+        "",
+        "- Control",
+        "### Bonus Focus Pool",
+        "",
+        "weapon",
+    ]
+    assert hpc._normalize_heading_spacing(body) == [
+        "# Title",
+        "",  # H1 title keeps its body-authored gap below
+        "Live until X",
+        "",  # inserted gap ABOVE the sub-heading
+        "### Game Modes",
+        "- Control",  # tight below the heading (blank dropped)
+        "",  # inserted gap above the next sub-heading
+        "### Bonus Focus Pool",
+        "weapon",
+    ]
+
+
+def test_normalize_heading_spacing_leaves_leading_heading_and_collapses() -> None:
+    # A sub-heading at the very top gets no blank inserted above it; multiple
+    # body-authored blanks above a heading collapse to exactly one.
+    assert hpc._normalize_heading_spacing(["### Top", "x"]) == ["### Top", "x"]
+    assert hpc._normalize_heading_spacing(["a", "", "", "### H", "b"]) == [
+        "a",
+        "",
+        "### H",
+        "b",
+    ]
+
+
 def test_render_post_spec_renders_h2_heading() -> None:
     # '## ' is an H2 heading (used by the Lost Sector post); rendered as an md-h2 span
     # with the inline link, not left as literal '## ' text.
