@@ -70,54 +70,6 @@ class CreateEmbed(lb.SlashCommand, name="embed", description="Create a new embed
             logging.exception(e)
 
 
-class EditEmbed(lb.MessageCommand, name="Edit embed", description="Edit an embed post"):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
-        message = self.target
-
-        bot_user = bot.get_me()
-        if not (bot_user and message.author.id == bot_user.id):
-            await _respond_cv2(
-                ctx, cv2_error("Can only edit messages posted by this bot")
-            )
-            return
-
-        if not (message.embeds and len(message.embeds) == 1):
-            await _respond_cv2(ctx, cv2_error("Can only edit messages with 1 embed"))
-            return
-
-        embed = await build_embed_with_user(
-            ctx, done_button_text="Edit", existing_embed=message.embeds[0]
-        )
-        if embed is None:
-            return
-
-        await message.edit(embed=embed)
-
-
-class CopyEmbed(
-    lb.MessageCommand,
-    name="Copy embed",
-    description="Copy, edit and then send an embed post",
-):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
-        message = self.target
-
-        if not (message.embeds and len(message.embeds) == 1):
-            await _respond_cv2(ctx, cv2_error("Can only edit messages with 1 embed"))
-            return
-
-        embed = await build_embed_with_user(
-            ctx, done_button_text="Send", existing_embed=message.embeds[0]
-        )
-        if embed is None:
-            return
-
-        channel = t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id))
-        await channel.send(embed=embed)
-
-
 # Discord rejects a Components V2 message longer than 4000 characters of text.
 _CV2_LIMIT_HINT = (
     "Make sure it's a valid Components V2 structure, within the 4000-character "
@@ -146,25 +98,15 @@ def _is_cv2(msg: h.Message) -> bool:
     return h.MessageFlag.IS_COMPONENTS_V2 in (msg.flags or h.MessageFlag.NONE)
 
 
-async def _reject_unless_own_cv2(
-    ctx: lb.Context, message: h.Message, bot: CachedFetchBot
-) -> bool:
-    """Respond + return ``True`` if ``message`` isn't an editable bot CV2 message."""
+def _is_own(message: h.Message, bot: CachedFetchBot) -> bool:
+    """Whether ``message`` was posted by this bot."""
     bot_user = bot.get_me()
-    if not (bot_user and message.author.id == bot_user.id):
-        await _respond_cv2(ctx, cv2_error("Can only edit messages posted by this bot"))
-        return True
-    if not _is_cv2(message):
-        await _respond_cv2(
-            ctx,
-            cv2_error(
-                "Not a Components V2 post",
-                "This only works on Components V2 posts. Use **Edit embed** for "
-                "embed posts.",
-            ),
-        )
-        return True
-    return False
+    return bool(bot_user and message.author.id == bot_user.id)
+
+
+def _single_embed(message: h.Message) -> bool:
+    """Whether ``message`` carries exactly one embed (the editable-embed shape)."""
+    return bool(message.embeds and len(message.embeds) == 1)
 
 
 async def _load_cv2_nodes(ctx: lb.Context, message: h.Message) -> list[Node] | None:
@@ -234,86 +176,127 @@ class PostComponents(
         await _respond_cv2(ctx, cv2_success(f"Posted: {link}"))
 
 
-class EditComponents(
+class EditPost(
     lb.MessageCommand,
-    name="Edit components",
-    description="Edit this Components V2 post in Discord",
+    name="Edit post",
+    description="Edit this bot's post (embed or Components V2)",
 ):
     @lb.invoke
     async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
         message = self.target
-        if await _reject_unless_own_cv2(ctx, message, bot):
-            return
-
-        nodes = await _load_cv2_nodes(ctx, message)
-        if nodes is None:
-            return
-
-        edited = await build_components_with_user(
-            ctx, done_button_text="Save", existing_nodes=nodes
-        )
-        if not edited:
-            return
-
-        try:
-            await message.edit(
-                components=_to_builders(edited), flags=h.MessageFlag.IS_COMPONENTS_V2
+        if not _is_own(message, bot):
+            await _respond_cv2(
+                ctx, cv2_error("Can only edit messages posted by this bot")
             )
-        except h.BadRequestError as e:
+            return
+
+        # Dispatch on the message's actual format — embeds and CV2 are both
+        # first-class here; editing never crosses formats (that's what Convert is for).
+        if _is_cv2(message):
+            nodes = await _load_cv2_nodes(ctx, message)
+            if nodes is None:
+                return
+
+            edited = await build_components_with_user(
+                ctx, done_button_text="Save", existing_nodes=nodes
+            )
+            if not edited:
+                return
+
+            try:
+                await message.edit(
+                    components=_to_builders(edited),
+                    flags=h.MessageFlag.IS_COMPONENTS_V2,
+                )
+            except h.BadRequestError as e:
+                await _respond_cv2(
+                    ctx,
+                    cv2_error(
+                        "Discord rejected the update", _CV2_LIMIT_HINT.format(error=e)
+                    ),
+                )
+                return
+
+            link = message.make_link(ctx.guild_id)
+            await _respond_cv2(ctx, cv2_success(f"Updated: {link}"))
+            return
+
+        if not _single_embed(message):
             await _respond_cv2(
                 ctx,
                 cv2_error(
-                    "Discord rejected the update", _CV2_LIMIT_HINT.format(error=e)
+                    "Nothing to edit",
+                    "This post isn't a Components V2 message and doesn't have a "
+                    "single embed to edit.",
                 ),
             )
             return
 
-        link = message.make_link(ctx.guild_id)
-        await _respond_cv2(ctx, cv2_success(f"Updated: {link}"))
+        embed = await build_embed_with_user(
+            ctx, done_button_text="Edit", existing_embed=message.embeds[0]
+        )
+        if embed is None:
+            return
+
+        await message.edit(embed=embed)
 
 
-class CopyComponents(
+class CopyPost(
     lb.MessageCommand,
-    name="Copy components",
-    description="Copy, edit and then send a Components V2 post",
+    name="Copy post",
+    description="Copy, edit and then send a post (embed or Components V2)",
 ):
     @lb.invoke
     async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
         message = self.target
-        if not _is_cv2(message):
+
+        # Copy preserves the source format — no ownership gate (any post is copyable).
+        if _is_cv2(message):
+            nodes = await _load_cv2_nodes(ctx, message)
+            if nodes is None:
+                return
+
+            edited = await build_components_with_user(
+                ctx, done_button_text="Send", existing_nodes=nodes
+            )
+            if not edited:
+                return
+
+            channel = t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id))
+            try:
+                posted = await channel.send(components=_to_builders(edited))
+            except h.BadRequestError as e:
+                await _respond_cv2(
+                    ctx,
+                    cv2_error(
+                        "Discord rejected the message", _CV2_LIMIT_HINT.format(error=e)
+                    ),
+                )
+                return
+
+            link = posted.make_link(ctx.guild_id)
+            await _respond_cv2(ctx, cv2_success(f"Posted: {link}"))
+            return
+
+        if not _single_embed(message):
             await _respond_cv2(
                 ctx,
                 cv2_error(
-                    "Not a Components V2 post",
-                    "This only works on Components V2 posts.",
+                    "Nothing to copy",
+                    "This post isn't a Components V2 message and doesn't have a "
+                    "single embed to copy.",
                 ),
             )
             return
 
-        nodes = await _load_cv2_nodes(ctx, message)
-        if nodes is None:
-            return
-
-        edited = await build_components_with_user(
-            ctx, done_button_text="Send", existing_nodes=nodes
+        embed = await build_embed_with_user(
+            ctx, done_button_text="Send", existing_embed=message.embeds[0]
         )
-        if not edited:
+        if embed is None:
             return
 
         channel = t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id))
-        try:
-            posted = await channel.send(components=_to_builders(edited))
-        except h.BadRequestError as e:
-            await _respond_cv2(
-                ctx,
-                cv2_error(
-                    "Discord rejected the message", _CV2_LIMIT_HINT.format(error=e)
-                ),
-            )
-            return
-
-        link = posted.make_link(ctx.guild_id)
-        await _respond_cv2(ctx, cv2_success(f"Posted: {link}"))
+        await channel.send(embed=embed)
 
 
 class ConvertToComponents(
@@ -337,8 +320,8 @@ class ConvertToComponents(
                 ctx,
                 cv2_error(
                     "Already Components V2",
-                    "This post is already a Components V2 message. Use **Edit "
-                    "components** to change it.",
+                    "This post is already a Components V2 message. Use **Edit post** "
+                    "to change it.",
                 ),
             )
             return
@@ -473,8 +456,6 @@ _post_guilds = utils.guild_scope(
     cfg.kyber_discord_server_id,
 )
 loader.command(post_group, guilds=_post_guilds)
-loader.command(EditEmbed, guilds=_post_guilds)
-loader.command(CopyEmbed, guilds=_post_guilds)
+loader.command(EditPost, guilds=_post_guilds)
+loader.command(CopyPost, guilds=_post_guilds)
 loader.command(ConvertToComponents, guilds=_post_guilds)
-loader.command(EditComponents, guilds=_post_guilds)
-loader.command(CopyComponents, guilds=_post_guilds)

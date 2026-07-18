@@ -17,7 +17,7 @@
 
 from dd.anchor.help_details import (
     CONVERT_COMPONENTS_DETAIL,
-    COPY_COMPONENTS_DETAIL,
+    COPY_POST_DETAIL,
     HELP_DETAILS,
     POST_COMPONENTS_DETAIL,
 )
@@ -36,9 +36,9 @@ def test_post_components_walkthrough_renders() -> None:
     assert "1." in joined  # numbered steps present
 
 
-def test_copy_components_walkthrough_renders() -> None:
-    joined = "\n".join(render_detail_sections(COPY_COMPONENTS_DETAIL))
-    assert "Copy components" in joined
+def test_copy_post_walkthrough_renders() -> None:
+    joined = "\n".join(render_detail_sections(COPY_POST_DETAIL))
+    assert "Copy post" in joined
     assert "Apps" in joined  # the right-click invocation hint
 
 

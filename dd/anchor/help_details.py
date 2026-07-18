@@ -45,7 +45,7 @@ POST_COMPONENTS_DETAIL = CommandDetail(
         "Containers are top-level only; sections hold 1–3 text blocks plus one "
         "accessory (a thumbnail image or a link button).",
         "Only link buttons are supported — interactive buttons and select menus need "
-        'per-button code, so they are not offered. Use "Edit components" to change a '
+        'per-button code, so they are not offered. Use "Edit post" to change a '
         "post later.",
         "The builder session lasts ~14 minutes before it times out; just re-run.",
     ),
@@ -71,41 +71,44 @@ CREATE_POST_DETAIL = CommandDetail(
 )
 
 EDIT_POST_DETAIL = CommandDetail(
-    command="Edit embed",
-    title="Edit embed (right-click message command)",
+    command="Edit post",
+    title="Edit post (right-click message command)",
     summary=(
-        "Edit an embed the bot already posted, using the interactive embed builder. "
-        "Owner/team only."
+        "Edit a post the bot already made — either an embed or a Components V2 "
+        "message — using the matching interactive builder. Owner/team only."
     ),
     steps=(
         "Right-click (long-press on mobile) a message this bot posted ▸ Apps ▸ "
-        '"Edit embed".',
-        "Change the title, text, colour, author, image, thumbnail or footer in the "
-        "ephemeral builder.",
-        'Press "Edit" to apply your changes to the original message in place.',
+        '"Edit post".',
+        "The right builder opens for the post's format: the embed builder for embed "
+        "posts, the Components V2 builder for CV2 posts, pre-loaded with its content.",
+        'Press "Edit"/"Save" to apply your changes to the original message in place.',
     ),
     notes=(
         "Only works on messages posted by this bot.",
-        "The message must contain exactly one embed.",
+        "Embed posts must contain exactly one embed; CV2 posts open the block builder.",
+        "Editing never changes a post's format — use \"Convert to components\" to turn "
+        "an embed into a Components V2 message.",
     ),
 )
 
 COPY_POST_DETAIL = CommandDetail(
-    command="Copy embed",
-    title="Copy embed (right-click message command)",
+    command="Copy post",
+    title="Copy post (right-click message command)",
     summary=(
-        "Clone any single-embed message, tweak it in the builder, then post it fresh "
-        "in the current channel. Owner/team only."
+        "Clone any embed or Components V2 message, tweak it in the matching builder, "
+        "then post it fresh in the current channel. Owner/team only."
     ),
     steps=(
-        'Right-click any message that has one embed ▸ Apps ▸ "Copy embed".',
-        "Adjust the copied embed in the ephemeral builder.",
+        'Right-click any embed or Components V2 message ▸ Apps ▸ "Copy post".',
+        "Adjust the copied content in the ephemeral builder that matches its format.",
         'Press "Send" to post the result as a new message in the channel you ran the '
         "command in.",
     ),
     notes=(
-        "The source message must contain exactly one embed.",
+        "The source must be a single-embed message or a Components V2 post.",
         "Unlike Edit, this posts a new message and leaves the original untouched.",
+        "The copy keeps the source's format (embed stays embed, CV2 stays CV2).",
     ),
 )
 
@@ -125,47 +128,6 @@ LS_UPDATE_DETAIL = CommandDetail(
     ),
 )
 
-EDIT_COMPONENTS_DETAIL = CommandDetail(
-    command="Edit components",
-    title="Edit components (right-click message command)",
-    summary=(
-        "Edit a Components V2 post this bot made, in Discord, with the interactive "
-        "builder. Owner/team only."
-    ),
-    steps=(
-        "Right-click (long-press on mobile) a Components V2 message this bot posted ▸ "
-        'Apps ▸ "Edit components".',
-        "The builder opens pre-loaded with the post's current blocks.",
-        "Add, edit, delete, move or re-nest blocks just like when creating a post.",
-        'Press "Save" to apply your changes to the message in place.',
-    ),
-    notes=(
-        'Only works on Components V2 messages this bot posted (use "Edit embed" for '
-        "embed posts).",
-        "File blocks from the original post are preserved and can be moved or removed, "
-        "but new ones can't be authored (they need a real uploaded attachment).",
-    ),
-)
-
-COPY_COMPONENTS_DETAIL = CommandDetail(
-    command="Copy components",
-    title="Copy components (right-click message command)",
-    summary=(
-        "Clone any Components V2 message, tweak it in the builder, then post it fresh "
-        "in the current channel. Owner/team only."
-    ),
-    steps=(
-        'Right-click any Components V2 message ▸ Apps ▸ "Copy components".',
-        "Adjust the copied blocks in the ephemeral builder.",
-        'Press "Send" to post the result as a new message in the channel you ran the '
-        "command in.",
-    ),
-    notes=(
-        "The source message must be a Components V2 post.",
-        "Unlike Edit, this posts a new message and leaves the original untouched.",
-    ),
-)
-
 CONVERT_COMPONENTS_DETAIL = CommandDetail(
     command="Convert to components",
     title="Convert to components (right-click message command)",
@@ -182,10 +144,10 @@ CONVERT_COMPONENTS_DETAIL = CommandDetail(
     ),
     notes=(
         "Only works on this bot's own messages, and only on embed posts that aren't "
-        'already Components V2 (those get an error pointing you at "Edit components").',
+        'already Components V2 (those get an error pointing you at "Edit post").',
         "The message must have an embed with content to convert.",
         "Conversion is one-way: once a message becomes Components V2 the flag "
-        'can\'t be removed. Use "Edit components" afterwards to tweak the result.',
+        'can\'t be removed. Use "Edit post" afterwards to tweak the result.',
     ),
 )
 
@@ -194,8 +156,6 @@ HELP_DETAILS: tuple[CommandDetail, ...] = (
     CREATE_POST_DETAIL,
     EDIT_POST_DETAIL,
     COPY_POST_DETAIL,
-    EDIT_COMPONENTS_DETAIL,
-    COPY_COMPONENTS_DETAIL,
     CONVERT_COMPONENTS_DETAIL,
     LS_UPDATE_DETAIL,
 )

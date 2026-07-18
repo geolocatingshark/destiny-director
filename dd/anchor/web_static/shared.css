@@ -1,19 +1,75 @@
 /*
-  Shared base / reset / theme for the anchor web editors (the rotation editor today; a
-  weekly-reset form later). Page-specific styles live alongside each page (e.g.
-  editor.css). Served statically from /static/shared.css — no build step.
+  Shared base / reset / theme for the anchor web editors (rotation editor, weekly-reset
+  form, Trials form, control panel, autopost settings). Page-specific styles live
+  alongside each page (e.g. editor.css). Served statically from /static/shared.css — no
+  build step.
+
+  Design tokens live in :root below — every page consumes these instead of re-hardcoding
+  the palette, so the whole web UI reads as one system. Seeded from the Trials set-card
+  look. Dark-only for now (color-scheme: dark).
 */
-:root { color-scheme: dark; }
+:root {
+  color-scheme: dark;
+
+  /* Layered dark surfaces, back (page) to front (controls). */
+  --surface-0: #14161a;   /* inset: preview boxes */
+  --surface-1: #1b1d22;   /* page background, sticky toolbars/tabs */
+  --surface-2: #202329;   /* fieldsets, cards, dropdowns */
+  --surface-3: #24272e;   /* inputs, secondary buttons, control chrome */
+
+  --border: #3a3f47;
+  --border-hover: #8a5a72;   /* muted rose hover border */
+
+  /* Accent split by role:
+     - --accent: the full-strength Kyber brand pink (#EC42A5), used bright on small
+       interaction states — the toggle fill, focus rings and selection borders — so it
+       pops as a brand accent without dominating the chrome.
+     - --accent-strong: the original blue (#2e5bff) for solid button/chip/tag fills that
+       carry white text, so primary actions read as they always did.
+     Links use the blue --link. Does NOT change per post. */
+  --accent: #EC42A5;              /* toggle fill, focus rings, form-control focus, selection, active tab */
+  --accent-ink: #14161a;          /* dark text on the bright --accent fill (e.g. active tab) */
+  --accent-strong: #2e5bff;       /* button/chip/tag fills (original blue; white text AA) */
+  --accent-tint: #2b1420;         /* selected-row background wash */
+  --accent-text-strong: #ffffff;  /* text on --accent-strong fills */
+  --link: #9fb4ff;                /* link + selected-option text (the original blue) */
+  /* Per-post accent — mirrors the current post's CV2 embed colour. Set at runtime by the
+     form JS (setProperty on <html>); only the preview bar + set-card selection consume it,
+     so page chrome stays stable across posts. Defaults to the fixed accent. */
+  --post-accent: var(--accent);
+
+  /* Text tiers, brightest to faintest. */
+  --text-1: #e6e6e6;      /* primary */
+  --text-2: #cfd3d6;      /* labels, legends */
+  --text-3: #b9bec4;      /* tertiary body */
+  --text-muted: #8b9096;  /* placeholders, bullets, small print */
+  --text-faint: #9aa0a6;  /* muted captions, backlinks, descriptions */
+
+  /* Feedback. */
+  --ok: #7ee787;
+  --err: #ff7b72;
+  --danger-surface: #3a1e1e;  /* danger button fill */
+  --danger-text: #ff9d97;
+  --danger-border: #5a2a2a;
+  --danger-bg: #2a1e1e;       /* problem panels, invalid inputs */
+
+  --radius: 8px;      /* cards, fieldsets, preview */
+  --radius-sm: 6px;   /* inputs, buttons */
+}
 * { box-sizing: border-box; }
 body {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   margin: 0; padding: 0 1.2rem 1.2rem; max-width: 880px; margin-inline: auto;
-  background: #1b1d22; color: #e6e6e6; line-height: 1.4;
+  background: var(--surface-1); color: var(--text-1); line-height: 1.4;
 }
+/* Native checkboxes/radios adopt the brand pink when checked. The autopost toggle's
+   hidden checkbox and the set-card's hidden radio are visually hidden, so this only
+   colours the real, visible checkboxes (weekly/Trials forms, editor sector picker). */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 header { padding-top: 1.2rem; }
 h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
-.muted { color: #9aa0a6; font-size: .85rem; }
+.muted { color: var(--text-faint); font-size: .85rem; }
 /* Header nav links (e.g. "← Control panel") — one place so every page matches. */
-.backlink { color: #9aa0a6; text-decoration: none; font-size: .85rem; }
+.backlink { color: var(--text-faint); text-decoration: none; font-size: .85rem; }
 .backlink:hover { text-decoration: underline; }
 p.nav { margin: 0 0 .4rem; }

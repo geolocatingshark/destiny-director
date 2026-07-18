@@ -20,8 +20,9 @@
 const BOOT = window.__BOOTSTRAP__;
 const { draft, options, conquest_tiers } = BOOT;
 // Mirror the post's CV2 accent colour as the preview's left bar (see #previewBox CSS).
+// Only --post-accent (preview bar) tracks the post; --accent (page chrome) stays fixed.
 if (BOOT.accent_color) {
-  document.documentElement.style.setProperty("--accent", BOOT.accent_color);
+  document.documentElement.style.setProperty("--post-accent", BOOT.accent_color);
 }
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, kids = []) => {
