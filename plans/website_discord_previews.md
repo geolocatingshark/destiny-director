@@ -1,5 +1,17 @@
 # Website Discord previews — reusable previewer
 
+> **Status (2026-07-18): core DONE, remainder DEFERRED.** The standalone reusable
+> previewer is extracted — `initPostPreview({routePrefix, readForm, accentColor})` in
+> `dd/anchor/web_static/shared.js` (branch `anchor/share-web-form-client`, alongside
+> `plans/trials_web_form_sharing.md` B). Both the weekly_reset and trials forms now drive
+> it instead of duplicating `renderPreview`/`#previewBox`, and a future page (the
+> user-commands manager) can call it without a form. **Everything below this line is the
+> deferred remainder** — standardising previews across other rotations (legacy activities,
+> lost sector, xur), classic-embed (not just CV2) preview support, and a generic `/preview`
+> endpoint — which stays blocked on `plans/embeds_and_cv2_parallel_first_class.md` and
+> `plans/website_user_commands.md`. Keep this plan until those land; do NOT delete it as
+> "done".
+
 ## Goal
 
 Extract the message preview used by the weekly_reset web form (`renderPreview` /
