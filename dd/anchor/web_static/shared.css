@@ -27,7 +27,8 @@
      - --accent-strong: the original blue (#2e5bff) for solid button/chip/tag fills that
        carry white text, so primary actions read as they always did.
      Links use the blue --link. Does NOT change per post. */
-  --accent: #EC42A5;              /* toggle fill, focus rings, form-control focus, selection */
+  --accent: #EC42A5;              /* toggle fill, focus rings, form-control focus, selection, active tab */
+  --accent-ink: #14161a;          /* dark text on the bright --accent fill (e.g. active tab) */
   --accent-strong: #2e5bff;       /* button/chip/tag fills (original blue; white text AA) */
   --accent-tint: #2b1420;         /* selected-row background wash */
   --accent-text-strong: #ffffff;  /* text on --accent-strong fills */

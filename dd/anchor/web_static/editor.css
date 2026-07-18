@@ -38,7 +38,7 @@ button.danger { background: var(--danger-surface); }
   border-radius: 999px; padding: .45rem 1rem; white-space: nowrap; flex: 0 0 auto;
 }
 .tabs button:hover { border-color: var(--border-hover); }
-.tabs button.active { background: var(--accent-strong); color: #fff; border-color: var(--accent-strong); }
+.tabs button.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .panel { display: none; }
 .panel.active { display: block; }
 details > summary { cursor: pointer; color: var(--text-faint); margin: .3rem 0; }
