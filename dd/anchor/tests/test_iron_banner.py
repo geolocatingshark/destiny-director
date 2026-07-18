@@ -22,6 +22,7 @@ domain build gate, and the Discord-post preview). The manifest pool and guild em
 monkeypatched so nothing hits Bungie/Discord.
 """
 
+import datetime as dt
 import typing as t
 
 import hikari as h
@@ -162,9 +163,21 @@ async def _rotation_coro(rotation: ib.IronBannerRotation) -> ib.IronBannerRotati
 
 @pytest.mark.asyncio
 async def test_posted_guard_round_trip() -> None:
-    assert await ibx._load_last_posted() == 0  # absent -> 0
-    await ibx._save_last_posted(1782838800)
-    assert await ibx._load_last_posted() == 1782838800
+    assert await ibx._load_last_posted_reset() == 0  # absent -> 0
+    await ibx._save_last_posted_reset(1782838800)
+    assert await ibx._load_last_posted_reset() == 1782838800
+
+
+def test_event_period_normalises_to_reset_week() -> None:
+    # A Tuesday-17:00 start is itself a reset boundary; a later day in the SAME reset
+    # week collapses to the same period key — so correcting an event's start date within
+    # its week won't look like a new event and re-trigger the post.
+    tue = int(dt.datetime(2026, 6, 30, 17, tzinfo=dt.UTC).timestamp())
+    thu = int(dt.datetime(2026, 7, 2, 17, tzinfo=dt.UTC).timestamp())
+    ev_tue = ib.Event(tue, tue + 7 * 86400, "Pool 1", ["Control"], [])
+    ev_thu = ib.Event(thu, thu + 7 * 86400, "Pool 1", ["Control"], [])
+    assert ibx._event_period(ev_tue) == tue
+    assert ibx._event_period(ev_thu) == tue
 
 
 # --- rotation-editor wiring -------------------------------------------------------

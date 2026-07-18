@@ -33,6 +33,7 @@ the Components-V2 assembly (with the guide button) and the scheduling.
 """
 
 import asyncio
+import datetime as dt
 import logging
 import typing as t
 
@@ -108,16 +109,27 @@ async def format_post(bot: CachedFetchBot) -> HMessage:
 # ---------------------------------------------------------------------------
 
 
-async def _load_last_posted() -> int:
-    """The ``start_ts`` of the last Iron Banner event we posted (0 = none)."""
+def _event_period(event: ib.Event) -> int:
+    """The reset-period key for an event's posted-guard: its start normalised to the
+    containing weekly reset boundary (Tuesday 17:00 UTC).
+
+    Keying the guard on the *period* rather than the raw ``start_ts`` means correcting
+    an event's start date within the same week (a common editor tweak) doesn't look like
+    a new event and re-trigger the post. For a well-formed Tuesday-reset start this
+    equals ``start_ts``; a stray non-Tuesday start still collapses to a stable key.
+    """
+    start = dt.datetime.fromtimestamp(event.start_ts, tz=dt.UTC)
+    return hybrid_post_core.current_reset_ts(start)
+
+
+async def _load_last_posted_reset() -> int:
+    """The reset-period key of the last Iron Banner event we posted (0 = none)."""
     data = await schemas.RotationData.get_data(META_SLUG)
-    return int((data or {}).get("last_posted_event_start", 0) or 0)
+    return int((data or {}).get("last_posted_reset", 0) or 0)
 
 
-async def _save_last_posted(start_ts: int) -> None:
-    await schemas.RotationData.set_data(
-        META_SLUG, {"last_posted_event_start": int(start_ts)}
-    )
+async def _save_last_posted_reset(period: int) -> None:
+    await schemas.RotationData.set_data(META_SLUG, {"last_posted_reset": int(period)})
 
 
 async def _get_iron_banner_enabled() -> bool:
@@ -150,12 +162,19 @@ async def _schedule_iron_banner(
     async def autopost_iron_banner() -> None:
         if not await schemas.AutoPostSettings.get_iron_banner_enabled():
             return
-        rotation = await ib.load_rotation()
+        try:
+            rotation = await ib.load_rotation()
+        except Exception:
+            # Malformed stored doc / DB outage with no cache — skip this run rather than
+            # posting the baked default (see iron_banner.load_rotation).
+            logger.exception("iron_banner: rotation unavailable; skipping this run")
+            return
         current = rotation.active_event()
         if current is None:
             return  # not an Iron Banner week
-        if await _load_last_posted() == current.start_ts:
-            return  # already posted this event
+        period = _event_period(current)
+        if await _load_last_posted_reset() == period:
+            return  # already posted this event's reset period
         await discord_announcer(
             bot,
             channel_id=channel_id,
@@ -163,7 +182,7 @@ async def _schedule_iron_banner(
             publish_message=True,
             cv2=True,
         )
-        await _save_last_posted(current.start_ts)
+        await _save_last_posted_reset(period)
 
 
 # The owner control group (/iron_banner auto|send|show) — the enable/disable toggle plus

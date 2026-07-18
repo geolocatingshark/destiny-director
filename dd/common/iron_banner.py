@@ -148,34 +148,47 @@ class IronBannerRotation:
 async def load_rotation() -> IronBannerRotation:
     """Load the Iron Banner rotation from the DB JSON store.
 
-    Resolution order: the ``RotationData['iron_banner']`` document → the baked default
-    doc (:func:`rotation_schema.iron_banner_default_doc`, so the schedule works before
-    anyone edits it) → the last-known-good cache. The DB is consulted every call so an
-    editor save takes effect immediately; the cache only covers a total DB outage.
+    Resolution order: the ``RotationData['iron_banner']`` document → (only for a *clean
+    absent row*) the baked default doc, so the schedule works before anyone edits it →
+    the last-known-good cache. The DB is consulted every call so an editor save takes
+    effect immediately.
+
+    A **clean absent row** (``get_data`` returns ``None`` with no error) is the intended
+    first-run state, so the baked default seeds it. But a **DB read error** or a
+    **malformed stored doc** must NOT silently fall back to the default — that would
+    crosspost the seed schedule over the operator's real (but currently unreadable)
+    intent. In those cases serve the last-known-good cache, and if there is none, raise
+    so the producer skips the run rather than posting defaults (mirrors
+    :func:`dd.common.lost_sector.load_rotation`).
     """
     global _rotation_cache
     try:
         doc = await schemas.RotationData.get_data(_IRON_BANNER)
+        db_ok = True
     except Exception:
         logger.exception("Failed to read iron_banner rotation from the DB")
-        doc = None
+        doc, db_ok = None, False
 
-    if doc is None:
+    # Clean absent row → seed with the baked default (the intended pre-edit state).
+    if db_ok and doc is None:
         doc = rotation_schema.iron_banner_default_doc()
 
-    try:
-        rotation = IronBannerRotation.from_json(doc)
-        _rotation_cache = rotation
-        return rotation
-    except Exception:
-        logger.exception("Stored iron_banner rotation JSON is malformed")
+    if doc is not None:
+        try:
+            rotation = IronBannerRotation.from_json(doc)
+            _rotation_cache = rotation
+            return rotation
+        except Exception:
+            logger.exception("Stored iron_banner rotation JSON is malformed")
 
+    # DB unreachable, or the stored doc is malformed: serve the last-known-good cache;
+    # else raise so the caller skips this run instead of posting the baked default.
     if _rotation_cache is not None:
         return _rotation_cache
-    # Nothing usable and nothing cached: the baked default is guaranteed valid, so this
-    # is effectively unreachable — but keep the contract explicit rather than returning
-    # an empty schedule that would silently never post.
-    return IronBannerRotation.from_json(rotation_schema.iron_banner_default_doc())
+    raise RuntimeError(
+        "No usable iron_banner rotation (DB unreadable or stored doc malformed, and "
+        "nothing cached)"
+    )
 
 
 def build_body(event: Event, pool_lines: list[str]) -> str:

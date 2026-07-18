@@ -663,6 +663,9 @@ if (type === "iron_banner") {
     for (const n of names) counts[n] = (counts[n] || 0) + 1;
     const known = new Set(names.filter(Boolean));
     const problems = new Set();
+    // The schema requires at least one pool (minItems: 1); catch it here so removing
+    // every pool surfaces inline instead of as a raw server 400 on Save.
+    if (!poolModels.length) problems.add("add at least one bonus focus pool");
     for (const m of poolModels) {
       const n = m.nameInput.value.trim();
       const bad = !n || counts[n] > 1;
@@ -671,9 +674,13 @@ if (type === "iron_banner") {
       else if (counts[n] > 1) problems.add(`duplicate pool name "${n}"`);
     }
     for (const row of scheduleBox.children) {
-      const poolBad = !!row._pool() && !known.has(row._pool());
+      const p = row._pool();
+      // A blank pool is as invalid as an unknown one — every week must name a pool
+      // (the server rejects an empty/undefined pool). Flag both, distinctly.
+      const poolBad = !known.has(p);
       row._poolInput.classList.toggle("invalid", poolBad);
-      if (poolBad) problems.add(`schedule week "${row._pool()}" isn't a pool`);
+      if (!p) problems.add("a schedule week has no pool");
+      else if (poolBad) problems.add(`schedule week "${p}" isn't a pool`);
       const startBad = !row._start();
       row._startInput.classList.toggle("invalid", startBad);
       if (startBad) problems.add("a schedule week has no start date");
