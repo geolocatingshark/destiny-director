@@ -20,9 +20,11 @@ it builds per destination (the role-ping placement / non-mutation of the shared 
 now lives on ``HMessage.with_appended_text`` — see
 dd/hmessage/tests/test_message.py)."""
 
+import logging
 import typing as t
 
 import hikari as h
+import pytest
 
 from dd.beacon import mirror_worker as mw
 from dd.hmessage import HMessage
@@ -143,3 +145,69 @@ def test_send_payload_cv2_no_ping_shares_component_and_omits_content() -> None:
     assert payload["components"][0] is hmsg.components[0]  # shared verbatim
     assert payload["flags"] == h.MessageFlag.IS_COMPONENTS_V2
     assert "content" not in payload
+
+
+# --- _fit_source_to_budget (reserve ping room once per source + CRITICAL alert) -------
+# The ping is appended per-dest at send time, so the source is capped to a budget that
+# reserves room for it — no destination's send can then exceed Discord's hard limit, and
+# an over-long (usually rewrite-inflated) post surfaces as a CRITICAL owner alert.
+
+_PLAIN_BUDGET = mw._PLAIN_CONTENT_LIMIT - mw._MAX_ROLE_PING_LEN - mw._LEN_SAFETY_MARGIN
+_CV2_BUDGET = mw.CV2_TEXT_BUDGET - mw._MAX_ROLE_PING_LEN - mw._LEN_SAFETY_MARGIN
+
+
+def _record_alerts(monkeypatch) -> list:
+    """Capture (operation, level) for each alert the mirror raises."""
+    calls: list = []
+
+    async def _fake(e, *a, operation=None, level=logging.ERROR, **k):
+        calls.append((operation, level))
+        return "REF"
+
+    monkeypatch.setattr(mw, "discord_error_logger", _fake)
+    return calls
+
+
+def _cv2_hmsg_with_text(text: str) -> HMessage:
+    container = h.impl.ContainerComponentBuilder()
+    container.add_text_display(text)
+    comps: list[h.api.ComponentBuilder] = [container]
+    return HMessage(components=comps)
+
+
+@pytest.mark.asyncio
+async def test_fit_source_plain_over_budget_truncates_and_alerts(monkeypatch):
+    calls = _record_alerts(monkeypatch)
+    # Valid at construction (<=2000) but over the ping-reserved budget.
+    hmsg = HMessage(content="x" * 1980)
+    await mw._fit_source_to_budget(hmsg, 42)
+    assert len(hmsg.content) == _PLAIN_BUDGET  # truncated so content + ping <= 2000
+    assert len(calls) == 1 and calls[0][1] == logging.CRITICAL
+
+
+@pytest.mark.asyncio
+async def test_fit_source_plain_within_budget_is_silent(monkeypatch):
+    calls = _record_alerts(monkeypatch)
+    hmsg = HMessage(content="short")
+    await mw._fit_source_to_budget(hmsg, 42)
+    assert hmsg.content == "short"  # untouched
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_fit_source_cv2_over_budget_truncates_and_alerts(monkeypatch):
+    from dd.common.components import cv2_text_length
+
+    calls = _record_alerts(monkeypatch)
+    hmsg = _cv2_hmsg_with_text("x" * 4200)  # over Discord's 4000 CV2 cap
+    await mw._fit_source_to_budget(hmsg, 42)
+    assert cv2_text_length(hmsg.components) <= _CV2_BUDGET  # room left for the ping
+    assert len(calls) == 1 and calls[0][1] == logging.CRITICAL
+
+
+@pytest.mark.asyncio
+async def test_fit_source_cv2_within_budget_is_silent(monkeypatch):
+    calls = _record_alerts(monkeypatch)
+    hmsg = _cv2_hmsg_with_text("body")
+    await mw._fit_source_to_budget(hmsg, 42)
+    assert calls == []

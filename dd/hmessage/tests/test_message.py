@@ -137,6 +137,22 @@ def test_with_appended_text_cv2_no_container_appends_top_level():
     assert out.components[-1].content == "ping"
 
 
+# --- fit_content ---------------------------------------------------------------
+
+
+def test_fit_content_truncates_over_budget_and_reports_original_length():
+    msg = HMessage(content="x" * 50)
+    length = msg.fit_content(10)
+    assert length == 50  # pre-trim length reported
+    assert msg.content == "x" * 10  # truncated in place
+
+
+def test_fit_content_is_noop_within_budget():
+    msg = HMessage(content="short")
+    assert msg.fit_content(10) == 5
+    assert msg.content == "short"  # untouched
+
+
 # --- __add__ -------------------------------------------------------------------
 
 

@@ -46,6 +46,7 @@ import hikari as h
 
 from ..common import cfg
 from ..common.bot import CachedFetchBot
+from ..common.components import CV2_TEXT_BUDGET
 from ..common.emoji_store import AppEmojiStore, rewrite_item_emoji_in_message
 from ..common.schemas import (
     CrosspostState,
@@ -59,6 +60,7 @@ from ..common.schemas import (
 from ..common.utils import (
     ErrorClass,
     classify_error,
+    discord_error_logger,
     identity_for_exc,
     reference_code,
 )
@@ -84,6 +86,18 @@ _DRAIN_TIMEOUT_SECONDS = 20.0
 # Per-destination role-mention map (dest channel id -> optional role id to ping).
 _RoleMap = collections.abc.Mapping[int, int | None]
 
+# Worst-case chars the per-destination role ping adds to a mirrored message before it is
+# sent (see _send_payload / HMessage.with_appended_text): "\n\n" (2) + "||<@&" (5) + a
+# 20-digit u64 snowflake + ">||" (3) for plain content, or a "||<@&…>||" text display
+# (<=28 UTF-16 units) for CV2. Reserved from the length budget once per source (see
+# _fit_source_to_budget) so appending the ping can never tip a destination's send over
+# Discord's hard cap.
+_MAX_ROLE_PING_LEN = 30
+# A little extra headroom on top of the reserve (e.g. codepoint-vs-UTF-16 slack).
+_LEN_SAFETY_MARGIN = 20
+# Discord's hard cap on plain message content (CV2's cap is CV2_TEXT_BUDGET's 4000).
+_PLAIN_CONTENT_LIMIT = 2000
+
 
 # --- Discord delivery primitives ----------------------------------------------------
 
@@ -91,6 +105,37 @@ _RoleMap = collections.abc.Mapping[int, int | None]
 def _is_cv2(msg: h.Message) -> bool:
     """Whether the source message was sent as a Components V2 message."""
     return h.MessageFlag.IS_COMPONENTS_V2 in (msg.flags or h.MessageFlag.NONE)
+
+
+async def _fit_source_to_budget(hmsg: HMessage, src_msg_id: int) -> None:
+    """Cap the rewritten source's text to a budget that reserves room for the per-dest
+    role ping, so no destination's send/edit can exceed Discord's hard limit.
+
+    Runs once per source version (the result is cached and reused across destinations).
+    A CV2 source is capped via :meth:`HMessage.fit_cv2_text`, a plain one via
+    :meth:`HMessage.fit_content`. On overflow — an abnormally long mirrored post, which
+    the item-emoji rewrite can produce by expanding ``:tokens:`` into ``<:name:id>`` —
+    it truncates in place and fires a CRITICAL owner-pinging alert (the same primitive
+    the autopost guards use) so the loss is surfaced, not silently dropped by Discord.
+    """
+    if hmsg.components:
+        budget = CV2_TEXT_BUDGET - _MAX_ROLE_PING_LEN - _LEN_SAFETY_MARGIN
+        length = hmsg.fit_cv2_text(budget)
+        unit = "UTF-16 units of CV2 text"
+    else:
+        budget = _PLAIN_CONTENT_LIMIT - _MAX_ROLE_PING_LEN - _LEN_SAFETY_MARGIN
+        length = hmsg.fit_content(budget)
+        unit = "characters"
+    if length > budget:
+        await discord_error_logger(
+            ValueError(
+                f"Mirror source {src_msg_id} is {length} {unit}, over the {budget} "
+                f"budget (Discord's cap minus {_MAX_ROLE_PING_LEN} reserved for the "
+                "role ping) — truncated to fit, content lost"
+            ),
+            operation="Mirror source fit",
+            level=logging.CRITICAL,
+        )
 
 
 def _send_payload(
@@ -374,6 +419,11 @@ class MirrorWorker:
             )
         if self._store is not None:
             await rewrite_item_emoji_in_message(self._store, hmsg)
+        # Cap once per source, reserving room for the per-dest ping added at send time,
+        # so no destination's send can exceed Discord's hard limit (and the rewrite
+        # above can't grow the text past it). Runs even without a store — the ping alone
+        # can tip a source that was already near the cap.
+        await _fit_source_to_budget(hmsg, src_msg_id)
         role_map = await MirroredChannel.fetch_mirror_and_role_mention_id(src_ch_id)
         self._source_cache[src_msg_id] = (version, hmsg, role_map)
         return hmsg, role_map
