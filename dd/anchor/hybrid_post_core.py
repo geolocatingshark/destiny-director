@@ -293,6 +293,64 @@ def render_post_html(
 
 
 # ---------------------------------------------------------------------------
+# PostSpec — the format-tagged, serializable description a previewer renders
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class PostSpec:
+    """A format-tagged, JSON-friendly description of a post, for the shared previewer.
+
+    :func:`render_post_spec` is the ONE render path every preview surface shares — the
+    weekly_reset/trials web forms today, the upcoming rotation preview wall and the
+    user-commands manager later. Only the ``cv2`` kind is renderable now: a single
+    markdown body + optional image, the shape every current producer emits via
+    ``build_body``. An ``embed`` kind is reserved for the user-commands manager (the
+    first classic-embed consumer); adding that variant + its render branch is tracked in
+    ``plans/website_user_commands.md``.
+    """
+
+    kind: str
+    body: str = ""
+    image_url: str | None = None
+
+    @classmethod
+    def cv2(cls, body: str, image_url: str | None = None) -> "PostSpec":
+        """A Components-V2 post: a markdown body + optional image (build_body shape)."""
+        return cls(kind="cv2", body=body, image_url=image_url)
+
+    @classmethod
+    def from_payload(cls, payload: t.Mapping[str, t.Any]) -> "PostSpec":
+        """Parse a client-supplied spec (the future ``POST /post/preview`` body).
+
+        Defaults to the ``cv2`` kind. Raises :class:`ValueError` on an unknown kind so a
+        route can 422 it — the ``embed`` kind isn't renderable until its branch lands
+        with the user-commands work.
+        """
+        kind = payload.get("kind", "cv2")
+        if kind != "cv2":
+            raise ValueError(f"Unsupported post kind: {kind!r}")
+        return cls.cv2(
+            body=str(payload.get("body", "")),
+            image_url=(payload.get("image_url") or None),
+        )
+
+
+def render_post_spec(spec: PostSpec, emoji_dict: dict[str, h.Emoji]) -> str:
+    """Render any :class:`PostSpec` to safe preview HTML — the shared render path.
+
+    Dispatches on ``spec.kind``: ``cv2`` runs the existing markdown->HTML machinery
+    (:func:`render_post_html`), unchanged; ``embed`` is reserved and raises until its
+    branch lands (see :class:`PostSpec`). Output is safe for an ``innerHTML`` sink
+    (escaped leaves, whitelisted tags, http(s)-validated URLs) — see
+    :func:`render_post_html`.
+    """
+    if spec.kind == "cv2":
+        return render_post_html(spec.body, emoji_dict, spec.image_url)
+    raise ValueError(f"Cannot render post kind {spec.kind!r} yet")
+
+
+# ---------------------------------------------------------------------------
 # Draft metadata (post message id, publish status, "needs attention" flags)
 # ---------------------------------------------------------------------------
 
@@ -659,10 +717,13 @@ async def preview(
     # Rich preview: render the post's markdown subset to safe HTML (emoji as <img>,
     # bold/italic/links/dates), matching what Discord shows for the published post. The
     # renderer escapes every text leaf and validates URLs, so this is safe for the
-    # client's innerHTML sink. Emoji come from the short-TTL guild-emoji cache.
+    # client's innerHTML sink. Emoji come from the short-TTL guild-emoji cache. Flows
+    # through render_post_spec — the one render path shared with the coming rotation
+    # preview wall and user-commands manager.
     emoji_dict = await preview_emoji_dict(bot)
+    post = PostSpec.cv2(spec.build_body(ctx), ctx.image_url)
     return aiohttp.web.Response(
-        text=render_post_html(spec.build_body(ctx), emoji_dict, ctx.image_url),
+        text=render_post_spec(post, emoji_dict),
         content_type="text/html",
     )
 

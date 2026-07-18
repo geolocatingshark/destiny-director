@@ -1,6 +1,6 @@
 # Website interface for user-defined commands
 
-## Status: BLOCKED on `plans/website_discord_previews.md`
+## Status: partially unblocked — reusable previewer exists; embed/message-content render is THIS plan's job
 
 ## Goal
 
@@ -9,12 +9,20 @@ user_commands.py`), replacing/complementing the old `/command` control surface. 
 a live preview of what the command's response will look like when posted, the same way
 the weekly_reset/trials web forms preview their post.
 
-## Why blocked
+## Previewer status (from `plans/website_discord_previews.md`)
 
-There's no reusable previewer yet — `renderPreview`/`#previewBox` is currently
-embedded in the weekly_reset form JS/CSS. Building the user-commands preview against
-that would just add a third copy. Wait until `website_discord_previews.md` lands a
-standalone previewer, then consume it here.
+The **reusable previewer is done**: client `initPostPreview` + server `render_post_spec(PostSpec)`
+(the shared render path). Consume those here — do NOT add a fourth copy.
+
+> **THIS PLAN OWNS the embed + message-content preview render.** The shared previewer renders
+> **CV2 posts only** today (`PostSpec` kind `"cv2"`). user-commands is the first consumer that
+> needs to preview **classic embeds** (`response_type 3` → `h.Embed`) and **plain message
+> content** (and copied-message/CV2 responses). So Part C of `website_discord_previews.md` —
+> adding the `{kind:"embed", …}` variant to `PostSpec` and an embed→safe-HTML branch in
+> `render_post_spec` (mirroring `dd.common.components.embeds_to_container`'s mapping), plus a
+> plain-content branch — lands **as part of building this plan**, together with the
+> client-authored spec-POST endpoint (`POST /post/preview`) that this UI drives. Budget for it
+> here; it is not delivered by the previews plan on its own.
 
 ## Not yet scoped
 
