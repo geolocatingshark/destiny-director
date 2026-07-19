@@ -85,14 +85,21 @@ def footer_button_specs(
     ]
 
 
+def link_button_row(
+    specs: t.Sequence[tuple[str, str]],
+) -> h.impl.MessageActionRowBuilder:
+    """An action row of link buttons from ``(label, url)`` specs."""
+    row = h.impl.MessageActionRowBuilder()
+    for label, url in specs:
+        row.add_component(h.impl.LinkButtonBuilder(url=url, label=label))
+    return row
+
+
 def footer_buttons_row(
     *, guides: t.Sequence[tuple[str, str]] = ()
 ) -> h.impl.MessageActionRowBuilder:
     """The standard footer link-button row (see :func:`footer_button_specs`)."""
-    row = h.impl.MessageActionRowBuilder()
-    for label, url in footer_button_specs(guides=guides):
-        row.add_component(h.impl.LinkButtonBuilder(url=url, label=label))
-    return row
+    return link_button_row(footer_button_specs(guides=guides))
 
 _PREV_CUSTOM_ID = "dd_paginator:prev"
 _INDICATOR_CUSTOM_ID = "dd_paginator:indicator"

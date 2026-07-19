@@ -52,7 +52,7 @@ from dd.hmessage import HMessage
 
 from ..common import cfg, schemas
 from ..common.bot import CachedFetchBot
-from ..common.components import footer_button_specs
+from ..common.components import footer_button_specs, link_button_row
 from ..common.utils import fetch_emoji_dict, re_user_side_emoji
 from . import utils
 from .extensions import bungie_api as api
@@ -165,10 +165,7 @@ def build_cv2(
         container.add_component(gallery)
     if buttons:
         container.add_separator(divider=True)
-        row = h.impl.MessageActionRowBuilder()
-        for label, url in buttons:
-            row.add_component(h.impl.LinkButtonBuilder(url=url, label=label))
-        container.add_component(row)
+        container.add_component(link_button_row(buttons))
     return HMessage(components=[container])
 
 
@@ -656,10 +653,9 @@ class HybridPostSpec:
     #: rotation here); NOT fired for uncrossposted posts/edits or the seeding cron, so a
     #: draft that is never published (or is deleted) has no effect.
     on_published: t.Callable[..., t.Awaitable[None]] | None = None
-    #: Post-specific footer "guide" links (``(label, url)``); the shared Support +
-    #: Support button is appended by
-    #: :func:`~dd.common.components.footer_button_specs`. Drives both the published
-    #: button row and the preview's rendered buttons.
+    #: Post-specific footer "guide" links (``(label, url)``); the shared Support button
+    #: is appended by :func:`~dd.common.components.footer_button_specs`. Drives both the
+    #: published button row and the preview's rendered buttons.
     footer_guides: tuple[tuple[str, str], ...] = ()
 
     @property
