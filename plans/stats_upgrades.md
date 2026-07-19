@@ -52,7 +52,7 @@ Opus window on Pro — small on purpose, with headroom for the debug/`make check
 | # | Chunk | Deliverable (one commit, green) | Depends | ≈window |
 |---|-------|----------------------------------|---------|---------|
 | ☑ 1 | **Snapshot table** | `AutopostDailyStat` model + `record`/`fetch_series` methods + migration + schema tests | — | ~20% |
-| ☐ 2 | **Daily snapshot job** | `@loader.task` writing the snapshot + its unit test (data starts accruing) | 1 | ~15% |
+| ☑ 2 | **Daily snapshot job** | `@loader.task` writing the snapshot + its unit test (data starts accruing) | 1 | ~15% |
 | ☐ 3 | **Data endpoint + shell** | `GET /stats/data` JSON + `GET /stats` HTML shell + homepage card (tables only, no charts) | 1 | ~25% |
 | ☐ 4 | **Chart harness + command usage** | Read `dataviz` skill; dependency-free SVG line-chart helper + daily/weekly/monthly toggle in `stats.js`; wire the command-usage section + leaderboard | 3 | ~35% |
 | ☐ 5 | **Autopost reach section** | Reuse the harness for the stacked reach chart + current-totals table | 4 | ~20% |

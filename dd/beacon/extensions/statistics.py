@@ -67,6 +67,30 @@ async def track_command_usage(_pl: lb.ExecutionPipeline, ctx: lb.Context) -> Non
         )
 
 
+async def _snapshot_autopost_reach(followables: dict[str, int] | None = None) -> None:
+    """Snapshot today's active autopost reach into ``AutopostDailyStat``.
+
+    Counts enabled destinations per feed, split into "follow" (native Discord
+    channel-follows, i.e. non-legacy) and "mirror" (legacy mirrored channels). The write
+    is an idempotent overwrite, so running this more than once a day — including at
+    every boot — simply refreshes today's value rather than double-counting.
+    """
+    followables = cfg.followables if followables is None else followables
+    today = dt.datetime.now(tz=dt.UTC).date()
+    for feed, src_id in followables.items():
+        follows = await schemas.MirroredChannel.count_dests(src_id, legacy_only=False)
+        mirrors = await schemas.MirroredChannel.count_dests(src_id, legacy_only=True)
+        await schemas.AutopostDailyStat.record(today, feed, "follow", follows)
+        await schemas.AutopostDailyStat.record(today, feed, "mirror", mirrors)
+
+
+@loader.task(lb.uniformtrigger(hours=24, wait_first=False), max_failures=-1)
+async def snapshot_autopost_reach() -> None:
+    # Runs daily and once at boot (wait_first=False) so a redeploy always writes the
+    # current day's snapshot; the idempotent upsert makes repeated runs safe.
+    await _snapshot_autopost_reach()
+
+
 stats_command_group = lb.Group("stats", "Bot statistics command group")
 
 
