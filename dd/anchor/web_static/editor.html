@@ -45,6 +45,7 @@
       <button type="button" data-tab="locations" class="xur-only">Locations</button>
       <button type="button" data-tab="activities" class="legacy-only">Activities</button>
       <button type="button" data-tab="trials_loot" class="trials-loot-only">Loot sets</button>
+      <button type="button" data-tab="iron_banner" class="iron-banner-only">Iron Banner</button>
       <button type="button" data-tab="preview">Preview</button>
     </nav>
 
@@ -105,6 +106,20 @@
           schedule is a pure order, not a calendar.
         </p>
         <div id="trialsLootSets"></div>
+      </section>
+
+      <section class="panel iron-banner-only" data-panel="iron_banner">
+        <h2>Iron Banner</h2>
+        <p class="muted">
+          Each schedule week is a calendar entry: its start date (a Tuesday reset), the
+          bonus focus pool active that week (by name), and the game modes. The post goes
+          out automatically on that week's reset. Define the pools below — they're
+          referenced by name, so renaming a pool updates the schedule.
+        </p>
+        <h3>Schedule</h3>
+        <div id="ibSchedule"></div>
+        <h3>Bonus focus pools</h3>
+        <div id="ibPools"></div>
       </section>
 
       <section class="panel" data-panel="preview">

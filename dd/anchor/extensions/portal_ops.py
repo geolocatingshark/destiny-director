@@ -423,9 +423,8 @@ async def fetch_portal_ops() -> list[PortalOp]:
 
 # ── Rendering ──────────────────────────────────────────────────────────────────
 
-# No "View more details" link: there's no Portal-specific page to point at, so a
-# generic-homepage "details" link would be disingenuous (see commit history).
-PORTAL_OPS_FOOTER = "[Support Us](https://ko-fi.com/Kyber3000) ↗\n"
+# Portal Ops has no dedicated page, so its footer button row carries no "guide" button
+# (just the shared Support + Kyber's Corner) — see format below.
 
 
 async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
@@ -451,14 +450,15 @@ async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
             )
         description += "\n"
 
-    description += PORTAL_OPS_FOOTER
-
     # Components V2: the whole post is one text display (no image/fields), matching
     # the Eververse/Ada layout — raw :emoji: tokens, resolved on the message below.
     container = h.impl.ContainerComponentBuilder(
         accent_color=h.Color(cfg.embed_default_color)
     )
     container.add_text_display(description)
+    # No post-specific guide (Portal Ops has no dedicated page) — just the shared
+    # Support + Kyber's Corner buttons.
+    container.add_component(components.footer_buttons_row())
 
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
     # on overflow).

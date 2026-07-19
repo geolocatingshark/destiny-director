@@ -110,6 +110,12 @@ _SETTINGS: tuple[_Setting, ...] = (
         "Tuesday reset overview — activities, rotators, and rewards.",
         False,
     ),
+    _Setting(
+        "iron_banner",
+        "Iron Banner",
+        "Iron Banner weeks — dates, game modes, bonus focus pool, and guide link.",
+        False,
+    ),
 )
 
 # The slugs this page is allowed to write — a save request's keys are filtered against

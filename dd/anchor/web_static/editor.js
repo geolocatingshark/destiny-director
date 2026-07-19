@@ -9,12 +9,14 @@
 // form is a convenience, not a trust boundary.
 //
 // Each post type has its own bespoke form (tagged .ls-only / .xur-only / .legacy-only /
-// .trials-loot-only in the markup); on load every other type's nodes are removed and the
-// matching type's block builds its fields and assigns collect(). lost_sector is tabbed
-// (Sectors / Planet cycles / Preview); xur_location is a simpler Locations / Preview; a
-// world-activity destination is Activities (each activity's elements are independent
-// editable value lists) / Preview; trials_loot is a standalone weapons-only set pool
-// (Loot sets / Preview), reusing the world-activity set-pool building blocks.
+// .trials-loot-only / .iron-banner-only in the markup); on load every other type's nodes
+// are removed and the matching type's block builds its fields and assigns collect().
+// lost_sector is tabbed (Sectors / Planet cycles / Preview); xur_location is a simpler
+// Locations / Preview; a world-activity destination is Activities (each activity's
+// elements are independent editable value lists) / Preview; trials_loot is a standalone
+// weapons-only set pool (Loot sets / Preview), reusing the world-activity set-pool
+// building blocks; iron_banner is a date-anchored schedule (start/pool/modes per week) +
+// named bonus focus pools (Iron Banner / Preview).
 
 const BOOTSTRAP = window.__BOOTSTRAP__;
 const { type, data, vocab } = BOOTSTRAP;
@@ -43,8 +45,10 @@ const activeOnly = isWorldActivity
     ? "ls-only"
     : type === "xur_location"
       ? "xur-only"
-      : "trials-loot-only";
-document.querySelectorAll(".ls-only, .xur-only, .legacy-only, .trials-loot-only").forEach((n) => {
+      : type === "iron_banner"
+        ? "iron-banner-only"
+        : "trials-loot-only";
+document.querySelectorAll(".ls-only, .xur-only, .legacy-only, .trials-loot-only, .iron-banner-only").forEach((n) => {
   if (!n.classList.contains(activeOnly)) n.remove();
 });
 
@@ -632,6 +636,153 @@ if (type === "trials_loot") {
   });
 }
 
+// ===== iron_banner form ================================================
+// A date-anchored schedule of Iron Banner weeks — each names a start date (a Tuesday
+// reset), the bonus focus pool active that week, and the game modes — plus a pool of
+// named weapon lists. Unlike Trials there's no cursor: each week is a calendar entry.
+// Save is gated on every schedule week naming a defined pool + carrying a start date, and
+// on pool names being non-blank + unique. Pool renames propagate to the schedule.
+if (type === "iron_banner") {
+  const poolNamesId = "ibPoolNames";
+  const poolNamesDl = el("datalist", { id: poolNamesId });
+  const scheduleBox = el("div");
+  const poolsWrap = el("div");
+  const poolModels = [];
+
+  function refreshPoolNames() {
+    poolNamesDl.replaceChildren(
+      ...poolModels.map((m) => el("option", { value: m.nameInput.value.trim() })).filter((o) => o.value),
+    );
+  }
+
+  // Highlight blank/duplicate pool names and schedule weeks that name no pool or lack a
+  // start date; return the problems (empty ⇒ internally consistent).
+  function validate() {
+    const names = poolModels.map((m) => m.nameInput.value.trim());
+    const counts = {};
+    for (const n of names) counts[n] = (counts[n] || 0) + 1;
+    const known = new Set(names.filter(Boolean));
+    const problems = new Set();
+    // The schema requires at least one pool (minItems: 1); catch it here so removing
+    // every pool surfaces inline instead of as a raw server 400 on Save.
+    if (!poolModels.length) problems.add("add at least one bonus focus pool");
+    for (const m of poolModels) {
+      const n = m.nameInput.value.trim();
+      const bad = !n || counts[n] > 1;
+      m.nameInput.classList.toggle("invalid", bad);
+      if (!n) problems.add("a pool has a blank name");
+      else if (counts[n] > 1) problems.add(`duplicate pool name "${n}"`);
+    }
+    for (const row of scheduleBox.children) {
+      const p = row._pool();
+      // A blank pool is as invalid as an unknown one — every week must name a pool
+      // (the server rejects an empty/undefined pool). Flag both, distinctly.
+      const poolBad = !known.has(p);
+      row._poolInput.classList.toggle("invalid", poolBad);
+      if (!p) problems.add("a schedule week has no pool");
+      else if (poolBad) problems.add(`schedule week "${p}" isn't a pool`);
+      const startBad = !row._start();
+      row._startInput.classList.toggle("invalid", startBad);
+      if (startBad) problems.add("a schedule week has no start date");
+    }
+    return [...problems];
+  }
+
+  function addWeek(w = {}) {
+    const start = el("input", { type: "date", value: w.start || "" });
+    start.addEventListener("input", validate);
+    const pool = el("input", { type: "text", value: w.pool || "", className: "grow", placeholder: "Pool name" });
+    pool.setAttribute("list", poolNamesId);
+    pool.addEventListener("input", validate);
+    const modes = el("input", { type: "text", value: w.modes || "", placeholder: "Control / Eruption" });
+    const up = el("button", { className: "tiny secondary", type: "button", textContent: "↑" });
+    const down = el("button", { className: "tiny secondary", type: "button", textContent: "↓" });
+    const del = el("button", { className: "tiny danger", type: "button", textContent: "✕ Remove week" });
+    const row = el("div", { className: "card" }, [
+      el("div", { className: "field" }, [el("label", { textContent: "Start date (a weekly-reset Tuesday)" }), start]),
+      el("div", { className: "field" }, [el("label", { textContent: "Bonus focus pool" }), pool]),
+      el("div", { className: "field" }, [el("label", { textContent: "Game modes (blank = Control / Eruption)" }), modes]),
+      el("div", { className: "row" }, [up, down, del]),
+    ]);
+    row._start = () => start.value;
+    row._pool = () => pool.value.trim();
+    row._modes = () => modes.value.trim();
+    row._startInput = start;
+    row._poolInput = pool;
+    del.addEventListener("click", () => { row.remove(); validate(); });
+    up.addEventListener("click", () => row.previousElementSibling && row.parentNode.insertBefore(row, row.previousElementSibling));
+    down.addEventListener("click", () => row.nextElementSibling && row.parentNode.insertBefore(row.nextElementSibling, row));
+    scheduleBox.append(row);
+  }
+
+  function addPool(p = {}) {
+    const nameInput = el("input", { type: "text", value: p.name || "", className: "grow", placeholder: "Pool name" });
+    const weapons = valueList("Weapons", p.weapons, "+ Weapon", "weapon");
+    const remove = el("button", { className: "tiny danger", type: "button", textContent: "✕ Remove pool" });
+    const model = { nameInput, weaponsList: weapons.list, prev: (p.name || "").trim() };
+    const card = el("div", { className: "card" }, [
+      el("div", { className: "card-head" }, [el("span", { className: "grow" }), remove]),
+      el("div", { className: "field" }, [el("label", { textContent: "Pool name" }), nameInput]),
+      weapons.fs,
+    ]);
+    remove.addEventListener("click", () => {
+      const goneName = nameInput.value.trim();
+      card.remove();
+      poolModels.splice(poolModels.indexOf(model), 1);
+      // Drop schedule weeks that named this pool, unless a duplicate still holds the name.
+      if (goneName && !poolModels.some((m) => m.nameInput.value.trim() === goneName))
+        for (const row of [...scheduleBox.children]) if (row._pool() === goneName) row.remove();
+      refreshPoolNames();
+      validate();
+    });
+    nameInput.addEventListener("input", () => { refreshPoolNames(); validate(); });
+    // On commit, propagate a rename to every schedule week that named the old pool.
+    nameInput.addEventListener("change", () => {
+      const oldName = model.prev;
+      const newName = nameInput.value.trim();
+      if (oldName && newName && oldName !== newName)
+        for (const row of scheduleBox.children) if (row._pool() === oldName) row._poolInput.value = newName;
+      model.prev = newName;
+      refreshPoolNames();
+      validate();
+    });
+    poolsWrap.append(card);
+    poolModels.push(model);
+  }
+
+  (data.pools || []).forEach(addPool);
+  if (!poolModels.length) addPool();
+  const poolsAdd = el("button", { className: "secondary tiny", type: "button", textContent: "+ Add pool" });
+  poolsAdd.addEventListener("click", () => { addPool(); refreshPoolNames(); validate(); });
+
+  (data.schedule || []).forEach(addWeek);
+  const weekAdd = el("button", { className: "tiny secondary", type: "button", textContent: "+ Week" });
+  weekAdd.addEventListener("click", () => { addWeek(); validate(); });
+
+  $("ibSchedule").append(scheduleBox, weekAdd, poolNamesDl);
+  $("ibPools").append(poolsWrap, poolsAdd);
+  refreshPoolNames();
+
+  // Gate Save on the schedule ↔ pool consistency, and paint the initial highlight.
+  consistencyProblems = validate;
+  validate();
+
+  collect = () => ({
+    version: data.version || 1,
+    schedule: [...scheduleBox.children]
+      .map((r) => {
+        const out = { start: r._start(), pool: r._pool() };
+        if (r._modes()) out.modes = r._modes();
+        return out;
+      })
+      .filter((s) => s.start || s.pool),
+    pools: poolModels.map((m) => ({
+      name: m.nameInput.value.trim(),
+      weapons: listValues(m.weaponsList),
+    })),
+  });
+}
+
 // --- submit helpers ----------------------------------------------------
 function setStatus(msg, ok) {
   const s = $("status");
@@ -700,3 +851,4 @@ $("saveBtn").addEventListener("click", async () => {
 if (type === "xur_location") showTab("locations");
 if (isWorldActivity) showTab("activities");
 if (type === "trials_loot") showTab("trials_loot");
+if (type === "iron_banner") showTab("iron_banner");

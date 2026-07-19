@@ -51,6 +51,10 @@ SHADER_TYPE_NAME = "Shader"
 # Title links to Kyber's Ada-1 page, mirroring the Eververse post's linked title.
 ADA_TITLE = "# [Ada-1's Weekly Shaders](https://kyber3000.com/Ada)"
 
+#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: ``components.footer_button_specs`` (the ADA_FOOTER note stays as body text).
+ADA_GUIDES: tuple[tuple[str, str], ...] = (("Ada-1 Guide", "https://kyber3000.com/Ada"),)
+
 # Ada rotates at the weekly reset: Tuesday 17:00 UTC.
 ADA_RESET_WEEKDAY = 1  # Monday=0 … Tuesday=1
 ADA_RESET_HOUR_UTC = 17
@@ -133,6 +137,7 @@ async def format_ada_vendor(
     container.add_text_display(_render_shader_block(shaders))
     container.add_separator(divider=True)
     container.add_text_display(ADA_FOOTER)
+    container.add_component(components.footer_buttons_row(guides=ADA_GUIDES))
 
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert
     # on overflow — the trailing footer is dropped first, then the shader block; the

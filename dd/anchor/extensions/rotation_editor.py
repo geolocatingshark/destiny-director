@@ -35,9 +35,14 @@ import aiohttp.web
 import hikari as h
 import lightbulb as lb
 
-from ...common import cfg, lost_sector, rotation_schema, schemas
+from ...common import cfg, iron_banner, lost_sector, rotation_schema, schemas
 from ...common.bot import CachedFetchBot
-from ...common.components import cv2_error, cv2_notice, respond_cv2
+from ...common.components import (
+    cv2_error,
+    cv2_notice,
+    footer_button_specs,
+    respond_cv2,
+)
 from ...common.legacy_activities import iter_wall_posts, load_seed_doc, weapon_values
 from ...sector_accounting import (
     legacy_activities,
@@ -79,6 +84,9 @@ def _default_doc(post_type: str) -> dict[str, t.Any]:
         # Start populated with the baked default sets + a one-loop schedule (so the
         # editor isn't blank), matching the producer's runtime fallback.
         return rotation_schema.trials_loot_default_doc()
+    if post_type == rotation_schema.IRON_BANNER_SLUG:
+        # Seeded schedule + the two default bonus focus pools (the producer's fallback).
+        return rotation_schema.iron_banner_default_doc()
     if rotation_schema.is_world_activity(post_type):
         return rotation_schema.legacy_default_doc(post_type)
     return {}
@@ -122,7 +130,14 @@ def _render_lost_sector_preview(
             continue
         body = lost_sector.build_body(sectors, details_enabled)
         posts.append(
-            (label, hybrid_post_core.PostSpec.cv2(body, cfg.lost_sector_gif_url))
+            (
+                label,
+                hybrid_post_core.PostSpec.cv2(
+                    body,
+                    cfg.lost_sector_gif_url,
+                    buttons=footer_button_specs(guides=lost_sector.GUIDES),
+                ),
+            )
         )
     return hybrid_post_core.render_post_wall(posts, emoji_dict)
 
@@ -197,6 +212,43 @@ def _render_trials_loot_preview_html(rotation: list[tuple[str, list[str]]]) -> s
     return "<ol>" + "".join(items) + "</ol>"
 
 
+async def _render_iron_banner_preview(
+    rotation: iron_banner.IronBannerRotation,
+    emoji_dict: dict[str, h.Emoji],
+) -> str:
+    """The next few Iron Banner events, rendered as the real Discord posts.
+
+    Uses the SAME layout the live post uses (``iron_banner.build_body`` +
+    ``hybrid_post_core.resolve_weapon_lines``) so the editor previews exactly what will
+    post — dates, game modes, and the bonus focus pool as light.gg links + weapon-type
+    emoji. Shows the upcoming events (falling back to the last few when the whole
+    schedule is in the past) so an operator can eyeball what's next.
+    """
+    now = dt.datetime.now(dt.UTC)
+    ts = int(now.timestamp())
+    upcoming = [e for e in rotation.events if e.end_ts > ts]
+    events = (upcoming or rotation.events[-_PREVIEW_DAYS:])[:_PREVIEW_DAYS]
+    available = set(emoji_dict) | {"weapon"}
+    posts: list[tuple[str, hybrid_post_core.PostSpec]] = []
+    for event in events:
+        pool_lines = await hybrid_post_core.resolve_weapon_lines(
+            event.pool_weapon_names, available
+        )
+        start = dt.datetime.fromtimestamp(event.start_ts, dt.UTC).strftime("%b %d, %Y")
+        live = event.start_ts <= ts < event.end_ts
+        label = f"{start} · {event.pool_name}" + (" · now" if live else "")
+        posts.append(
+            (
+                label,
+                hybrid_post_core.PostSpec.cv2(
+                    iron_banner.build_body(event, pool_lines),
+                    buttons=footer_button_specs(guides=iron_banner.GUIDES),
+                ),
+            )
+        )
+    return hybrid_post_core.render_post_wall(posts, emoji_dict)
+
+
 def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
     """Construct the domain object for ``post_type`` (a hard gate beyond the schema).
 
@@ -208,6 +260,8 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
         return xur_support_data.XurLocations.from_json(data)
     if post_type == rotation_schema.TRIALS_LOOT_SLUG:
         return _build_trials_loot(data)
+    if post_type == rotation_schema.IRON_BANNER_SLUG:
+        return iron_banner.IronBannerRotation.from_json(data)
     if rotation_schema.is_world_activity(post_type):
         return legacy_activities.LegacyRotation.from_json(data)
     return sector_accounting.Rotation.from_json(data)
@@ -225,6 +279,8 @@ async def _render_preview(
     if post_type == rotation_schema.TRIALS_LOOT_SLUG:
         return _render_trials_loot_preview_html(obj)
     emoji_dict = await hybrid_post_core.preview_emoji_dict(bot)
+    if post_type == rotation_schema.IRON_BANNER_SLUG:
+        return await _render_iron_banner_preview(obj, emoji_dict)
     if rotation_schema.is_world_activity(post_type):
         key = post_type.removeprefix(rotation_schema.ROTATION_SLUG_PREFIX)
         return _render_legacy_preview(key, obj, emoji_dict)

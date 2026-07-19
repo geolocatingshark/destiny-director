@@ -105,6 +105,17 @@ p.nav { margin: 0 0 .4rem; }
   display: block; max-width: 100%; height: auto;
   border-radius: var(--radius); margin: .5rem 0;
 }
+/* The footer link-button row (render_post_html) — mirrors the CV2 post's LinkButton row.
+   white-space:normal escapes the .post-preview pre-wrap so the flex row lays out cleanly. */
+.post-preview .post-buttons {
+  white-space: normal; display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .8rem;
+}
+.post-preview .post-button {
+  display: inline-block; padding: .35rem .7rem; border-radius: var(--radius);
+  background: var(--surface-2, var(--surface-1)); border: 1px solid var(--border);
+  color: var(--text); text-decoration: none; font-size: .9em; font-weight: 600;
+}
+.post-preview .post-button:hover { border-color: var(--post-accent); }
 
 /* A stacked, labelled wall of post previews (render_post_wall) — the rotation editor's
    live preview shows the next few posts a rotation will publish. */
