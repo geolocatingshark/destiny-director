@@ -24,6 +24,25 @@ The **reusable previewer is done**: client `initPostPreview` + server `render_po
 > client-authored spec-POST endpoint (`POST /post/preview`) that this UI drives. Budget for it
 > here; it is not delivered by the previews plan on its own.
 
+## Embed render — concrete spec (migrated from `website_discord_previews.md` Part C)
+
+When building this plan, add the embed (and plain-content) render branch:
+
+- Add the `{kind:"embed", …}` variant to `PostSpec` and an embed→safe-HTML branch in
+  `render_post_spec`/`render_post_html`, a **safe-HTML mirror of
+  `dd.common.components.embeds_to_container`'s mapping**:
+  - title/description → heading + body
+  - fields → labelled blocks
+  - thumbnail/image → `post-image`
+  - color → the `#previewBox` accent bar
+  - author/footer → small text
+- Also add a **plain message-content** branch (for `response_type` values that post raw
+  content rather than an embed or CV2).
+- user-commands' web manager consumes the shared client `initPostPreview` + a
+  client-authored spec-POST endpoint (`POST /post/preview`) with an `embed` (or `cv2`, or
+  copied-message) spec per the command's `response_type`. This is the first real consumer
+  of `PostSpec.from_payload` (which currently 422s any non-`cv2` kind).
+
 ## Not yet scoped
 
 - Auth/permissions model for who can create/edit/delete user commands via the web UI
