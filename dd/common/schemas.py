@@ -1765,6 +1765,58 @@ class CommandUsage(Base):
         return [(n, d, int(c)) for n, d, c in (await session.execute(q)).all()]
 
 
+class AutopostDailyStat(Base):
+    """Per-feed, per-day snapshot of active autopost destination counts.
+
+    One row per ``(date, feed, kind)`` where ``kind`` is ``"follow"`` (native Discord
+    channel-follows) or ``"mirror"`` (legacy mirrored channels). A daily task snapshots
+    the current ``MirroredChannel`` reach into this table, so the series is robust to
+    later removals (a deleted ``MirroredChannel`` row leaves the historical snapshot
+    intact). Writes are a MySQL upsert that **overwrites** ``count`` — unlike
+    ``CommandUsage.increment``'s ``count = count + 1`` — so re-running the snapshot on
+    the same day corrects the value rather than doubling it.
+    """
+
+    __tablename__ = "autopost_daily_stat"
+    __mapper_args__ = {"eager_defaults": True}
+
+    date = Column("date", Date, primary_key=True)  # daily bucket, UTC
+    feed = Column("feed", String(length=32), primary_key=True)  # cfg.followables key
+    kind = Column("kind", String(length=8), primary_key=True)  # "follow" | "mirror"
+    count = Column("count", BigInteger, nullable=False, default=0)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def record(
+        cls,
+        date: dt.date,
+        feed: str,
+        kind: str,
+        count: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        stmt = mysql_insert(cls).values(date=date, feed=feed, kind=kind, count=count)
+        await session.execute(stmt.on_duplicate_key_update(count=stmt.inserted.count))
+
+    @classmethod
+    @ensure_session(db_session)
+    async def fetch_series(
+        cls, *, since: dt.date | None = None, session: AsyncSession = _UNSET
+    ) -> list[tuple[dt.date, str, str, int]]:
+        """Daily snapshot rows on/after ``since`` as ``(date, feed, kind, count)``.
+
+        Ordered by date, then feed, then kind. The web layer re-buckets this daily
+        series into weekly/monthly resolutions in the browser, so the aggregation math
+        stays out of SQL.
+        """
+        q = select(cls.date, cls.feed, cls.kind, cls.count)
+        if since is not None:
+            q = q.where(cls.date >= since)
+        q = q.order_by(cls.date, cls.feed, cls.kind)
+        return [(d, f, k, int(c)) for d, f, k, c in (await session.execute(q)).all()]
+
+
 class UserCommand(Base):
     __tablename__ = "user_command"
     __mapper_args__ = {"eager_defaults": True}
