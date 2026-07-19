@@ -82,7 +82,7 @@ _FOOTER = (
     ":legendary_weap: Legendary Weapon (If-Solo)\n"
 )
 
-#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: Post-specific footer guide button(s); Support is appended by
 #: ``components.footer_button_specs``. The "more details" page that was a markdown link.
 GUIDES: tuple[tuple[str, str], ...] = (("More Details", "https://lostsectortoday.com"),)
 

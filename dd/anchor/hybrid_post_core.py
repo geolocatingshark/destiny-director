@@ -657,7 +657,7 @@ class HybridPostSpec:
     #: draft that is never published (or is deleted) has no effect.
     on_published: t.Callable[..., t.Awaitable[None]] | None = None
     #: Post-specific footer "guide" links (``(label, url)``); the shared Support +
-    #: Kyber's Corner buttons are appended by
+    #: Support button is appended by
     #: :func:`~dd.common.components.footer_button_specs`. Drives both the published
     #: button row and the preview's rendered buttons.
     footer_guides: tuple[tuple[str, str], ...] = ()

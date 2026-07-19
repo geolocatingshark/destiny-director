@@ -90,7 +90,7 @@ async def format_post(bot: CachedFetchBot) -> HMessage:
         accent_color=h.Color(cfg.embed_default_color)
     )
     container.add_text_display(ib.build_body(event, pool_lines))
-    # The standard footer button row (Iron Banner Guide + Support + Kyber's Corner).
+    # The standard footer button row (Iron Banner Guide + Support).
     # finalize_cv2_post only substitutes emoji + trims text, so the row is preserved.
     container.add_component(components.footer_buttons_row(guides=ib.GUIDES))
 

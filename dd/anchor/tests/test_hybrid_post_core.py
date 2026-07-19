@@ -109,20 +109,16 @@ def test_normalize_heading_spacing_leaves_leading_heading_and_collapses() -> Non
 def test_footer_button_specs() -> None:
     from dd.common import components as c
 
-    # Guides first, then the standard Support + Kyber's Corner buttons.
+    # Guides first, then the standard Support button.
     assert c.footer_button_specs(guides=[("Guide", "https://g.example")]) == [
         ("Guide", "https://g.example"),
         ("Support Us", c.KOFI_URL),
-        ("Kyber's Corner", c.KYBERS_CORNER_URL),
     ]
-    # No guides -> just the two shared buttons (e.g. Portal Ops / Weekly Reset).
-    assert c.footer_button_specs() == [
-        ("Support Us", c.KOFI_URL),
-        ("Kyber's Corner", c.KYBERS_CORNER_URL),
-    ]
-    # A row caps at 5 buttons, so at most 3 guides.
+    # No guides -> just the Support button (e.g. Portal Ops / Weekly Reset).
+    assert c.footer_button_specs() == [("Support Us", c.KOFI_URL)]
+    # A row caps at 5 buttons, so at most 4 guides.
     with pytest.raises(ValueError):
-        c.footer_button_specs(guides=[("a", "https://x")] * 4)
+        c.footer_button_specs(guides=[("a", "https://x")] * 5)
 
 
 def test_render_post_html_renders_footer_buttons() -> None:

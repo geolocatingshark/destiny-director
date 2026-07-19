@@ -424,7 +424,7 @@ async def fetch_portal_ops() -> list[PortalOp]:
 # ── Rendering ──────────────────────────────────────────────────────────────────
 
 # Portal Ops has no dedicated page, so its footer button row carries no "guide" button
-# (just the shared Support + Kyber's Corner) — see format below.
+# (just the shared Support button) — see format below.
 
 
 async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
@@ -457,7 +457,7 @@ async def portal_ops_message_constructor(bot: CachedFetchBot) -> HMessage:
     )
     container.add_text_display(description)
     # No post-specific guide (Portal Ops has no dedicated page) — just the shared
-    # Support + Kyber's Corner buttons.
+    # Support button.
     container.add_component(components.footer_buttons_row())
 
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert

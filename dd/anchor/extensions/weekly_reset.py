@@ -692,7 +692,7 @@ def build_body(ctx: WeeklyResetContext) -> str:
 
 async def format_weekly_reset(ctx: WeeklyResetContext, bot: CachedFetchBot) -> HMessage:
     """Render the context to a Components V2 :class:`HMessage`."""
-    # No dedicated weekly-reset page — just the shared Support + Kyber's Corner buttons.
+    # No dedicated weekly-reset page — just the shared Support button.
     hmsg = build_cv2(build_body(ctx), ctx.image_url, buttons=footer_button_specs())
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert).
     return await finalize_cv2_post(
