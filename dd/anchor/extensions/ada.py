@@ -51,7 +51,7 @@ SHADER_TYPE_NAME = "Shader"
 # Title links to Kyber's Ada-1 page, mirroring the Eververse post's linked title.
 ADA_TITLE = "# [Ada-1's Weekly Shaders](https://kyber3000.com/Ada)"
 
-#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: Post-specific footer guide button(s); Support is appended by
 #: ``components.footer_button_specs`` (the ADA_FOOTER note stays as body text).
 ADA_GUIDES: tuple[tuple[str, str], ...] = (("Ada-1 Guide", "https://kyber3000.com/Ada"),)
 

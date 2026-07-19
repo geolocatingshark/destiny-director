@@ -21,7 +21,7 @@ from . import (
 
 loader = lb.Loader()
 
-#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: Post-specific footer guide button(s); Support is appended by
 #: ``components.footer_button_specs``.
 EVERVERSE_GUIDES: tuple[tuple[str, str], ...] = (
     ("Eververse Guide", "https://kyber3000.com/Eververse"),

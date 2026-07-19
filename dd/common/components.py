@@ -61,11 +61,10 @@ NEXT_PAGE_EMOJI = chr(9654)
 
 # --- standard post footer buttons -------------------------------------------------
 # Every autopost ends with the same link-button row: any post-specific "guide" links,
-# then a Support and a Kyber's Corner button. Kept here as the single source of truth so
-# the live CV2 post (footer_buttons_row) and the web preview (PostSpec.buttons, built
-# from footer_button_specs) can never drift.
+# then a Support button. Kept here as the single source of truth so the live CV2 post
+# (footer_buttons_row) and the web preview (PostSpec.buttons, built from
+# footer_button_specs) can never drift.
 KOFI_URL = "https://ko-fi.com/Kyber3000"
-KYBERS_CORNER_URL = "https://kyberscorner.com/"
 
 
 def footer_button_specs(
@@ -73,17 +72,16 @@ def footer_button_specs(
 ) -> list[tuple[str, str]]:
     """The ``(label, url)`` specs for a post's footer button row.
 
-    ``guides`` are the post-specific links (0-3 of them — e.g. a Lost Sector guide +
-    details page), followed by the standard Support and Kyber's Corner buttons. This is
-    the one source both the live CV2 row and the preview render from. Labels must be
-    plain text (no ``:emoji:`` tokens — button labels aren't emoji-substituted).
+    ``guides`` are the post-specific links (0-4 of them — e.g. a Lost Sector guide +
+    details page), followed by the standard Support button. This is the one source both
+    the live CV2 row and the preview render from. Labels must be plain text (no
+    ``:emoji:`` tokens — button labels aren't emoji-substituted).
     """
-    if len(guides) > 3:
-        raise ValueError("at most 3 guide buttons (Discord caps an action row at 5)")
+    if len(guides) > 4:
+        raise ValueError("at most 4 guide buttons (Discord caps an action row at 5)")
     return [
         *[(str(label), str(url)) for label, url in guides],
         ("Support Us", KOFI_URL),
-        ("Kyber's Corner", KYBERS_CORNER_URL),
     ]
 
 

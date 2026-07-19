@@ -447,7 +447,7 @@ def legendary_armor_sets_fragment(
 
 XUR_FOOTER = "\n\nHave a great weekend! :gscheer:"
 
-#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: Post-specific footer guide button(s); Support is appended by
 #: ``footer_button_specs``. The "View More" page that was a markdown link in the footer.
 XUR_GUIDES: tuple[tuple[str, str], ...] = (("Xûr Guide", "https://kyber3000.com/D2-Xur"),)
 

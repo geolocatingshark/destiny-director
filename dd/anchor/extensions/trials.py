@@ -96,7 +96,7 @@ TRIALS_REWARDS: tuple[str, ...] = (
 #: body text; the link footer is now the button row (see TRIALS_GUIDES).
 TRIALS_FOOTER_LINE = "### Good luck in your games!  :gscheer:"
 
-#: Post-specific footer guide button(s); Support + Kyber's Corner are appended by
+#: Post-specific footer guide button(s); Support is appended by
 #: ``footer_button_specs``. Drives both the live post and the web-form preview.
 TRIALS_GUIDES: tuple[tuple[str, str], ...] = (
     ("Trials Report", "https://kyber3000.com/Trialspost"),

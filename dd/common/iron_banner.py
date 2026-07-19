@@ -42,7 +42,7 @@ _IRON_BANNER = rotation_schema.IRON_BANNER_SLUG
 
 #: The full guide the post highlights and links out to (title link + footer button).
 GUIDE_URL = "https://kyberscorner.com/destiny2/iron-banner/"
-#: Post-specific footer guide button(s); the shared Support + Kyber's Corner buttons
+#: Post-specific footer guide button(s); the shared Support button
 #: are appended by ``components.footer_button_specs``. Shared by post + preview.
 GUIDES: tuple[tuple[str, str], ...] = (("Iron Banner Guide", GUIDE_URL),)
 
