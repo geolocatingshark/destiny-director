@@ -36,6 +36,12 @@ function _fillTable(tableId, rows) {
 }
 
 const _fmt = (n) => Number(n).toLocaleString();
+const cssVar = (name) =>
+  getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// Fetched payload + current time-resolution, shared by the chart renderers so the
+// resolution toggle can re-render without re-fetching.
+const STATE = { data: null, resolution: "daily" };
 
 // --- section renderers ------------------------------------------------------
 
@@ -115,6 +121,50 @@ function renderServers(populations) {
   _byId("section-servers").classList.remove("hidden");
 }
 
+// --- time-series charts -----------------------------------------------------
+
+// Collapse the per-command daily rows into one total-invocations-per-day series.
+function commandDailyTotals(commands) {
+  const byDay = new Map();
+  for (const [, iso, count] of commands) byDay.set(iso, (byDay.get(iso) || 0) + count);
+  return [...byDay.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([iso, v]) => [new Date(iso + "T00:00:00Z"), v]);
+}
+
+function renderCommandsChart() {
+  const points = DDCharts.bucketByResolution(
+    commandDailyTotals(STATE.data.commands || []),
+    STATE.resolution,
+  );
+  DDCharts.lineChart(_byId("commandsChart"), {
+    resolution: STATE.resolution,
+    // Single series → on-brand accent, no legend (the section title names it).
+    series: [{ name: "Commands", color: cssVar("--accent"), points }],
+  });
+}
+
+// Re-render every time-series chart at the current resolution. Later chunks add the
+// autopost + populations charts here.
+function renderTimeCharts() {
+  if (!STATE.data) return;
+  renderCommandsChart();
+}
+
+function initToolbar() {
+  const tb = _byId("toolbar");
+  tb.classList.remove("hidden");
+  tb.querySelectorAll(".seg-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      STATE.resolution = btn.dataset.res;
+      tb.querySelectorAll(".seg-btn").forEach((b) =>
+        b.classList.toggle("active", b === btn),
+      );
+      renderTimeCharts();
+    });
+  });
+}
+
 // --- boot -------------------------------------------------------------------
 
 async function load() {
@@ -122,11 +172,15 @@ async function load() {
     const res = await fetch("/stats/data", { credentials: "same-origin" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    STATE.data = data;
 
     renderCommands(data.commands || []);
     renderAutoposts(data.current || []);
     renderPopulations(data.populations || []);
     renderServers(data.populations || []);
+
+    initToolbar();
+    renderTimeCharts();
 
     _byId("loading").classList.add("hidden");
   } catch (e) {
@@ -138,3 +192,10 @@ async function load() {
 }
 
 document.addEventListener("DOMContentLoaded", load);
+
+// Charts size to their container width, so re-render (debounced) on resize.
+let _resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(renderTimeCharts, 150);
+});

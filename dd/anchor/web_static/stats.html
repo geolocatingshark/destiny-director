@@ -32,6 +32,15 @@
       <p id="loading" class="muted">Loading…</p>
       <p id="error" class="err hidden"></p>
 
+      <div id="toolbar" class="toolbar hidden">
+        <span class="toolbar-label">Resolution</span>
+        <div class="seg" role="group" aria-label="Time resolution">
+          <button type="button" class="seg-btn active" data-res="daily">Daily</button>
+          <button type="button" class="seg-btn" data-res="weekly">Weekly</button>
+          <button type="button" class="seg-btn" data-res="monthly">Monthly</button>
+        </div>
+      </div>
+
       <section id="section-commands" class="card hidden">
         <h2>Command usage</h2>
         <div class="chart" id="commandsChart"></div>
@@ -80,6 +89,7 @@
       </section>
     </main>
 
+    <script src="/static/charts.js" defer></script>
     <script src="/static/stats.js" defer></script>
   </body>
 </html>

@@ -54,7 +54,7 @@ Opus window on Pro — small on purpose, with headroom for the debug/`make check
 | ☑ 1 | **Snapshot table** | `AutopostDailyStat` model + `record`/`fetch_series` methods + migration + schema tests | — | ~20% |
 | ☑ 2 | **Daily snapshot job** | `@loader.task` writing the snapshot + its unit test (data starts accruing) | 1 | ~15% |
 | ☑ 3 | **Data endpoint + shell** | `GET /stats/data` JSON + `GET /stats` HTML shell + homepage card. Shipped with the leaderboard / current-totals / populations-summary / server tables already rendered (client-side), so chunks 5–7 shrink to just their charts. | 1 | ~25% |
-| ☐ 4 | **Chart harness + command usage** | Read `dataviz` skill; dependency-free SVG line-chart helper + daily/weekly/monthly toggle in `stats.js`; wire the command-usage trend chart (`#commandsChart`) | 3 | ~35% |
+| ☑ 4 | **Chart harness + command usage** | `charts.js` (DDCharts.lineChart + bucketByResolution) + daily/weekly/monthly toggle; command-usage trend chart wired (single-series accent line). Palette validated (accent pink passes dark checks). | 3 | ~35% |
 | ☐ 5 | **Autopost reach chart** | Reuse the harness for the stacked reach chart (`#autopostsChart`); current-totals table already done | 4 | ~15% |
 | ☐ 6 | **Populations chart** | Log-scale distribution chart (`#populationsChart`); summary tiles already done | 4 | ~15% |
 | ☐ 7 | ~~Server list section~~ | **Done in chunk 3** (searchable `#serversTable`). No separate work unless we later add server names. | — | — |
