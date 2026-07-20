@@ -39,24 +39,99 @@ const _fmt = (n) => Number(n).toLocaleString();
 const cssVar = (name) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-// Fetched payload + current time-resolution, shared by the chart renderers so the
-// resolution toggle can re-render without re-fetching.
-const STATE = { data: null, resolution: "daily" };
+// Fetched payload + current time-resolution + which command the big chart is focused on
+// ("__total__" = all commands summed). Shared by the chart renderers so the resolution
+// toggle / row selection can re-render without re-fetching.
+const STATE = { data: null, resolution: "daily", selectedCommand: "__total__", cmdIndex: null };
 
 // --- section renderers ------------------------------------------------------
 
-function renderCommands(commands) {
-  // Leaderboard: sum daily counts per command, descending.
-  const totals = new Map();
-  for (const [name, , count] of commands) {
-    totals.set(name, (totals.get(name) || 0) + count);
+// Index the raw command rows into per-command daily series + totals + a summed "total"
+// series, computed once per load and reused by the chart, sparklines, and leaderboard.
+function commandIndex(commands) {
+  const byNameDays = new Map(); // name -> Map(iso -> count)
+  const totalDays = new Map(); //  iso  -> count (all commands)
+  for (const [name, iso, count] of commands) {
+    if (!byNameDays.has(name)) byNameDays.set(name, new Map());
+    const m = byNameDays.get(name);
+    m.set(iso, (m.get(iso) || 0) + count);
+    totalDays.set(iso, (totalDays.get(iso) || 0) + count);
   }
-  const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
-  _fillTable(
-    "commandsTable",
-    ranked.map(([name, total]) => [name, { text: _fmt(total), num: true }]),
-  );
+  const toSeries = (m) =>
+    [...m.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([iso, v]) => [new Date(iso + "T00:00:00Z"), v]);
+  const byName = new Map();
+  const totals = new Map();
+  for (const [name, m] of byNameDays) {
+    byName.set(name, toSeries(m));
+    totals.set(name, [...m.values()].reduce((a, b) => a + b, 0));
+  }
+  const order = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n);
+  return { byName, totals, order, total: toSeries(totalDays) };
+}
+
+// The daily series behind a leaderboard key ("__total__" or a command name).
+function seriesFor(key) {
+  const ix = STATE.cmdIndex;
+  return key === "__total__" ? ix.total : ix.byName.get(key) || [];
+}
+
+// Neutral up/flat/down arrow from first-half vs second-half usage. Usage rising or
+// falling isn't inherently good/bad, so this uses text tokens, not status colours.
+function trendArrow(series) {
+  if (series.length < 2) return { sym: "→", cls: "flat" };
+  const mid = Math.floor(series.length / 2);
+  const first = series.slice(0, mid).reduce((s, [, v]) => s + v, 0);
+  const second = series.slice(mid).reduce((s, [, v]) => s + v, 0);
+  if (second > first * 1.1) return { sym: "▲", cls: "up" };
+  if (second < first * 0.9) return { sym: "▼", cls: "down" };
+  return { sym: "→", cls: "flat" };
+}
+
+function _cmdRow(key, label, total) {
+  const tr = document.createElement("tr");
+  tr.dataset.cmd = key;
+  tr.className = "row-select" + (key === STATE.selectedCommand ? " active" : "");
+
+  const name = document.createElement("td");
+  name.textContent = label;
+  const tot = document.createElement("td");
+  tot.className = "num";
+  tot.textContent = _fmt(total);
+
+  const trend = document.createElement("td");
+  const t = trendArrow(seriesFor(key));
+  trend.className = "trend " + t.cls;
+  trend.textContent = t.sym;
+
+  const spark = document.createElement("td");
+  spark.className = "spark-cell";
+  spark.dataset.spark = key; // filled/refreshed by renderCommandSparklines()
+
+  tr.append(name, tot, trend, spark);
+  tr.addEventListener("click", () => selectCommand(key));
+  return tr;
+}
+
+function renderCommands(commands) {
+  STATE.cmdIndex = commandIndex(commands);
+  const { order, totals, total } = STATE.cmdIndex;
+  const tbody = _byId("commandsTable").querySelector("tbody");
+  const rows = [
+    _cmdRow("__total__", "All commands", total.reduce((s, [, v]) => s + v, 0)),
+    ...order.map((name) => _cmdRow(name, name, totals.get(name))),
+  ];
+  tbody.replaceChildren(...rows);
   _byId("section-commands").classList.remove("hidden");
+}
+
+function selectCommand(key) {
+  STATE.selectedCommand = key;
+  document.querySelectorAll("#commandsTable .row-select").forEach((tr) =>
+    tr.classList.toggle("active", tr.dataset.cmd === key),
+  );
+  renderCommandsChart();
 }
 
 function renderAutoposts(current) {
@@ -123,25 +198,33 @@ function renderServers(populations) {
 
 // --- time-series charts -----------------------------------------------------
 
-// Collapse the per-command daily rows into one total-invocations-per-day series.
-function commandDailyTotals(commands) {
-  const byDay = new Map();
-  for (const [, iso, count] of commands) byDay.set(iso, (byDay.get(iso) || 0) + count);
-  return [...byDay.entries()]
-    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    .map(([iso, v]) => [new Date(iso + "T00:00:00Z"), v]);
-}
-
+// Focused line chart for the currently-selected command (or the all-commands total).
 function renderCommandsChart() {
+  const key = STATE.selectedCommand;
+  const label = key === "__total__" ? "All commands (total)" : key;
+  _byId("commandsCaption").textContent = label;
   const points = DDCharts.bucketByResolution(
-    commandDailyTotals(STATE.data.commands || []),
+    seriesFor(key),
     STATE.resolution,
     "sum", // command usage is a FLOW — periods add up
   );
   DDCharts.lineChart(_byId("commandsChart"), {
     resolution: STATE.resolution,
-    // Single series → on-brand accent, no legend (the section title names it).
-    series: [{ name: "Commands", color: cssVar("--accent"), points }],
+    // Single series → on-brand accent, no legend (the caption names it).
+    series: [{ name: label, color: cssVar("--accent"), points }],
+  });
+}
+
+// Fill/refresh every per-command sparkline at the current resolution (small multiples).
+function renderCommandSparklines() {
+  const color = cssVar("--accent");
+  document.querySelectorAll("#commandsTable [data-spark]").forEach((cell) => {
+    const points = DDCharts.bucketByResolution(
+      seriesFor(cell.dataset.spark),
+      STATE.resolution,
+      "sum",
+    );
+    DDCharts.sparkline(cell, points, { color, width: 150, height: 26 });
   });
 }
 
@@ -177,6 +260,7 @@ function renderAutopostsChart() {
 function renderTimeCharts() {
   if (!STATE.data) return;
   renderCommandsChart();
+  renderCommandSparklines();
   renderAutopostsChart();
 }
 

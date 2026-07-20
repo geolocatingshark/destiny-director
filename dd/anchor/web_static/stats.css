@@ -75,6 +75,27 @@ table.data tbody tr:hover { background: var(--surface-3); }
 .chart-overlay { cursor: crosshair; }
 .chart-empty { padding: .8rem 0; }
 
+/* Per-command small-multiples: sparkline cells + selectable rows + trend arrows. */
+.muted.small { font-size: .78rem; margin: .1rem 0 .5rem; }
+#commandsCaption { margin: 0 0 .2rem; }
+.spark-col { width: 160px; }
+.trend-col { width: 3rem; }
+.spark-cell { padding: .15rem .5rem; }
+.sparkline { display: block; }
+.spark-line { stroke-width: 1.5; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+
+td.trend { font-size: .95rem; text-align: center; }
+td.trend.up { color: var(--text-1); }
+td.trend.down { color: var(--text-faint); }
+td.trend.flat { color: var(--text-muted); }
+
+table.selectable tbody tr { cursor: pointer; }
+table.selectable tbody tr.active {
+  background: var(--accent-tint);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+table.selectable tbody tr.active:hover { background: var(--accent-tint); }
+
 .chart-legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .5rem; }
 .legend-item { display: inline-flex; align-items: center; gap: .35rem; font-size: .82rem; color: var(--text-2); }
 .legend-key { width: 12px; height: 12px; border-radius: 3px; flex: none; }

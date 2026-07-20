@@ -345,5 +345,45 @@ window.DDCharts = (function () {
     container.appendChild(svg);
   }
 
-  return { lineChart, barChart, bucketByResolution };
+  // Render a tiny axis-less sparkline (for table rows / small multiples). Independent
+  // y-scale from 0 to the series max, so it shows each command's own trend SHAPE /
+  // direction; magnitude is carried by the adjacent total column, per the skill's
+  // "label selectively" guidance.
+  function sparkline(container, points, opts) {
+    container.replaceChildren();
+    opts = opts || {};
+    const w = opts.width || 140;
+    const h = opts.height || 26;
+    const pad = 2;
+    const color = opts.color || "#888";
+    if (!points || !points.length) return;
+
+    let xmin = Infinity, xmax = -Infinity, ymax = 0;
+    for (const [d, v] of points) {
+      const t = d.getTime();
+      if (t < xmin) xmin = t;
+      if (t > xmax) xmax = t;
+      if (v > ymax) ymax = v;
+    }
+    if (xmin === xmax) { xmin -= 1; xmax += 1; }
+    if (ymax <= 0) ymax = 1;
+    const xP = (t) => pad + ((t - xmin) / (xmax - xmin)) * (w - 2 * pad);
+    const yP = (v) => h - pad - (v / ymax) * (h - 2 * pad);
+
+    const svg = el("svg", {
+      class: "sparkline",
+      viewBox: `0 0 ${w} ${h}`,
+      width: String(w),
+      height: String(h),
+    });
+    const d = points
+      .map(([dt, v], i) => `${i ? "L" : "M"}${xP(dt.getTime()).toFixed(1)} ${yP(v).toFixed(1)}`)
+      .join(" ");
+    svg.appendChild(el("path", { class: "spark-line", d, stroke: color, fill: "none" }));
+    const [ld, lv] = points[points.length - 1];
+    svg.appendChild(el("circle", { class: "spark-dot", cx: xP(ld.getTime()), cy: yP(lv), r: 2, fill: color }));
+    container.appendChild(svg);
+  }
+
+  return { lineChart, barChart, sparkline, bucketByResolution };
 })();

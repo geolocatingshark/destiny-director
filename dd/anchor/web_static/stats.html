@@ -43,11 +43,22 @@
 
       <section id="section-commands" class="card hidden">
         <h2>Command usage</h2>
+        <p class="muted" id="commandsCaption">All commands (total)</p>
         <div class="chart" id="commandsChart"></div>
-        <h3>Leaderboard</h3>
-        <table class="data" id="commandsTable">
+        <h3>Per-command trends</h3>
+        <p class="muted small">
+          Each command's usage over time — scan the column to see what's trending up or
+          down. Click a row to focus it in the chart above. The resolution toggle applies
+          to every sparkline.
+        </p>
+        <table class="data selectable" id="commandsTable">
           <thead>
-            <tr><th>Command</th><th class="num">Total</th></tr>
+            <tr>
+              <th>Command</th>
+              <th class="num">Total</th>
+              <th class="trend-col">Trend</th>
+              <th class="spark-col">Over time</th>
+            </tr>
           </thead>
           <tbody></tbody>
         </table>
