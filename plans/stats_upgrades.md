@@ -53,12 +53,12 @@ Opus window on Pro — small on purpose, with headroom for the debug/`make check
 |---|-------|----------------------------------|---------|---------|
 | ☑ 1 | **Snapshot table** | `AutopostDailyStat` model + `record`/`fetch_series` methods + migration + schema tests | — | ~20% |
 | ☑ 2 | **Daily snapshot job** | `@loader.task` writing the snapshot + its unit test (data starts accruing) | 1 | ~15% |
-| ☐ 3 | **Data endpoint + shell** | `GET /stats/data` JSON + `GET /stats` HTML shell + homepage card (tables only, no charts) | 1 | ~25% |
-| ☐ 4 | **Chart harness + command usage** | Read `dataviz` skill; dependency-free SVG line-chart helper + daily/weekly/monthly toggle in `stats.js`; wire the command-usage section + leaderboard | 3 | ~35% |
-| ☐ 5 | **Autopost reach section** | Reuse the harness for the stacked reach chart + current-totals table | 4 | ~20% |
-| ☐ 6 | **Populations section** | Top-7 bar + log-scale distribution | 4 | ~20% |
-| ☐ 7 | **Server list section** | Searchable server table | 3 | ~15% |
-| ☐ 8 | **Remove Discord `/stats`** | Delete the four subcommands + dead chart helpers + test cleanup (keep the tracking hook) | 5,6,7 | ~20% |
+| ☑ 3 | **Data endpoint + shell** | `GET /stats/data` JSON + `GET /stats` HTML shell + homepage card. Shipped with the leaderboard / current-totals / populations-summary / server tables already rendered (client-side), so chunks 5–7 shrink to just their charts. | 1 | ~25% |
+| ☐ 4 | **Chart harness + command usage** | Read `dataviz` skill; dependency-free SVG line-chart helper + daily/weekly/monthly toggle in `stats.js`; wire the command-usage trend chart (`#commandsChart`) | 3 | ~35% |
+| ☐ 5 | **Autopost reach chart** | Reuse the harness for the stacked reach chart (`#autopostsChart`); current-totals table already done | 4 | ~15% |
+| ☐ 6 | **Populations chart** | Log-scale distribution chart (`#populationsChart`); summary tiles already done | 4 | ~15% |
+| ☐ 7 | ~~Server list section~~ | **Done in chunk 3** (searchable `#serversTable`). No separate work unless we later add server names. | — | — |
+| ☐ 8 | **Remove Discord `/stats`** | Delete the four subcommands + dead chart helpers + test cleanup (keep the tracking hook) | 4,5,6 | ~20% |
 
 Natural early stops: after **#2** history is being recorded (the time-sensitive part —
 do this first); after **#3** the page exists; after **#4** the harness is reusable so
@@ -196,3 +196,11 @@ In `dd/beacon/extensions/statistics.py`:
   snapshot-only).
 - Autopost **message volume** over time (this tracks reach = active destinations, not
   messages sent). Could be added later from `mirror_delivery` DELIVERED counts if wanted.
+- **Server names** on the populations / server-list sections. `ServerStatistics` stores
+  only `(id, population)`, and the id list is the *beacon's* guilds, whose names the
+  anchor web process can't resolve without slow per-guild Discord fetches (the reason the
+  old `/stats populations` command was slow). The web page shows ids + populations. If
+  names are wanted, options are: persist a name column on `ServerStatistics` (refreshed by
+  the existing `refresh_server_sizes` task) or a best-effort anchor-cache lookup.
+- **`/stats/data` payload note:** there is no separate `servers` array — the server-list
+  section derives from `populations` (`[id, population]`, id as a string) client-side.

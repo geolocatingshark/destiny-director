@@ -1,0 +1,55 @@
+/*
+  Statistics dashboard styles. Base/reset/theme + design tokens live in shared.css
+  (linked first); only this page's own styles are here. Scoped loosely under the page's
+  own elements/classes — the stats page is standalone (no shared form chrome), so there is
+  no risk of colliding with editor.css / the hybrid-post forms.
+*/
+
+/* No global .hidden utility exists in shared.css (it only defines a form-scoped one), so
+   define the one this page toggles from stats.js. */
+.hidden { display: none !important; }
+
+main.stats { margin: 1rem 0; display: flex; flex-direction: column; gap: 1.2rem; }
+
+#error.err { color: var(--err); white-space: pre-wrap; }
+
+.card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2); padding: 1rem 1.1rem;
+}
+.card h2 { margin: 0 0 .3rem; font-size: 1.1rem; }
+.card h3 {
+  margin: 1.1rem 0 .4rem; font-size: .9rem; color: var(--text-2);
+  font-weight: 600;
+}
+
+/* Chart slot — a min-height reservation so the layout doesn't jump when the SVG (added by
+   a later chunk) fills it. Empty for now. */
+.chart { min-height: 40px; margin: .2rem 0 .4rem; }
+
+/* Data tables — command leaderboard, current totals, server list. */
+table.data { width: 100%; border-collapse: collapse; font-size: .88rem; }
+table.data th, table.data td {
+  text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--border);
+}
+table.data thead th {
+  color: var(--text-2); font-weight: 600; border-bottom: 1px solid var(--border-hover);
+}
+table.data td.num, table.data th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.data tbody tr:hover { background: var(--surface-3); }
+
+.search {
+  width: 100%; box-sizing: border-box; margin: .2rem 0 .6rem;
+  padding: .45rem .6rem; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-3); color: var(--text-1); font-size: .88rem;
+}
+.search:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+#populationsSummary {
+  display: flex; flex-wrap: wrap; gap: 1.2rem; margin-bottom: .3rem;
+}
+#populationsSummary .stat { display: flex; flex-direction: column; }
+#populationsSummary .stat .value {
+  font-size: 1.3rem; font-variant-numeric: tabular-nums; color: var(--text-1);
+}
+#populationsSummary .stat .label { font-size: .78rem; color: var(--text-faint); }
