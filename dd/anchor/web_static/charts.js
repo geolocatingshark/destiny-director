@@ -19,10 +19,15 @@ window.DDCharts = (function () {
     return node;
   }
 
-  // Bucket [[Date, value], ...] to the given resolution, summing values that fall in the
-  // same period. Weekly buckets to the ISO-week Monday; monthly to the 1st. Returns a
-  // date-sorted [[Date, value], ...]. All arithmetic is in UTC to match the DB's UTC days.
-  function bucketByResolution(points, resolution) {
+  // Bucket [[Date, value], ...] to the given resolution. Weekly buckets to the ISO-week
+  // Monday; monthly to the 1st. Returns a date-sorted [[Date, value], ...]. All
+  // arithmetic is in UTC to match the DB's UTC days.
+  //
+  //   agg="sum"  — add values in a period. For FLOWS (event counts like command usage).
+  //   agg="last" — take the period's last (most recent) snapshot. For STOCKS/levels
+  //                (autopost reach = active-channel count): summing daily snapshots would
+  //                be nonsense, so weekly/monthly show the reach as of the period's end.
+  function bucketByResolution(points, resolution, agg) {
     const keyOf = (d) => {
       const y = d.getUTCFullYear();
       const m = d.getUTCMonth();
@@ -35,14 +40,18 @@ window.DDCharts = (function () {
       }
       return Date.UTC(y, m, day); // daily
     };
-    const sums = new Map();
+    const groups = new Map(); // key -> { sum, lastT, lastV }
     for (const [d, v] of points) {
       const k = keyOf(d);
-      sums.set(k, (sums.get(k) || 0) + v);
+      const t = d.getTime();
+      const g = groups.get(k) || { sum: 0, lastT: -Infinity, lastV: 0 };
+      g.sum += v;
+      if (t >= g.lastT) { g.lastT = t; g.lastV = v; }
+      groups.set(k, g);
     }
-    return [...sums.entries()]
+    return [...groups.entries()]
       .sort((a, b) => a[0] - b[0])
-      .map(([k, v]) => [new Date(k), v]);
+      .map(([k, g]) => [new Date(k), agg === "last" ? g.lastV : g.sum]);
   }
 
   // A "nice" axis top >= max, plus a step, giving ~`ticks` clean gridlines from 0.
@@ -238,5 +247,103 @@ window.DDCharts = (function () {
     });
   }
 
-  return { lineChart, bucketByResolution };
+  // Path for a column with a 4px-rounded top and a square baseline (skill mark spec:
+  // "4px rounded data-end, square at the baseline").
+  function _colPath(x, yTop, w, yBase) {
+    const r = Math.min(4, w / 2, Math.max(0, yBase - yTop));
+    return (
+      `M${x} ${yBase} L${x} ${yTop + r} Q${x} ${yTop} ${x + r} ${yTop} ` +
+      `L${x + w - r} ${yTop} Q${x + w} ${yTop} ${x + w} ${yTop + r} L${x + w} ${yBase} Z`
+    );
+  }
+
+  // Render a single-series column chart into `container`.
+  //   opts.bars:  [{ label, value }]  (x order preserved)
+  //   opts.color: column fill
+  function barChart(container, opts) {
+    const bars = opts.bars || [];
+    container.replaceChildren();
+    if (!bars.length) {
+      const empty = document.createElement("p");
+      empty.className = "chart-empty muted";
+      empty.textContent = "No data yet.";
+      container.appendChild(empty);
+      return;
+    }
+
+    const width = container.clientWidth || 640;
+    const height = opts.height || 220;
+    const M = { top: 18, right: 12, bottom: 34, left: 48 };
+    const plotW = Math.max(1, width - M.left - M.right);
+    const plotH = Math.max(1, height - M.top - M.bottom);
+
+    const ymax = Math.max(...bars.map((b) => b.value), 0);
+    const { top: yTop, step: yStep } = niceScale(ymax, 4);
+    const yPix = (v) => M.top + plotH - (v / yTop) * plotH;
+
+    const n = bars.length;
+    const band = plotW / n;
+    const barW = Math.min(24, band - 8); // cap 24px; leftover band is air (skill spec)
+
+    const svg = el("svg", {
+      class: "chart-svg",
+      viewBox: `0 0 ${width} ${height}`,
+      width: "100%",
+      height: String(height),
+      role: "img",
+    });
+
+    for (let v = 0; v <= yTop + 1e-9; v += yStep) {
+      const y = yPix(v);
+      svg.appendChild(el("line", { class: "chart-grid", x1: M.left, y1: y, x2: width - M.right, y2: y }));
+      svg.appendChild(
+        el("text", { class: "chart-tick", x: M.left - 8, y: y + 4, "text-anchor": "end" }, [
+          document.createTextNode(fmtInt(v)),
+        ]),
+      );
+    }
+
+    const tip = document.createElement("div");
+    tip.className = "chart-tooltip hidden";
+    container.appendChild(tip);
+
+    bars.forEach((b, i) => {
+      const x = M.left + band * i + (band - barW) / 2;
+      const yBase = M.top + plotH;
+      const yColTop = yPix(b.value);
+      const path = el("path", {
+        class: "chart-bar",
+        d: _colPath(x, yColTop, barW, yBase),
+        fill: opts.color,
+      });
+      svg.appendChild(path);
+      // Value on the cap (selective direct label — few bars, so every cap is fine).
+      svg.appendChild(
+        el("text", { class: "chart-tick", x: x + barW / 2, y: yColTop - 6, "text-anchor": "middle" }, [
+          document.createTextNode(fmtInt(b.value)),
+        ]),
+      );
+      // Band label under the column.
+      svg.appendChild(
+        el("text", { class: "chart-tick", x: x + barW / 2, y: height - 10, "text-anchor": "middle" }, [
+          document.createTextNode(b.label),
+        ]),
+      );
+      // Per-mark hover (skill: bar charts ship per-mark hover).
+      path.addEventListener("mouseenter", () => {
+        tip.innerHTML =
+          `<div class="tt-date">${b.label}</div>` +
+          `<div class="tt-row"><span class="tt-key" style="background:${opts.color}"></span>` +
+          `<span class="tt-name">${opts.unit || "servers"}</span><span class="tt-val">${fmtInt(b.value)}</span></div>`;
+        tip.classList.remove("hidden");
+        tip.style.left = Math.min(x, width - 120) + "px";
+        tip.style.top = "6px";
+      });
+      path.addEventListener("mouseleave", () => tip.classList.add("hidden"));
+    });
+
+    container.appendChild(svg);
+  }
+
+  return { lineChart, barChart, bucketByResolution };
 })();

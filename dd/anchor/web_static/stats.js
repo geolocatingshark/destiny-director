@@ -136,6 +136,7 @@ function renderCommandsChart() {
   const points = DDCharts.bucketByResolution(
     commandDailyTotals(STATE.data.commands || []),
     STATE.resolution,
+    "sum", // command usage is a FLOW — periods add up
   );
   DDCharts.lineChart(_byId("commandsChart"), {
     resolution: STATE.resolution,
@@ -144,11 +145,68 @@ function renderCommandsChart() {
   });
 }
 
-// Re-render every time-series chart at the current resolution. Later chunks add the
-// autopost + populations charts here.
+// Split the autopost snapshot rows into per-day follow/mirror totals (summed across all
+// feeds), as two [Date, count] series sharing the same dates.
+function autopostDailyByKind(autoposts) {
+  const byDay = new Map();
+  for (const [iso, , kind, count] of autoposts) {
+    const g = byDay.get(iso) || { follow: 0, mirror: 0 };
+    g[kind] = (g[kind] || 0) + count;
+    byDay.set(iso, g);
+  }
+  const dates = [...byDay.keys()].sort();
+  const at = (k) => dates.map((iso) => [new Date(iso + "T00:00:00Z"), byDay.get(iso)[k]]);
+  return { follow: at("follow"), mirror: at("mirror") };
+}
+
+function renderAutopostsChart() {
+  const { follow, mirror } = autopostDailyByKind(STATE.data.autoposts || []);
+  const res = STATE.resolution;
+  // Reach is a STOCK (active-channel count), so aggregate by the period's last snapshot.
+  DDCharts.lineChart(_byId("autopostsChart"), {
+    resolution: res,
+    series: [
+      { name: "Followers", color: cssVar("--accent"), points: DDCharts.bucketByResolution(follow, res, "last") },
+      { name: "Mirrors", color: cssVar("--accent-strong"), points: DDCharts.bucketByResolution(mirror, res, "last") },
+    ],
+  });
+}
+
+// Re-render every time-series chart at the current resolution. (Populations is a
+// distribution, not a time series, so it is rendered once at load — not here.)
 function renderTimeCharts() {
   if (!STATE.data) return;
   renderCommandsChart();
+  renderAutopostsChart();
+}
+
+// Server population distribution: count servers per [10^k, 10^(k+1)) band (mirrors the
+// old /stats populations log breakdown), rendered as a column chart.
+function populationLogBands(populations) {
+  const counts = new Map();
+  for (const [, pop] of populations) {
+    if (pop > 0) {
+      const k = Math.floor(Math.log10(pop));
+      counts.set(k, (counts.get(k) || 0) + 1);
+    }
+  }
+  const ks = [...counts.keys()];
+  if (!ks.length) return [];
+  const lo = Math.min(...ks), hi = Math.max(...ks);
+  const compact = (n) => (n >= 1e6 ? n / 1e6 + "M" : n >= 1e3 ? n / 1e3 + "K" : String(n));
+  const bands = [];
+  for (let k = lo; k <= hi; k++) {
+    bands.push({ label: `${compact(10 ** k)}–${compact(10 ** (k + 1))}`, value: counts.get(k) || 0 });
+  }
+  return bands;
+}
+
+function renderPopulationsChart() {
+  DDCharts.barChart(_byId("populationsChart"), {
+    bars: populationLogBands(STATE.data.populations || []),
+    color: cssVar("--accent-strong"),
+    unit: "servers",
+  });
 }
 
 function initToolbar() {
@@ -181,6 +239,7 @@ async function load() {
 
     initToolbar();
     renderTimeCharts();
+    renderPopulationsChart(); // distribution — resolution-independent, render once
 
     _byId("loading").classList.add("hidden");
   } catch (e) {

@@ -69,6 +69,8 @@ table.data tbody tr:hover { background: var(--surface-3); }
 .chart-tick { fill: var(--text-faint); font-size: 11px; }
 .chart-line { stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
 .chart-dot { stroke: var(--surface-2); stroke-width: 2; }
+.chart-bar { transition: opacity .1s ease; }
+.chart-bar:hover { opacity: .85; }
 .chart-crosshair { stroke: var(--border-hover); stroke-width: 1; pointer-events: none; }
 .chart-overlay { cursor: crosshair; }
 .chart-empty { padding: .8rem 0; }
