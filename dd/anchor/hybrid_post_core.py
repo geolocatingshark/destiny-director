@@ -528,18 +528,22 @@ class DraftMeta:
     needs_attention: list[str] = dataclasses.field(default_factory=list)
 
     def is_current(self, reset_ts: int) -> bool:
-        """Whether the tracked post should be managed as reset period ``reset_ts``'s.
+        """Whether the tracked post belongs to reset period ``reset_ts``.
 
-        Drives the form's Edit/Delete-vs-Create split. True when a post exists and its
-        stamped period matches ``reset_ts`` — OR the stamp is 0, i.e. a legacy doc from
-        before per-period tracking: its live post is treated as current so it stays
-        editable/deletable instead of being duplicated by a Create. A post whose stamp
-        names a *different* (past-or-future) period is not current — the form starts a
-        fresh draft for ``reset_ts`` and offers Create. NB for producers whose post is
-        optional (e.g. Trials): a ``False`` here is a normal "no post this period"
-        state, not an error.
+        Drives the form's Edit/Delete-vs-Create split. True only when a post exists AND
+        its stamped period matches ``reset_ts``. A post whose stamp names any *other*
+        period is not current — the form starts a fresh draft for ``reset_ts`` and
+        offers Create, and the old post stays in the channel as that week's history.
+        This covers the common after-reset case (stamp = last week), a future stamp, and
+        a legacy ``reset_ts == 0`` doc from before per-period tracking: 0 names no known
+        period, so its post is treated as a past post to be superseded by a Create
+        rather than edited in place forever. (Editing never re-stamps ``reset_ts`` —
+        only :func:`_send_new_post` does — so a 0 stamp that counted as "current" would
+        stay stuck on Edit every week and never flip to Create.) NB for producers whose
+        post is optional (e.g. Trials): a ``False`` here is a normal "no post this
+        period" state, not an error.
         """
-        return self.message_id != 0 and self.reset_ts in (0, reset_ts)
+        return self.message_id != 0 and self.reset_ts == reset_ts
 
     def to_dict(self) -> dict[str, t.Any]:
         return dataclasses.asdict(self)
@@ -553,7 +557,8 @@ class DraftMeta:
         # ``crossposted``). Read the old key into ``message_id`` and default
         # ``crossposted`` from the legacy "published" status. ``reset_ts`` predates the
         # per-period tracking, so old docs default it to 0 — which ``is_current`` treats
-        # as the current period so a pre-existing live post stays manageable on deploy.
+        # as a past period, so the next form load offers Create (the legacy post becomes
+        # that week's history) instead of editing it in place forever.
         message_id = int(d.get("message_id", d.get("published_message_id", 0)) or 0)
         return cls(
             message_id=message_id,

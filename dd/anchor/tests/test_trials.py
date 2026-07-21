@@ -454,8 +454,10 @@ async def test_handle_create_refuses_when_post_exists(
     monkeypatch, stub_weapon_items
 ) -> None:
     monkeypatch.setattr(tr, "_bot", _FakeBot())
-    # A legacy-stamped (reset_ts=0) live post is always "current" — Create is refused.
-    await tr.save_meta(tr.DraftMeta(message_id=42, reset_ts=0, status="posted"))
+    # A live post stamped with the current period is "current" — Create is refused.
+    await tr.save_meta(
+        tr.DraftMeta(message_id=42, reset_ts=tr.current_reset_ts(), status="posted")
+    )
     resp = await tr._handle_create(_req(body={"reset_ts": SAMPLE_RESET}))
     assert resp.status == 409
     assert "already exists" in json.loads(resp.text or "")["error"]
@@ -481,7 +483,9 @@ async def test_handle_edit_edits_existing_in_place(
 ) -> None:
     bot = _FakeBot()
     monkeypatch.setattr(tr, "_bot", bot)
-    await tr.save_meta(tr.DraftMeta(message_id=42, reset_ts=0, status="posted"))
+    await tr.save_meta(
+        tr.DraftMeta(message_id=42, reset_ts=tr.current_reset_ts(), status="posted")
+    )
     resp = await tr._handle_edit(
         _req(body={"reset_ts": SAMPLE_RESET, "maps_text": "Burnout"})
     )

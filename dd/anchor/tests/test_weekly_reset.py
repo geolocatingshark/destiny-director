@@ -837,9 +837,10 @@ def test_draft_meta_is_current() -> None:
     # Post stamped with another (past or future) week -> not current: start fresh.
     assert wr.DraftMeta(message_id=42, reset_ts=prev).is_current(now) is False
     assert wr.DraftMeta(message_id=42, reset_ts=nxt).is_current(now) is False
-    # Legacy doc (reset_ts absent -> 0) with a live post -> treated as current so it
-    # stays editable/deletable after deploy instead of being duplicated by a Create.
-    assert wr.DraftMeta(message_id=42, reset_ts=0).is_current(now) is True
+    # Legacy doc (reset_ts absent -> 0) with a live post -> NOT current: 0 names no
+    # known period, so the form offers Create and the legacy post becomes history.
+    # (A "current" 0 would never re-stamp and would stay stuck on Edit every week.)
+    assert wr.DraftMeta(message_id=42, reset_ts=0).is_current(now) is False
 
 
 # --- lifecycle: post_or_edit_unpublished / publish_draft / delete (fake bot) -------
@@ -1166,10 +1167,12 @@ async def test_form_get_starts_fresh_when_no_current_post(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_form_get_legacy_post_is_current(monkeypatch) -> None:
-    # Back-compat: a live post from before per-week tracking has reset_ts=0. The form
-    # must treat it as current (Edit/Delete), NOT show Create — else clicking Create
-    # would orphan and duplicate the live, already-crossposted message.
+async def test_form_get_legacy_post_offers_create(monkeypatch) -> None:
+    # A live post from before per-week tracking has reset_ts=0, which names no known
+    # period. The form must NOT treat it as current — it reports post_this_period False
+    # so the client shows Create, and the legacy post stays in the channel as history.
+    # (Treating 0 as current would stick the form on Edit forever, since editing never
+    # re-stamps reset_ts — the real prod bug this fixes.)
     monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
     await _stub_form_deps(monkeypatch)
     ctx = _full_ctx()
@@ -1180,7 +1183,7 @@ async def test_form_get_legacy_post_is_current(monkeypatch) -> None:
     )
     resp = await wr._handle_form_get(_req())
     assert resp.status == 200
-    assert '"post_this_period": true' in (resp.text or "")
+    assert '"post_this_period": false' in (resp.text or "")
 
 
 @pytest.mark.asyncio
