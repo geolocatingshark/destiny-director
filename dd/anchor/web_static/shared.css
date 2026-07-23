@@ -92,7 +92,10 @@ p.nav { margin: 0 0 .4rem; }
   border-radius: var(--radius); padding: 1rem; font: inherit;
 }
 .post-preview .emoji {
-  height: 1.2em; width: auto; vertical-align: middle;
+  /* Fixed square box so every custom emoji renders at a uniform size regardless of the
+     source image's aspect ratio (Discord emoji aren't all square); object-fit keeps
+     non-square art centered and undistorted rather than stretched. */
+  height: 1.2em; width: 1.2em; vertical-align: middle;
   margin: 0 .05em; object-fit: contain;
 }
 .post-preview .md-h1 { font-weight: 700; font-size: 1.3em; }
