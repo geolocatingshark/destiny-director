@@ -1,0 +1,106 @@
+<!doctype html>
+<!--
+  Anchor statistics dashboard — command usage & autopost reach over time, current
+  follower/mirror counts, and server populations. Served by dd.anchor.extensions.stats_page:
+  GET /stats returns this static shell; the page fetches GET /stats/data (JSON, DB-only)
+  and renders everything client-side (stats.js). Time series arrive at daily granularity
+  and are re-bucketed to weekly/monthly in the browser. Charts (inline SVG) are layered in
+  by later chunks; this shell already renders the leaderboard / totals / populations tables.
+  Auth is the shared OAuth middleware (web_auth), same as every other page.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Statistics — Destiny Director</title>
+    <link rel="stylesheet" href="/static/shared.css" />
+    <link rel="stylesheet" href="/static/stats.css" />
+  </head>
+  <body>
+    <header>
+      <p class="nav"><a href="/" class="backlink">← Control panel</a></p>
+      <h1>Statistics</h1>
+      <p class="muted">
+        Command usage and autopost reach over time, plus current follower/mirror counts
+        and server populations. Data refreshes on load; autopost history begins on the
+        deploy date.
+      </p>
+    </header>
+
+    <main class="stats">
+      <p id="loading" class="muted">Loading…</p>
+      <p id="error" class="err hidden"></p>
+
+      <div id="toolbar" class="toolbar hidden">
+        <span class="toolbar-label">Resolution</span>
+        <div class="seg" role="group" aria-label="Time resolution">
+          <button type="button" class="seg-btn active" data-res="daily">Daily</button>
+          <button type="button" class="seg-btn" data-res="weekly">Weekly</button>
+          <button type="button" class="seg-btn" data-res="monthly">Monthly</button>
+        </div>
+      </div>
+
+      <section id="section-commands" class="card hidden">
+        <h2>Command usage</h2>
+        <p class="muted" id="commandsCaption">All commands (total)</p>
+        <div class="chart" id="commandsChart"></div>
+        <h3>Per-command trends</h3>
+        <p class="muted small">
+          Each command's usage over time — scan the column to see what's trending up or
+          down. Click a row to focus it in the chart above. The resolution toggle applies
+          to every sparkline.
+        </p>
+        <table class="data selectable" id="commandsTable">
+          <thead>
+            <tr>
+              <th>Command</th>
+              <th class="num">Total</th>
+              <th class="trend-col">Trend</th>
+              <th class="spark-col">Over time</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section id="section-autoposts" class="card hidden">
+        <h2>Autopost reach</h2>
+        <div class="chart" id="autopostsChart"></div>
+        <h3>Current totals</h3>
+        <table class="data" id="currentTable">
+          <thead>
+            <tr><th>Feed</th><th class="num">Followers</th><th class="num">Mirrors</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section id="section-populations" class="card hidden">
+        <h2>Server populations</h2>
+        <div id="populationsSummary"></div>
+        <div class="chart" id="populationsChart"></div>
+      </section>
+
+      <section id="section-servers" class="card hidden">
+        <h2>Servers</h2>
+        <input
+          type="search"
+          id="serverSearch"
+          class="search"
+          placeholder="Filter by server id…"
+          autocomplete="off"
+        />
+        <table class="data" id="serversTable">
+          <thead>
+            <tr><th>Server ID</th><th class="num">Population</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script src="/static/charts.js" defer></script>
+    <script src="/static/stats.js" defer></script>
+  </body>
+</html>
