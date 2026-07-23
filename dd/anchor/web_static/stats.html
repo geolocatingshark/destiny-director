@@ -94,20 +94,27 @@
       </section>
 
       <section id="section-servers" class="card hidden">
-        <h2>Servers</h2>
-        <input
-          type="search"
-          id="serverSearch"
-          class="search"
-          placeholder="Filter by server id…"
-          autocomplete="off"
-        />
-        <table class="data" id="serversTable">
-          <thead>
-            <tr><th>Server ID</th><th class="num">Population</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+        <details class="fold">
+          <summary>
+            <h2>Servers</h2>
+            <span class="fold-count" id="serversCount"></span>
+          </summary>
+          <div class="fold-body">
+            <input
+              type="search"
+              id="serverSearch"
+              class="search"
+              placeholder="Filter by server id…"
+              autocomplete="off"
+            />
+            <table class="data" id="serversTable">
+              <thead>
+                <tr><th>Server ID</th><th class="num">Population</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </details>
       </section>
     </main>
 

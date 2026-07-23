@@ -263,6 +263,7 @@ function renderServers(populations) {
   const all = populations
     .map(([id, pop]) => ({ id: String(id), pop }))
     .sort((a, b) => b.pop - a.pop);
+  _byId("serversCount").textContent = `(${_fmt(all.length)})`;
 
   const draw = (rows) =>
     _fillTable(
