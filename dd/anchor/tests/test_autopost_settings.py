@@ -147,6 +147,72 @@ async def test_handle_save_coerces_truthy_values() -> None:
     assert await schemas.AutoPostSettings.get_enabled("portal_ops") is False
 
 
+# --- url setting (eververse default image) ----------------------------------------
+
+
+@pytest.mark.integration
+async def test_render_shows_url_field_with_value() -> None:
+    await schemas.AutoPostSettings.set_eververse_image_url(
+        "https://example.com/banner.png"
+    )
+
+    html_out = await aps._render_html()
+
+    # The URL setting renders a text input (not a switch) carrying its saved value.
+    assert 'class="urlfield" data-slug="eververse_image_url"' in html_out
+    assert 'value="https://example.com/banner.png"' in html_out
+
+
+@pytest.mark.integration
+async def test_handle_save_persists_url_value() -> None:
+    req = _FakeRequest(
+        {"settings": {"eververse_image_url": "https://example.com/banner.png"}}
+    )
+
+    resp = await aps._handle_save(_as_request(req))
+
+    assert resp.status == 200
+    assert (
+        await schemas.AutoPostSettings.get_eververse_image_url()
+        == "https://example.com/banner.png"
+    )
+
+
+@pytest.mark.integration
+async def test_handle_save_blank_url_clears_value() -> None:
+    await schemas.AutoPostSettings.set_eververse_image_url("https://example.com/a.png")
+
+    resp = await aps._handle_save(
+        _as_request(_FakeRequest({"settings": {"eververse_image_url": "  "}}))
+    )
+
+    assert resp.status == 200
+    # A blank field stores NULL → "no image".
+    assert await schemas.AutoPostSettings.get_eververse_image_url() is None
+
+
+@pytest.mark.integration
+async def test_handle_save_rejects_non_http_url() -> None:
+    resp = await aps._handle_save(
+        _as_request(
+            _FakeRequest({"settings": {"eververse_image_url": "ftp://x/y.png"}})
+        )
+    )
+
+    assert resp.status == 400
+    # The whole save aborts before any write — no row is created.
+    assert await schemas.AutoPostSettings.get_eververse_image_url() is None
+
+
+@pytest.mark.integration
+async def test_handle_save_rejects_non_string_url() -> None:
+    resp = await aps._handle_save(
+        _as_request(_FakeRequest({"settings": {"eververse_image_url": 123}}))
+    )
+
+    assert resp.status == 400
+
+
 async def test_handle_save_rejects_malformed_body() -> None:
     resp = await aps._handle_save(_as_request(_FakeRequest(None, raise_on_json=True)))
 

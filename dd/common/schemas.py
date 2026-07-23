@@ -2179,14 +2179,20 @@ class AutoPostSettings(Base):
         Boolean,
         default=True,
     )
+    # Optional free-text payload for settings that need a value, not just an on/off
+    # flag (e.g. ``eververse_image_url`` stores the default-image URL edited from the
+    # autopost settings webpage). NULL for the plain boolean toggle rows.
+    value = Column("value", String(512), nullable=True, default=None)
 
     def __init__(
         self,
         name: str,
         enabled=False,
+        value: str | None = None,
     ):
         self.name = name
         self.enabled = enabled
+        self.value = value
 
     @classmethod
     @ensure_session(db_session)
@@ -2219,12 +2225,49 @@ class AutoPostSettings(Base):
             )
 
     @classmethod
+    @ensure_session(db_session)
+    async def get_value(
+        cls, auto_post_name: str, session: AsyncSession = _UNSET
+    ) -> str | None:
+        return (
+            await session.execute(select(cls.value).where(cls.name == auto_post_name))
+        ).scalar()
+
+    @classmethod
+    @ensure_session(db_session)
+    async def set_value(
+        cls, auto_post_name: str, value: str | None, session: AsyncSession = _UNSET
+    ) -> None:
+        # Upsert on the name PK, touching only the ``value`` column so an existing row's
+        # ``enabled`` flag is preserved (value-only slugs like ``eververse_image_url``
+        # never have their ``enabled`` read by a producer).
+        row_exists = (
+            await session.execute(select(cls.name).where(cls.name == auto_post_name))
+        ).scalar()
+        if row_exists is None:
+            await session.execute(
+                insert(cls).values({cls.name: auto_post_name, cls.value: value})
+            )
+        else:
+            await session.execute(
+                update(cls).values({cls.value: value}).where(cls.name == auto_post_name)
+            )
+
+    @classmethod
     async def get_eververse_enabled(cls) -> bool | None:
         return await cls.get_enabled("eververse")
 
     @classmethod
     async def set_eververse(cls, enabled: bool) -> None:
         return await cls.set_enabled("eververse", enabled)
+
+    @classmethod
+    async def get_eververse_image_url(cls) -> str | None:
+        return await cls.get_value("eververse_image_url")
+
+    @classmethod
+    async def set_eververse_image_url(cls, url: str | None) -> None:
+        return await cls.set_value("eververse_image_url", url)
 
     @classmethod
     async def get_lost_sector_enabled(cls) -> bool | None:

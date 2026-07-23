@@ -54,18 +54,21 @@ _TOGGLES_PLACEHOLDER = "<!--__TOGGLES__-->"
 
 
 class _Setting(t.NamedTuple):
-    """One global autopost toggle.
+    """One global autopost setting.
 
     ``slug`` is the ``AutoPostSettings.name`` primary key; ``label`` is display copy;
-    ``desc`` is a one-line explanation shown under the label; ``sub`` marks a toggle
+    ``desc`` is a one-line explanation shown under the label; ``sub`` marks a setting
     that refines its predecessor (rendered indented) — e.g. ``lost_sector_details``
-    under ``lost_sector``.
+    under ``lost_sector``. ``kind`` is ``"toggle"`` (a boolean switch backed by the
+    ``enabled`` column) or ``"url"`` (a text input backed by the ``value`` column, e.g.
+    ``eververse_image_url``).
     """
 
     slug: str
     label: str
     desc: str
     sub: bool
+    kind: str = "toggle"
 
 
 # Ordered for display: each sub-toggle immediately follows its parent. Every slug here
@@ -97,6 +100,13 @@ _SETTINGS: tuple[_Setting, ...] = (
         "This week's Eververse featured items and Bright Dust.",
         False,
     ),
+    _Setting(
+        "eververse_image_url",
+        "Default image URL",
+        "Banner shown at the bottom of each Eververse post. Leave blank for none.",
+        True,
+        "url",
+    ),
     _Setting("ada", "Ada-1", "Ada-1's weekly rotating shaders.", False),
     _Setting(
         "portal_ops",
@@ -119,25 +129,41 @@ _SETTINGS: tuple[_Setting, ...] = (
 )
 
 # The slugs this page is allowed to write — a save request's keys are filtered against
-# this so an unknown/forged key can never create a stray AutoPostSettings row.
-_KNOWN_SLUGS = frozenset(setting.slug for setting in _SETTINGS)
+# this so an unknown/forged key can never create a stray AutoPostSettings row. Split by
+# kind so a save routes each to the right column (``enabled`` vs ``value``).
+_TOGGLE_SLUGS = frozenset(s.slug for s in _SETTINGS if s.kind == "toggle")
+_URL_SLUGS = frozenset(s.slug for s in _SETTINGS if s.kind == "url")
 
 
-def _render_row(setting: _Setting, enabled: bool) -> str:
-    """Render one row: label + description on the left, a toggle switch on the right.
+def _render_row(setting: _Setting, state: bool | str | None) -> str:
+    """Render one settings row: label + description, then its control.
 
-    The switch is a checkbox styled by CSS (see autopost_settings.html), so it keeps the
-    ``data-slug`` checkbox the save handler / client script already key off — the visual
-    change is purely presentational.
+    A ``toggle`` setting renders a checkbox styled by CSS (see autopost_settings.html)
+    as an iOS-style switch, keyed by ``data-slug``. A ``url`` setting renders a
+    full-width text input (below its label) keyed by the same ``data-slug`` — both are
+    what the client save script and ``_handle_save`` read back.
     """
-    checked = " checked" if enabled else ""
-    row_class = "row sub" if setting.sub else "row"
-    return (
-        f'<div class="{row_class}">'
+    base_class = "row sub" if setting.sub else "row"
+    label_block = (
         '<div class="text">'
         f'<div class="name">{html.escape(setting.label)}</div>'
         f'<div class="desc">{html.escape(setting.desc)}</div>'
         "</div>"
+    )
+    if setting.kind == "url":
+        value = html.escape(state or "") if isinstance(state, str) else ""
+        return (
+            f'<div class="{base_class} urlrow">'
+            f"{label_block}"
+            '<input type="url" class="urlfield" '
+            f'data-slug="{html.escape(setting.slug)}"'
+            f' value="{value}" placeholder="https://example.com/banner.png" />'
+            "</div>"
+        )
+    checked = " checked" if state else ""
+    return (
+        f'<div class="{base_class}">'
+        f"{label_block}"
         '<label class="switch">'
         f'<input type="checkbox" data-slug="{html.escape(setting.slug)}"{checked} />'
         '<span class="slider"></span>'
@@ -157,12 +183,17 @@ async def _render_html() -> str:
     current: list[str] = []
     async with schemas.db_session() as session:
         for setting in _SETTINGS:
-            enabled = bool(
-                await schemas.AutoPostSettings.get_enabled(
+            if setting.kind == "url":
+                state: bool | str | None = await schemas.AutoPostSettings.get_value(
                     setting.slug, session=session
                 )
-            )
-            row = _render_row(setting, enabled)
+            else:
+                state = bool(
+                    await schemas.AutoPostSettings.get_enabled(
+                        setting.slug, session=session
+                    )
+                )
+            row = _render_row(setting, state)
             if setting.sub:
                 current.append(row)
             else:
@@ -194,14 +225,35 @@ async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
             {"error": "Expected a 'settings' object."}, status=400
         )
 
+    # Validate URL fields up front so a bad value fails the whole save (before opening
+    # a transaction) rather than persisting a URL Discord can't fetch. A blank field
+    # clears the setting (stored as NULL → "no image").
+    url_values: dict[str, str | None] = {}
+    for slug in _URL_SLUGS:
+        if slug not in settings:
+            continue
+        raw = settings[slug]
+        if not isinstance(raw, str):
+            return aiohttp.web.json_response(
+                {"error": f"'{slug}' must be a string."}, status=400
+            )
+        trimmed = raw.strip()
+        if trimmed and not trimmed.startswith(("http://", "https://")):
+            return aiohttp.web.json_response(
+                {"error": f"'{slug}' must be an http(s) URL."}, status=400
+            )
+        url_values[slug] = trimmed or None
+
     # Only known slugs are honoured; unknown keys are ignored (never trust the client's
     # key set to spawn rows). One transaction so a batch save is all-or-nothing.
     async with schemas.db_session() as session, session.begin():
         for slug, value in settings.items():
-            if slug in _KNOWN_SLUGS:
+            if slug in _TOGGLE_SLUGS:
                 await schemas.AutoPostSettings.set_enabled(
                     slug, bool(value), session=session
                 )
+        for slug, url in url_values.items():
+            await schemas.AutoPostSettings.set_value(slug, url, session=session)
 
     return aiohttp.web.json_response({"ok": True})
 

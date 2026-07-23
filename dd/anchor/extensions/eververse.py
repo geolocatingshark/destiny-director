@@ -373,6 +373,11 @@ async def format_eververse_vendor(
         )
 
     container.add_separator(divider=True)
+    # Optional default banner, edited from the autopost settings webpage. A blank/unset
+    # URL means "no image"; a non-empty one is appended just above the footer buttons.
+    default_image_url = await schemas.AutoPostSettings.get_eververse_image_url()
+    if default_image_url:
+        container.add_component(components.url_media_gallery(default_image_url))
     container.add_component(components.footer_buttons_row(guides=EVERVERSE_GUIDES))
 
     # Resolve :emoji: then cap CV2 text (naive front-to-back truncate + CRITICAL alert

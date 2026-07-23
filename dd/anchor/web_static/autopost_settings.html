@@ -40,6 +40,17 @@
       .row .text { min-width: 0; }
       .row .name { font-size: .95rem; }
       .row .desc { color: var(--text-faint); font-size: .8rem; margin-top: .15rem; }
+      /* A URL setting stacks its full-width text input below the label instead of
+         placing a switch on the right. */
+      .row.urlrow { flex-direction: column; align-items: stretch; gap: .5rem; }
+      .urlfield {
+        width: 100%; box-sizing: border-box; padding: .45rem .6rem;
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-1); color: var(--text-1); font-size: .9rem;
+      }
+      .urlfield:focus-visible {
+        outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
+      }
 
       /* Toggle switch — a checkbox restyled as an iOS-style slider. The <input> stays a
          checkbox (visually hidden) so nothing about the save/read path changes. */
@@ -104,6 +115,11 @@
             .querySelectorAll("input[type=checkbox][data-slug]")
             .forEach((el) => {
               settings[el.dataset.slug] = el.checked;
+            });
+          document
+            .querySelectorAll("input.urlfield[data-slug]")
+            .forEach((el) => {
+              settings[el.dataset.slug] = el.value;
             });
           btn.disabled = true;
           status.textContent = "Saving…";
