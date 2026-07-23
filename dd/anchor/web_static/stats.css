@@ -77,7 +77,7 @@ table.data tbody tr:hover { background: var(--surface-3); }
 
 /* Per-command small-multiples: sparkline cells + selectable rows + trend arrows. */
 .muted.small { font-size: .78rem; margin: .1rem 0 .5rem; }
-#commandsCaption { margin: 0 0 .2rem; }
+#commandsCaption, #autopostsCaption { margin: 0 0 .2rem; }
 .spark-col { width: 160px; }
 .trend-col { width: 3rem; }
 .spark-cell { padding: .15rem .5rem; }
