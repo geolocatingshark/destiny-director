@@ -66,11 +66,22 @@
 
       <section id="section-autoposts" class="card hidden">
         <h2>Autopost reach</h2>
+        <p class="muted" id="autopostsCaption">All feeds</p>
         <div class="chart" id="autopostsChart"></div>
-        <h3>Current totals</h3>
-        <table class="data" id="currentTable">
+        <h3>Per-feed reach</h3>
+        <p class="muted small">
+          Each feed's total reach (followers + mirrors) over time. Click a row to focus
+          that feed in the chart above. The resolution toggle applies to every sparkline.
+        </p>
+        <table class="data selectable" id="currentTable">
           <thead>
-            <tr><th>Feed</th><th class="num">Followers</th><th class="num">Mirrors</th></tr>
+            <tr>
+              <th>Feed</th>
+              <th class="num">Followers</th>
+              <th class="num">Mirrors</th>
+              <th class="trend-col">Trend</th>
+              <th class="spark-col">Over time</th>
+            </tr>
           </thead>
           <tbody></tbody>
         </table>

@@ -42,7 +42,14 @@ const cssVar = (name) =>
 // Fetched payload + current time-resolution + which command the big chart is focused on
 // ("__total__" = all commands summed). Shared by the chart renderers so the resolution
 // toggle / row selection can re-render without re-fetching.
-const STATE = { data: null, resolution: "daily", selectedCommand: "__total__", cmdIndex: null };
+const STATE = {
+  data: null,
+  resolution: "daily",
+  selectedCommand: "__total__",
+  cmdIndex: null,
+  selectedFeed: "__all__", // "__all__" = every feed summed
+  autopostIndex: null,
+};
 
 // --- section renderers ------------------------------------------------------
 
@@ -134,16 +141,92 @@ function selectCommand(key) {
   renderCommandsChart();
 }
 
-function renderAutoposts(current) {
-  _fillTable(
-    "currentTable",
-    current.map((c) => [
-      c.feed,
-      { text: _fmt(c.follows), num: true },
-      { text: _fmt(c.mirrors), num: true },
-    ]),
+// Index the raw autopost snapshot rows into per-feed follow/mirror/reach daily series
+// plus an all-feeds total, computed once per load and reused by the focused chart, the
+// per-feed sparklines, and the trend arrows. Reach = followers + mirrors.
+function autopostIndex(autoposts) {
+  const byFeedDays = new Map(); // feed -> Map(iso -> {follow, mirror})
+  const totalDays = new Map(); //  iso  -> {follow, mirror} (all feeds)
+  for (const [iso, feed, kind, count] of autoposts) {
+    if (!byFeedDays.has(feed)) byFeedDays.set(feed, new Map());
+    const fm = byFeedDays.get(feed);
+    const g = fm.get(iso) || { follow: 0, mirror: 0 };
+    g[kind] = (g[kind] || 0) + count;
+    fm.set(iso, g);
+    const tg = totalDays.get(iso) || { follow: 0, mirror: 0 };
+    tg[kind] = (tg[kind] || 0) + count;
+    totalDays.set(iso, tg);
+  }
+  const toSeries = (m, pick) =>
+    [...m.entries()]
+      .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+      .map(([iso, g]) => [new Date(iso + "T00:00:00Z"), pick(g)]);
+  const build = (m) => ({
+    follow: toSeries(m, (g) => g.follow),
+    mirror: toSeries(m, (g) => g.mirror),
+    reach: toSeries(m, (g) => g.follow + g.mirror),
+  });
+  const byFeed = new Map();
+  for (const [feed, m] of byFeedDays) byFeed.set(feed, build(m));
+  return { byFeed, total: build(totalDays) };
+}
+
+// The reach series ("__all__" total, or a single feed) behind a per-feed row.
+function reachSeriesFor(key) {
+  const ix = STATE.autopostIndex;
+  return key === "__all__" ? ix.total.reach : ix.byFeed.get(key)?.reach || [];
+}
+
+function _feedRow(key, label, follows, mirrors) {
+  const tr = document.createElement("tr");
+  tr.dataset.feed = key;
+  tr.className = "row-select" + (key === STATE.selectedFeed ? " active" : "");
+
+  const name = document.createElement("td");
+  name.textContent = label;
+  const fol = document.createElement("td");
+  fol.className = "num";
+  fol.textContent = _fmt(follows);
+  const mir = document.createElement("td");
+  mir.className = "num";
+  mir.textContent = _fmt(mirrors);
+
+  const trend = document.createElement("td");
+  const t = trendArrow(reachSeriesFor(key));
+  trend.className = "trend " + t.cls;
+  trend.textContent = t.sym;
+
+  const spark = document.createElement("td");
+  spark.className = "spark-cell";
+  spark.dataset.spark = key; // filled/refreshed by renderAutopostSparklines()
+
+  tr.append(name, fol, mir, trend, spark);
+  tr.addEventListener("click", () => selectFeed(key));
+  return tr;
+}
+
+function renderAutoposts(current, autoposts) {
+  STATE.autopostIndex = autopostIndex(autoposts);
+  // Order feeds by current total reach (followers + mirrors), busiest first.
+  const feeds = [...current].sort(
+    (a, b) => b.follows + b.mirrors - (a.follows + a.mirrors),
+  );
+  const allFollows = feeds.reduce((s, c) => s + c.follows, 0);
+  const allMirrors = feeds.reduce((s, c) => s + c.mirrors, 0);
+  const tbody = _byId("currentTable").querySelector("tbody");
+  tbody.replaceChildren(
+    _feedRow("__all__", "All feeds", allFollows, allMirrors),
+    ...feeds.map((c) => _feedRow(c.feed, c.feed, c.follows, c.mirrors)),
   );
   _byId("section-autoposts").classList.remove("hidden");
+}
+
+function selectFeed(key) {
+  STATE.selectedFeed = key;
+  document.querySelectorAll("#currentTable .row-select").forEach((tr) =>
+    tr.classList.toggle("active", tr.dataset.feed === key),
+  );
+  renderAutopostsChart();
 }
 
 function renderPopulations(populations) {
@@ -228,30 +311,33 @@ function renderCommandSparklines() {
   });
 }
 
-// Split the autopost snapshot rows into per-day follow/mirror totals (summed across all
-// feeds), as two [Date, count] series sharing the same dates.
-function autopostDailyByKind(autoposts) {
-  const byDay = new Map();
-  for (const [iso, , kind, count] of autoposts) {
-    const g = byDay.get(iso) || { follow: 0, mirror: 0 };
-    g[kind] = (g[kind] || 0) + count;
-    byDay.set(iso, g);
-  }
-  const dates = [...byDay.keys()].sort();
-  const at = (k) => dates.map((iso) => [new Date(iso + "T00:00:00Z"), byDay.get(iso)[k]]);
-  return { follow: at("follow"), mirror: at("mirror") };
-}
-
+// Focused follow/mirror chart for the currently-selected feed (or all feeds summed).
 function renderAutopostsChart() {
-  const { follow, mirror } = autopostDailyByKind(STATE.data.autoposts || []);
+  const key = STATE.selectedFeed;
+  _byId("autopostsCaption").textContent = key === "__all__" ? "All feeds" : key;
+  const ix = STATE.autopostIndex;
+  const s = key === "__all__" ? ix.total : ix.byFeed.get(key) || { follow: [], mirror: [] };
   const res = STATE.resolution;
   // Reach is a STOCK (active-channel count), so aggregate by the period's last snapshot.
   DDCharts.lineChart(_byId("autopostsChart"), {
     resolution: res,
     series: [
-      { name: "Followers", color: cssVar("--accent"), points: DDCharts.bucketByResolution(follow, res, "last") },
-      { name: "Mirrors", color: cssVar("--accent-strong"), points: DDCharts.bucketByResolution(mirror, res, "last") },
+      { name: "Followers", color: cssVar("--accent"), points: DDCharts.bucketByResolution(s.follow, res, "last") },
+      { name: "Mirrors", color: cssVar("--accent-strong"), points: DDCharts.bucketByResolution(s.mirror, res, "last") },
     ],
+  });
+}
+
+// Fill/refresh every per-feed reach sparkline at the current resolution.
+function renderAutopostSparklines() {
+  const color = cssVar("--accent");
+  document.querySelectorAll("#currentTable [data-spark]").forEach((cell) => {
+    const points = DDCharts.bucketByResolution(
+      reachSeriesFor(cell.dataset.spark),
+      STATE.resolution,
+      "last", // reach is a STOCK — take the period's last snapshot
+    );
+    DDCharts.sparkline(cell, points, { color, width: 150, height: 26 });
   });
 }
 
@@ -262,6 +348,7 @@ function renderTimeCharts() {
   renderCommandsChart();
   renderCommandSparklines();
   renderAutopostsChart();
+  renderAutopostSparklines();
 }
 
 // Server population distribution: count servers per [10^k, 10^(k+1)) band (mirrors the
@@ -317,7 +404,7 @@ async function load() {
     STATE.data = data;
 
     renderCommands(data.commands || []);
-    renderAutoposts(data.current || []);
+    renderAutoposts(data.current || [], data.autoposts || []);
     renderPopulations(data.populations || []);
     renderServers(data.populations || []);
 
