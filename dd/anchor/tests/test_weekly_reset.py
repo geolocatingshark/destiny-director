@@ -689,14 +689,6 @@ async def test_create_publish_returns_problems_for_invalid_draft(monkeypatch) ->
     assert json.loads(resp.text or "")["problems"]
 
 
-@pytest.mark.asyncio
-async def test_auto_toggle_round_trips() -> None:
-    resp = await wr._handle_auto(_req(body={"enabled": True}))
-    assert resp.status == 200
-    assert json.loads(resp.text or "") == {"enabled": True}
-    assert await wr.schemas.AutoPostSettings.get_weekly_reset_enabled() is True
-
-
 # --- rich HTML preview (render_post_html) -----------------------------------------
 
 
@@ -893,7 +885,9 @@ def fake_publish_env(monkeypatch: pytest.MonkeyPatch):
         sent.append({"channel": channel_id, "crosspost": crosspost})
         return types.SimpleNamespace(id=555)
 
-    async def fake_crosspost(bot: t.Any, channel: t.Any, message_id: int) -> None:
+    async def fake_crosspost(
+        bot: t.Any, channel: t.Any, message_id: int, **_kwargs: t.Any
+    ) -> None:
         crossposted.append((channel, message_id))
 
     monkeypatch.setattr(wr, "format_weekly_reset", fake_format)
@@ -977,6 +971,74 @@ async def test_publish_draft_raises_and_touches_nothing_on_invalid(
         await wr.publish_draft(_bot(bot), empty, wr.DraftMeta())
     assert fake_publish_env.sent == [] and not bot.rest.edited
     assert fake_publish_env.crossposted == []
+
+
+@pytest.mark.asyncio
+async def test_publish_draft_reraises_and_stays_unpublished_on_crosspost_failure(
+    fake_publish_env, monkeypatch
+) -> None:
+    # Hardened publish: if the crosspost itself fails, publish_draft propagates the
+    # error and leaves the post UNpublished — never a false crossposted/published stamp
+    # (the old silent-skip bug marked it published even when nothing was broadcast).
+    async def boom(*a: t.Any, **k: t.Any) -> None:
+        raise wr.utils.CrosspostError("Channel is not an announcement/news channel")
+
+    monkeypatch.setattr(wr.utils, "crosspost_message_with_retries", boom)
+    bot = _FakeBot()
+    meta = wr.DraftMeta(message_id=42, status="posted", crossposted=False)
+    with pytest.raises(wr.utils.CrosspostError):
+        await wr.publish_draft(_bot(bot), _full_ctx(), meta)
+    # The in-channel edit happened, but the crosspost did not — so it stays unpublished.
+    assert meta.crossposted is False and meta.status == "posted"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_handle_edit_publish_returns_502_when_crosspost_fails(
+    monkeypatch, stub_indexes
+) -> None:
+    # End-to-end via the web handler: a failed crosspost returns a 502 with a real error
+    # (not an indefinitely-hanging request), and the persisted post is NOT marked
+    # published — so a retry from the form is safe.
+    monkeypatch.setattr(wr, "_bot", _FakeBot())
+    monkeypatch.setattr(wr, "current_reset_ts", lambda *a, **k: 1783443600)
+    await wr.save_meta(
+        wr.DraftMeta(message_id=42, reset_ts=1783443600, status="posted")
+    )
+
+    async def boom(spec: t.Any, bot: t.Any, ctx: t.Any, meta: t.Any) -> None:
+        raise wr.utils.CrosspostError("Channel is not an announcement/news channel")
+
+    monkeypatch.setattr(wr.hybrid_post_core, "publish_draft", boom)
+    resp = await wr._handle_edit(_req(body={"reset_ts": 1783443600, "publish": True}))
+    assert resp.status == 502
+    problems = json.loads(resp.text or "")["problems"]
+    assert problems and "publish" in problems[0].lower()
+    saved = await wr.load_meta()
+    assert saved.crossposted is False and saved.status == "posted"
+
+
+# --- autopost toggle + reset-day cron removed --------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_bootstrap_has_no_autopost_toggle(stub_indexes) -> None:
+    boot = await wr._build_bootstrap(_full_ctx(), wr.DraftMeta())
+    assert "autopost_enabled" not in boot
+
+
+def test_no_autopost_route_handler_or_cron() -> None:
+    app = aiohttp.web.Application()
+    wr.register_weekly_reset_routes(app)
+    paths = {r.resource.canonical for r in app.router.routes() if r.resource}
+    assert "/weekly_reset/create" in paths  # the real buttons still route
+    assert "/weekly_reset/auto" not in paths  # the toggle route is gone
+    # The toggle handler, the reset-day cron, and its spec hooks are all removed.
+    assert not hasattr(wr, "_handle_auto")
+    assert not hasattr(wr, "run_reset_draft")
+    assert not hasattr(wr._SPEC, "get_autopost")
+    assert not hasattr(wr._SPEC, "set_autopost")
 
 
 @pytest.mark.asyncio

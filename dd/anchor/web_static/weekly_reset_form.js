@@ -1,14 +1,14 @@
 // Weekly Reset Overview form script. A self-contained form for editing the weekly_reset
 // draft, served statically from /static/weekly_reset_form.js (no build step). The page
 // (weekly_reset_form.html) is served by dd.anchor.extensions.weekly_reset, which
-// substitutes {draft, options, autopost_enabled, conquest_tiers, reward_fields,
+// substitutes {draft, options, conquest_tiers, reward_fields,
 // post_this_period, crossposted} into a small inline <script> as window.__BOOTSTRAP__
 // before this script runs. This script reads that global, edits the draft client-side and
-// POSTs it (via the shared api() helper) to /weekly_reset/{preview,create,edit,delete,auto}
+// POSTs it (via the shared api() helper) to /weekly_reset/{preview,create,edit,delete}
 // — auth is the weekly_reset_session cookie (sent automatically on the same-origin fetch),
 // so no token is embedded here. The server
 // re-resolves weapons, re-applies the business rules and re-validates, so this form is a
-// convenience, not a trust boundary. The live preview and the create/edit/delete/autopost
+// convenience, not a trust boundary. The live preview and the create/edit/delete
 // buttons live in shared.js (initPostPreview / initPostForm); this script supplies only the
 // widgets, readForm(), and the delete-confirm / status strings.
 //
@@ -234,7 +234,7 @@ function readForm() {
   };
 }
 
-// --- shared lifecycle: preview + create/edit/delete/autopost -----------
+// --- shared lifecycle: preview + create/edit/delete -----------
 // Hand the previewer and the form buttons to shared.js (initPostForm), supplying only the
 // route prefix, readForm(), the previewer, onEdit (syncTrials + preview), and the
 // delete-confirm / status strings.

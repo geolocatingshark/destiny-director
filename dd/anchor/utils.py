@@ -31,6 +31,7 @@ from dd.hmessage import HMessage
 
 from ..common import cfg
 from ..common.bot import CachedFetchBot
+from ..common.utils import ErrorClass, classify_error
 
 
 class FeatureDisabledError(Exception):
@@ -112,11 +113,34 @@ async def find_duplicate_uncrossposted_message(
             return None
 
 
+class CrosspostError(Exception):
+    """A message could not be crossposted (non-news channel, or retries exhausted).
+
+    Raised ONLY in the strict mode (``max_attempts`` set) used by the web publish path,
+    so a failed publish surfaces an error to the form instead of hanging — and the
+    caller never marks a post "published" when no crosspost actually happened. The
+    fire-and-forget autopost callers keep the retry-forever behaviour (``max_attempts is
+    None``) and this is never raised for them.
+    """
+
+
 async def crosspost_message_with_retries(
     bot: CachedFetchBot,
     channel: h.TextableChannel | int,
     message_id: int,
+    *,
+    max_attempts: int | None = None,
 ):
+    """Crosspost ``message_id`` in ``channel``, retrying transient failures.
+
+    ``max_attempts is None`` (default) is the legacy fire-and-forget mode used by the
+    automatic producers: retry FOREVER with growing backoff, and silently skip a
+    non-news channel. Passing an explicit ``max_attempts`` opts into STRICT mode (the
+    web publish path): a non-news channel, a permanent error, or ``max_attempts``
+    transient failures raise :class:`CrosspostError`/the underlying error instead of
+    looping — so the form gets a real error rather than an indefinitely-hanging request.
+    """
+    strict = max_attempts is not None
     if isinstance(channel, int):
         resolved = bot.cache.get_guild_channel(channel) or await bot.rest.fetch_channel(
             channel
@@ -124,11 +148,20 @@ async def crosspost_message_with_retries(
     else:
         resolved = channel
     if not isinstance(resolved, h.GuildNewsChannel):
+        if strict:
+            raise CrosspostError(
+                f"Channel {getattr(resolved, 'id', channel)} is not an "
+                "announcement/news channel, so its posts can't be crossposted to "
+                "followers. Convert it to an Announcement channel in Discord first."
+            )
         logging.warning(
             "Attempted to crosspost a message in a non-news channel. Skipping..."
         )
         return
-    crosspost_backoff = 30
+    # Strict (web) mode uses a short backoff so a transient blip doesn't hang the
+    # request for minutes; fire-and-forget mode keeps the slower cadence it always had.
+    crosspost_backoff = 2 if strict else 30
+    attempts = 0
     while True:
         try:
             await bot.rest.crosspost_message(resolved.id, message_id)
@@ -143,6 +176,14 @@ async def crosspost_message_with_retries(
 
             e.add_note("Failed to publish message with exception\n")
             logging.exception(e)
+            attempts += 1
+            # Strict mode gives up (re-raises) on a permanent error or once the attempt
+            # budget is spent, so the publish route can report it. Legacy mode never
+            # gives up.
+            if strict and (
+                classify_error(e) is ErrorClass.PERMANENT or attempts >= max_attempts
+            ):
+                raise
             await aio.sleep(crosspost_backoff)
             crosspost_backoff = crosspost_backoff * 2
         else:

@@ -7,11 +7,11 @@
 //   initPostPreview(opts)  — the standalone live previewer (#previewBox) — reusable on its
 //                            own by any page that has a post to preview.
 //   initPostForm(opts)     — the full hybrid-post form lifecycle (status/problems, the
-//                            create/edit(±publish)/delete/autopost buttons and their
-//                            visibility), which drives a previewer internally.
+//                            create/edit(±publish)/delete buttons and their visibility),
+//                            which drives a previewer internally.
 // The two hybrid-post forms (trials, weekly_reset) share the SAME element ids and the same
-// server contract (POST /{prefix}/{preview,create,edit,delete,auto}), differing only by
-// their route prefix, a couple of delete-confirm strings, and their per-form widgets +
+// server contract (POST /{prefix}/{preview,create,edit,delete}), differing only by their
+// route prefix, a couple of delete-confirm strings, and their per-form widgets +
 // readForm() payload shape — so everything except those stays here.
 
 // Same-origin JSON POST. Auth is the session cookie, which a same-origin fetch sends
@@ -84,8 +84,8 @@ window.initPostPreview = initPostPreview;
 // Hybrid-post form lifecycle
 // ---------------------------------------------------------------------------
 // Wires the status line, problem list, the create/edit(±publish)/delete buttons and their
-// visibility, the autopost toggle, and the live preview against the shared element ids and
-// the /<routePrefix>/{preview,create,edit,delete,auto} server contract. The caller supplies
+// visibility, and the live preview against the shared element ids and the
+// /<routePrefix>/{preview,create,edit,delete} server contract. The caller supplies
 // only what genuinely differs between producers: the route prefix, a readForm() returning
 // the post payload, the two delete-confirm / post-delete strings (labels), the bootstrap
 // object, the previewer handle, and an onEdit run on every form edit.
@@ -210,20 +210,6 @@ function initPostForm({
       setStatus(labels.deleted, true);
     } catch (e) {
       setStatus("Delete error: " + e, false);
-    }
-  });
-
-  // --- autopost toggle --------------------------------------------------
-  const autopost = _byId("autopost");
-  autopost.checked = !!boot.autopost_enabled;
-  autopost.addEventListener("change", async () => {
-    try {
-      const res = await api(`/${routePrefix}/auto`, { enabled: autopost.checked });
-      const data = await res.json();
-      autopost.checked = !!data.enabled;
-      setStatus("Autopost " + (data.enabled ? "enabled" : "disabled") + ".", true);
-    } catch (e) {
-      setStatus("Autopost toggle error: " + e, false);
     }
   });
 

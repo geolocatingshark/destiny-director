@@ -34,10 +34,11 @@ Iron Banner/Trials schedule, Pantheon pair) carries over week-to-week in the
 ``weekly_reset_config`` :class:`~dd.common.schemas.RotationData` row.
 
 This module is the UI-agnostic core: the context model, the persisted config, the
-Bungie derivations, the Components V2 renderer, the manifest-backed option pools, the
-publish path (:func:`publish_draft`) and the reset-day autopost cron. The Discord input
-UI (a `/weekly_reset` command group + interactive editor) has been removed in favour of
-the web form.
+Bungie derivations, the Components V2 renderer, the manifest-backed option pools and the
+publish path (:func:`publish_draft`). The post is created and published entirely from
+the web form's Create/Publish buttons — there is no reset-day autopost cron. The Discord
+input UI (a `/weekly_reset` command group + interactive editor) has been removed in
+favour of the web form.
 """
 
 import asyncio
@@ -49,7 +50,6 @@ import re
 import typing as t
 from pathlib import Path
 
-import aiocron
 import aiohttp.web
 import aiosqlite
 import hikari as h
@@ -804,34 +804,6 @@ _draft_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
-# Reset-day cron
-# ---------------------------------------------------------------------------
-
-
-async def run_reset_draft(bot: CachedFetchBot, *, ping_owners: bool) -> None:
-    """Build a fresh draft and post it as the new week's *uncrossposted* channel post.
-
-    A fresh ``DraftMeta`` (``message_id == 0``) means the post is created anew each
-    Tuesday, clearing last week's message id; publishing (the crosspost) stays manual.
-    """
-    config = await load_config()
-    ctx = await build_draft_context(config)
-
-    async with _draft_lock:
-        meta = DraftMeta(
-            status="draft",
-            last_edited_ts=int(dt.datetime.now(tz=dt.UTC).timestamp()),
-        )
-        await save_draft(ctx)
-        meta = await post_or_edit_unpublished(bot, ctx, meta)
-        await save_meta(meta)
-
-    if ping_owners:
-        logger.info("weekly_reset: fresh draft posted (uncrossposted) for the new week")
-        # TODO(step5): notify owners with the web draft link
-
-
-# ---------------------------------------------------------------------------
 # Manifest-backed option pools + apply mutators
 # ---------------------------------------------------------------------------
 
@@ -1349,9 +1321,6 @@ async def _build_bootstrap(
     return {
         "draft": draft.to_dict(),
         "options": await _build_options(),
-        "autopost_enabled": bool(
-            await schemas.AutoPostSettings.get_weekly_reset_enabled()
-        ),
         "conquest_tiers": list(CONQUEST_TIERS),
         "reward_fields": [list(field) for field in _REWARD_FIELDS],
         # The saved default image (if any), so the form can pre-check "use as default"
@@ -1405,10 +1374,6 @@ async def _handle_delete(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return await hybrid_post_core.delete(_SPEC, request, _bot)
 
 
-async def _handle_auto(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    return await hybrid_post_core.auto(_SPEC, request, _bot)
-
-
 #: Wires this producer to the shared hybrid_post_core (built after every hook exists).
 _SPEC = HybridPostSpec(
     followable_key="weekly_reset",
@@ -1425,8 +1390,6 @@ _SPEC = HybridPostSpec(
     save_meta=save_meta,
     build_bootstrap=_build_bootstrap,
     persist_default_image=_persist_default_image,
-    get_autopost=schemas.AutoPostSettings.get_weekly_reset_enabled,
-    set_autopost=schemas.AutoPostSettings.set_weekly_reset,
     form_html_path=_FORM_HTML_PATH,
     draft_lock=_draft_lock,
 )
@@ -1439,7 +1402,6 @@ def register_weekly_reset_routes(app: aiohttp.web.Application) -> None:
     app.router.add_post("/weekly_reset/edit", _handle_edit)
     app.router.add_post("/weekly_reset/preview", _handle_preview)
     app.router.add_post("/weekly_reset/delete", _handle_delete)
-    app.router.add_post("/weekly_reset/auto", _handle_auto)
 
 
 web.register_routes(register_weekly_reset_routes)
@@ -1485,8 +1447,8 @@ class Create(
         # gated by Discord OAuth (web_auth.py) — you sign in with Discord on first open.
         container = cv2_notice(
             "Open the weekly-reset form with the button below — you'll sign in with "
-            "Discord the first time. Edit, preview, save, publish and toggle the "
-            "autopost all from that page."
+            "Discord the first time. Edit, preview, save and publish all from that "
+            "page."
         )
         row = h.impl.MessageActionRowBuilder()
         row.add_component(
@@ -1497,7 +1459,7 @@ class Create(
 
 
 @loader.listener(h.StartedEvent)
-async def _schedule_weekly_reset(
+async def _on_started(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
 ) -> None:
     if not cfg.followables.get("weekly_reset"):
@@ -1510,18 +1472,10 @@ async def _schedule_weekly_reset(
     # Prewarm the manifest-backed option-pool indexes so the first form load is fast.
     asyncio.create_task(get_indexes())
 
-    # Tuesday 17:00 UTC weekly reset. Enable/disable lives on the web form's autopost
-    # toggle (POST /weekly_reset/auto -> AutoPostSettings.set_weekly_reset).
-    @aiocron.crontab("0 17 * * TUE", start=True)
-    # Testing: post every minute -> @aiocron.crontab("* * * * *", start=True)
-    async def autopost_weekly_reset() -> None:
-        if not await schemas.AutoPostSettings.get_weekly_reset_enabled():
-            return
-        await run_reset_draft(bot, ping_owners=True)
-
 
 # The web form's routes are always registered (above); the slash command that mints the
 # link is gated on the publish target (the weekly_reset followable) — the same gate that
-# guards the autopost cron and the StartedEvent listener.
+# guards the StartedEvent listener. There is no reset-day cron: the post is created and
+# published entirely from the web form's Create/Publish buttons.
 if cfg.followables.get("weekly_reset"):
     loader.command(weekly_reset_group)

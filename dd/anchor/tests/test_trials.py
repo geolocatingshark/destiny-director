@@ -363,7 +363,9 @@ def fake_publish_env(monkeypatch: pytest.MonkeyPatch):
         sent.append({"channel": channel_id, "crosspost": crosspost})
         return types.SimpleNamespace(id=555)
 
-    async def fake_crosspost(bot: t.Any, channel: t.Any, message_id: int) -> None:
+    async def fake_crosspost(
+        bot: t.Any, channel: t.Any, message_id: int, **_kwargs: t.Any
+    ) -> None:
         crossposted.append((channel, message_id))
 
     monkeypatch.setattr(tr, "format_trials", fake_format)
@@ -602,13 +604,23 @@ async def test_handle_delete_removes_and_clears_reset_ts(monkeypatch) -> None:
     assert meta.crossposted is False and meta.status == "draft"
 
 
-@pytest.mark.asyncio
-async def test_handle_auto_round_trips(monkeypatch) -> None:
-    resp = await tr._handle_auto(_req(body={"enabled": True}))
-    assert json.loads(resp.text or "") == {"enabled": True}
-    assert await tr.schemas.AutoPostSettings.get_trials_enabled() is True
-    resp = await tr._handle_auto(_req(body={"enabled": False}))
-    assert json.loads(resp.text or "") == {"enabled": False}
+# ---------------------------------------------------------------------------
+# autopost toggle + reset-weekend cron removed
+# ---------------------------------------------------------------------------
+
+
+def test_no_autopost_route_handler_or_cron() -> None:
+    # Trials is driven entirely by the web form's Create/Publish buttons: the toggle
+    # route/handler, the reset-weekend cron, and the spec's autopost hooks are all gone.
+    app = aiohttp.web.Application()
+    tr.register_trials_routes(app)
+    paths = {r.resource.canonical for r in app.router.routes() if r.resource}
+    assert "/trials/create" in paths  # the real buttons still route
+    assert "/trials/auto" not in paths  # the toggle route is gone
+    assert not hasattr(tr, "_handle_auto")
+    assert not hasattr(tr, "run_trials_draft")
+    assert not hasattr(tr._SPEC, "get_autopost")
+    assert not hasattr(tr._SPEC, "set_autopost")
 
 
 # ---------------------------------------------------------------------------

@@ -2369,21 +2369,9 @@ class AutoPostSettings(Base):
     async def set_portal_ops(cls, enabled: bool) -> None:
         return await cls.set_enabled("portal_ops", enabled)
 
-    @classmethod
-    async def get_weekly_reset_enabled(cls) -> bool | None:
-        return await cls.get_enabled("weekly_reset")
-
-    @classmethod
-    async def set_weekly_reset(cls, enabled: bool) -> None:
-        return await cls.set_enabled("weekly_reset", enabled)
-
-    @classmethod
-    async def get_trials_enabled(cls) -> bool | None:
-        return await cls.get_enabled("trials")
-
-    @classmethod
-    async def set_trials(cls, enabled: bool) -> None:
-        return await cls.set_enabled("trials", enabled)
+    # NB: weekly_reset and trials intentionally have NO enabled/disabled accessors.
+    # Those two are hybrid-post producers driven entirely by the web form's
+    # Create/Publish buttons — no reset-day autopost cron to gate, so no toggle row.
 
     @classmethod
     async def get_iron_banner_enabled(cls) -> bool | None:

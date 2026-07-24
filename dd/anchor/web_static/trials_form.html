@@ -3,9 +3,9 @@
   Trials of Osiris form — a self-contained form for editing the trials draft. Reached
   from the control-panel card or the link minted by `/trials create`; served by
   dd.anchor.extensions.trials, whose GET handler substitutes the __BOOTSTRAP__
-  placeholder with {draft, options, autopost_enabled, default_image_url, accent_color,
+  placeholder with {draft, options, default_image_url, accent_color,
   post_this_period, crossposted}. The page edits the draft client-side and POSTs it to
-  /trials/{preview,create,edit,delete,auto}. Auth is the central Discord-OAuth session
+  /trials/{preview,create,edit,delete}. Auth is the central Discord-OAuth session
   cookie (web_auth.py), sent automatically on the same-origin fetch, so no token is
   embedded here. The server re-resolves the focus-pool weapons and re-validates on save,
   so this form is a convenience, not a trust boundary.
@@ -77,11 +77,6 @@
             <input type="url" id="imageUrl" placeholder="https://…" />
           </div>
           <label class="inline"><input type="checkbox" id="imageDefault" /> Use this as the default image for future weekends</label>
-        </fieldset>
-
-        <fieldset>
-          <legend>Autopost</legend>
-          <label class="inline"><input type="checkbox" id="autopost" /> Auto-build a fresh draft every Friday reset</label>
         </fieldset>
       </form>
 

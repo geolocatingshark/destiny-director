@@ -36,13 +36,11 @@ deep links + weapon-type emoji) via the shared weapon pool + resolver.
 
 import asyncio
 import dataclasses
-import datetime as dt
 import logging
 import re
 import typing as t
 from pathlib import Path
 
-import aiocron
 import aiohttp.web
 import hikari as h
 import lightbulb as lb
@@ -329,7 +327,7 @@ async def build_draft_context(config: TrialsConfig | None = None) -> TrialsConte
 #: generic ``:weapon:`` otherwise (the guild has no ``bow`` emoji, for instance) —
 #: mirroring xûr's ``emoji_include_list`` gate so a missing type never leaks a literal
 #: ``:bow:`` into the post. Populated once at startup from the guild emoji dict (see
-#: :func:`_schedule_trials`); defaults to just ``{"weapon"}`` so a not-yet-warmed
+#: :func:`_on_started`); defaults to just ``{"weapon"}`` so a not-yet-warmed
 #: process shows the generic icon.
 _weapon_emoji_names: frozenset[str] = frozenset({"weapon"})
 
@@ -580,7 +578,6 @@ async def _build_bootstrap(draft: TrialsContext, meta: DraftMeta) -> dict[str, t
         "current_loot_set": current_loot_set,
         # emoji name -> guild emoji URL, for the weapon-type icons on the cards.
         "emoji_urls": await _card_emoji_urls(loot_sets, draft),
-        "autopost_enabled": bool(await schemas.AutoPostSettings.get_trials_enabled()),
         "default_image_url": config.default_image_url or "",
         "accent_color": str(cfg.embed_default_color),
         # Whether a post already exists *for the current period* (Trials may skip a
@@ -669,10 +666,6 @@ async def _handle_delete(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return await hybrid_post_core.delete(_SPEC, request, _bot)
 
 
-async def _handle_auto(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    return await hybrid_post_core.auto(_SPEC, request, _bot)
-
-
 #: Wires this producer to the shared hybrid_post_core (built after every hook exists).
 _SPEC = HybridPostSpec(
     followable_key="trials",
@@ -689,8 +682,6 @@ _SPEC = HybridPostSpec(
     save_meta=save_meta,
     build_bootstrap=_build_bootstrap,
     persist_default_image=_persist_carryover,
-    get_autopost=schemas.AutoPostSettings.get_trials_enabled,
-    set_autopost=schemas.AutoPostSettings.set_trials,
     form_html_path=_FORM_HTML_PATH,
     draft_lock=_draft_lock,
     on_published=_advance_loot_cursor,
@@ -705,7 +696,6 @@ def register_trials_routes(app: aiohttp.web.Application) -> None:
     app.router.add_post("/trials/edit", _handle_edit)
     app.router.add_post("/trials/preview", _handle_preview)
     app.router.add_post("/trials/delete", _handle_delete)
-    app.router.add_post("/trials/auto", _handle_auto)
 
 
 web.register_routes(register_trials_routes)
@@ -716,40 +706,6 @@ web.register_card(
         "/trials",
     )
 )
-
-
-# ---------------------------------------------------------------------------
-# Reset-weekend cron
-# ---------------------------------------------------------------------------
-
-
-async def run_trials_draft(bot: CachedFetchBot) -> None:
-    """Build a fresh draft and post it as the weekend's *uncrossposted* channel post.
-
-    A fresh ``DraftMeta`` (``message_id == 0``) means the post is created anew each
-    Friday; publishing (the crosspost) stays manual. Trials may be skipped some
-    weekends, so this only posts an *uncrossposted* draft the team can delete; and it
-    no-ops if a post already exists this period (a manual Create beat the cron),
-    rather than clobbering it with a duplicate.
-    """
-    async with _draft_lock:
-        if (await load_meta()).is_current(current_reset_ts()):
-            logger.info("trials: a post already exists this period; cron skips")
-            return
-        config = await load_config()
-        ctx = await build_draft_context(config)
-        meta = DraftMeta(
-            status="draft",
-            last_edited_ts=int(dt.datetime.now(tz=dt.UTC).timestamp()),
-        )
-        await save_draft(ctx)
-        meta = await hybrid_post_core.post_or_edit_unpublished(_SPEC, bot, ctx, meta)
-        await save_meta(meta)
-        # NB: the cron posts UNCROSSPOSTED and does NOT advance the loot-set cursor —
-        # the rotation only advances on an actual publish (_advance_loot_cursor), so a
-        # weekend seeded then deleted (e.g. Iron Banner) doesn't consume a set.
-
-    logger.info("trials: fresh draft posted (uncrossposted) for the new weekend")
 
 
 # ---------------------------------------------------------------------------
@@ -783,8 +739,7 @@ class Create(
         url = f"{cfg.public_base_url}/trials"
         container = cv2_notice(
             "Open the Trials form with the button below — you'll sign in with Discord "
-            "the first time. Edit, preview, save, publish and toggle the autopost all "
-            "from that page."
+            "the first time. Edit, preview, save and publish all from that page."
         )
         row = h.impl.MessageActionRowBuilder()
         row.add_component(h.impl.LinkButtonBuilder(url=url, label="Open Trials form"))
@@ -793,7 +748,7 @@ class Create(
 
 
 @loader.listener(h.StartedEvent)
-async def _schedule_trials(
+async def _on_started(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
 ) -> None:
     if not cfg.followables.get("trials"):
@@ -809,18 +764,10 @@ async def _schedule_trials(
     # weapon with its type icon (and fall back to :weapon: for a missing type).
     asyncio.create_task(_prewarm_weapon_emoji(bot))
 
-    # Friday 17:00 UTC — Trials returns at the Friday reset. Enable/disable lives on the
-    # web form's autopost toggle (POST /trials/auto -> AutoPostSettings.set_trials).
-    @aiocron.crontab("0 17 * * FRI", start=True)
-    # Testing: post every minute -> @aiocron.crontab("* * * * *", start=True)
-    async def autopost_trials() -> None:
-        if not await schemas.AutoPostSettings.get_trials_enabled():
-            return
-        await run_trials_draft(bot)
-
 
 # The web form's routes are always registered (above); the slash command that links to
 # the form is gated on the publish target (the trials followable) — the same gate that
-# guards the autopost cron and the StartedEvent listener.
+# guards the StartedEvent listener. There is no reset-weekend cron: the post is created
+# and published entirely from the web form's Create/Publish buttons.
 if cfg.followables.get("trials"):
     loader.command(trials_group)

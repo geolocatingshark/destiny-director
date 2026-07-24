@@ -1,11 +1,11 @@
 // Trials of Osiris form script. A self-contained form for editing the trials draft,
 // served statically from /static/trials_form.js (no build step). The page
 // (trials_form.html) is served by dd.anchor.extensions.trials, which substitutes
-// {draft, loot_sets, current_loot_set, emoji_urls, autopost_enabled, default_image_url,
+// {draft, loot_sets, current_loot_set, emoji_urls, default_image_url,
 // accent_color, post_this_period, crossposted} into a small inline <script> as __BOOTSTRAP__
 // before this runs. This reads that global, builds the Trials-specific widgets and a
 // readForm() that shapes the payload, then hands the shared lifecycle (preview + the
-// create/edit/delete/autopost buttons) to shared.js's initPostPreview/initPostForm — auth
+// create/edit/delete buttons) to shared.js's initPostPreview/initPostForm — auth
 // is the central Discord-OAuth session cookie (sent automatically on the same-origin
 // fetch). The bonus focus pool is a set-card picker (one card per named rotation set); the
 // server re-resolves the picked set's weapons and re-validates, so this form is a
@@ -137,7 +137,7 @@ function readForm() {
   };
 }
 
-// --- shared lifecycle: preview + create/edit/delete/autopost -----------
+// --- shared lifecycle: preview + create/edit/delete -----------
 // The previewer and the form buttons live in shared.js (initPostPreview / initPostForm);
 // this form supplies only the route prefix, its readForm(), and the delete-confirm / status
 // strings. onEdit just re-renders the preview — Trials has no widgets whose changes skip the

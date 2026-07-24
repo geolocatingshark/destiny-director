@@ -3,9 +3,9 @@
   Weekly Reset Overview form — a self-contained form for editing the weekly_reset draft.
   Reached from the link minted by `/weekly_reset create`; served by
   dd.anchor.extensions.weekly_reset, whose GET handler substitutes the __BOOTSTRAP__
-  placeholder with {draft, options, autopost_enabled, conquest_tiers, reward_fields,
+  placeholder with {draft, options, conquest_tiers, reward_fields,
   post_this_period, crossposted}. The page edits the draft client-side and POSTs it to
-  /weekly_reset/{preview,create,edit,delete,auto} — auth is the weekly_reset_session
+  /weekly_reset/{preview,create,edit,delete} — auth is the weekly_reset_session
   cookie (sent automatically on the same-origin fetch), so no token is embedded here. The
   server re-resolves weapons, re-applies the business rules and re-validates, so this form
   is a convenience, not a trust boundary.
@@ -187,11 +187,6 @@
           </div>
           <label class="inline"><input type="checkbox" id="imageDefault" /> Use this as the default image for future weeks</label>
         </fieldset>
-
-        <fieldset>
-          <legend>Autopost</legend>
-          <label class="inline"><input type="checkbox" id="autopost" /> Auto-build a fresh draft every Tuesday reset</label>
-        </fieldset>
       </form>
 
       <aside class="preview-col">
@@ -223,7 +218,7 @@
     <!--
       The server (dd.anchor.extensions.weekly_reset) injects the bootstrap JSON by
       .replace()-ing the __BOOTSTRAP__ placeholder in the inline script below with
-      {draft, options, autopost_enabled, conquest_tiers, reward_fields}. That placeholder
+      {draft, options, conquest_tiers, reward_fields}. That placeholder
       MUST stay inline here (this page is templated per request), so it can't live in the
       statically-served weekly_reset_form.js. This tiny non-deferred script runs at parse
       time — before the deferred vendor / shared.js / weekly_reset_form.js — so the global

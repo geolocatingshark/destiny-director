@@ -591,6 +591,11 @@ def _discord_error_note(exc: Exception) -> str:
             "proxy link. Paste the original direct image URL instead (e.g. the "
             "https://pbs.twimg.com/… link, or a Discord attachment URL)."
         )
+    # A crosspost give-up (:class:`~dd.anchor.utils.CrosspostError`) is about publishing
+    # to followers, not the post's content — the in-channel post itself is fine, so
+    # don't frame it as a rejected post.
+    if isinstance(exc, utils.CrosspostError):
+        return f"Couldn't publish to followers: {msg[:200]}"
     return f"Discord rejected the post: {msg[:200]}"
 
 
@@ -644,10 +649,6 @@ class HybridPostSpec:
     #: async ``(payload, ctx) -> None`` — persist the carried-over default image if the
     #: form's "use as default" box is ticked (else a no-op).
     persist_default_image: t.Callable[..., t.Awaitable[None]]
-    #: async ``() -> bool | None`` — is the reset-day autopost enabled?
-    get_autopost: t.Callable[..., t.Awaitable[bool | None]]
-    #: async ``(bool) -> None`` — set the reset-day autopost toggle.
-    set_autopost: t.Callable[..., t.Awaitable[None]]
     #: The producer's web-form HTML template (bootstrap placeholder substituted in).
     form_html_path: Path
     #: Serialises read-modify-write of the shared draft doc (single bot process).
@@ -925,18 +926,6 @@ async def delete(
     return aiohttp.web.json_response({"ok": True})
 
 
-async def auto(
-    spec: HybridPostSpec, request: aiohttp.web.Request, bot: CachedFetchBot | None
-) -> aiohttp.web.Response:
-    try:
-        payload = await request.json()
-    except Exception:
-        return aiohttp.web.json_response({"error": "Malformed body."}, status=400)
-    await spec.set_autopost(bool(payload.get("enabled", False)))
-    state = bool(await spec.get_autopost())
-    return aiohttp.web.json_response({"enabled": state})
-
-
 async def _send_new_post(
     spec: HybridPostSpec, bot: CachedFetchBot, hmessage: HMessage, meta: DraftMeta
 ) -> None:
@@ -1005,7 +994,13 @@ async def publish_draft(
     else:
         # No post yet (e.g. publish before any save): post it first, uncrossposted.
         await _send_new_post(spec, bot, hmessage, meta)
-    await utils.crosspost_message_with_retries(bot, channel_id, meta.message_id)
+    # Strict crosspost: bounded retries that RAISE on give-up (a permanent error or the
+    # attempt budget), so a failed publish returns an error to the form instead of the
+    # request hanging forever — and we only reach the "published" stamp below on a real
+    # crosspost, never on a silent non-news skip.
+    await utils.crosspost_message_with_retries(
+        bot, channel_id, meta.message_id, max_attempts=4
+    )
     meta.crossposted = True
     meta.status = "published"
     note = (

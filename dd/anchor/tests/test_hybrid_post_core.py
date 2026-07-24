@@ -15,6 +15,7 @@
 
 """Tests for the shared post-preview core (PostSpec + render_post_spec)."""
 
+import dataclasses
 import datetime as dt
 import typing as t
 
@@ -22,6 +23,34 @@ import hikari as h
 import pytest
 
 from dd.anchor import hybrid_post_core as hpc
+
+
+def test_hybrid_post_spec_has_no_autopost_hooks() -> None:
+    # weekly_reset/trials no longer carry a reset-day autopost toggle, so the shared
+    # spec dropped its get_autopost/set_autopost hooks entirely.
+    fields = {f.name for f in dataclasses.fields(hpc.HybridPostSpec)}
+    assert "get_autopost" not in fields
+    assert "set_autopost" not in fields
+
+
+def test_core_has_no_auto_route_handler() -> None:
+    # The POST /{prefix}/auto handler that wrote the toggle is removed.
+    assert not hasattr(hpc, "auto")
+
+
+def test_autopostsettings_has_no_weekly_or_trials_toggle() -> None:
+    from dd.common import schemas
+
+    aps = schemas.AutoPostSettings
+    for name in (
+        "get_weekly_reset_enabled",
+        "set_weekly_reset",
+        "get_trials_enabled",
+        "set_trials",
+    ):
+        assert not hasattr(aps, name), name
+    # The generic accessors and other feeds' toggles are untouched.
+    assert hasattr(aps, "get_enabled") and hasattr(aps, "get_iron_banner_enabled")
 
 
 class _StubEmoji:
