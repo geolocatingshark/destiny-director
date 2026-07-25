@@ -107,6 +107,29 @@ async def test_stops_at_lifetime_cap_without_summary_when_incomplete(
     summary.assert_not_called()  # a capped-but-incomplete run is not summarised
 
 
+async def test_empty_counts_tick_is_not_treated_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A zero-row ledger read reads is_complete (no PENDING) but total == 0, so the loop
+    # must NOT finalize on it — otherwise a not-yet-populated run would summarise as
+    # done (this is the state a frozen/superseded card sits in). It keeps polling until
+    # real rows appear.
+    monkeypatch.setattr(
+        mirror.MirrorDelivery,
+        "state_counts",
+        AsyncMock(side_effect=[{}, {DeliveryState.DELIVERED.value: 2}]),
+    )
+    monkeypatch.setattr(mirror.aio, "sleep", AsyncMock())  # instant interval
+    summary = MagicMock()
+    monkeypatch.setattr(mirror, "_log_run_summary", summary)
+    log_message = _log_message()
+
+    await mirror._card_loop(log_message, _view(), lambda **_k: [], None)
+
+    assert log_message.edit.await_count == 2  # empty tick rendered, did not complete
+    summary.assert_called_once()  # completed only once real rows arrived
+
+
 async def test_releases_cancel_menu_on_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
