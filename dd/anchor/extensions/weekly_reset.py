@@ -108,18 +108,22 @@ DRAFT_SLUG = "weekly_reset_draft"
 #: RotationData slug for the carried-over curated config (rotator order, schedules…).
 CONFIG_SLUG = "weekly_reset_config"
 
-#: Column separator used in the post body, verbatim from the hand-authored posts.
-SEP = "┊"  # ┊
+#: Gap between an emoji token and its text. The hand-authored posts moved from a "┊"
+#: bar to a plain two-space gap; the surrounding " {SEP} " template yields those two
+#: spaces when this is empty.
+SEP = ""
 LEGACY_ACTIVITIES_URL = "https://kyberscorner.com/destiny2/legacy-activities/"
-SIGN_OFF = "***See you starside!*** \U0001f4ab"
+SIGN_OFF = "See you starside! \U0001f4ab"
 #: Editorial suffix on the Zavala weapon line (tier text is not API-derivable).
-ZAVALA_TIER_SUFFIX = "(T5/*rolls vary*)"
+ZAVALA_TIER_SUFFIX = "(T5 / rolls vary)"
 TRIALS_IB_REMINDER = (
     "Reminder: Trials of Osiris is unavailable while Iron Banner is active."
 )
-#: Static explainer under the VANGUARD ALERTS header (rewards are the weekly-challenge
-#: drops).
-VANGUARD_EXPLAINER = "Reward listed is for completing the weekly challenge."
+#: The Fireteam/Quickplay Bonus Focus rotates daily; this static link is shown when no
+#: specific weapon is set for the week.
+QUICKPLAY_BONUS_DEFAULT = "[Changes Daily](https://www.light.gg)"
+#: Emoji token prefixing the daily-rotating Quickplay Bonus Focus default line.
+BONUS_DROP_EMOJI = "Bonus_Drop"
 #: CONQUESTS (Seasonal Tab) difficulty tiers, in post order. The weekly tier->activity
 #: assignment is Portal presentation data the Bungie API does not expose (activities
 #: surface as untiered "…: Customize" entries), so this section is hand-curated — see
@@ -167,9 +171,6 @@ DEFAULT_DUNGEON_PAIRS: tuple[tuple[str, str], ...] = (
 DEFAULT_IB_WEEK_RESETS: tuple[int, ...] = ()
 
 DEFAULT_CRUCIBLE_1V6 = "Sparrow Racing, Rumble"
-# Current season's featured raid/dungeon (the "Weekly Reward" lines); update per season.
-DEFAULT_SEASONAL_RAID = "The Desert Perpetual"
-DEFAULT_SEASONAL_DUNGEON = "Equilibrium"
 
 # --- Bounded selector domains --------------------------------------------------------
 # Small, stable fields are picked from Choice dropdowns instead of free-typed
@@ -270,15 +271,19 @@ class WeeklyResetContext:
     """
 
     reset_ts: int
-    # VANGUARD ALERTS. The GM strike/weapon are Portal-derived; the Quickplay/Control
-    # featured weapons are set by hand — the API exposes only the daily reward or the
-    # full weekly pool, not which pool weapon is this week's featured one.
+    # GRANDMASTER + FIRETEAM & ARENA OPS (QUICKPLAY). The GM strike/challenge-reward are
+    # Portal-derived; the Bonus Focus weapons and the Quickplay/Control challenge
+    # rewards are set by hand (the API exposes only the daily reward or the full weekly
+    # pool, not this week's featured one). NOTE: for backwards compatibility
+    # the legacy attribute names are kept — ``gm_weapon``/``quickplay_weapon`` are now
+    # the GM/Quickplay *Challenge Reward* slots, and ``control_weapon`` is the Crucible
+    # *Control* challenge reward.
     gm_strike: str = ""
-    gm_weapon: WeaponRef | None = None
-    quickplay_weapon: WeaponRef | None = None
-    control_weapon: WeaponRef | None = None
-    seasonal_raid: str = DEFAULT_SEASONAL_RAID
-    seasonal_dungeon: str = DEFAULT_SEASONAL_DUNGEON
+    gm_weapon: WeaponRef | None = None  # GM Challenge Reward
+    gm_bonus_focus: WeaponRef | None = None
+    quickplay_weapon: WeaponRef | None = None  # Quickplay Challenge Reward
+    quickplay_bonus_focus: WeaponRef | None = None
+    control_weapon: WeaponRef | None = None  # Crucible Control Challenge Reward
     # ZAVALA'S WEAPON — set by hand (the vendor API doesn't expose the weekly weapon).
     zavala_weapon: WeaponRef | None = None
     # FEATURED RAIDS & DUNGEONS (weekly rotators)
@@ -310,14 +315,20 @@ class WeeklyResetContext:
             "reset_ts": self.reset_ts,
             "gm_strike": self.gm_strike,
             "gm_weapon": self.gm_weapon.to_dict() if self.gm_weapon else None,
+            "gm_bonus_focus": (
+                self.gm_bonus_focus.to_dict() if self.gm_bonus_focus else None
+            ),
             "quickplay_weapon": (
                 self.quickplay_weapon.to_dict() if self.quickplay_weapon else None
+            ),
+            "quickplay_bonus_focus": (
+                self.quickplay_bonus_focus.to_dict()
+                if self.quickplay_bonus_focus
+                else None
             ),
             "control_weapon": (
                 self.control_weapon.to_dict() if self.control_weapon else None
             ),
-            "seasonal_raid": self.seasonal_raid,
-            "seasonal_dungeon": self.seasonal_dungeon,
             "zavala_weapon": self.zavala_weapon.to_dict()
             if self.zavala_weapon
             else None,
@@ -353,10 +364,10 @@ class WeeklyResetContext:
             reset_ts=int(d["reset_ts"]),
             gm_strike=d.get("gm_strike", ""),
             gm_weapon=weapon("gm_weapon"),
+            gm_bonus_focus=weapon("gm_bonus_focus"),
             quickplay_weapon=weapon("quickplay_weapon"),
+            quickplay_bonus_focus=weapon("quickplay_bonus_focus"),
             control_weapon=weapon("control_weapon"),
-            seasonal_raid=d.get("seasonal_raid", DEFAULT_SEASONAL_RAID),
-            seasonal_dungeon=d.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON),
             zavala_weapon=weapon("zavala_weapon"),
             rotator_raids=pair("rotator_raids"),
             rotator_dungeons=pair("rotator_dungeons"),
@@ -387,8 +398,6 @@ class WeeklyResetConfig:
     last values the team entered, so next week's draft starts pre-filled, not blank.
     """
 
-    seasonal_raid: str = DEFAULT_SEASONAL_RAID
-    seasonal_dungeon: str = DEFAULT_SEASONAL_DUNGEON
     rotator_anchor: int = DEFAULT_ROTATOR_ANCHOR
     raid_pairs: tuple[tuple[str, str], ...] = DEFAULT_RAID_PAIRS
     dungeon_pairs: tuple[tuple[str, str], ...] = DEFAULT_DUNGEON_PAIRS
@@ -405,8 +414,6 @@ class WeeklyResetConfig:
 
     def to_dict(self) -> dict[str, t.Any]:
         return {
-            "seasonal_raid": self.seasonal_raid,
-            "seasonal_dungeon": self.seasonal_dungeon,
             "rotator_anchor": self.rotator_anchor,
             "raid_pairs": [list(p) for p in self.raid_pairs],
             "dungeon_pairs": [list(p) for p in self.dungeon_pairs],
@@ -433,8 +440,6 @@ class WeeklyResetConfig:
             return tuple((str(p[0]), str(p[1])) for p in raw)
 
         return cls(
-            seasonal_raid=d.get("seasonal_raid", DEFAULT_SEASONAL_RAID),
-            seasonal_dungeon=d.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON),
             rotator_anchor=int(d.get("rotator_anchor", DEFAULT_ROTATOR_ANCHOR)),
             raid_pairs=pairs("raid_pairs", DEFAULT_RAID_PAIRS),
             dungeon_pairs=pairs("dungeon_pairs", DEFAULT_DUNGEON_PAIRS),
@@ -540,8 +545,6 @@ async def build_draft_context(
 
     ctx = WeeklyResetContext(reset_ts=reset_ts)
     # Carried-over / deterministic fields.
-    ctx.seasonal_raid = config.seasonal_raid
-    ctx.seasonal_dungeon = config.seasonal_dungeon
     ctx.rotator_raids = compute_rotator(
         config.raid_pairs, config.rotator_anchor, rotation_ts
     )
@@ -573,8 +576,9 @@ async def build_draft_context(
 # ---------------------------------------------------------------------------
 
 
-def _weekly_reward(name: str) -> str:
-    return f"{name} - Weekly Reward" if name else "Weekly Reward"
+def _weapon_emoji(weapon: WeaponRef) -> str:
+    """The emoji token for a weapon line (its type emoji, or a generic fallback)."""
+    return weapon.emoji_name or "weapon"
 
 
 def build_body(ctx: WeeklyResetContext) -> str:
@@ -585,11 +589,11 @@ def build_body(ctx: WeeklyResetContext) -> str:
         f"Resets: <t:{next_reset_ts(ctx.reset_ts)}:f>",
     ]
 
-    # UPDATES & EVENTS — the Bungie patch link, the Trials-returns reminder, and any
-    # editorial events. Trials is mutually exclusive with Iron Banner weeks.
+    # THIS WEEK — the Bungie patch link, the Trials-returns reminder, and any editorial
+    # events. Trials is mutually exclusive with Iron Banner weeks.
     trials_line = ctx.trials_active and not ctx.iron_banner
     if ctx.update_link or ctx.iron_banner or ctx.events_narrative or trials_line:
-        lines += ["", "**UPDATES & EVENTS**", ""]
+        lines += ["### THIS WEEK", ""]
         if ctx.update_link:
             label = ctx.update_link.get("label") or "Update"
             url = ctx.update_link.get("url") or ""
@@ -603,27 +607,47 @@ def build_body(ctx: WeeklyResetContext) -> str:
         if ctx.events_narrative:
             lines += ["", ctx.events_narrative]
 
-    # VANGUARD ALERTS. GM is Portal-derived; Quickplay/Control are the manually-set
-    # weekly featured weapons (the API exposes only the daily reward or the full pool).
-    lines += ["", "**VANGUARD ALERTS**", "", VANGUARD_EXPLAINER, ""]
-    if ctx.quickplay_weapon:
-        lines.append(
-            f":vanguard_strikes: {SEP} Quickplay - {ctx.quickplay_weapon.markdown()}"
-        )
-    gm_weapon = f" - {ctx.gm_weapon.markdown()}" if ctx.gm_weapon else ""
-    if ctx.gm_strike or ctx.gm_weapon:
-        lines.append(f":gm_nightfall: {SEP} GM Alert: {ctx.gm_strike}{gm_weapon}")
-    if ctx.control_weapon:
-        lines.append(f":crucible: {SEP} Control - {ctx.control_weapon.markdown()}")
-    if ctx.seasonal_raid:
-        lines.append(f":raid: {SEP} {_weekly_reward(ctx.seasonal_raid)}")
-    if ctx.seasonal_dungeon:
-        lines.append(f":dungeon: {SEP} {_weekly_reward(ctx.seasonal_dungeon)}")
+    # GRANDMASTER — the weekly GM Nightfall: a bold title line (strike name) followed by
+    # its Bonus Focus and Challenge Reward weapons. The strike + challenge reward are
+    # Portal-derived; the bonus-focus weapon is set by hand.
+    if ctx.gm_strike or ctx.gm_weapon or ctx.gm_bonus_focus:
+        lines += ["### GRANDMASTER", ""]
+        if ctx.gm_strike:
+            lines.append(f"**:gm_nightfall: {SEP} {ctx.gm_strike}**")
+        if ctx.gm_bonus_focus:
+            lines.append(
+                f":{_weapon_emoji(ctx.gm_bonus_focus)}: {SEP} "
+                f"Bonus Focus: {ctx.gm_bonus_focus.markdown()}"
+            )
+        if ctx.gm_weapon:
+            lines.append(
+                f":{_weapon_emoji(ctx.gm_weapon)}: {SEP} "
+                f"Challenge Reward: {ctx.gm_weapon.markdown()}"
+            )
 
-    # CONQUESTS (Seasonal Tab) — one line per non-empty tier, in CONQUEST_TIERS order.
-    # Hand-curated; the API can't supply the weekly tier->activity map (see the plan).
+    # FIRETEAM & ARENA OPS (QUICKPLAY) — the Bonus Focus rotates daily (a static link
+    # unless a specific weapon is set) plus the weekly Challenge Reward weapon.
+    if ctx.quickplay_weapon or ctx.quickplay_bonus_focus:
+        lines += ["### FIRETEAM & ARENA OPS (QUICKPLAY)", ""]
+        if ctx.quickplay_bonus_focus:
+            lines.append(
+                f":{_weapon_emoji(ctx.quickplay_bonus_focus)}: {SEP} "
+                f"Bonus Focus: {ctx.quickplay_bonus_focus.markdown()}"
+            )
+        else:
+            lines.append(
+                f":{BONUS_DROP_EMOJI}: {SEP} Bonus Focus: {QUICKPLAY_BONUS_DEFAULT}"
+            )
+        if ctx.quickplay_weapon:
+            lines.append(
+                f":{_weapon_emoji(ctx.quickplay_weapon)}: {SEP} "
+                f"Challenge Reward: {ctx.quickplay_weapon.markdown()}"
+            )
+
+    # CONQUESTS — one line per non-empty tier, in CONQUEST_TIERS order. Hand-curated;
+    # the API can't supply the weekly tier->activity map (see the plan).
     if any(ctx.conquests.get(tier) for tier in CONQUEST_TIERS):
-        lines += ["", "**CONQUESTS (Seasonal Tab)**", ""]
+        lines += ["### CONQUESTS", ""]
         for tier in CONQUEST_TIERS:
             activities = [a for a in ctx.conquests.get(tier, []) if a]
             if activities:
@@ -631,7 +655,7 @@ def build_body(ctx: WeeklyResetContext) -> str:
 
     # FEATURED RAIDS & DUNGEONS
     if any(ctx.rotator_raids) or any(ctx.rotator_dungeons):
-        lines += ["", "**FEATURED RAIDS & DUNGEONS**", ""]
+        lines += ["### FEATURED RAIDS & DUNGEONS", ""]
         if any(ctx.rotator_raids):
             lines.append(
                 f":raid: {SEP} {' + '.join(x for x in ctx.rotator_raids if x)}"
@@ -648,7 +672,7 @@ def build_body(ctx: WeeklyResetContext) -> str:
 
     # FEATURED PANTHEON
     if ctx.pantheon_reprise or ctx.pantheon_encore:
-        lines += ["", "**FEATURED PANTHEON**", ""]
+        lines += ["### FEATURED PANTHEON", ""]
         if ctx.pantheon_reprise:
             lines.append(f":Pantheon: {SEP} Reprise: {ctx.pantheon_reprise}")
         if ctx.pantheon_encore:
@@ -658,29 +682,32 @@ def build_body(ctx: WeeklyResetContext) -> str:
     if ctx.zavala_weapon:
         emoji = ctx.zavala_weapon.emoji_name or "weapon"
         lines += [
-            "",
-            "**ZAVALA'S WEAPON**",
+            "### ZAVALA'S WEAPON",
             "",
             f":{emoji}: {SEP} {ctx.zavala_weapon.markdown()} {ZAVALA_TIER_SUFFIX}",
         ]
 
-    # CRUCIBLE OPS
-    if ctx.crucible_1v6 or ctx.crucible_3v3 or ctx.crucible_6v6:
-        lines += ["", "**CRUCIBLE OPS**", ""]
-        if ctx.crucible_1v6:
-            lines.append(f":crucible: {SEP} 1v6: {ctx.crucible_1v6}")
-        if ctx.crucible_3v3:
-            lines.append(f":crucible: {SEP} 3v3: {ctx.crucible_3v3}")
-        if ctx.crucible_6v6:
-            lines.append(f":crucible: {SEP} 6v6: {ctx.crucible_6v6}")
+    # CRUCIBLE OPS — the featured playlists, plus the Control Challenge Reward weapon.
+    if ctx.crucible_1v6 or ctx.crucible_3v3 or ctx.crucible_6v6 or ctx.control_weapon:
+        lines += ["### CRUCIBLE OPS", ""]
+        if ctx.crucible_1v6 or ctx.crucible_3v3 or ctx.crucible_6v6:
+            lines.append("**Playlists**")
+            if ctx.crucible_1v6:
+                lines.append(f":crucible: {SEP} 1v6: {ctx.crucible_1v6}")
+            if ctx.crucible_3v3:
+                lines.append(f":crucible: {SEP} 3v3: {ctx.crucible_3v3}")
+            if ctx.crucible_6v6:
+                lines.append(f":crucible: {SEP} 6v6: {ctx.crucible_6v6}")
+        if ctx.control_weapon:
+            lines += ["", "**Control**"]
+            lines.append(
+                f":{_weapon_emoji(ctx.control_weapon)}: {SEP} "
+                f"Challenge Reward: {ctx.control_weapon.markdown()}"
+            )
 
     # MORE
-    lines += [
-        "",
-        "**MORE**",
-        "",
-        f"[**View Legacy Activities**]({LEGACY_ACTIVITIES_URL}) ↗",
-    ]
+    legacy = f"[**View Legacy Activities**]({LEGACY_ACTIVITIES_URL}) ↗"
+    lines += ["### MORE", "", legacy]
     for link in ctx.extra_links:
         label, url = link.get("label"), link.get("url")
         if label and url:
@@ -810,9 +837,11 @@ _draft_lock = asyncio.Lock()
 # Reward slots as (label, attribute): the web form renders one weapon picker per entry
 # and ``apply_reward_field`` writes the resolved WeaponRef back.
 _REWARD_FIELDS: tuple[tuple[str, str], ...] = (
-    ("GM Nightfall reward weapon", "gm_weapon"),
-    ("Vanguard / Quickplay weapon", "quickplay_weapon"),
-    ("Crucible / Control weapon", "control_weapon"),
+    ("GM Challenge Reward weapon", "gm_weapon"),
+    ("GM Bonus Focus weapon", "gm_bonus_focus"),
+    ("Quickplay Challenge Reward weapon", "quickplay_weapon"),
+    ("Quickplay Bonus Focus weapon", "quickplay_bonus_focus"),
+    ("Crucible Control Challenge Reward weapon", "control_weapon"),
     ("Zavala's Weapon", "zavala_weapon"),
 )
 
@@ -1119,20 +1148,14 @@ def apply_pantheon(ctx: WeeklyResetContext, reprise: str, encore: str) -> None:
         ctx.pantheon_encore = encore
 
 
-def apply_raids(ctx: WeeklyResetContext, seasonal: str, feat1: str, feat2: str) -> None:
-    if seasonal:
-        ctx.seasonal_raid = seasonal
+def apply_raids(ctx: WeeklyResetContext, feat1: str, feat2: str) -> None:
     if feat1:
         ctx.rotator_raids = (feat1, ctx.rotator_raids[1])
     if feat2:
         ctx.rotator_raids = (ctx.rotator_raids[0], feat2)
 
 
-def apply_dungeons(
-    ctx: WeeklyResetContext, seasonal: str, feat1: str, feat2: str
-) -> None:
-    if seasonal:
-        ctx.seasonal_dungeon = seasonal
+def apply_dungeons(ctx: WeeklyResetContext, feat1: str, feat2: str) -> None:
     if feat1:
         ctx.rotator_dungeons = (feat1, ctx.rotator_dungeons[1])
     if feat2:
@@ -1142,7 +1165,14 @@ def apply_dungeons(
 def apply_reward_field(
     ctx: WeeklyResetContext, field: str, weapon: WeaponRef | None
 ) -> None:
-    if field in {"gm_weapon", "quickplay_weapon", "control_weapon", "zavala_weapon"}:
+    if field in {
+        "gm_weapon",
+        "gm_bonus_focus",
+        "quickplay_weapon",
+        "quickplay_bonus_focus",
+        "control_weapon",
+        "zavala_weapon",
+    }:
         setattr(ctx, field, weapon)
 
 
@@ -1252,8 +1282,14 @@ async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> WeeklyResetCo
 
     ctx.gm_strike = str(payload.get("gm_strike", "")).strip()
     ctx.gm_weapon = await resolve_reward_value(str(payload.get("gm_weapon", "")))
+    ctx.gm_bonus_focus = await resolve_reward_value(
+        str(payload.get("gm_bonus_focus", ""))
+    )
     ctx.quickplay_weapon = await resolve_reward_value(
         str(payload.get("quickplay_weapon", ""))
+    )
+    ctx.quickplay_bonus_focus = await resolve_reward_value(
+        str(payload.get("quickplay_bonus_focus", ""))
     )
     ctx.control_weapon = await resolve_reward_value(
         str(payload.get("control_weapon", ""))
@@ -1262,10 +1298,6 @@ async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> WeeklyResetCo
         str(payload.get("zavala_weapon", ""))
     )
 
-    ctx.seasonal_raid = str(payload.get("seasonal_raid", DEFAULT_SEASONAL_RAID)).strip()
-    ctx.seasonal_dungeon = str(
-        payload.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON)
-    ).strip()
     ctx.rotator_raids = _pair(payload.get("rotator_raids"))
     ctx.rotator_dungeons = _pair(payload.get("rotator_dungeons"))
     ctx.pantheon_reprise = str(payload.get("pantheon_reprise", "")).strip()
