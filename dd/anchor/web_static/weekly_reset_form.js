@@ -146,7 +146,9 @@ function featured(value) {
 }
 
 // Weapon pickers.
+tsWeapon("gmBonusFocus", draft.gm_bonus_focus);
 tsWeapon("gmWeapon", draft.gm_weapon);
+tsWeapon("quickplayBonusFocus", draft.quickplay_bonus_focus);
 tsWeapon("quickplayWeapon", draft.quickplay_weapon);
 tsWeapon("controlWeapon", draft.control_weapon);
 tsWeapon("zavalaWeapon", draft.zavala_weapon);
@@ -209,7 +211,9 @@ function readForm() {
     reset_ts: at ? Math.floor(Date.parse(at + "Z") / 1000) : draft.reset_ts,
     gm_strike: TS.gmStrike.getValue().trim(),
     gm_weapon: TS.gmWeapon.getValue(),
+    gm_bonus_focus: TS.gmBonusFocus.getValue(),
     quickplay_weapon: TS.quickplayWeapon.getValue(),
+    quickplay_bonus_focus: TS.quickplayBonusFocus.getValue(),
     control_weapon: TS.controlWeapon.getValue(),
     zavala_weapon: TS.zavalaWeapon.getValue(),
     seasonal_raid: TS.seasonalRaid.getValue().trim(),

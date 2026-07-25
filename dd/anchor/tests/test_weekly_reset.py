@@ -54,9 +54,11 @@ SAMPLE_DUNGEONS = (
 def _full_ctx() -> wr.WeeklyResetContext:
     ctx = wr.WeeklyResetContext(reset_ts=1783443600)
     ctx.gm_strike = "The Sunless Cell"
-    ctx.gm_weapon = wr.WeaponRef("Null Composure", 222)
-    ctx.quickplay_weapon = wr.WeaponRef("Service Revolver", 111)
-    ctx.control_weapon = wr.WeaponRef("The Helmsman", 333)
+    ctx.gm_weapon = wr.WeaponRef("Null Composure", 222)  # GM Challenge Reward
+    ctx.gm_bonus_focus = wr.WeaponRef("Ouster Engine", 555, "sword")
+    ctx.quickplay_weapon = wr.WeaponRef("Service Revolver", 111)  # QP Challenge Reward
+    # quickplay_bonus_focus left unset -> the "Changes Daily" default line.
+    ctx.control_weapon = wr.WeaponRef("The Helmsman", 333)  # Control Challenge Reward
     ctx.seasonal_raid = "The Desert Perpetual"
     ctx.seasonal_dungeon = "Equilibrium"
     ctx.rotator_raids = ("Crota's End", "Vault of Glass")
@@ -150,28 +152,43 @@ def test_build_body_has_all_sections_and_deeplink() -> None:
         "# Weekly Reset Overview",
         # Resets line shows the *next* Tuesday (reset_ts + 1 week), not reset_ts.
         "Resets: <t:1784048400:f>",
-        "**UPDATES & EVENTS**",
+        "### THIS WEEK",
         "[Update 9.7.0.3](https://example.com/notes)",
         "Trials returns on Friday at reset",  # relocated from the old bottom block
-        "**VANGUARD ALERTS**",
-        wr.VANGUARD_EXPLAINER,
-        "Quickplay - [Service Revolver]",  # manually-set weekly weapon
-        "GM Alert: The Sunless Cell",
-        "Control - [The Helmsman]",  # manually-set weekly weapon
-        "**CONQUESTS (Seasonal Tab)**",
+        # GRANDMASTER: bold-titled strike, Bonus Focus + Challenge Reward weapons.
+        "### GRANDMASTER",
+        "The Sunless Cell**",
+        "Bonus Focus: [Ouster Engine]",
+        "Challenge Reward: [Null Composure]",
+        # FIRETEAM: unset bonus focus falls back to the daily-rotating default link.
+        "### FIRETEAM & ARENA OPS (QUICKPLAY)",
+        "Bonus Focus: [Changes Daily](https://www.light.gg)",
+        "Challenge Reward: [Service Revolver]",
+        "### CONQUESTS",
         "Expert: Sunless Cell",
         "GM: Arms Dealer, Scarlet Keep",
-        "**FEATURED RAIDS & DUNGEONS**",
+        "### FEATURED RAIDS & DUNGEONS",
         "Crota's End + Vault of Glass",
+        "### FEATURED PANTHEON",
         "Reprise: Argos",
-        "**ZAVALA'S WEAPON**",
-        "**CRUCIBLE OPS**",
+        "### ZAVALA'S WEAPON",
+        "(T5 / rolls vary)",
+        # CRUCIBLE OPS: Playlists sub-block + Control Challenge Reward sub-block.
+        "### CRUCIBLE OPS",
+        "**Playlists**",
+        "**Control**",
+        "Challenge Reward: [The Helmsman]",
         ":info: Duality is available due to a bug.",
-        "See you starside",
+        "### MORE",
+        "See you starside! \U0001f4ab",
     ):
         assert marker in body, marker
-    # The "(Seasonal Tab)" qualifier moved off the Vanguard header to Conquests.
-    assert "**VANGUARD ALERTS (Seasonal Tab)**" not in body
+    # The old embed-era headers/format are gone.
+    assert "**VANGUARD ALERTS**" not in body
+    assert "**UPDATES & EVENTS**" not in body
+    assert "(Seasonal Tab)" not in body
+    assert "***See you starside!***" not in body
+    assert "┊" not in body
     # light.gg deep link uses the item hash (fixes the old bare placeholder).
     assert "https://light.gg/db/items/444" in body
 
