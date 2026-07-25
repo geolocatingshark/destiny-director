@@ -155,8 +155,6 @@ tsWeapon("zavalaWeapon", draft.zavala_weapon);
 
 // Bounded-pool single-selects.
 tsSingle("gmStrike", options.strikes, draft.gm_strike);
-tsSingle("seasonalRaid", options.raids, draft.seasonal_raid);
-tsSingle("seasonalDungeon", options.dungeons, draft.seasonal_dungeon);
 tsSingle("rotRaid1", options.raids, R[0]);
 tsSingle("rotRaid2", options.raids, R[1]);
 tsSingle("rotDun1", options.dungeons, D[0]);
@@ -216,8 +214,6 @@ function readForm() {
     quickplay_bonus_focus: TS.quickplayBonusFocus.getValue(),
     control_weapon: TS.controlWeapon.getValue(),
     zavala_weapon: TS.zavalaWeapon.getValue(),
-    seasonal_raid: TS.seasonalRaid.getValue().trim(),
-    seasonal_dungeon: TS.seasonalDungeon.getValue().trim(),
     rotator_raids: [TS.rotRaid1.getValue(), TS.rotRaid2.getValue()],
     rotator_dungeons: [TS.rotDun1.getValue(), TS.rotDun2.getValue()],
     pantheon_reprise: TS.pantheonReprise.getValue(),

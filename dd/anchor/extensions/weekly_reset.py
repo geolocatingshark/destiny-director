@@ -171,9 +171,6 @@ DEFAULT_DUNGEON_PAIRS: tuple[tuple[str, str], ...] = (
 DEFAULT_IB_WEEK_RESETS: tuple[int, ...] = ()
 
 DEFAULT_CRUCIBLE_1V6 = "Sparrow Racing, Rumble"
-# Current season's featured raid/dungeon (the "Weekly Reward" lines); update per season.
-DEFAULT_SEASONAL_RAID = "The Desert Perpetual"
-DEFAULT_SEASONAL_DUNGEON = "Equilibrium"
 
 # --- Bounded selector domains --------------------------------------------------------
 # Small, stable fields are picked from Choice dropdowns instead of free-typed
@@ -287,8 +284,6 @@ class WeeklyResetContext:
     quickplay_weapon: WeaponRef | None = None  # Quickplay Challenge Reward
     quickplay_bonus_focus: WeaponRef | None = None
     control_weapon: WeaponRef | None = None  # Crucible Control Challenge Reward
-    seasonal_raid: str = DEFAULT_SEASONAL_RAID
-    seasonal_dungeon: str = DEFAULT_SEASONAL_DUNGEON
     # ZAVALA'S WEAPON — set by hand (the vendor API doesn't expose the weekly weapon).
     zavala_weapon: WeaponRef | None = None
     # FEATURED RAIDS & DUNGEONS (weekly rotators)
@@ -334,8 +329,6 @@ class WeeklyResetContext:
             "control_weapon": (
                 self.control_weapon.to_dict() if self.control_weapon else None
             ),
-            "seasonal_raid": self.seasonal_raid,
-            "seasonal_dungeon": self.seasonal_dungeon,
             "zavala_weapon": self.zavala_weapon.to_dict()
             if self.zavala_weapon
             else None,
@@ -375,8 +368,6 @@ class WeeklyResetContext:
             quickplay_weapon=weapon("quickplay_weapon"),
             quickplay_bonus_focus=weapon("quickplay_bonus_focus"),
             control_weapon=weapon("control_weapon"),
-            seasonal_raid=d.get("seasonal_raid", DEFAULT_SEASONAL_RAID),
-            seasonal_dungeon=d.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON),
             zavala_weapon=weapon("zavala_weapon"),
             rotator_raids=pair("rotator_raids"),
             rotator_dungeons=pair("rotator_dungeons"),
@@ -407,8 +398,6 @@ class WeeklyResetConfig:
     last values the team entered, so next week's draft starts pre-filled, not blank.
     """
 
-    seasonal_raid: str = DEFAULT_SEASONAL_RAID
-    seasonal_dungeon: str = DEFAULT_SEASONAL_DUNGEON
     rotator_anchor: int = DEFAULT_ROTATOR_ANCHOR
     raid_pairs: tuple[tuple[str, str], ...] = DEFAULT_RAID_PAIRS
     dungeon_pairs: tuple[tuple[str, str], ...] = DEFAULT_DUNGEON_PAIRS
@@ -425,8 +414,6 @@ class WeeklyResetConfig:
 
     def to_dict(self) -> dict[str, t.Any]:
         return {
-            "seasonal_raid": self.seasonal_raid,
-            "seasonal_dungeon": self.seasonal_dungeon,
             "rotator_anchor": self.rotator_anchor,
             "raid_pairs": [list(p) for p in self.raid_pairs],
             "dungeon_pairs": [list(p) for p in self.dungeon_pairs],
@@ -453,8 +440,6 @@ class WeeklyResetConfig:
             return tuple((str(p[0]), str(p[1])) for p in raw)
 
         return cls(
-            seasonal_raid=d.get("seasonal_raid", DEFAULT_SEASONAL_RAID),
-            seasonal_dungeon=d.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON),
             rotator_anchor=int(d.get("rotator_anchor", DEFAULT_ROTATOR_ANCHOR)),
             raid_pairs=pairs("raid_pairs", DEFAULT_RAID_PAIRS),
             dungeon_pairs=pairs("dungeon_pairs", DEFAULT_DUNGEON_PAIRS),
@@ -560,8 +545,6 @@ async def build_draft_context(
 
     ctx = WeeklyResetContext(reset_ts=reset_ts)
     # Carried-over / deterministic fields.
-    ctx.seasonal_raid = config.seasonal_raid
-    ctx.seasonal_dungeon = config.seasonal_dungeon
     ctx.rotator_raids = compute_rotator(
         config.raid_pairs, config.rotator_anchor, rotation_ts
     )
@@ -1165,20 +1148,14 @@ def apply_pantheon(ctx: WeeklyResetContext, reprise: str, encore: str) -> None:
         ctx.pantheon_encore = encore
 
 
-def apply_raids(ctx: WeeklyResetContext, seasonal: str, feat1: str, feat2: str) -> None:
-    if seasonal:
-        ctx.seasonal_raid = seasonal
+def apply_raids(ctx: WeeklyResetContext, feat1: str, feat2: str) -> None:
     if feat1:
         ctx.rotator_raids = (feat1, ctx.rotator_raids[1])
     if feat2:
         ctx.rotator_raids = (ctx.rotator_raids[0], feat2)
 
 
-def apply_dungeons(
-    ctx: WeeklyResetContext, seasonal: str, feat1: str, feat2: str
-) -> None:
-    if seasonal:
-        ctx.seasonal_dungeon = seasonal
+def apply_dungeons(ctx: WeeklyResetContext, feat1: str, feat2: str) -> None:
     if feat1:
         ctx.rotator_dungeons = (feat1, ctx.rotator_dungeons[1])
     if feat2:
@@ -1321,10 +1298,6 @@ async def _context_from_payload(payload: t.Mapping[str, t.Any]) -> WeeklyResetCo
         str(payload.get("zavala_weapon", ""))
     )
 
-    ctx.seasonal_raid = str(payload.get("seasonal_raid", DEFAULT_SEASONAL_RAID)).strip()
-    ctx.seasonal_dungeon = str(
-        payload.get("seasonal_dungeon", DEFAULT_SEASONAL_DUNGEON)
-    ).strip()
     ctx.rotator_raids = _pair(payload.get("rotator_raids"))
     ctx.rotator_dungeons = _pair(payload.get("rotator_dungeons"))
     ctx.pantheon_reprise = str(payload.get("pantheon_reprise", "")).strip()

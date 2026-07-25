@@ -59,8 +59,6 @@ def _full_ctx() -> wr.WeeklyResetContext:
     ctx.quickplay_weapon = wr.WeaponRef("Service Revolver", 111)  # QP Challenge Reward
     # quickplay_bonus_focus left unset -> the "Changes Daily" default line.
     ctx.control_weapon = wr.WeaponRef("The Helmsman", 333)  # Control Challenge Reward
-    ctx.seasonal_raid = "The Desert Perpetual"
-    ctx.seasonal_dungeon = "Equilibrium"
     ctx.rotator_raids = ("Crota's End", "Vault of Glass")
     ctx.rotator_dungeons = ("Warlord's Ruin", "Grasp of Avarice")
     ctx.pantheon_reprise = "Argos"
@@ -357,15 +355,6 @@ def test_option_pool_domains_have_no_duplicates() -> None:
     assert "Heavy Metal Supremacy" in wr.CRUCIBLE_MODES
 
 
-def test_seasonal_defaults() -> None:
-    fresh = wr.WeeklyResetContext(reset_ts=1)
-    assert fresh.seasonal_raid == "The Desert Perpetual"
-    assert fresh.seasonal_dungeon == "Equilibrium"
-    config = wr.WeeklyResetConfig()
-    assert config.seasonal_raid == "The Desert Perpetual"
-    assert config.seasonal_dungeon == "Equilibrium"
-
-
 @pytest.mark.parametrize(
     ("defn", "type_name", "expected"),
     [
@@ -462,11 +451,9 @@ def test_apply_pantheon_raids_dungeons() -> None:
     ctx = wr.WeeklyResetContext(reset_ts=1)
     wr.apply_pantheon(ctx, "Argos", "Calus")
     assert (ctx.pantheon_reprise, ctx.pantheon_encore) == ("Argos", "Calus")
-    wr.apply_raids(ctx, "The Desert Perpetual", "Vault of Glass", "Crota's End")
-    assert ctx.seasonal_raid == "The Desert Perpetual"
+    wr.apply_raids(ctx, "Vault of Glass", "Crota's End")
     assert ctx.rotator_raids == ("Vault of Glass", "Crota's End")
-    wr.apply_dungeons(ctx, "Equilibrium", "Duality", "Prophecy")
-    assert ctx.seasonal_dungeon == "Equilibrium"
+    wr.apply_dungeons(ctx, "Duality", "Prophecy")
     assert ctx.rotator_dungeons == ("Duality", "Prophecy")
     wr.apply_gm_strike(ctx, "The Sunless Cell")
     assert ctx.gm_strike == "The Sunless Cell"
