@@ -1550,6 +1550,164 @@ class MirrorDelivery(Base):
 
     @classmethod
     @ensure_session(db_session)
+    async def recent_runs(
+        cls,
+        *,
+        limit: int = 50,
+        within_days: int = 30,
+        session: AsyncSession = _UNSET,
+    ) -> list[dict[str, t.Any]]:
+        """Recent mirror runs (one row per source message) for the web log view.
+
+        Groups every delivery row created within ``within_days`` by ``src_msg_id``,
+        newest first, capped at ``limit`` — the per-state and crosspost tallies the log
+        list needs without shipping every delivery row. The ``created_at`` window keeps
+        the scan on the prune index rather than the whole table. The datetime aggregates
+        carry an explicit ``DateTime`` type so SQLite returns ``datetime`` (not an ISO
+        string); the values are the ledger's naive-UTC wall clock (the web layer stamps
+        them UTC on the way out).
+        """
+        cutoff = _utcnow() - dt.timedelta(days=within_days)
+
+        def _sum_state(value: str):
+            return func.sum(case((cls.state == value, 1), else_=0))
+
+        def _sum_xpost(value: str):
+            return func.sum(case((cls.crosspost_state == value, 1), else_=0))
+
+        rows = (
+            await session.execute(
+                select(
+                    cls.src_msg_id,
+                    func.max(cls.src_ch_id),
+                    func.count(),
+                    _sum_state(DeliveryState.DELIVERED.value),
+                    _sum_state(DeliveryState.FAILED.value),
+                    _sum_state(DeliveryState.PENDING.value),
+                    _sum_state(DeliveryState.CANCELLED.value),
+                    _sum_xpost(CrosspostState.DONE.value),
+                    _sum_xpost(CrosspostState.PENDING.value),
+                    func.min(cls.created_at, type_=DateTime),
+                    func.max(coalesce(cls.finished_at, cls.created_at), type_=DateTime),
+                    func.max(cls.attempts),
+                    func.max(cls.desired_version),
+                )
+                .where(cls.created_at >= cutoff)
+                .group_by(cls.src_msg_id)
+                .order_by(desc(func.min(cls.created_at)))
+                .limit(int(limit))
+            )
+        ).fetchall()
+
+        return [
+            {
+                "src_msg_id": int(smi),
+                "src_ch_id": int(sci),
+                "total": int(total),
+                "delivered": int(delivered),
+                "failed": int(failed),
+                "pending": int(pending),
+                "cancelled": int(cancelled),
+                "crosspost_done": int(xp_done),
+                "crosspost_pending": int(xp_pending),
+                "started": started,
+                "last_at": last_at,
+                "max_attempts": int(max_attempts),
+                "version": int(version),
+            }
+            for (
+                smi,
+                sci,
+                total,
+                delivered,
+                failed,
+                pending,
+                cancelled,
+                xp_done,
+                xp_pending,
+                started,
+                last_at,
+                max_attempts,
+                version,
+            ) in rows
+        ]
+
+    @classmethod
+    @ensure_session(db_session)
+    async def run_rows(
+        cls,
+        src_msg_id: int,
+        *,
+        limit: int = 500,
+        session: AsyncSession = _UNSET,
+    ) -> list[dict[str, t.Any]]:
+        """Per-destination delivery rows for one source message (the log detail view).
+
+        Ordered failures-first then by destination channel and capped at ``limit`` so a
+        huge fan-out cannot produce an unbounded payload. Carries the error triple so
+        the page can show *why* a destination failed.
+        """
+        rows = (
+            await session.execute(
+                select(
+                    cls.dest_ch_id,
+                    cls.dest_msg_id,
+                    cls.state,
+                    cls.crosspost_state,
+                    cls.attempts,
+                    cls.applied_version,
+                    cls.desired_version,
+                    cls.deleted,
+                    cls.last_error_ref,
+                    cls.last_error_class,
+                    cls.last_error_msg,
+                    cls.created_at,
+                    cls.finished_at,
+                )
+                .where(cls.src_msg_id == int(src_msg_id))
+                .order_by(
+                    case((cls.state == DeliveryState.FAILED.value, 0), else_=1),
+                    cls.dest_ch_id,
+                )
+                .limit(int(limit))
+            )
+        ).fetchall()
+
+        return [
+            {
+                "dest_ch_id": int(dest_ch_id),
+                "dest_msg_id": int(dest_msg_id) if dest_msg_id is not None else None,
+                "state": str(state),
+                "crosspost_state": str(crosspost_state),
+                "attempts": int(attempts),
+                "applied_version": int(applied_version),
+                "desired_version": int(desired_version),
+                "deleted": bool(deleted),
+                "error_ref": str(error_ref) if error_ref else None,
+                "error_class": str(error_class) if error_class else None,
+                "error_msg": str(error_msg) if error_msg else None,
+                "created_at": created_at,
+                "finished_at": finished_at,
+            }
+            for (
+                dest_ch_id,
+                dest_msg_id,
+                state,
+                crosspost_state,
+                attempts,
+                applied_version,
+                desired_version,
+                deleted,
+                error_ref,
+                error_class,
+                error_msg,
+                created_at,
+                finished_at,
+            ) in rows
+        ]
+
+    @classmethod
+    @ensure_session(db_session)
     async def prune(
         cls,
         *,
@@ -2502,9 +2660,7 @@ class AppEmojiCache(Base):
         now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
         exists_ = (
             await session.execute(
-                select(cls.name).where(
-                    and_(cls.app_id == app_id, cls.name == name)
-                )
+                select(cls.name).where(and_(cls.app_id == app_id, cls.name == name))
             )
         ).scalar()
         if exists_ is None:

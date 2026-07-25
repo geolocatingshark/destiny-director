@@ -1,0 +1,195 @@
+/*
+  Mirror-log page styles (dd.anchor.extensions.mirror_log). Consumes the shared design
+  tokens in shared.css; only the run table, status chips and the expandable per-run
+  detail panel live here (the shared sheet has no generic .data table styling).
+*/
+
+main.mirror-log {
+  max-width: 100%;
+}
+
+/* -- run table ----------------------------------------------------------- */
+
+table.runs {
+  width: 100%;
+  border-collapse: collapse;
+  padding: 0; /* .card gives padding; the table wants edge-to-edge rows */
+  overflow: hidden; /* keep rounded .card corners over the header row */
+}
+table.runs thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: var(--text-2);
+  padding: 0.55rem 0.7rem;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+}
+table.runs th.num {
+  text-align: right;
+}
+table.runs tbody td {
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+table.runs td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A run row is clickable to toggle its detail panel. */
+tr.run {
+  cursor: pointer;
+}
+tr.run:hover td {
+  background: var(--accent-tint);
+}
+tr.run.open td {
+  background: var(--accent-tint);
+  border-bottom-color: transparent;
+}
+
+.src-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  color: var(--text-1);
+}
+.src-sub {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+/* -- status chips -------------------------------------------------------- */
+
+.chip {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.chip.clean {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+.chip.failed,
+.chip.partial {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 45%, transparent);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
+.chip.partial {
+  color: #f0b429; /* amber: some delivered, some failed */
+  border-color: color-mix(in srgb, #f0b429 45%, transparent);
+  background: color-mix(in srgb, #f0b429 12%, transparent);
+}
+.chip.progress {
+  color: var(--link);
+  border-color: color-mix(in srgb, var(--link) 45%, transparent);
+  background: color-mix(in srgb, var(--link) 12%, transparent);
+}
+.chip.cancelled {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: var(--surface-3);
+}
+
+/* Compact count badges inside the Results cell. */
+.counts {
+  display: inline-flex;
+  gap: 0.45rem;
+  justify-content: flex-end;
+  font-size: 0.78rem;
+}
+.counts .ok {
+  color: var(--ok);
+}
+.counts .bad {
+  color: var(--err);
+}
+.counts .pend {
+  color: var(--link);
+}
+.counts .zero {
+  color: var(--text-muted);
+}
+
+.when {
+  font-size: 0.8rem;
+  color: var(--text-3);
+}
+.when .dur {
+  color: var(--text-muted);
+}
+
+/* -- detail panel -------------------------------------------------------- */
+
+tr.detail-row > td {
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+}
+.detail {
+  padding: 0.6rem 0.7rem;
+}
+.detail .detail-loading,
+.detail .detail-error {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.detail .detail-error {
+  color: var(--err);
+}
+.detail .trunc {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin: 0.3rem 0 0;
+}
+
+table.dests {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+table.dests th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-2);
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+table.dests td {
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  vertical-align: top;
+}
+table.dests td.dest-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-3);
+}
+.state {
+  font-weight: 600;
+}
+.state.DELIVERED {
+  color: var(--ok);
+}
+.state.FAILED {
+  color: var(--err);
+}
+.state.PENDING {
+  color: var(--link);
+}
+.state.CANCELLED {
+  color: var(--text-muted);
+}
+.err-detail {
+  color: var(--text-muted);
+}
+.err-detail .err-ref {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--err);
+}
