@@ -224,12 +224,12 @@ async def mirror_env() -> AsyncIterator[_MirrorEnv]:
 
 @pytest.fixture(autouse=True)
 def _silence_progress(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stop the handlers posting a CV2 progress card to ``cfg.log_channel`` in tests."""
+    """Stop the handlers spawning a drain watcher / posting to ``cfg.log_channel``."""
 
-    async def _noop(*_args: object, **_kwargs: object) -> None:
+    def _noop(*_args: object, **_kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr(mirror, "start_progress_card", _noop)
+    monkeypatch.setattr(mirror, "start_drain_watcher", _noop)
 
 
 @pytest_asyncio.fixture(loop_scope="module", autouse=True)
