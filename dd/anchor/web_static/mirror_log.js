@@ -305,9 +305,12 @@
     );
   }
 
-  // The expandable detail: the mirrored message itself, as a version render pane (newest
-  // version selected, with a diff-vs-previous toggle) plus a jump-to-source button.
-  function renderVersionPane(data, run) {
+  // The expandable detail's message view: every captured version rendered as its own
+  // column in a horizontally-scrollable row (no vertical scroll), oldest→newest, each
+  // labelled by the operation it was (v1 = Create, later = Update). A "highlight changes
+  // vs previous" toggle re-renders every v2+ column as an inline diff against the one
+  // before it. Plus the jump-to-source button.
+  function renderVersionColumns(data, run) {
     const vs = data.versions || [];
     const jump = sourceButton(run);
     if (!vs.length) {
@@ -318,81 +321,74 @@
         `capture began at deploy, so older runs have none.</p></div>`
       );
     }
-    const chips = vs
+    const control =
+      vs.length > 1
+        ? `<label class="diff-toggle"><input type="checkbox" class="diff-check" /> ` +
+          `Highlight changes vs previous</label>`
+        : `<span class="version-hint">only version so far — edits are captured as ` +
+          `new versions and shown as diffs</span>`;
+    const cols = vs
       .map((v, i) => {
-        const active = i === vs.length - 1 ? " active" : "";
-        const title = v.captured_at ? new Date(v.captured_at).toLocaleString() : "";
+        const op = i === 0 ? "Create" : "Update";
+        const opCls = i === 0 ? "create" : "update";
+        const abs = v.captured_at ? new Date(v.captured_at).toLocaleString() : "";
         return (
-          `<button type="button" class="vchip${active}" data-idx="${i}" ` +
-          `title="${esc(title)}">v${esc(v.version)}</button>`
+          `<div class="vcol" data-idx="${i}">` +
+          `<div class="vcol-head">` +
+          `<span class="op-tag ${opCls}">${op}</span>` +
+          `<span class="vcol-ver">v${esc(v.version)}</span>` +
+          `<span class="vcol-time" title="${esc(abs)}">${esc(relTime(v.captured_at))}</span>` +
+          `</div>` +
+          `<div class="vcol-body"><p class="detail-loading">Loading…</p></div>` +
+          `</div>`
         );
       })
       .join("");
-    // With only one captured version there's nothing to diff against, so show a hint
-    // instead of the (hidden) toggle — an edit after delivery captures the next version.
-    const single =
-      vs.length < 2
-        ? `<span class="version-hint">only version — edits are captured as new ` +
-          `versions and shown here as diffs</span>`
-        : "";
     return (
       `<div class="versions">` +
-      `<div class="version-head">` +
-      `<span class="version-label">Versions</span>` +
-      `<div class="version-chips">${chips}</div>` +
-      `<label class="diff-toggle hidden">` +
-      `<input type="checkbox" class="diff-check" /> Highlight changes vs previous` +
-      `</label>` +
-      single +
+      `<div class="version-head"><span class="version-label">Versions</span>` +
+      control +
       jump +
       `</div>` +
-      `<div class="render-pane"><p class="detail-loading">Loading render…</p></div>` +
+      `<div class="vcols">${cols}</div>` +
       `</div>`
     );
   }
 
-  // Wire the version chips + diff toggle to the stateless render route. The server
-  // returns pre-escaped safe HTML (cv2_render), so it goes straight into innerHTML on
-  // ok; an error body is untrusted, so it stays textContent.
-  function setupVersionPane(srcId, container, versions) {
+  // Fetch each version column's render (or its diff-vs-previous when the toggle is on).
+  // The server returns pre-escaped safe HTML (cv2_render) → innerHTML; an error body is
+  // untrusted → textContent. Each column carries its own token so a toggle mid-fetch
+  // can't land a stale render.
+  function setupVersionColumns(srcId, container, versions) {
     if (!versions.length) return;
-    const chips = [...container.querySelectorAll(".vchip")];
-    const pane = container.querySelector(".render-pane");
-    const toggleLabel = container.querySelector(".diff-toggle");
+    const cols = [...container.querySelectorAll(".vcol")];
     const diffCheck = container.querySelector(".diff-check");
-    let selectedIdx = versions.length - 1;
-    let renderToken = 0;
+    const tokens = new WeakMap();
 
-    async function show() {
-      const token = ++renderToken;
-      const v = versions[selectedIdx];
-      const hasPrev = selectedIdx > 0;
-      toggleLabel.classList.toggle("hidden", !hasPrev);
-      const diffOn = hasPrev && diffCheck.checked;
+    async function renderCol(col) {
+      const idx = Number(col.dataset.idx);
+      const v = versions[idx];
+      const body = col.querySelector(".vcol-body");
+      const diffOn = !!diffCheck && diffCheck.checked && idx > 0;
       let url = `/mirror-logs/render?src=${encodeURIComponent(srcId)}&v=${encodeURIComponent(v.version)}`;
-      if (diffOn)
-        url += `&diff=${encodeURIComponent(versions[selectedIdx - 1].version)}`;
-      pane.innerHTML = `<p class="detail-loading">Loading render…</p>`;
+      if (diffOn) url += `&diff=${encodeURIComponent(versions[idx - 1].version)}`;
+      const token = (tokens.get(col) || 0) + 1;
+      tokens.set(col, token);
+      body.innerHTML = `<p class="detail-loading">Loading…</p>`;
       try {
         const res = await fetch(url, { credentials: "same-origin" });
-        const body = await res.text();
-        if (token !== renderToken) return; // superseded by a newer selection
-        if (res.ok) pane.innerHTML = body;
-        else pane.textContent = `Render failed: ${body}`;
+        const html = await res.text();
+        if (tokens.get(col) !== token) return; // superseded
+        if (res.ok) body.innerHTML = html;
+        else body.textContent = `Render failed: ${html}`;
       } catch (e) {
-        if (token === renderToken) pane.textContent = `Render error: ${e}`;
+        if (tokens.get(col) === token) body.textContent = `Render error: ${e}`;
       }
     }
 
-    chips.forEach((chip) => {
-      chip.addEventListener("click", () => {
-        selectedIdx = Number(chip.dataset.idx);
-        chips.forEach((c) => c.classList.toggle("active", c === chip));
-        show();
-      });
-    });
-    diffCheck.addEventListener("change", show);
-    show();
+    cols.forEach(renderCol);
+    if (diffCheck)
+      diffCheck.addEventListener("change", () => cols.forEach(renderCol));
   }
 
   async function loadDetail(run, container) {
@@ -401,23 +397,38 @@
       const data = await fetchJSON(
         `/mirror-logs/data?src=${encodeURIComponent(run.src_msg_id)}`,
       );
-      container.innerHTML = renderRunStats(run, data) + renderVersionPane(data, run);
-      setupVersionPane(run.src_msg_id, container, data.versions || []);
+      container.innerHTML =
+        renderRunStats(run, data) + renderVersionColumns(data, run);
+      setupVersionColumns(run.src_msg_id, container, data.versions || []);
     } catch (e) {
       container.innerHTML = `<p class="detail-error">Failed to load detail: ${esc(e.message)}</p>`;
     }
   }
 
-  // Channel is named where known (feed name); the latest snapshot's summary sits below.
-  // The jump-to-source button lives in the expanded detail (renderVersionPane), so the
-  // row just carries the muted msg id as the run identifier.
+  // Source message column: the channel name links to the source *message*, and the
+  // message summary links to the source *channel* (per request). Both need the source
+  // guild id (from the latest snapshot); without it they fall back to plain text.
   function sourceCell(run) {
-    const channel = run.src_name ? `#${run.src_name}` : `#${run.src_ch_id}`;
-    const summary = run.summary
-      ? `<div class="src-summary">${esc(run.summary)}</div>`
-      : "";
+    const name = run.src_name ? `#${run.src_name}` : `#${run.src_ch_id}`;
+    const g = run.src_guild_id;
+    const msgHref = g
+      ? `${DISCORD}/${g}/${run.src_ch_id}/${run.src_msg_id}`
+      : null;
+    const chHref = g ? `${DISCORD}/${g}/${run.src_ch_id}` : null;
+    const channel = msgHref
+      ? `<a href="${esc(msgHref)}" target="_blank" rel="noopener" ` +
+        `title="Jump to source message">${esc(name)}</a>`
+      : esc(name);
+    let summary = "";
+    if (run.summary) {
+      summary = chHref
+        ? `<a href="${esc(chHref)}" target="_blank" rel="noopener" ` +
+          `title="Open source channel">${esc(run.summary)}</a>`
+        : esc(run.summary);
+    }
     return (
-      `<div class="src-channel">${esc(channel)}</div>${summary}` +
+      `<div class="src-channel">${channel}</div>` +
+      (summary ? `<div class="src-summary">${summary}</div>` : "") +
       `<div class="src-sub">msg ${esc(run.src_msg_id)}</div>`
     );
   }

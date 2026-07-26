@@ -62,6 +62,18 @@ tr.run.open td {
   font-weight: 600;
   color: var(--text-1);
 }
+/* Channel name → source message, summary → source channel (links inherit the row's
+   type hierarchy; the link affordance shows on hover). */
+.src-channel a,
+.src-summary a {
+  color: inherit;
+  text-decoration: none;
+}
+.src-channel a:hover,
+.src-summary a:hover {
+  color: var(--link);
+  text-decoration: underline;
+}
 .src-id {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.82rem;
@@ -216,30 +228,6 @@ tr.detail-row > td {
   font-weight: 600;
   color: var(--text-2);
 }
-.version-chips {
-  display: inline-flex;
-  gap: 0.3rem;
-  flex-wrap: wrap;
-}
-.vchip {
-  font: inherit;
-  font-size: 0.74rem;
-  cursor: pointer;
-  padding: 0.12rem 0.5rem;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface-3);
-  color: var(--text-2);
-}
-.vchip:hover {
-  border-color: var(--accent);
-}
-.vchip.active {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  background: var(--accent-tint);
-  font-weight: 600;
-}
 .diff-toggle {
   font-size: 0.76rem;
   color: var(--text-2);
@@ -253,25 +241,82 @@ tr.detail-row > td {
   color: var(--text-muted);
   font-style: italic;
 }
-.render-pane {
+
+/* Every captured version is a column in a horizontally-scrollable row (no vertical
+   scroll on the columns — the row scrolls sideways, each column shows its full body). */
+.vcols {
+  display: flex;
+  gap: 0.7rem;
+  overflow-x: auto;
+  padding-bottom: 0.5rem;
+  scroll-snap-type: x proximity;
+}
+.vcol {
+  flex: 0 0 min(380px, 82vw);
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-0);
+  overflow: hidden;
+}
+.vcol-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.op-tag {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.08rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.op-tag.create {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+.op-tag.update {
+  color: var(--link);
+  border-color: color-mix(in srgb, var(--link) 45%, transparent);
+  background: color-mix(in srgb, var(--link) 12%, transparent);
+}
+.op-tag.delete {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 45%, transparent);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
+.vcol-ver {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.vcol-time {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.vcol-body {
   padding: 0.7rem 0.8rem;
-  max-height: 60vh;
-  overflow: auto;
 }
 
 /* -- rendered CV2 / classic message (cv2_render output) ------------------- */
 
-.render-pane .cv2-root {
+.vcol-body .cv2-root {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   font-size: 0.86rem;
   color: var(--text-1);
 }
-.render-pane .cv2-container {
+.vcol-body .cv2-container {
   border-left: 3px solid var(--accent);
   background: var(--surface-2);
   border-radius: var(--radius-sm);
@@ -280,80 +325,80 @@ tr.detail-row > td {
   flex-direction: column;
   gap: 0.4rem;
 }
-.render-pane .cv2-text {
+.vcol-body .cv2-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.45;
 }
-.render-pane .md-h1 {
+.vcol-body .md-h1 {
   font-size: 1.15rem;
   font-weight: 700;
 }
-.render-pane .md-h2 {
+.vcol-body .md-h2 {
   font-size: 1.02rem;
   font-weight: 700;
 }
-.render-pane .md-h3 {
+.vcol-body .md-h3 {
   font-size: 0.92rem;
   font-weight: 700;
 }
-.render-pane .md-small {
+.vcol-body .md-small {
   font-size: 0.72rem;
   color: var(--text-muted);
 }
-.render-pane .md-bullet::before {
+.vcol-body .md-bullet::before {
   content: "• ";
   color: var(--text-3);
 }
-.render-pane .emoji {
+.vcol-body .emoji {
   width: 1.2em;
   height: 1.2em;
   vertical-align: -0.2em;
   object-fit: contain;
 }
-.render-pane .cv2-section {
+.vcol-body .cv2-section {
   display: flex;
   gap: 0.6rem;
   align-items: flex-start;
   justify-content: space-between;
 }
-.render-pane .cv2-section-body {
+.vcol-body .cv2-section-body {
   flex: 1;
   min-width: 0;
 }
-.render-pane .cv2-accessory .cv2-thumb,
-.render-pane .cv2-thumb {
+.vcol-body .cv2-accessory .cv2-thumb,
+.vcol-body .cv2-thumb {
   max-width: 84px;
   max-height: 84px;
   border-radius: var(--radius-sm);
   object-fit: cover;
 }
-.render-pane .cv2-media {
+.vcol-body .cv2-media {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
 }
-.render-pane .cv2-media-item,
-.render-pane .embed-image {
+.vcol-body .cv2-media-item,
+.vcol-body .embed-image {
   max-width: 100%;
   max-height: 240px;
   border-radius: var(--radius-sm);
   object-fit: contain;
 }
-.render-pane .cv2-sep {
+.vcol-body .cv2-sep {
   border: none;
   border-top: 1px solid var(--border);
   margin: 0.15rem 0;
 }
-.render-pane .cv2-spacer {
+.vcol-body .cv2-spacer {
   height: 0.5rem;
 }
-.render-pane .cv2-buttons {
+.vcol-body .cv2-buttons {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
 }
-.render-pane .cv2-button {
+.vcol-body .cv2-button {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
@@ -365,16 +410,16 @@ tr.detail-row > td {
   font-size: 0.78rem;
   text-decoration: none;
 }
-.render-pane .cv2-button:hover {
+.vcol-body .cv2-button:hover {
   border-color: var(--accent);
 }
-.render-pane .cv2-placeholder,
-.render-pane .cv2-note {
+.vcol-body .cv2-placeholder,
+.vcol-body .cv2-note {
   font-size: 0.74rem;
   color: var(--text-muted);
   font-style: italic;
 }
-.render-pane .cv2-embed {
+.vcol-body .cv2-embed {
   border-left: 3px solid var(--text-3);
   background: var(--surface-2);
   border-radius: var(--radius-sm);
@@ -383,27 +428,27 @@ tr.detail-row > td {
   flex-direction: column;
   gap: 0.3rem;
 }
-.render-pane .embed-title {
+.vcol-body .embed-title {
   font-weight: 700;
 }
-.render-pane .embed-author,
-.render-pane .embed-footer {
+.vcol-body .embed-author,
+.vcol-body .embed-footer {
   font-size: 0.74rem;
   color: var(--text-muted);
 }
-.render-pane .embed-field-name {
+.vcol-body .embed-field-name {
   font-weight: 600;
   font-size: 0.8rem;
 }
 /* diff marks — word-by-word inline within a changed text leaf */
-.render-pane ins {
+.vcol-body ins {
   background: color-mix(in srgb, var(--ok) 28%, transparent);
   color: var(--ok);
   text-decoration: none;
   border-radius: 2px;
   padding: 0 1px;
 }
-.render-pane del {
+.vcol-body del {
   background: color-mix(in srgb, var(--err) 22%, transparent);
   color: var(--err);
   text-decoration: line-through;
@@ -412,15 +457,15 @@ tr.detail-row > td {
 }
 /* diff marks — whole component added (green) / removed (red); background only, no
    accent bar (a left border reads as a container accent). */
-.render-pane .cv2-added,
-.render-pane .cv2-removed {
+.vcol-body .cv2-added,
+.vcol-body .cv2-removed {
   border-radius: var(--radius-sm);
   padding: 0.15rem 0.4rem;
 }
-.render-pane .cv2-added {
+.vcol-body .cv2-added {
   background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
-.render-pane .cv2-removed {
+.vcol-body .cv2-removed {
   background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
