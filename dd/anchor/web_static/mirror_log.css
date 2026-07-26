@@ -410,19 +410,17 @@ tr.detail-row > td {
   border-radius: 2px;
   padding: 0 1px;
 }
-/* diff marks — whole component added (green) / removed (red) */
+/* diff marks — whole component added (green) / removed (red); background only, no
+   accent bar (a left border reads as a container accent). */
 .render-pane .cv2-added,
 .render-pane .cv2-removed {
   border-radius: var(--radius-sm);
   padding: 0.15rem 0.4rem;
-  border-left: 3px solid transparent;
 }
 .render-pane .cv2-added {
-  border-left-color: var(--ok);
   background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
 .render-pane .cv2-removed {
-  border-left-color: var(--err);
   background: color-mix(in srgb, var(--err) 12%, transparent);
 }
 
