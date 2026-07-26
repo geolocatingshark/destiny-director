@@ -4,10 +4,12 @@
   announcement fanned out to its follower channels). Served by
   dd.anchor.extensions.mirror_log: GET /mirror-logs returns this static shell; the page
   fetches GET /mirror-logs/data (JSON, DB-only) for the recent-runs list and
-  GET /mirror-logs/data?src=<id> for one run's per-destination detail, rendering
-  everything client-side (mirror_log.js). This is the web-native replacement for the
-  beacon Discord progress card — nothing here is a live Discord message, so there is
-  nothing to supersede or freeze. Auth is the shared OAuth middleware (web_auth).
+  GET /mirror-logs/data?src=<id> for one run's per-destination detail + captured version
+  list, then GET /mirror-logs/render?src=<id>&v=<n>[&diff=<m>] for each version's safe
+  rendered HTML (or a word-level diff), rendering everything client-side (mirror_log.js).
+  This is the web-native replacement for the beacon Discord progress card — nothing here
+  is a live Discord message, so there is nothing to supersede or freeze. Auth is the
+  shared OAuth middleware (web_auth).
 -->
 <html lang="en">
   <head>

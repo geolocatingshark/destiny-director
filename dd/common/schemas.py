@@ -1889,6 +1889,46 @@ class MirrorMessageVersion(Base):
 
     @classmethod
     @ensure_session(db_session)
+    async def latest_for(
+        cls,
+        src_msg_ids: t.Sequence[int],
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> dict[int, dict[str, t.Any]]:
+        """Latest snapshot per source message, for the run-list summary + source link.
+
+        One query over the given ids (the run list is capped, so the id set is small),
+        reduced in Python to the highest ``version`` per ``src_msg_id``. Returns a map
+        of ``src_msg_id -> {version, src_guild_id, summary, kind}`` (no payload)."""
+        if not src_msg_ids:
+            return {}
+        ids = [int(i) for i in src_msg_ids]
+        rows = (
+            await session.execute(
+                select(
+                    cls.src_msg_id,
+                    cls.version,
+                    cls.src_guild_id,
+                    cls.summary,
+                    cls.kind,
+                )
+                .where(cls.src_msg_id.in_(ids))
+                .order_by(cls.src_msg_id, cls.version)
+            )
+        ).fetchall()
+        # Ordered by version ascending, so the last row seen per id is its latest.
+        latest: dict[int, dict[str, t.Any]] = {}
+        for src_msg_id, version, src_guild_id, summary, kind in rows:
+            latest[int(src_msg_id)] = {
+                "version": int(version),
+                "src_guild_id": int(src_guild_id) if src_guild_id is not None else None,
+                "summary": summary,
+                "kind": str(kind),
+            }
+        return latest
+
+    @classmethod
+    @ensure_session(db_session)
     async def get_version(
         cls,
         src_msg_id: int,
@@ -1940,12 +1980,16 @@ class MirrorMessageVersion(Base):
         the ledger prune has to work around.
         """
         orphaned = (
-            await session.execute(
-                select(cls.src_msg_id).where(
-                    ~exists().where(MirrorDelivery.src_msg_id == cls.src_msg_id)
+            (
+                await session.execute(
+                    select(cls.src_msg_id).where(
+                        ~exists().where(MirrorDelivery.src_msg_id == cls.src_msg_id)
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         ids = [int(smi) for smi in orphaned]
         for i in range(0, len(ids), 500):  # chunk the IN-list / packet size
             await session.execute(

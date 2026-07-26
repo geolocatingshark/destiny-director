@@ -21,11 +21,13 @@ normalized to ints), the classic content/embed path (entity-factory embed dicts 
 upload resources dropped), the summary extraction, and the over-cap truncation marker.
 """
 
+import typing as t
 from types import SimpleNamespace
 
 import hikari as h
 
 from dd.beacon import mirror_worker as mw
+from dd.common.bot import CachedFetchBot
 from dd.hmessage import HMessage
 
 
@@ -39,9 +41,18 @@ def _cv2(text: str) -> HMessage:
     )
 
 
+def _stub_bot(serialize_embed: t.Any = None) -> CachedFetchBot:
+    # Only .entity_factory.serialize_embed is touched (classic path); cast the stub to
+    # the bot type, matching the repo's test convention (t.cast over inline ignores).
+    return t.cast(
+        CachedFetchBot,
+        SimpleNamespace(entity_factory=SimpleNamespace(serialize_embed=serialize_embed)),
+    )
+
+
 def test_snapshot_cv2_serializes_tree_with_int_types() -> None:
     payload, kind, summary = mw._snapshot_payload(
-        _cv2("**Weekly reset**\nsecond line"), bot=None  # type: ignore[arg-type]
+        _cv2("**Weekly reset**\nsecond line"), bot=_stub_bot()
     )
     assert kind == "cv2"
     assert summary == "**Weekly reset**"  # first line only
@@ -54,9 +65,8 @@ def test_snapshot_cv2_serializes_tree_with_int_types() -> None:
 
 
 def test_snapshot_classic_uses_content_first_line() -> None:
-    bot = SimpleNamespace(entity_factory=SimpleNamespace(serialize_embed=None))
     payload, kind, summary = mw._snapshot_payload(
-        HMessage(content="Title line\nmore body"), bot=bot  # type: ignore[arg-type]
+        HMessage(content="Title line\nmore body"), bot=_stub_bot()
     )
     assert kind == "classic"
     assert summary == "Title line"
@@ -65,14 +75,9 @@ def test_snapshot_classic_uses_content_first_line() -> None:
 
 def test_snapshot_classic_embed_summary_and_drops_upload_resources() -> None:
     # serialize_embed returns (payload, resources); we keep the dict, drop the upload.
-    bot = SimpleNamespace(
-        entity_factory=SimpleNamespace(
-            serialize_embed=lambda e: ({"title": "Embed Title"}, ["UPLOAD"])
-        )
-    )
+    bot = _stub_bot(lambda e: ({"title": "Embed Title"}, ["UPLOAD"]))
     payload, kind, summary = mw._snapshot_payload(
-        HMessage(content="", embeds=[h.Embed(title="Embed Title")]),
-        bot=bot,  # type: ignore[arg-type]
+        HMessage(content="", embeds=[h.Embed(title="Embed Title")]), bot=bot
     )
     assert kind == "classic"
     assert summary == "Embed Title"  # falls back to first embed title
@@ -81,7 +86,7 @@ def test_snapshot_classic_embed_summary_and_drops_upload_resources() -> None:
 
 def test_snapshot_truncates_oversized_payload() -> None:
     payload, kind, summary = mw._snapshot_payload(
-        _cv2("x" * (mw._MAX_SNAPSHOT_BYTES + 1000)), bot=None  # type: ignore[arg-type]
+        _cv2("x" * (mw._MAX_SNAPSHOT_BYTES + 1000)), bot=_stub_bot()
     )
     assert kind == "cv2"
     # body collapsed to a marker; the row still records the version existed.

@@ -158,27 +158,116 @@
     return `<table class="dests"><thead>${head}</thead><tbody>${body}</tbody></table>${trunc}`;
   }
 
+  // The expandable detail: a version render pane (newest version selected, with a
+  // diff-vs-previous toggle) above the per-destination table.
+  function renderVersionPane(data) {
+    const vs = data.versions || [];
+    if (!vs.length) {
+      return (
+        `<div class="versions"><p class="detail-loading">` +
+        `No version snapshots for this source yet — capture began at deploy, so ` +
+        `older runs have none.</p></div>`
+      );
+    }
+    const chips = vs
+      .map((v, i) => {
+        const active = i === vs.length - 1 ? " active" : "";
+        const title = v.captured_at ? new Date(v.captured_at).toLocaleString() : "";
+        return (
+          `<button type="button" class="vchip${active}" data-idx="${i}" ` +
+          `title="${esc(title)}">v${esc(v.version)}</button>`
+        );
+      })
+      .join("");
+    return (
+      `<div class="versions">` +
+      `<div class="version-head">` +
+      `<span class="version-label">Versions</span>` +
+      `<div class="version-chips">${chips}</div>` +
+      `<label class="diff-toggle hidden">` +
+      `<input type="checkbox" class="diff-check" /> Highlight changes vs previous` +
+      `</label>` +
+      `</div>` +
+      `<div class="render-pane"><p class="detail-loading">Loading render…</p></div>` +
+      `</div>`
+    );
+  }
+
+  // Wire the version chips + diff toggle to the stateless render route. The server
+  // returns pre-escaped safe HTML (cv2_render), so it goes straight into innerHTML on
+  // ok; an error body is untrusted, so it stays textContent.
+  function setupVersionPane(srcId, container, versions) {
+    if (!versions.length) return;
+    const chips = [...container.querySelectorAll(".vchip")];
+    const pane = container.querySelector(".render-pane");
+    const toggleLabel = container.querySelector(".diff-toggle");
+    const diffCheck = container.querySelector(".diff-check");
+    let selectedIdx = versions.length - 1;
+    let renderToken = 0;
+
+    async function show() {
+      const token = ++renderToken;
+      const v = versions[selectedIdx];
+      const hasPrev = selectedIdx > 0;
+      toggleLabel.classList.toggle("hidden", !hasPrev);
+      const diffOn = hasPrev && diffCheck.checked;
+      let url = `/mirror-logs/render?src=${encodeURIComponent(srcId)}&v=${encodeURIComponent(v.version)}`;
+      if (diffOn)
+        url += `&diff=${encodeURIComponent(versions[selectedIdx - 1].version)}`;
+      pane.innerHTML = `<p class="detail-loading">Loading render…</p>`;
+      try {
+        const res = await fetch(url, { credentials: "same-origin" });
+        const body = await res.text();
+        if (token !== renderToken) return; // superseded by a newer selection
+        if (res.ok) pane.innerHTML = body;
+        else pane.textContent = `Render failed: ${body}`;
+      } catch (e) {
+        if (token === renderToken) pane.textContent = `Render error: ${e}`;
+      }
+    }
+
+    chips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        selectedIdx = Number(chip.dataset.idx);
+        chips.forEach((c) => c.classList.toggle("active", c === chip));
+        show();
+      });
+    });
+    diffCheck.addEventListener("change", show);
+    show();
+  }
+
   async function loadDetail(srcId, container) {
     container.innerHTML = `<p class="detail-loading">Loading destinations…</p>`;
     try {
       const data = await fetchJSON(
         `/mirror-logs/data?src=${encodeURIComponent(srcId)}`,
       );
-      container.innerHTML = renderDetailTable(data);
+      container.innerHTML = renderVersionPane(data) + renderDetailTable(data);
+      setupVersionPane(srcId, container, data.versions || []);
     } catch (e) {
       container.innerHTML = `<p class="detail-error">Failed to load detail: ${esc(e.message)}</p>`;
     }
   }
 
-  // Channel is named where known (feed name); the message id stays as the muted run
-  // identifier (a source-message link needs the source guild id, which we don't store
-  // yet — see the versioning design doc).
+  // Channel is named where known (feed name); the summary + a jump-to-source link come
+  // from the latest captured snapshot (src_guild_id) — a bare msg id only as fallback
+  // for sources predating the capture deploy.
   function sourceCell(run) {
     const channel = run.src_name ? `#${run.src_name}` : `#${run.src_ch_id}`;
-    return (
-      `<div class="src-channel">${esc(channel)}</div>` +
-      `<div class="src-sub">msg ${esc(run.src_msg_id)}</div>`
-    );
+    const summary = run.summary
+      ? `<div class="src-summary">${esc(run.summary)}</div>`
+      : "";
+    let msgLine;
+    if (run.src_guild_id) {
+      const href = `${DISCORD}/${run.src_guild_id}/${run.src_ch_id}/${run.src_msg_id}`;
+      msgLine =
+        `<a class="src-link" href="${esc(href)}" target="_blank" rel="noopener">` +
+        `msg ${esc(run.src_msg_id)} ↗</a>`;
+    } else {
+      msgLine = `<span class="src-sub">msg ${esc(run.src_msg_id)}</span>`;
+    }
+    return `<div class="src-channel">${esc(channel)}</div>${summary}${msgLine}`;
   }
 
   function render(runs) {

@@ -22,13 +22,16 @@ is the web-native replacement for the beacon Discord "progress card": because it
 rendered on demand from the DB, there is no long-lived Discord message to supersede,
 cancel or freeze.
 
-Two routes, mirroring the ``/stats`` shell + JSON pattern:
+Three routes, mirroring the ``/stats`` shell + JSON pattern:
 
 - ``GET /mirror-logs`` serves the static shell (``web_static/mirror_log.html``); the
   page fetches its data and renders everything client-side (``mirror_log.js``).
 - ``GET /mirror-logs/data`` returns recent runs as JSON, read entirely from the shared
   DB (no Discord API calls). ``?src=<src_msg_id>`` returns one run's per-destination
-  rows for the expandable detail view.
+  rows plus its captured version list for the expandable detail view.
+- ``GET /mirror-logs/render?src=<id>&v=<n>`` returns the safe rendered HTML of one
+  captured version (see :mod:`dd.anchor.cv2_render`); adding ``&diff=<m>`` returns a
+  word-level diff of version ``n`` against version ``m``. Pull/stateless.
 
 Discord snowflake ids exceed JavaScript's safe-integer range, so ids are emitted as
 strings; ledger timestamps are naive-UTC wall clocks, stamped UTC here so the browser
@@ -46,6 +49,7 @@ import lightbulb as lb
 from ...common import schemas
 from ...common.utils import followable_name
 from .. import web
+from ..cv2_render import render_diff, render_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +77,24 @@ async def _collect_runs() -> dict:
     runs = await schemas.MirrorDelivery.recent_runs(
         limit=_RUN_LIMIT, within_days=_WINDOW_DAYS
     )
+    # One batch lookup of each source's latest captured snapshot supplies the run-list
+    # summary label + the source guild id for a jump-to-source link (retiring the last
+    # bare snowflake). Sources predating the capture deploy simply have no entry.
+    latest = await schemas.MirrorMessageVersion.latest_for(
+        [run["src_msg_id"] for run in runs]
+    )
     for run in runs:
         # Resolve the source channel to its configured feed name (else None → the page
         # falls back to the id). followable_name returns the id itself when unknown.
         name = followable_name(id=run["src_ch_id"])
         run["src_name"] = name if isinstance(name, str) else None
+        snap = latest.get(run["src_msg_id"])
+        run["summary"] = snap["summary"] if snap else None
+        run["src_guild_id"] = (
+            str(snap["src_guild_id"])
+            if snap and snap["src_guild_id"] is not None
+            else None
+        )
         run["src_msg_id"] = str(run["src_msg_id"])
         run["src_ch_id"] = str(run["src_ch_id"])
         run["started"] = _iso_utc(run["started"])
@@ -97,10 +114,21 @@ async def _collect_detail(src_msg_id: int) -> dict:
         )
         row["created_at"] = _iso_utc(row["created_at"])
         row["finished_at"] = _iso_utc(row["finished_at"])
+    versions = await schemas.MirrorMessageVersion.versions_for(src_msg_id)
     return {
         "src_msg_id": str(src_msg_id),
         "rows": rows,
         "truncated": len(rows) >= _ROW_LIMIT,
+        # Version snapshots power the render pane; empty for sources predating capture.
+        "versions": [
+            {
+                "version": v["version"],
+                "captured_at": _iso_utc(v["captured_at"]),
+                "summary": v["summary"],
+                "kind": v["kind"],
+            }
+            for v in versions
+        ],
     }
 
 
@@ -122,10 +150,49 @@ async def _handle_data(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.json_response(await _collect_runs())
 
 
+def _int_param(request: aiohttp.web.Request, name: str) -> int:
+    raw = request.query.get(name)
+    if raw is None:
+        raise aiohttp.web.HTTPBadRequest(text=f"{name} is required")
+    try:
+        return int(raw)
+    except ValueError:
+        raise aiohttp.web.HTTPBadRequest(text=f"{name} must be an integer") from None
+
+
+async def _handle_render(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Return the safe rendered HTML for one captured version of a source message.
+
+    ``?src=<id>&v=<n>`` renders version ``n``; adding ``&diff=<m>`` returns a word-level
+    diff of version ``n`` against version ``m`` instead. Pull/stateless — no live
+    message, no lifecycle. The HTML is pre-escaped by the renderer, safe for the page's
+    ``innerHTML`` sink."""
+    src_msg_id = _int_param(request, "src")
+    version = _int_param(request, "v")
+    new = await schemas.MirrorMessageVersion.get_version(src_msg_id, version)
+    if new is None:
+        raise aiohttp.web.HTTPNotFound(text="No snapshot for that version.")
+
+    diff = request.query.get("diff")
+    if diff is not None:
+        old = await schemas.MirrorMessageVersion.get_version(
+            src_msg_id, _int_param(request, "diff")
+        )
+        if old is None:
+            raise aiohttp.web.HTTPNotFound(
+                text="No snapshot for the diff-against version."
+            )
+        body = render_diff(new["payload"], new["kind"], old["payload"], old["kind"])
+    else:
+        body = render_snapshot(new["payload"], new["kind"])
+    return aiohttp.web.Response(text=body, content_type="text/html")
+
+
 def register_mirror_log_routes(app: aiohttp.web.Application) -> None:
     """Add the mirror-log routes to the shared persistent app."""
     app.router.add_get("/mirror-logs", _handle_page)
     app.router.add_get("/mirror-logs/data", _handle_data)
+    app.router.add_get("/mirror-logs/render", _handle_render)
 
 
 web.register_routes(register_mirror_log_routes)
