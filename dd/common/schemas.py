@@ -1784,6 +1784,175 @@ class MirrorDelivery(Base):
             )
 
 
+class MirrorMessageVersion(Base):
+    """Per-version content snapshot of a mirrored source message.
+
+    The delivery ledger (:class:`MirrorDelivery`) stores *intent*, never content — the
+    worker fetches the source fresh at delivery time. This table is the one place we
+    persist *what was actually delivered*: the worker snapshots each
+    ``(src_msg_id, version)`` once, as it materializes that version on a source-cache
+    miss (so one cheap write per version, not per destination), letting the web log
+    re-render every version a follower saw and diff between them. There is **no
+    backfill** — history starts at deploy.
+
+    ``payload`` is a JSON snapshot in Discord's own component/embed shape:
+
+    - ``kind == "cv2"``:  ``{"components": [raw component dicts]}`` — the re-renderable,
+      diffable Components V2 tree, post item-emoji rewrite (i.e. exactly what followers
+      receive).
+    - ``kind == "classic"``:  ``{"content": str, "embeds": [embed dicts]}``.
+    - a pathological (over-cap) post is stored as ``{"truncated": true}`` — the row
+      still records that a version existed, just not its full body.
+
+    Attachments/stickers are referenced by url inside the payload, never stored as
+    binary. ``summary`` is a short label (first text line / embed title) for the run
+    list; ``captured_at`` is naive-UTC.
+    """
+
+    __tablename__ = "mirror_message_version"
+    __table_args__ = (
+        # prune scans by captured age; also serves the versions-for-source lookup's
+        # sibling ordering cheaply enough without a second index.
+        Index("ix_mirror_message_version_captured_at", "captured_at"),
+    )
+
+    src_msg_id = Column("src_msg_id", BigInteger, primary_key=True)
+    version = Column("version", Integer, primary_key=True)
+    captured_at = Column("captured_at", DateTime, nullable=False, default=_utcnow)
+    src_guild_id = Column("src_guild_id", BigInteger, nullable=True)
+    kind = Column("kind", String(8), nullable=False)
+    summary = Column("summary", String(200), nullable=True)
+    payload = Column("payload", JSON, nullable=False)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def capture(
+        cls,
+        *,
+        src_msg_id: int,
+        version: int,
+        src_guild_id: int | None,
+        kind: str,
+        summary: str | None,
+        payload: dict[str, t.Any],
+        session: AsyncSession = _UNSET,
+    ) -> int:
+        """Record one version snapshot; return rows inserted (0 if already captured).
+
+        INSERT-IGNORE on the ``(src_msg_id, version)`` PK, so re-materializing a version
+        already snapshotted (a multi-batch fan-out, a restart) is a cheap no-op rather
+        than a clobber — the first capture wins.
+        """
+        result = await session.execute(
+            _insert_ignore(cls).values(
+                src_msg_id=int(src_msg_id),
+                version=int(version),
+                captured_at=_utcnow(),
+                src_guild_id=int(src_guild_id) if src_guild_id is not None else None,
+                kind=str(kind),
+                summary=(str(summary)[:200] if summary else None),
+                payload=payload,
+            )
+        )
+        return result.rowcount or 0
+
+    @classmethod
+    @ensure_session(db_session)
+    async def versions_for(
+        cls,
+        src_msg_id: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> list[dict[str, t.Any]]:
+        """Captured versions of one source message, oldest first (the selector list).
+
+        Returns the light metadata only — ``version``, ``captured_at`` (naive-UTC),
+        ``summary``, ``kind`` — never the payload, so the detail JSON stays small; the
+        payload is fetched per-version by the render route.
+        """
+        rows = (
+            await session.execute(
+                select(cls.version, cls.captured_at, cls.summary, cls.kind)
+                .where(cls.src_msg_id == int(src_msg_id))
+                .order_by(cls.version)
+            )
+        ).fetchall()
+        return [
+            {
+                "version": int(version),
+                "captured_at": captured_at,
+                "summary": summary,
+                "kind": str(kind),
+            }
+            for version, captured_at, summary, kind in rows
+        ]
+
+    @classmethod
+    @ensure_session(db_session)
+    async def get_version(
+        cls,
+        src_msg_id: int,
+        version: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> dict[str, t.Any] | None:
+        """One version's full snapshot (payload included), or ``None`` if absent."""
+        row = (
+            await session.execute(
+                select(
+                    cls.version,
+                    cls.captured_at,
+                    cls.src_guild_id,
+                    cls.kind,
+                    cls.summary,
+                    cls.payload,
+                ).where(
+                    and_(cls.src_msg_id == int(src_msg_id), cls.version == int(version))
+                )
+            )
+        ).first()
+        if row is None:
+            return None
+        version_, captured_at, src_guild_id, kind, summary, payload = row
+        return {
+            "version": int(version_),
+            "captured_at": captured_at,
+            "src_guild_id": int(src_guild_id) if src_guild_id is not None else None,
+            "kind": str(kind),
+            "summary": summary,
+            "payload": payload,
+        }
+
+    @classmethod
+    @ensure_session(db_session)
+    async def prune(
+        cls,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        """Drop version rows orphaned by :meth:`MirrorDelivery.prune`.
+
+        A snapshot is kept exactly as long as its source still has any delivery row —
+        so it lives through the retention window and stays for the indefinitely-kept
+        latest-delivered-per-channel anchor, then goes when the last delivery row for
+        that source is pruned. Run *after* ``MirrorDelivery.prune``. The subquery
+        targets a different table, so this is not the MySQL error-1093 self-reference
+        the ledger prune has to work around.
+        """
+        orphaned = (
+            await session.execute(
+                select(cls.src_msg_id).where(
+                    ~exists().where(MirrorDelivery.src_msg_id == cls.src_msg_id)
+                )
+            )
+        ).scalars().all()
+        ids = [int(smi) for smi in orphaned]
+        for i in range(0, len(ids), 500):  # chunk the IN-list / packet size
+            await session.execute(
+                delete(cls).where(cls.src_msg_id.in_(ids[i : i + 500]))
+            )
+
+
 class ServerStatistics(Base):
     __tablename__ = "server_statistics"
     __mapper_args__ = {"eager_defaults": True}

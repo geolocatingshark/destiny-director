@@ -37,6 +37,8 @@ import asyncio as aio
 import collections.abc
 import contextlib
 import datetime as dt
+import enum
+import json
 import logging
 import typing as t
 from collections import defaultdict
@@ -54,6 +56,7 @@ from ..common.schemas import (
     DeliveryState,
     MirrorDelivery,
     MirroredChannel,
+    MirrorMessageVersion,
     OutcomeKind,
     PickedRow,
 )
@@ -105,6 +108,87 @@ _PLAIN_CONTENT_LIMIT = 2000
 def _is_cv2(msg: h.Message) -> bool:
     """Whether the source message was sent as a Components V2 message."""
     return h.MessageFlag.IS_COMPONENTS_V2 in (msg.flags or h.MessageFlag.NONE)
+
+
+# --- version snapshotting (for the web mirror-log render view) -----------------------
+
+# Non-fatal snapshot failures land here, not on the health/alerts channel — a missed
+# render snapshot never affects delivery, so it stays out of the operator alert stream.
+_snapshot_logger = logging.getLogger(__name__)
+
+# A pathological post whose JSON snapshot exceeds this is stored as a truncated marker
+# rather than bloating the table (the row still records that the version existed).
+_MAX_SNAPSHOT_BYTES = 60_000
+# Longest text pulled from a post for the run-list summary label (the column caps at
+# 200; we trim first so a giant first line does not dominate the serialization).
+_SUMMARY_LEN = 200
+
+
+def _json_primitive(obj: t.Any) -> t.Any:
+    """Deep-convert a build/serialize payload to plain JSON primitives.
+
+    hikari's ``build()`` / ``serialize_embed`` payloads carry ``IntEnum`` type tags
+    (``ComponentType``, ``ButtonStyle``) and the odd ``datetime``/``Color``; round-trip
+    through ``json`` with a coercing default so the stored JSON is clean primitives the
+    anchor renderer can walk without importing hikari."""
+
+    def _default(o: t.Any) -> t.Any:
+        if isinstance(o, enum.Enum):
+            return o.value
+        return str(o)
+
+    return json.loads(json.dumps(obj, default=_default))
+
+
+def _first_text_line(nodes: t.Iterable[t.Any]) -> str | None:
+    """First non-empty text-display line anywhere in a CV2 component tree."""
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") == 10 and str(node.get("content", "")).strip():
+            return str(node["content"]).strip().splitlines()[0].strip()
+        for key in ("components", "items"):
+            child = node.get(key)
+            if isinstance(child, list):
+                found = _first_text_line(child)
+                if found:
+                    return found
+    return None
+
+
+def _snapshot_payload(
+    hmsg: HMessage, bot: CachedFetchBot
+) -> tuple[dict[str, t.Any], str, str | None]:
+    """Serialize an :class:`HMessage` to a ``(payload, kind, summary)`` snapshot.
+
+    CV2 messages serialize their rebuilt component builders back to Discord's raw
+    component dicts (``build()[0]``); classic messages store content + entity-factory
+    embed dicts. Either way the snapshot is *post* item-emoji rewrite — exactly what
+    followers receive. Over-cap payloads collapse to a truncated marker.
+    """
+    if hmsg.components:
+        components = [_json_primitive(c.build()[0]) for c in hmsg.components]
+        payload: dict[str, t.Any] = {"components": components}
+        kind = "cv2"
+        summary = _first_text_line(components)
+    else:
+        embeds = [
+            _json_primitive(bot.entity_factory.serialize_embed(e)[0])
+            for e in hmsg.embeds
+        ]
+        payload = {"content": hmsg.content, "embeds": embeds}
+        kind = "classic"
+        summary = None
+        if hmsg.content.strip():
+            summary = hmsg.content.strip().splitlines()[0].strip()
+        elif embeds:
+            first = embeds[0]
+            summary = first.get("title") or first.get("description")
+    if summary:
+        summary = summary[:_SUMMARY_LEN]
+    if len(json.dumps(payload)) > _MAX_SNAPSHOT_BYTES:
+        payload = {"truncated": True}
+    return payload, kind, summary
 
 
 async def _fit_source_to_budget(hmsg: HMessage, src_msg_id: int) -> None:
@@ -425,8 +509,42 @@ class MirrorWorker:
         # can tip a source that was already near the cap.
         await _fit_source_to_budget(hmsg, src_msg_id)
         role_map = await MirroredChannel.fetch_mirror_and_role_mention_id(src_ch_id)
+        # Snapshot this version for the web log's render view — once per materialized
+        # version (this cache-miss path), on the fully-rewritten, budget-fitted content
+        # every destination will receive. Best-effort: never let it break a delivery.
+        await self._capture_version(msg, src_msg_id, version, hmsg, bot)
         self._source_cache[src_msg_id] = (version, hmsg, role_map)
         return hmsg, role_map
+
+    async def _capture_version(
+        self,
+        msg: h.Message,
+        src_msg_id: int,
+        version: int,
+        hmsg: HMessage,
+        bot: CachedFetchBot,
+    ) -> None:
+        """Persist a content snapshot of ``(src_msg_id, version)`` (fire-and-log-only).
+
+        A serialization or DB error here must never sideline the delivery it rides on,
+        so everything is swallowed and logged (not alerted) — a missing render snapshot
+        only degrades the web log, never the mirror."""
+        try:
+            payload, kind, summary = _snapshot_payload(hmsg, bot)
+            await MirrorMessageVersion.capture(
+                src_msg_id=src_msg_id,
+                version=version,
+                src_guild_id=int(msg.guild_id) if msg.guild_id is not None else None,
+                kind=kind,
+                summary=summary,
+                payload=payload,
+            )
+        except Exception:
+            _snapshot_logger.exception(
+                "Failed to capture mirror version snapshot for %s v%s",
+                src_msg_id,
+                version,
+            )
 
     async def _evict_resolved_sources(self, batch: list[PickedRow]) -> None:
         """Drop cached source content for any batch source whose fan-out has resolved.

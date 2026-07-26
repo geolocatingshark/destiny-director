@@ -45,7 +45,12 @@ from ...common import cfg
 from ...common.auth import owner_only
 from ...common.bot import CachedFetchBot
 from ...common.emoji_store import AppEmojiStore
-from ...common.schemas import MirrorDelivery, MirroredChannel, ServerStatistics
+from ...common.schemas import (
+    MirrorDelivery,
+    MirroredChannel,
+    MirrorMessageVersion,
+    ServerStatistics,
+)
 from ...common.utils import (
     ErrorClass,
     classify_error,
@@ -787,6 +792,9 @@ async def prune_message_db(bot: CachedFetchBot = lb.di.INJECTED):
     await aio.sleep(randint(120, 1800))
     try:
         await MirrorDelivery.prune()
+        # After the ledger prune, drop version snapshots orphaned by it (a snapshot
+        # lives exactly as long as its source keeps any delivery row).
+        await MirrorMessageVersion.prune()
     except Exception as e:
         e.add_note("Exception during routine pruning of the mirror delivery ledger")
         await discord_error_logger(e, operation="Mirror DB prune")
