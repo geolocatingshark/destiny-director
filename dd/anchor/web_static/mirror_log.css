@@ -74,6 +74,17 @@ tr.run.open td {
   color: var(--link);
   text-decoration: underline;
 }
+.src-msg {
+  margin: 0.1rem 0;
+}
+.src-msg-link {
+  font-size: 0.76rem;
+  color: var(--link);
+  text-decoration: none;
+}
+.src-msg-link:hover {
+  text-decoration: underline;
+}
 .src-id {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.82rem;
