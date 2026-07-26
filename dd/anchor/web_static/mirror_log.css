@@ -175,55 +175,6 @@ tr.detail-row > td {
 .detail .detail-error {
   color: var(--err);
 }
-.detail .trunc {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  margin: 0.3rem 0 0;
-}
-
-table.dests {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.78rem;
-}
-table.dests th {
-  text-align: left;
-  font-weight: 600;
-  color: var(--text-2);
-  padding: 0.3rem 0.5rem;
-  border-bottom: 1px solid var(--border);
-}
-table.dests td {
-  padding: 0.3rem 0.5rem;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
-  vertical-align: top;
-}
-table.dests td.dest-id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--text-3);
-}
-.state {
-  font-weight: 600;
-}
-.state.DELIVERED {
-  color: var(--ok);
-}
-.state.FAILED {
-  color: var(--err);
-}
-.state.PENDING {
-  color: var(--link);
-}
-.state.CANCELLED {
-  color: var(--text-muted);
-}
-.err-detail {
-  color: var(--text-muted);
-}
-.err-detail .err-ref {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--err);
-}
 
 /* -- source summary + link (run list) ------------------------------------ */
 
@@ -432,14 +383,52 @@ table.dests td.dest-id {
   font-weight: 600;
   font-size: 0.8rem;
 }
-/* diff marks */
-.render-pane .cv2-diff ins {
-  background: color-mix(in srgb, var(--ok) 22%, transparent);
+/* diff marks — word-by-word inline within a changed text leaf */
+.render-pane ins {
+  background: color-mix(in srgb, var(--ok) 28%, transparent);
   color: var(--ok);
   text-decoration: none;
+  border-radius: 2px;
+  padding: 0 1px;
 }
-.render-pane .cv2-diff del {
-  background: color-mix(in srgb, var(--err) 18%, transparent);
+.render-pane del {
+  background: color-mix(in srgb, var(--err) 22%, transparent);
   color: var(--err);
   text-decoration: line-through;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+/* diff marks — whole component added (green) / removed (red) */
+.render-pane .cv2-added,
+.render-pane .cv2-removed {
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.4rem;
+  border-left: 3px solid transparent;
+}
+.render-pane .cv2-added {
+  border-left-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+.render-pane .cv2-removed {
+  border-left-color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
+
+/* jump-to-source button (run detail pane) */
+.jump-source {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.jump-source:hover {
+  border-color: var(--accent);
 }

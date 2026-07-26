@@ -29,6 +29,13 @@ URLs ``http(s)``-validated, only the ``{span, strong, em, a, img}`` tag whitelis
 the container/section wrappers here), so the output is safe for the ``box.innerHTML``
 sink the page injects it through.
 
+The **diff** view (:func:`render_diff`) renders the whole message in place and
+highlights what changed since the previous version, both **component-by-component** (a
+whole added/removed component is wrapped green/red) and **word-by-word** (text edits
+show inline ``<ins>``/``<del>`` marks). It is a recursive structural diff: sibling
+components are aligned, recursing into containers/sections, so an edit is localised
+rather than blowing away the whole message.
+
 Emoji: captured content carries full ``<:name:id>`` / ``<a:name:id>`` custom emoji, so
 we resolve straight to the Discord CDN (``cdn.discordapp.com/emojis/{id}.{png|gif}``) —
 no bot or guild-emoji dict needed, unlike the live post previewer.
@@ -36,6 +43,7 @@ no bot or guild-emoji dict needed, unlike the live post previewer.
 
 import difflib
 import html
+import json
 import re
 import typing as t
 
@@ -102,14 +110,18 @@ def _placeholder(message: str) -> str:
     return f'<div class="cv2-placeholder">⚠️ {html.escape(message)}</div>'
 
 
+def _render_markdown(content: str, sub: EmojiSub) -> str:
+    """A text leaf's inner HTML: per-line heading/bullet markdown, inline-safe."""
+    lines = _normalize_heading_spacing(content.split("\n"))
+    return "\n".join(_render_line(line, sub) for line in lines)
+
+
+# --- plain render --------------------------------------------------------------------
+
+
 def _text_block(content: t.Any, sub: EmojiSub) -> str:
-    """A text-display body: per-line heading/bullet markdown, inline-safe + pre-wrap."""
-    lines = _normalize_heading_spacing(str(content).split("\n"))
-    return (
-        '<div class="cv2-text">'
-        + "\n".join(_render_line(line, sub) for line in lines)
-        + "</div>"
-    )
+    """A text-display body (or embed description / field value), pre-wrapped."""
+    return f'<div class="cv2-text">{_render_markdown(str(content), sub)}</div>'
 
 
 def _emoji_prefix_html(emoji: t.Any) -> str:
@@ -129,7 +141,7 @@ def _emoji_prefix_html(emoji: t.Any) -> str:
     return (html.escape(name) + " ") if name else ""
 
 
-def _render_button(node: t.Any, sub: EmojiSub) -> str:
+def _render_button(node: t.Any) -> str:
     """A link button → anchor button. Non-link / url-less buttons (e.g. interactive
     ones that never survive a mirror) are dropped, matching the send whitelist."""
     if not isinstance(node, dict) or not _is_http_url(node.get("url")):
@@ -152,7 +164,7 @@ def _render_thumbnail(node: t.Any) -> str:
     )
 
 
-def _render_accessory(node: t.Any, sub: EmojiSub) -> str:
+def _render_accessory(node: t.Any) -> str:
     """A section accessory is a thumbnail or a (link) button."""
     if not isinstance(node, dict):
         return ""
@@ -161,21 +173,21 @@ def _render_accessory(node: t.Any, sub: EmojiSub) -> str:
         thumb = _render_thumbnail(node)
         return f'<div class="cv2-accessory">{thumb}</div>' if thumb else ""
     if ty == _BUTTON:
-        btn = _render_button(node, sub)
+        btn = _render_button(node)
         return f'<div class="cv2-accessory">{btn}</div>' if btn else ""
     return ""
 
 
 def _render_section(node: t.Any, sub: EmojiSub) -> str:
     body = "".join(_render_node(c, sub) for c in node.get("components") or [])
-    accessory = _render_accessory(node.get("accessory"), sub)
+    accessory = _render_accessory(node.get("accessory"))
     return (
         '<div class="cv2-section">'
         f'<div class="cv2-section-body">{body}</div>{accessory}</div>'
     )
 
 
-def _render_media(node: t.Any, sub: EmojiSub) -> str:
+def _render_media(node: t.Any) -> str:
     items = []
     for item in node.get("items") or []:
         url = _media_url(item.get("media")) if isinstance(item, dict) else None
@@ -187,7 +199,7 @@ def _render_media(node: t.Any, sub: EmojiSub) -> str:
     return f'<div class="cv2-media">{"".join(items)}</div>' if items else ""
 
 
-def _render_separator(node: t.Any, sub: EmojiSub) -> str:
+def _render_separator(node: t.Any) -> str:
     return (
         '<hr class="cv2-sep">'
         if node.get("divider", True)
@@ -195,8 +207,8 @@ def _render_separator(node: t.Any, sub: EmojiSub) -> str:
     )
 
 
-def _render_action_row(node: t.Any, sub: EmojiSub) -> str:
-    buttons = "".join(_render_button(c, sub) for c in node.get("components") or [])
+def _render_action_row(node: t.Any) -> str:
+    buttons = "".join(_render_button(c) for c in node.get("components") or [])
     return f'<div class="cv2-buttons">{buttons}</div>' if buttons else ""
 
 
@@ -218,15 +230,15 @@ def _render_node(node: t.Any, sub: EmojiSub) -> str:
     if ty == _SECTION:
         return _render_section(node, sub)
     if ty == _MEDIA_GALLERY:
-        return _render_media(node, sub)
+        return _render_media(node)
     if ty == _SEPARATOR:
-        return _render_separator(node, sub)
+        return _render_separator(node)
     if ty == _THUMBNAIL:
         return _render_thumbnail(node)
     if ty == _ACTION_ROW:
-        return _render_action_row(node, sub)
+        return _render_action_row(node)
     if ty == _BUTTON:
-        return _render_button(node, sub)
+        return _render_button(node)
     if ty == _FILE:
         return _placeholder("File attachment (from the original post)")
     return _placeholder(f"Unsupported component (type {ty})")
@@ -263,7 +275,7 @@ def _render_embed(embed: dict, sub: EmojiSub) -> str:
         if field.get("value"):
             fp.append(
                 '<div class="embed-field-value">'
-                f'{_text_block(field["value"], sub)}</div>'
+                f"{_text_block(field['value'], sub)}</div>"
             )
         if fp:
             parts.append(f'<div class="embed-field">{"".join(fp)}</div>')
@@ -325,96 +337,34 @@ def render_snapshot(
 
 # --- diff (Phase E) ------------------------------------------------------------------
 #
-# Announcement edits almost always rework *text* inside a stable structure, so the diff
-# highlights the text word-for-word and summarises any structural (image/button/embed)
-# change as a one-line note above it. This keeps the diff robust to tree reshaping (a
-# node-position aligner would mis-anchor when a component is inserted) and cheaply,
-# thoroughly testable — the design doc's bounded "cap to text-bearing nodes".
+# A recursive structural diff of the new vs old snapshot. Sibling components are aligned
+# by exact serialization (difflib); unmatched components are wrapped whole as added
+# (green) or removed (red); a matched-but-changed container/section recurses, and a
+# changed text leaf gets an inline word-level diff — so edits are localised and shown
+# both component-by-component and word-by-word.
 
 _WORD = re.compile(r"\S+|\s+")
 
 
-def _walk_text_units(nodes: t.Iterable[t.Any], out: list[str]) -> None:
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        if node.get("type") == _TEXT_DISPLAY:
-            content = str(node.get("content", ""))
-            if content.strip():
-                out.append(content)
-        for key in ("components",):
-            child = node.get(key)
-            if isinstance(child, list):
-                _walk_text_units(child, out)
+def _node_key(node: t.Any) -> str:
+    """A stable serialization of a node, for exact-match alignment."""
+    return json.dumps(node, sort_keys=True, ensure_ascii=False, default=str)
 
 
-def _extract_text_units(payload: t.Any, kind: str) -> list[str]:
-    """Ordered text blocks of a snapshot — the diffable, text-bearing leaves only."""
-    if not isinstance(payload, dict) or payload.get("truncated"):
-        return []
-    if kind == "cv2":
-        out: list[str] = []
-        _walk_text_units(payload.get("components") or [], out)
-        return out
-    out = []
-    content = str(payload.get("content") or "")
-    if content.strip():
-        out.append(content)
-    for embed in payload.get("embeds") or []:
-        if not isinstance(embed, dict):
-            continue
-        for key in ("title", "description"):
-            if embed.get(key):
-                out.append(str(embed[key]))
-        for field in embed.get("fields") or []:
-            if isinstance(field, dict):
-                for key in ("name", "value"):
-                    if field.get(key):
-                        out.append(str(field[key]))
-    return out
+def _wrap(cls: str, inner: str) -> str:
+    return f'<div class="{cls}">{inner}</div>'
 
 
-def _count_media(payload: t.Any, kind: str) -> tuple[int, int]:
-    """(image count, button count) of a snapshot, for the structural-change note."""
-    images = buttons = 0
-    if not isinstance(payload, dict) or payload.get("truncated"):
-        return (0, 0)
-    stack: list[t.Any] = list(payload.get("components") or [])
-    while stack:
-        node = stack.pop()
-        if not isinstance(node, dict):
-            continue
-        ty = node.get("type")
-        if ty == _MEDIA_GALLERY:
-            images += len(
-                [
-                    i
-                    for i in node.get("items") or []
-                    if _media_url(i.get("media") if isinstance(i, dict) else None)
-                ]
-            )
-        elif ty == _THUMBNAIL and _media_url(node.get("media")):
-            images += 1
-        elif ty == _BUTTON and _is_http_url(node.get("url")):
-            buttons += 1
-        for key in ("components", "items"):
-            child = node.get(key)
-            if isinstance(child, list):
-                stack.extend(child)
-        accessory = node.get("accessory")
-        if isinstance(accessory, dict):
-            stack.append(accessory)
-    if kind == "classic":
-        for embed in payload.get("embeds") or []:
-            if isinstance(embed, dict) and (
-                _media_url(embed.get("image")) or _media_url(embed.get("thumbnail"))
-            ):
-                images += 1
-    return images, buttons
+def _added_node(node: t.Any, sub: EmojiSub) -> str:
+    return _wrap("cv2-added", _render_node(node, sub))
+
+
+def _removed_node(node: t.Any, sub: EmojiSub) -> str:
+    return _wrap("cv2-removed", _render_node(node, sub))
 
 
 def _word_diff_html(old: str, new: str) -> str:
-    """Word-level inline diff of two text blocks → ``<ins>``/``<del>``-marked HTML."""
+    """Word-level inline diff of two single lines → ``<ins>``/``<del>``-marked HTML."""
     old_tokens = _WORD.findall(old)
     new_tokens = _WORD.findall(new)
     sm = difflib.SequenceMatcher(a=old_tokens, b=new_tokens, autojunk=False)
@@ -433,22 +383,153 @@ def _word_diff_html(old: str, new: str) -> str:
     return "".join(out)
 
 
-def _structural_note(old_payload, old_kind, new_payload, new_kind) -> str:
-    old_imgs, old_btns = _count_media(old_payload, old_kind)
-    new_imgs, new_btns = _count_media(new_payload, new_kind)
-    notes: list[str] = []
-    for label, old_n, new_n in (
-        ("image", old_imgs, new_imgs),
-        ("button", old_btns, new_btns),
-    ):
-        if new_n > old_n:
-            notes.append(f"+{new_n - old_n} {label}{'s' if new_n - old_n != 1 else ''}")
-        elif old_n > new_n:
-            notes.append(f"−{old_n - new_n} {label}{'s' if old_n - new_n != 1 else ''}")
-    if not notes:
-        return ""
-    summary = html.escape(", ".join(notes))
-    return f'<div class="cv2-note">Structural change: {summary}</div>'
+def _line_diff_html(old: str, new: str, sub: EmojiSub) -> str:
+    """Diff two multi-line text leaves line-by-line: unchanged lines keep their markdown
+    rendering; changed lines show a raw word-level ``<ins>``/``<del>`` diff.
+
+    Diffing per line (not over the whole leaf) means a one-word edit in a big
+    text_display doesn't drop heading/bold rendering for every *other* line."""
+    old_lines = old.split("\n")
+    new_lines = new.split("\n")
+    sm = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    out: list[str] = []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            out.extend(_render_line(line, sub) for line in new_lines[j1:j2])
+        elif op == "delete":
+            out.extend(f"<del>{html.escape(line)}</del>" for line in old_lines[i1:i2])
+        elif op == "insert":
+            out.extend(
+                f"<ins>{_render_line(line, sub)}</ins>" for line in new_lines[j1:j2]
+            )
+        else:  # replace: word-diff the changed block (raw text, inline marks)
+            out.append(
+                _word_diff_html(
+                    "\n".join(old_lines[i1:i2]), "\n".join(new_lines[j1:j2])
+                )
+            )
+    return "\n".join(out)
+
+
+def _diff_accessory(old: t.Any, new: t.Any, sub: EmojiSub) -> str:
+    """Diff a section accessory: added green, removed red, changed shows both."""
+    new_ok = isinstance(new, dict) and _render_accessory(new)
+    old_ok = isinstance(old, dict) and _render_accessory(old)
+    if not new_ok:
+        return _wrap("cv2-removed", _render_accessory(old)) if old_ok else ""
+    if not old_ok:
+        return _wrap("cv2-added", _render_accessory(new))
+    if _node_key(old) != _node_key(new):
+        return _wrap("cv2-removed", _render_accessory(old)) + _wrap(
+            "cv2-added", _render_accessory(new)
+        )
+    return _render_accessory(new)
+
+
+def _diff_pair(old: t.Any, new: t.Any, sub: EmojiSub) -> str:
+    """Two same-position, differing components → localised diff HTML."""
+    if not (isinstance(old, dict) and isinstance(new, dict)):
+        return _added_node(new, sub)
+    to, tn = old.get("type"), new.get("type")
+    if to != tn:  # a component replaced by a different kind: remove old, add new
+        return _removed_node(old, sub) + _added_node(new, sub)
+    if tn == _TEXT_DISPLAY:
+        oc, nc = str(old.get("content", "")), str(new.get("content", ""))
+        body = _render_markdown(nc, sub) if oc == nc else _line_diff_html(oc, nc, sub)
+        return f'<div class="cv2-text">{body}</div>'
+    if tn == _CONTAINER:
+        inner = _diff_nodes(
+            old.get("components") or [], new.get("components") or [], sub
+        )
+        accent = _accent_style(new.get("accent_color"))
+        return f'<div class="cv2-container"{accent}>{inner}</div>'
+    if tn == _SECTION:
+        inner = _diff_nodes(
+            old.get("components") or [], new.get("components") or [], sub
+        )
+        acc = _diff_accessory(old.get("accessory"), new.get("accessory"), sub)
+        return (
+            '<div class="cv2-section">'
+            f'<div class="cv2-section-body">{inner}</div>{acc}</div>'
+        )
+    if tn == _ACTION_ROW:
+        inner = _diff_nodes(
+            old.get("components") or [], new.get("components") or [], sub
+        )
+        return f'<div class="cv2-buttons">{inner}</div>'
+    # A changed leaf (media / thumbnail / separator / …): show old removed + new added.
+    return _removed_node(old, sub) + _added_node(new, sub)
+
+
+def _diff_replace(old_block: list, new_block: list, sub: EmojiSub) -> str:
+    """A difflib 'replace' run: pair components positionally (diffing each pair), and
+    tail extras become pure add/remove."""
+    out: list[str] = []
+    for k in range(max(len(old_block), len(new_block))):
+        o = old_block[k] if k < len(old_block) else None
+        n = new_block[k] if k < len(new_block) else None
+        if o is None:
+            out.append(_added_node(n, sub))
+        elif n is None:
+            out.append(_removed_node(o, sub))
+        else:
+            out.append(_diff_pair(o, n, sub))
+    return "".join(out)
+
+
+def _diff_nodes(old_nodes: list, new_nodes: list, sub: EmojiSub) -> str:
+    """Diff two sibling-component lists: equal runs render plain, added/removed runs are
+    wrapped green/red, and replaced runs recurse per :func:`_diff_replace`."""
+    a = [_node_key(n) for n in old_nodes]
+    b = [_node_key(n) for n in new_nodes]
+    out: list[str] = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(
+        a=a, b=b, autojunk=False
+    ).get_opcodes():
+        if op == "equal":
+            out.extend(_render_node(n, sub) for n in new_nodes[j1:j2])
+        elif op == "delete":
+            out.extend(_removed_node(n, sub) for n in old_nodes[i1:i2])
+        elif op == "insert":
+            out.extend(_added_node(n, sub) for n in new_nodes[j1:j2])
+        else:
+            out.append(_diff_replace(old_nodes[i1:i2], new_nodes[j1:j2], sub))
+    return "".join(out)
+
+
+def _diff_embeds(old_embeds: list, new_embeds: list, sub: EmojiSub) -> str:
+    """Classic embeds diff: unchanged plain, added green, removed red, changed both
+    (whole-embed granularity — classic-with-embeds edits are rare)."""
+    a = [_node_key(e) for e in old_embeds]
+    b = [_node_key(e) for e in new_embeds]
+    out: list[str] = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(
+        a=a, b=b, autojunk=False
+    ).get_opcodes():
+        if op == "equal":
+            out.extend(_render_embed(e, sub) for e in new_embeds[j1:j2])
+        else:
+            out.extend(
+                _wrap("cv2-removed", _render_embed(e, sub)) for e in old_embeds[i1:i2]
+            )
+            out.extend(
+                _wrap("cv2-added", _render_embed(e, sub)) for e in new_embeds[j1:j2]
+            )
+    return "".join(out)
+
+
+def _diff_classic(new_payload: dict, old_payload: dict, sub: EmojiSub) -> str:
+    oc = str(old_payload.get("content") or "")
+    nc = str(new_payload.get("content") or "")
+    parts = []
+    if nc.strip() or oc.strip():
+        body = _render_markdown(nc, sub) if oc == nc else _line_diff_html(oc, nc, sub)
+        parts.append(f'<div class="cv2-text">{body}</div>')
+    old_embeds = [e for e in (old_payload.get("embeds") or []) if isinstance(e, dict)]
+    new_embeds = [e for e in (new_payload.get("embeds") or []) if isinstance(e, dict)]
+    if old_embeds or new_embeds:
+        parts.append(_diff_embeds(old_embeds, new_embeds, sub))
+    return f'<div class="cv2-root classic">{"".join(parts)}</div>'
 
 
 def render_diff(
@@ -457,22 +538,44 @@ def render_diff(
     old_payload: dict[str, t.Any] | None,
     old_kind: str,
 ) -> str:
-    """Render ``new`` vs ``old`` as a word-level text diff + a structural-change note.
+    """Render the ``new`` version in full, highlighting what changed vs ``old``.
 
-    Green ``<ins>`` = added, struck red ``<del>`` = removed. Text-bearing leaves are
-    concatenated in document order and diffed; image/button count deltas are summarised
-    above. A truncated snapshot on either side degrades to a note."""
+    Component-by-component (a whole added component is wrapped green, a removed one red)
+    and word-by-word (text edits show inline ``<ins>``/``<del>``). The whole message —
+    with its structure, images and buttons — is always shown; a no-change diff renders
+    the message with a small note. A truncated snapshot on either side degrades to a
+    note; a version that switched message format falls back to a plain render."""
     if (isinstance(new_payload, dict) and new_payload.get("truncated")) or (
         isinstance(old_payload, dict) and old_payload.get("truncated")
     ):
         return _placeholder("Cannot diff — a version's snapshot was stored truncated.")
-    old_text = "\n\n".join(_extract_text_units(old_payload, old_kind))
-    new_text = "\n\n".join(_extract_text_units(new_payload, new_kind))
-    note = _structural_note(old_payload, old_kind, new_payload, new_kind)
-    if old_text == new_text and not note:
-        return (
-            '<div class="cv2-note">No text or structural changes between these '
-            "versions.</div>"
+    sub = _cdn_emoji_substituter
+    new_payload = new_payload or {}
+    old_payload = old_payload or {}
+    if new_kind != old_kind:
+        note = (
+            '<div class="cv2-note">Message format changed since the previous '
+            "version — showing the current version.</div>"
         )
-    diff_html = _word_diff_html(old_text, new_text)
-    return f'{note}<div class="cv2-diff cv2-text">{diff_html}</div>'
+        return note + render_snapshot(new_payload, new_kind)
+
+    if new_kind == "cv2":
+        old_nodes = old_payload.get("components") or []
+        new_nodes = new_payload.get("components") or []
+        unchanged = _node_key(old_nodes) == _node_key(new_nodes)
+        body = _diff_nodes(old_nodes, new_nodes, sub)
+        inner = (
+            f'<div class="cv2-root">{body}</div>'
+            if body
+            else _placeholder("This version captured no renderable components.")
+        )
+    else:
+        unchanged = _node_key(old_payload) == _node_key(new_payload)
+        inner = _diff_classic(new_payload, old_payload, sub)
+
+    note = (
+        '<div class="cv2-note">No changes from the previous version.</div>'
+        if unchanged
+        else ""
+    )
+    return note + inner

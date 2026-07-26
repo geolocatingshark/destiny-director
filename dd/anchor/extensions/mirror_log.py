@@ -27,8 +27,8 @@ Three routes, mirroring the ``/stats`` shell + JSON pattern:
 - ``GET /mirror-logs`` serves the static shell (``web_static/mirror_log.html``); the
   page fetches its data and renders everything client-side (``mirror_log.js``).
 - ``GET /mirror-logs/data`` returns recent runs as JSON, read entirely from the shared
-  DB (no Discord API calls). ``?src=<src_msg_id>`` returns one run's per-destination
-  rows plus its captured version list for the expandable detail view.
+  DB (no Discord API calls). ``?src=<src_msg_id>`` returns that run's captured version
+  list for the expandable detail view (the mirrored message itself).
 - ``GET /mirror-logs/render?src=<id>&v=<n>`` returns the safe rendered HTML of one
   captured version (see :mod:`dd.anchor.cv2_render`); adding ``&diff=<m>`` returns a
   word-level diff of version ``n`` against version ``m``. Pull/stateless.
@@ -61,11 +61,10 @@ _PAGE_HTML_PATH = (
     Path(__file__).resolve().parent.parent / "web_static" / "mirror_log.html"
 )
 
-# How far back the run list reaches, and the per-view caps. The window keeps the query
-# on the ledger's created_at prune index; the caps bound the JSON payload.
+# How far back the run list reaches, and its cap. The window keeps the query on the
+# ledger's created_at prune index; the cap bounds the JSON payload.
 _WINDOW_DAYS = 30
 _RUN_LIMIT = 50
-_ROW_LIMIT = 500
 
 
 def _iso_utc(value: dt.datetime | None) -> str | None:
@@ -103,22 +102,11 @@ async def _collect_runs() -> dict:
 
 
 async def _collect_detail(src_msg_id: int) -> dict:
-    rows = await schemas.MirrorDelivery.run_rows(src_msg_id, limit=_ROW_LIMIT)
-    for row in rows:
-        row["dest_ch_id"] = str(row["dest_ch_id"])
-        row["dest_msg_id"] = (
-            str(row["dest_msg_id"]) if row["dest_msg_id"] is not None else None
-        )
-        row["dest_server_id"] = (
-            str(row["dest_server_id"]) if row["dest_server_id"] is not None else None
-        )
-        row["created_at"] = _iso_utc(row["created_at"])
-        row["finished_at"] = _iso_utc(row["finished_at"])
+    # The detail is now the mirrored *message* itself (the version render pane), not the
+    # per-destination delivery list — so we only ship the captured version snapshots.
     versions = await schemas.MirrorMessageVersion.versions_for(src_msg_id)
     return {
         "src_msg_id": str(src_msg_id),
-        "rows": rows,
-        "truncated": len(rows) >= _ROW_LIMIT,
         # Version snapshots power the render pane; empty for sources predating capture.
         "versions": [
             {

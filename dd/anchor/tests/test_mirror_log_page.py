@@ -110,34 +110,19 @@ async def test_data_endpoint_returns_runs_json_shaped() -> None:
 
 
 @pytest.mark.integration
-async def test_data_endpoint_detail_by_src() -> None:
-    await _seed(
-        [
-            _base(
-                777,
-                20,
-                state=DeliveryState.FAILED.value,
-                last_error_ref="PERM01",
-                last_error_class="PERMANENT",
-                last_error_msg="Missing Access",
-                finished_at=None,
-            ),
-            _base(777, 10, dest_msg_id=999),
-        ]
-    )
+async def test_data_endpoint_detail_returns_versions_only() -> None:
+    # The detail view is the mirrored message (its version snapshots), not the
+    # per-destination delivery list — so no rows, just versions (empty here: none
+    # captured for this seeded run). Version-list content is covered in
+    # test_mirror_log_render.py.
+    await _seed([_base(777, 10, dest_msg_id=999)])
 
     resp = await mirror_log._handle_data(_as_request({"src": "777"}))
 
     payload = json.loads(_text(resp))
     assert payload["src_msg_id"] == "777"
-    assert payload["truncated"] is False
-    first = payload["rows"][0]
-    assert first["state"] == "FAILED"  # failures first
-    assert first["error_ref"] == "PERM01"
-    assert first["dest_ch_id"] == "20"
-    assert first["dest_server_id"] is None  # no mirror config seeded → bare-id fallback
-    delivered = next(r for r in payload["rows"] if r["state"] == "DELIVERED")
-    assert delivered["dest_msg_id"] == "999"
+    assert payload["versions"] == []
+    assert "rows" not in payload  # destinations list removed
 
 
 async def test_data_endpoint_rejects_non_integer_src() -> None:

@@ -155,20 +155,78 @@ def test_word_diff_marks_added_and_removed() -> None:
     assert "brown fox" in out  # unchanged text preserved
 
 
-def test_diff_structural_note_on_image_delta() -> None:
+def test_diff_renders_full_structure_with_inline_marks() -> None:
+    # A changed line is word-diffed; unchanged lines keep their markdown rendering, and
+    # sibling structure (buttons) is still rendered — the message is shown, not a bare
+    # text blob.
+    old = _cv2(
+        {
+            "type": 17,
+            "components": [
+                _text("# Reset\nThe quick fox\nStable line"),
+                {
+                    "type": 1,
+                    "components": [
+                        {"type": 2, "style": 5, "label": "Guide", "url": "https://g.ex"}
+                    ],
+                },
+            ],
+        }
+    )
+    new = _cv2(
+        {
+            "type": 17,
+            "components": [
+                _text("# Reset\nThe slow fox\nStable line"),
+                {
+                    "type": 1,
+                    "components": [
+                        {"type": 2, "style": 5, "label": "Guide", "url": "https://g.ex"}
+                    ],
+                },
+            ],
+        }
+    )
+    out = r.render_diff(new, "cv2", old, "cv2")
+    assert '<span class="md-h1">Reset</span>' in out  # unchanged heading still rendered
+    assert "<del>quick</del>" in out and "<ins>slow</ins>" in out  # changed line diffed
+    assert "Stable line" in out  # unchanged line kept
+    assert '<a class="cv2-button"' in out  # structure (button) still shown
+
+
+def test_diff_removed_component_wrapped_red() -> None:
+    old = _cv2(_text("kept"), _text("going away"))
+    new = _cv2(_text("kept"))
+    out = r.render_diff(new, "cv2", old, "cv2")
+    # A dropped component is wrapped whole as removed (red), not an inline <del>.
+    assert '<div class="cv2-removed">' in out
+    assert "going away" in out
+
+
+def test_diff_added_component_wrapped_green() -> None:
     old = _cv2(_text("body"))
     new = _cv2(
         _text("body"),
         {"type": 12, "items": [{"media": {"url": "https://cdn.ex/a.png"}}]},
     )
     out = r.render_diff(new, "cv2", old, "cv2")
-    assert "Structural change" in out and "+1 image" in out
+    assert '<div class="cv2-added">' in out  # the new media component highlighted green
+    assert "https://cdn.ex/a.png" in out
+
+
+def test_diff_changed_leaf_shows_removed_then_added() -> None:
+    # A button whose url/label changed: old removed (red) + new added (green).
+    old = _cv2({"type": 2, "style": 5, "label": "Old", "url": "https://old.ex"})
+    new = _cv2({"type": 2, "style": 5, "label": "New", "url": "https://new.ex"})
+    out = r.render_diff(new, "cv2", old, "cv2")
+    assert '<div class="cv2-removed">' in out and ">Old</a>" in out
+    assert '<div class="cv2-added">' in out and ">New</a>" in out
 
 
 def test_diff_no_changes_reports_none() -> None:
     same = _cv2(_text("identical"))
     out = r.render_diff(same, "cv2", same, "cv2")
-    assert "No text or structural changes" in out
+    assert "No changes from the previous version" in out
 
 
 def test_diff_truncated_side_degrades() -> None:

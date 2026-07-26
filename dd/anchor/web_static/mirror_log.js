@@ -106,67 +106,28 @@
     return `${esc(relTime(run.started))}${dur ? ` <span class="dur">· ${esc(dur)}</span>` : ""}`;
   }
 
-  // A destination shows as a link (no name cache yet), not a bare snowflake: jump to
-  // the delivered message when we have its guild + message id, else open the channel,
-  // else fall back to the mono id. dest_server_id comes from the mirror config join.
-  function destCell(r) {
-    if (r.dest_server_id && r.dest_msg_id) {
-      const href = `${DISCORD}/${r.dest_server_id}/${r.dest_ch_id}/${r.dest_msg_id}`;
-      return (
-        `<a href="${esc(href)}" target="_blank" rel="noopener" ` +
-        `title="channel ${esc(r.dest_ch_id)}">Jump to message ↗</a>`
-      );
-    }
-    if (r.dest_server_id) {
-      const href = `${DISCORD}/${r.dest_server_id}/${r.dest_ch_id}`;
-      return (
-        `<a href="${esc(href)}" target="_blank" rel="noopener" ` +
-        `title="channel ${esc(r.dest_ch_id)}">Open channel ↗</a>`
-      );
-    }
-    return `<span class="dest-id" title="channel id">${esc(r.dest_ch_id)}</span>`;
+  // A "Jump to source ↗" button for the mirrored message, when we know its source guild
+  // (from the latest captured snapshot). Empty for sources predating the capture deploy.
+  function sourceButton(run) {
+    if (!run.src_guild_id) return "";
+    const href = `${DISCORD}/${run.src_guild_id}/${run.src_ch_id}/${run.src_msg_id}`;
+    return (
+      `<a class="jump-source" href="${esc(href)}" target="_blank" rel="noopener">` +
+      `Jump to source ↗</a>`
+    );
   }
 
-  function renderDetailTable(data) {
-    if (!data.rows.length) return `<p class="detail-loading">No destinations.</p>`;
-    const head =
-      "<tr><th>Destination</th><th>State</th><th>Crosspost</th>" +
-      "<th>Attempts</th><th>Detail</th></tr>";
-    const body = data.rows
-      .map((r) => {
-        const errBits = [];
-        if (r.error_class) errBits.push(esc(r.error_class));
-        if (r.error_ref)
-          errBits.push(`<span class="err-ref">${esc(r.error_ref)}</span>`);
-        if (r.error_msg) errBits.push(esc(r.error_msg));
-        const detail = errBits.length
-          ? `<span class="err-detail">${errBits.join(" · ")}</span>`
-          : r.deleted
-            ? '<span class="err-detail">deleted</span>'
-            : "";
-        return (
-          `<tr><td class="dest-id">${destCell(r)}</td>` +
-          `<td><span class="state ${esc(r.state)}">${esc(r.state)}</span></td>` +
-          `<td>${r.crosspost_state === "NOT_APPLICABLE" ? "—" : esc(r.crosspost_state)}</td>` +
-          `<td>${r.attempts}</td><td>${detail}</td></tr>`
-        );
-      })
-      .join("");
-    const trunc = data.truncated
-      ? `<p class="trunc">Showing the first ${data.rows.length} destinations.</p>`
-      : "";
-    return `<table class="dests"><thead>${head}</thead><tbody>${body}</tbody></table>${trunc}`;
-  }
-
-  // The expandable detail: a version render pane (newest version selected, with a
-  // diff-vs-previous toggle) above the per-destination table.
-  function renderVersionPane(data) {
+  // The expandable detail: the mirrored message itself, as a version render pane (newest
+  // version selected, with a diff-vs-previous toggle) plus a jump-to-source button.
+  function renderVersionPane(data, run) {
     const vs = data.versions || [];
+    const jump = sourceButton(run);
     if (!vs.length) {
       return (
-        `<div class="versions"><p class="detail-loading">` +
-        `No version snapshots for this source yet — capture began at deploy, so ` +
-        `older runs have none.</p></div>`
+        `<div class="versions"><div class="version-head">` +
+        `<span class="version-label">Message</span>${jump}</div>` +
+        `<p class="detail-loading">No version snapshots for this source yet — ` +
+        `capture began at deploy, so older runs have none.</p></div>`
       );
     }
     const chips = vs
@@ -187,6 +148,7 @@
       `<label class="diff-toggle hidden">` +
       `<input type="checkbox" class="diff-check" /> Highlight changes vs previous` +
       `</label>` +
+      jump +
       `</div>` +
       `<div class="render-pane"><p class="detail-loading">Loading render…</p></div>` +
       `</div>`
@@ -237,37 +199,31 @@
     show();
   }
 
-  async function loadDetail(srcId, container) {
-    container.innerHTML = `<p class="detail-loading">Loading destinations…</p>`;
+  async function loadDetail(run, container) {
+    container.innerHTML = `<p class="detail-loading">Loading message…</p>`;
     try {
       const data = await fetchJSON(
-        `/mirror-logs/data?src=${encodeURIComponent(srcId)}`,
+        `/mirror-logs/data?src=${encodeURIComponent(run.src_msg_id)}`,
       );
-      container.innerHTML = renderVersionPane(data) + renderDetailTable(data);
-      setupVersionPane(srcId, container, data.versions || []);
+      container.innerHTML = renderVersionPane(data, run);
+      setupVersionPane(run.src_msg_id, container, data.versions || []);
     } catch (e) {
       container.innerHTML = `<p class="detail-error">Failed to load detail: ${esc(e.message)}</p>`;
     }
   }
 
-  // Channel is named where known (feed name); the summary + a jump-to-source link come
-  // from the latest captured snapshot (src_guild_id) — a bare msg id only as fallback
-  // for sources predating the capture deploy.
+  // Channel is named where known (feed name); the latest snapshot's summary sits below.
+  // The jump-to-source button lives in the expanded detail (renderVersionPane), so the
+  // row just carries the muted msg id as the run identifier.
   function sourceCell(run) {
     const channel = run.src_name ? `#${run.src_name}` : `#${run.src_ch_id}`;
     const summary = run.summary
       ? `<div class="src-summary">${esc(run.summary)}</div>`
       : "";
-    let msgLine;
-    if (run.src_guild_id) {
-      const href = `${DISCORD}/${run.src_guild_id}/${run.src_ch_id}/${run.src_msg_id}`;
-      msgLine =
-        `<a class="src-link" href="${esc(href)}" target="_blank" rel="noopener">` +
-        `msg ${esc(run.src_msg_id)} ↗</a>`;
-    } else {
-      msgLine = `<span class="src-sub">msg ${esc(run.src_msg_id)}</span>`;
-    }
-    return `<div class="src-channel">${esc(channel)}</div>${summary}${msgLine}`;
+    return (
+      `<div class="src-channel">${esc(channel)}</div>${summary}` +
+      `<div class="src-sub">msg ${esc(run.src_msg_id)}</div>`
+    );
   }
 
   function render(runs) {
@@ -299,7 +255,7 @@
         td.appendChild(panel);
         dr.appendChild(td);
         els.tbody.appendChild(dr);
-        loadDetail(run.src_msg_id, panel);
+        loadDetail(run, panel);
       }
     }
   }
