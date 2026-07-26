@@ -273,12 +273,16 @@ def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
     for m in _INLINE_MD.finditer(text):
         if m.start() > pos:
             out.append(html.escape(text[pos : m.start()]))
+        # Bold/italic recurse into their inner span so nested inline markup renders —
+        # notably a masked link inside bold, "**[Title](url)**" (Lost Sector titles).
         if m.group("bi") is not None:
-            out.append(f"<strong><em>{html.escape(m.group('bi_inner'))}</em></strong>")
+            inner = _render_inline(m.group("bi_inner"), emoji_sub)
+            out.append(f"<strong><em>{inner}</em></strong>")
         elif m.group("b") is not None:
-            out.append(f"<strong>{html.escape(m.group('b_inner'))}</strong>")
+            inner = _render_inline(m.group("b_inner"), emoji_sub)
+            out.append(f"<strong>{inner}</strong>")
         elif m.group("i") is not None:
-            out.append(f"<em>{html.escape(m.group('i_inner'))}</em>")
+            out.append(f"<em>{_render_inline(m.group('i_inner'), emoji_sub)}</em>")
         elif m.group("link") is not None:
             url = m.group("url")
             # Discord's ``[label](<url>)`` form wraps the URL in angle brackets to

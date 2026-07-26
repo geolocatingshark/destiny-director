@@ -2126,10 +2126,13 @@ class MirrorOperationLog(Base):
         cls,
         *,
         within_days: int = 30,
+        limit: int = 1000,
         session: AsyncSession = _UNSET,
     ) -> list[dict[str, t.Any]]:
-        """All operations finished within the window, newest first — the run-list op
-        chips + the overview's per-op-type daily chart read from this."""
+        """Operations in the window, newest first, capped at ``limit``.
+
+        The run-list op chips + the overview's per-op-type daily chart read from this;
+        the cap keeps the list-poll payload bounded (the run list is capped too)."""
         cutoff = _utcnow() - dt.timedelta(days=within_days)
         rows = (
             (
@@ -2137,6 +2140,7 @@ class MirrorOperationLog(Base):
                     select(cls)
                     .where(cls.finished_at >= cutoff)
                     .order_by(desc(cls.finished_at))
+                    .limit(int(limit))
                 )
             )
             .scalars()

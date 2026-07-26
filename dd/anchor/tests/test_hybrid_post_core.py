@@ -185,6 +185,20 @@ def test_render_post_html_angle_bracket_masked_link() -> None:
     assert "&lt;https" not in out  # angle brackets consumed, not shown as text
 
 
+def test_render_post_html_link_inside_bold() -> None:
+    # Bold/italic must recurse into their span so a masked link inside bold renders as a
+    # link (Lost Sector titles are "**[Title](url)**") rather than raw escaped text.
+    out = hpc.render_post_html(
+        "**[Scavenger's Den (EDZ)](https://kyber3000.com/LS-ScavengersDen)**",
+        t.cast("dict[str, h.Emoji]", {}),
+    )
+    assert (
+        '<strong><a href="https://kyber3000.com/LS-ScavengersDen">'
+        "Scavenger&#x27;s Den (EDZ)</a></strong>" in out
+    )
+    assert "](" not in out  # not left as raw markdown inside the bold
+
+
 def test_render_post_spec_renders_h2_heading() -> None:
     # '## ' is an H2 heading (used by the Lost Sector post); rendered as an md-h2 span
     # with the inline link, not left as literal '## ' text.
