@@ -19,8 +19,8 @@ A single owner-only page (linked from the control-panel homepage via
 :func:`web.register_card`) that shows every **global** autopost produce toggle and lets
 the owner flip them in one place. Each toggle maps to one ``name`` row in
 :class:`~dd.common.schemas.AutoPostSettings` — the same rows the scattered ``/<feed>
-auto`` anchor slash commands (and ``POST /weekly_reset/auto``) write. This page does not
-replace those; it is an additional, consolidated surface over the same rows.
+auto`` anchor slash commands write. This page does not replace those; it is an
+additional, consolidated surface over the same rows.
 
 Scope is settings only — no "send now" / preview and no per-guild follow management
 (that is end-user ``/autopost <feed>`` territory, stored as ``MirroredChannel`` rows). A
@@ -112,12 +112,6 @@ _SETTINGS: tuple[_Setting, ...] = (
         "portal_ops",
         "Portal Ops",
         "Today's featured Portal Ops and their guaranteed rewards.",
-        False,
-    ),
-    _Setting(
-        "weekly_reset",
-        "Weekly Reset",
-        "Tuesday reset overview — activities, rotators, and rewards.",
         False,
     ),
     _Setting(
