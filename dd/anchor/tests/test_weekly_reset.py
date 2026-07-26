@@ -201,6 +201,24 @@ def test_iron_banner_week_hides_trials_line_shows_reminder() -> None:
     assert wr.TRIALS_IB_REMINDER in body
 
 
+def test_iron_banner_week_drops_control_and_swaps_6v6_first_mode() -> None:
+    # IB replaces the 6v6 Control playlist, so the fixed first mode reads "Iron Banner"
+    # (featured second mode kept) and the Control Challenge Reward is dropped entirely.
+    ctx = _full_ctx()  # control_weapon set; crucible_6v6 = "Control, Eruption"
+    non_ib = wr.build_body(ctx)
+    assert "6v6: Control, Eruption" in non_ib
+    assert "**Control**" in non_ib and "The Helmsman" in non_ib
+
+    ctx.iron_banner = True
+    ctx.trials_active = False
+    ib = wr.build_body(ctx)
+    assert "6v6: Iron Banner, Eruption" in ib
+    assert "6v6: Control" not in ib
+    assert "**Control**" not in ib and "The Helmsman" not in ib
+    # The Playlists sub-block still renders via the other crucible slots.
+    assert "### CRUCIBLE OPS" in ib and "**Playlists**" in ib
+
+
 def test_trials_line_shows_on_non_ib_week() -> None:
     ctx = _full_ctx()
     ctx.iron_banner = False

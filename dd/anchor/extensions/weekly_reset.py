@@ -183,6 +183,9 @@ DEFAULT_CRUCIBLE_1V6 = "Sparrow Racing, Rumble"
 # a Choice selector. Add new Labs modes here as Bungie ships them.
 CRUCIBLE_3V3_FIRST = "Competitive"
 CRUCIBLE_6V6_FIRST = "Control"
+# On Iron Banner weeks the 6v6 Control playlist is replaced by Iron Banner, so the fixed
+# first mode is swapped for this at render time (see the CRUCIBLE OPS block).
+CRUCIBLE_6V6_FIRST_IB = "Iron Banner"
 CRUCIBLE_MODES: tuple[str, ...] = (
     # Base modes
     "Clash",
@@ -688,7 +691,13 @@ def build_body(ctx: WeeklyResetContext) -> str:
         ]
 
     # CRUCIBLE OPS — the featured playlists, plus the Control Challenge Reward weapon.
-    if ctx.crucible_1v6 or ctx.crucible_3v3 or ctx.crucible_6v6 or ctx.control_weapon:
+    # On Iron Banner weeks the 6v6 Control playlist becomes Iron Banner: swap the fixed
+    # first mode of the 6v6 line and drop the (no-longer-featured) Control reward.
+    six = ctx.crucible_6v6
+    if six and ctx.iron_banner:
+        six = ", ".join([CRUCIBLE_6V6_FIRST_IB, *six.split(", ", 1)[1:]])
+    show_control = bool(ctx.control_weapon) and not ctx.iron_banner
+    if ctx.crucible_1v6 or ctx.crucible_3v3 or ctx.crucible_6v6 or show_control:
         lines += ["### CRUCIBLE OPS", ""]
         if ctx.crucible_1v6 or ctx.crucible_3v3 or ctx.crucible_6v6:
             lines.append("**Playlists**")
@@ -697,8 +706,8 @@ def build_body(ctx: WeeklyResetContext) -> str:
             if ctx.crucible_3v3:
                 lines.append(f":crucible: {SEP} 3v3: {ctx.crucible_3v3}")
             if ctx.crucible_6v6:
-                lines.append(f":crucible: {SEP} 6v6: {ctx.crucible_6v6}")
-        if ctx.control_weapon:
+                lines.append(f":crucible: {SEP} 6v6: {six}")
+        if ctx.control_weapon and not ctx.iron_banner:
             lines += ["", "**Control**"]
             lines.append(
                 f":{_weapon_emoji(ctx.control_weapon)}: {SEP} "

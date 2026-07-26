@@ -47,7 +47,7 @@ const TS = {};
 // Native inputs bubble "input" (handled by initPostForm); Tom Select fires this via each
 // instance's onChange.
 function onEdit() {
-  syncTrials();
+  syncEvents();
   preview.schedule();
 }
 
@@ -189,13 +189,23 @@ for (const tier of conquest_tiers) {
   TS["conq_" + tier] = ts;
 }
 
-// --- Iron Banner => Trials off, reflected live in the UI ---------------
-function syncTrials() {
+// --- Iron Banner => Trials off + no Control reward, reflected live in the UI --------
+// IB replaces the 6v6 Control playlist, so on top of forcing Trials off we grey out the
+// Control Challenge Reward picker (the server drops it on save/preview) and note that the
+// 6v6 first mode becomes Iron Banner.
+const CRUCIBLE_6V6_HINT = $("crucible6v6Hint").textContent;
+function syncEvents() {
   const ib = $("ironBanner").checked;
   if (ib) $("trialsActive").checked = false;
   $("trialsActive").disabled = ib;
+  if (ib) TS.controlWeapon.disable();
+  else TS.controlWeapon.enable();
+  $("controlWeaponNote").hidden = !ib;
+  $("crucible6v6Hint").textContent = ib
+    ? "During Iron Banner weeks the 6v6 first mode is Iron Banner."
+    : CRUCIBLE_6V6_HINT;
 }
-syncTrials();
+syncEvents();
 
 // --- read the form into the payload the server expects -----------------
 // getValue() returns the option value: a hash string (weapons) or plain name (everything
