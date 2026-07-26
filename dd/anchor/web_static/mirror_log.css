@@ -4,6 +4,13 @@
   detail panel live here (the shared sheet has no generic .data table styling).
 */
 
+/* No global .hidden utility exists in shared.css (it only defines a form-scoped one),
+   so define one here — the page toggles .hidden on the loading/empty/filter elements and
+   the diff toggle via JS. Without this the class is inert (elements never hide). */
+.hidden {
+  display: none !important;
+}
+
 main.mirror-log {
   max-width: 100%;
 }
@@ -240,6 +247,11 @@ tr.detail-row > td {
   align-items: center;
   gap: 0.3rem;
   cursor: pointer;
+}
+.version-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-style: italic;
 }
 .render-pane {
   border: 1px solid var(--border);

@@ -140,6 +140,13 @@
         );
       })
       .join("");
+    // With only one captured version there's nothing to diff against, so show a hint
+    // instead of the (hidden) toggle — an edit after delivery captures the next version.
+    const single =
+      vs.length < 2
+        ? `<span class="version-hint">only version — edits are captured as new ` +
+          `versions and shown here as diffs</span>`
+        : "";
     return (
       `<div class="versions">` +
       `<div class="version-head">` +
@@ -148,6 +155,7 @@
       `<label class="diff-toggle hidden">` +
       `<input type="checkbox" class="diff-check" /> Highlight changes vs previous` +
       `</label>` +
+      single +
       jump +
       `</div>` +
       `<div class="render-pane"><p class="detail-loading">Loading render…</p></div>` +
