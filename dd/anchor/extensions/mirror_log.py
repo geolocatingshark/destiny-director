@@ -44,6 +44,7 @@ import aiohttp.web
 import lightbulb as lb
 
 from ...common import schemas
+from ...common.utils import followable_name
 from .. import web
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,10 @@ async def _collect_runs() -> dict:
         limit=_RUN_LIMIT, within_days=_WINDOW_DAYS
     )
     for run in runs:
+        # Resolve the source channel to its configured feed name (else None → the page
+        # falls back to the id). followable_name returns the id itself when unknown.
+        name = followable_name(id=run["src_ch_id"])
+        run["src_name"] = name if isinstance(name, str) else None
         run["src_msg_id"] = str(run["src_msg_id"])
         run["src_ch_id"] = str(run["src_ch_id"])
         run["started"] = _iso_utc(run["started"])
@@ -86,6 +91,9 @@ async def _collect_detail(src_msg_id: int) -> dict:
         row["dest_ch_id"] = str(row["dest_ch_id"])
         row["dest_msg_id"] = (
             str(row["dest_msg_id"]) if row["dest_msg_id"] is not None else None
+        )
+        row["dest_server_id"] = (
+            str(row["dest_server_id"]) if row["dest_server_id"] is not None else None
         )
         row["created_at"] = _iso_utc(row["created_at"])
         row["finished_at"] = _iso_utc(row["finished_at"])

@@ -1645,7 +1645,12 @@ class MirrorDelivery(Base):
 
         Ordered failures-first then by destination channel and capped at ``limit`` so a
         huge fan-out cannot produce an unbounded payload. Carries the error triple so
-        the page can show *why* a destination failed.
+        the page can show *why* a destination failed, and — via a LEFT JOIN to the
+        mirror config on the exact ``(src, dest)`` pair — the destination's
+        ``dest_server_id`` so the web layer can build a jump-to-message link instead of
+        showing a bare snowflake. The join is on both ids (the config PK) so a channel
+        that is a destination for several sources can't multiply the row; it is a LEFT
+        join so a since-removed mirror config just yields ``None`` (bare-id fallback).
         """
         rows = (
             await session.execute(
@@ -1663,6 +1668,14 @@ class MirrorDelivery(Base):
                     cls.last_error_msg,
                     cls.created_at,
                     cls.finished_at,
+                    MirroredChannel.dest_server_id,
+                )
+                .outerjoin(
+                    MirroredChannel,
+                    and_(
+                        MirroredChannel.src_id == cls.src_ch_id,
+                        MirroredChannel.dest_id == cls.dest_ch_id,
+                    ),
                 )
                 .where(cls.src_msg_id == int(src_msg_id))
                 .order_by(
@@ -1677,6 +1690,9 @@ class MirrorDelivery(Base):
             {
                 "dest_ch_id": int(dest_ch_id),
                 "dest_msg_id": int(dest_msg_id) if dest_msg_id is not None else None,
+                "dest_server_id": int(dest_server_id)
+                if dest_server_id is not None
+                else None,
                 "state": str(state),
                 "crosspost_state": str(crosspost_state),
                 "attempts": int(attempts),
@@ -1703,6 +1719,7 @@ class MirrorDelivery(Base):
                 error_msg,
                 created_at,
                 finished_at,
+                dest_server_id,
             ) in rows
         ]
 

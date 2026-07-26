@@ -208,7 +208,6 @@ def start_drain_watcher(
     view: RunView,
     *,
     source_message: h.Message | None = None,
-    **_ignored: t.Any,
 ) -> None:
     """Ensure a single drain watcher runs for this source (coalescing).
 
@@ -216,9 +215,7 @@ def start_drain_watcher(
     no-op: the running watcher polls the ledger and will observe the rows the caller
     just wrote (enqueue/bump/delete all happen before this call). A *finished* watcher
     is replaced. The check-and-register runs with no ``await`` in between, so two
-    near-simultaneous starts can't both spawn. ``**_ignored`` accepts the old progress
-    card's extra kwargs (title/enable_cancellation/source_channel/client) so call sites
-    need no per-argument surgery.
+    near-simultaneous starts can't both spawn.
     """
     existing = _watchers.get(view.src_msg_id)
     if existing is not None and not existing.done():
@@ -364,7 +361,6 @@ async def reachability_sweep(bot: CachedFetchBot = lb.di.INJECTED):
 @loader.listener(h.StartedEvent)
 async def _start_mirror_worker(
     _event: h.StartedEvent,
-    client: lb.Client = lb.di.INJECTED,
     store: AppEmojiStore = lb.di.INJECTED,
 ) -> None:
     bot = t.cast(CachedFetchBot, _event.app)
@@ -374,10 +370,10 @@ async def _start_mirror_worker(
     # query can't stall startup. Keep a strong reference (asyncio only holds a weak one;
     # see ``_watchers``) so the coroutine can't be garbage-collected mid-query.
     global _backlog_recovery_task
-    _backlog_recovery_task = aio.create_task(_recover_backlog_watchers(bot, client))
+    _backlog_recovery_task = aio.create_task(_recover_backlog_watchers(bot))
 
 
-async def _recover_backlog_watchers(bot: CachedFetchBot, client: lb.Client) -> None:
+async def _recover_backlog_watchers(bot: CachedFetchBot) -> None:
     """Register a drain watcher per source message with non-terminal rows on startup."""
     try:
         backlog = await MirrorDelivery.non_terminal_backlog()
@@ -562,9 +558,7 @@ async def _ledger_write_with_retry[T](
 @loader.listener(h.MessageCreateEvent)
 @ignore_non_src_channels
 @utils.ignore_own_user
-async def message_create_repeater(
-    event: h.MessageCreateEvent, client: lb.Client = lb.di.INJECTED
-):
+async def message_create_repeater(event: h.MessageCreateEvent):
     cached_bot = t.cast(CachedFetchBot, event.app)
     await message_create_repeater_impl(
         event.message,
@@ -573,7 +567,6 @@ async def message_create_repeater(
             h.TextableChannel,
             await cached_bot.fetch_channel(event.message.channel_id),
         ),
-        client=client,
     )
 
 
@@ -582,7 +575,6 @@ async def message_create_repeater_impl(
     bot: CachedFetchBot,
     channel: h.TextableChannel,
     wait_for_crosspost: bool = True,
-    client: lb.Client | None = None,
 ):
     # Wait for message to be crossposted before mirroring if requested.
     await handle_waiting_for_crosspost(
@@ -630,9 +622,7 @@ def is_content_edit(message: h.PartialMessage) -> bool:
 @loader.listener(h.MessageUpdateEvent)
 @ignore_non_src_channels
 @utils.ignore_own_user
-async def message_update_repeater(
-    event: h.MessageUpdateEvent, client: lb.Client = lb.di.INJECTED
-):
+async def message_update_repeater(event: h.MessageUpdateEvent):
     # Cheap early-out for the non-content updates Discord also reports as edits (embed
     # unfurls, flag changes) so an unfurl of an already-delivered message doesn't
     # trigger a needless dest re-edit. The publish/crosspost transition is *not* caught
@@ -653,13 +643,10 @@ async def message_update_repeater(
     await message_update_repeater_impl(
         t.cast(h.Message, event.message),
         t.cast(CachedFetchBot, event.app),
-        client=client,
     )
 
 
-async def message_update_repeater_impl(
-    msg: h.Message, bot: CachedFetchBot, client: lb.Client | None = None
-):
+async def message_update_repeater_impl(msg: h.Message, bot: CachedFetchBot):
     # Reconcile the edit: bump every non-deleted row at the new version (and, once the
     # message has been delivered somewhere, insert rows for any dests added since the
     # send). One transaction, no locks; retried on a transient DB blip so the edit isn't
@@ -962,7 +949,6 @@ class ManualMirrorSend(
         self,
         ctx: lb.Context,
         bot: CachedFetchBot = lb.di.INJECTED,
-        client: lb.Client = lb.di.INJECTED,
     ):
         initial = await ctx.respond("Mirroring message...", ephemeral=True)
         logging.info(f"Manually mirroring for channel id {self.target.channel_id}")
@@ -971,7 +957,6 @@ class ManualMirrorSend(
             bot,
             t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id)),
             wait_for_crosspost=False,
-            client=client,
         )
         await ctx.edit_response(initial, "Mirrored message.")
 
@@ -987,14 +972,13 @@ class ManualMirrorUpdate(
         self,
         ctx: lb.Context,
         bot: CachedFetchBot = lb.di.INJECTED,
-        client: lb.Client = lb.di.INJECTED,
     ):
         initial = await ctx.respond("Updating message...", ephemeral=True)
         logging.info(
             f"Manually updating mirrored message {self.target.id} "
             f" in channel id {self.target.channel_id}"
         )
-        await message_update_repeater_impl(self.target, bot, client=client)
+        await message_update_repeater_impl(self.target, bot)
         await ctx.edit_response(initial, "Updated message.")
 
 

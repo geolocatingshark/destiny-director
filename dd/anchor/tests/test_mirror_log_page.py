@@ -103,6 +103,7 @@ async def test_data_endpoint_returns_runs_json_shaped() -> None:
     # Snowflakes survive as strings (JS-safe); timestamps carry a UTC offset.
     assert run["src_msg_id"] == "1111111111111111111"
     assert run["src_ch_id"] == "555"
+    assert run["src_name"] is None  # 555 is not a configured followable in tests
     assert run["total"] == 2 and run["delivered"] == 2
     assert run["started"].endswith("+00:00")
     assert run["last_at"].endswith("+00:00")
@@ -134,6 +135,7 @@ async def test_data_endpoint_detail_by_src() -> None:
     assert first["state"] == "FAILED"  # failures first
     assert first["error_ref"] == "PERM01"
     assert first["dest_ch_id"] == "20"
+    assert first["dest_server_id"] is None  # no mirror config seeded → bare-id fallback
     delivered = next(r for r in payload["rows"] if r["state"] == "DELIVERED")
     assert delivered["dest_msg_id"] == "999"
 

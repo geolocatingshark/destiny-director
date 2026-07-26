@@ -34,6 +34,14 @@
       <p id="error" class="err hidden"></p>
       <p id="empty" class="muted hidden">No mirror runs in the log window.</p>
 
+      <div id="filterBar" class="filter-bar hidden">
+        <label for="srcFilter">Source channel</label>
+        <select id="srcFilter">
+          <option value="">All</option>
+        </select>
+      </div>
+      <p id="noMatches" class="muted hidden">No runs for this source channel.</p>
+
       <table class="runs card hidden" id="runsTable">
         <thead>
           <tr>

@@ -14,6 +14,9 @@
     loading: document.getElementById("loading"),
     error: document.getElementById("error"),
     empty: document.getElementById("empty"),
+    noMatches: document.getElementById("noMatches"),
+    filterBar: document.getElementById("filterBar"),
+    srcFilter: document.getElementById("srcFilter"),
     table: document.getElementById("runsTable"),
     tbody: document.querySelector("#runsTable tbody"),
     windowDays: document.getElementById("windowDays"),
@@ -21,6 +24,9 @@
 
   const expanded = new Set(); // src_msg_ids whose detail panel is open
   let pollToken = 0; // bumped to cancel an in-flight poll chain
+  let selectedSrc = ""; // "" = all; else a src_ch_id string
+
+  const DISCORD = "https://discord.com/channels";
 
   async function fetchJSON(url) {
     const res = await fetch(url, { credentials: "same-origin" });
@@ -100,6 +106,27 @@
     return `${esc(relTime(run.started))}${dur ? ` <span class="dur">· ${esc(dur)}</span>` : ""}`;
   }
 
+  // A destination shows as a link (no name cache yet), not a bare snowflake: jump to
+  // the delivered message when we have its guild + message id, else open the channel,
+  // else fall back to the mono id. dest_server_id comes from the mirror config join.
+  function destCell(r) {
+    if (r.dest_server_id && r.dest_msg_id) {
+      const href = `${DISCORD}/${r.dest_server_id}/${r.dest_ch_id}/${r.dest_msg_id}`;
+      return (
+        `<a href="${esc(href)}" target="_blank" rel="noopener" ` +
+        `title="channel ${esc(r.dest_ch_id)}">Jump to message ↗</a>`
+      );
+    }
+    if (r.dest_server_id) {
+      const href = `${DISCORD}/${r.dest_server_id}/${r.dest_ch_id}`;
+      return (
+        `<a href="${esc(href)}" target="_blank" rel="noopener" ` +
+        `title="channel ${esc(r.dest_ch_id)}">Open channel ↗</a>`
+      );
+    }
+    return `<span class="dest-id" title="channel id">${esc(r.dest_ch_id)}</span>`;
+  }
+
   function renderDetailTable(data) {
     if (!data.rows.length) return `<p class="detail-loading">No destinations.</p>`;
     const head =
@@ -118,7 +145,7 @@
             ? '<span class="err-detail">deleted</span>'
             : "";
         return (
-          `<tr><td class="dest-id">${esc(r.dest_ch_id)}</td>` +
+          `<tr><td class="dest-id">${destCell(r)}</td>` +
           `<td><span class="state ${esc(r.state)}">${esc(r.state)}</span></td>` +
           `<td>${r.crosspost_state === "NOT_APPLICABLE" ? "—" : esc(r.crosspost_state)}</td>` +
           `<td>${r.attempts}</td><td>${detail}</td></tr>`
@@ -143,16 +170,30 @@
     }
   }
 
+  // Channel is named where known (feed name); the message id stays as the muted run
+  // identifier (a source-message link needs the source guild id, which we don't store
+  // yet — see the versioning design doc).
+  function sourceCell(run) {
+    const channel = run.src_name ? `#${run.src_name}` : `#${run.src_ch_id}`;
+    return (
+      `<div class="src-channel">${esc(channel)}</div>` +
+      `<div class="src-sub">msg ${esc(run.src_msg_id)}</div>`
+    );
+  }
+
   function render(runs) {
     els.tbody.replaceChildren();
-    for (const run of runs) {
+    const shown = selectedSrc
+      ? runs.filter((r) => r.src_ch_id === selectedSrc)
+      : runs;
+    els.noMatches.classList.toggle("hidden", shown.length > 0 || !runs.length);
+    for (const run of shown) {
       const st = statusOf(run);
       const tr = document.createElement("tr");
       tr.className = "run" + (expanded.has(run.src_msg_id) ? " open" : "");
       tr.innerHTML =
         `<td><span class="chip ${st.cls}">${esc(st.label)}</span></td>` +
-        `<td><div class="src-id">${esc(run.src_msg_id)}</div>` +
-        `<div class="src-sub">#${esc(run.src_ch_id)}</div></td>` +
+        `<td>${sourceCell(run)}</td>` +
         `<td class="num">${countsCell(run)}</td>` +
         `<td class="num">${crosspostCell(run)}</td>` +
         `<td><span class="when">${whenCell(run)}</span></td>`;
@@ -182,6 +223,32 @@
 
   let lastRuns = null;
 
+  // Rebuild the source-channel dropdown from the distinct sources in the loaded runs,
+  // preserving the current selection (drop it if that source is no longer present).
+  function populateFilter(runs) {
+    const seen = new Map(); // src_ch_id -> label
+    for (const r of runs) {
+      if (!seen.has(r.src_ch_id)) {
+        seen.set(r.src_ch_id, r.src_name ? `#${r.src_name}` : `#${r.src_ch_id}`);
+      }
+    }
+    if (![...seen.keys()].includes(selectedSrc)) selectedSrc = "";
+    const opts = ['<option value="">All source channels</option>'];
+    for (const [id, label] of [...seen.entries()].sort((a, b) =>
+      a[1].localeCompare(b[1]),
+    )) {
+      const sel = id === selectedSrc ? " selected" : "";
+      opts.push(`<option value="${esc(id)}"${sel}>${esc(label)}</option>`);
+    }
+    els.srcFilter.innerHTML = opts.join("");
+    els.filterBar.classList.toggle("hidden", seen.size < 2);
+  }
+
+  els.srcFilter.addEventListener("change", () => {
+    selectedSrc = els.srcFilter.value;
+    if (lastRuns) render(lastRuns);
+  });
+
   async function load() {
     const token = ++pollToken;
     try {
@@ -195,9 +262,12 @@
       if (!data.runs.length) {
         els.empty.classList.remove("hidden");
         els.table.classList.add("hidden");
+        els.filterBar.classList.add("hidden");
+        els.noMatches.classList.add("hidden");
       } else {
         els.empty.classList.add("hidden");
         els.table.classList.remove("hidden");
+        populateFilter(data.runs);
         render(data.runs);
       }
 

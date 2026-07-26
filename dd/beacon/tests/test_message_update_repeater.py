@@ -51,7 +51,7 @@ def _wire(
 
 
 async def _run(bot: MagicMock) -> None:
-    await mirror.message_update_repeater_impl(MagicMock(), bot, client=None)
+    await mirror.message_update_repeater_impl(MagicMock(), bot)
 
 
 async def test_no_watcher_when_ledger_write_gave_up(

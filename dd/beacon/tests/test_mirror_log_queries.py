@@ -239,6 +239,28 @@ async def test_run_rows_failures_first_with_error_detail() -> None:
     assert delivered["dest_msg_id"] == 99
     pending = next(r for r in rows if r["state"] == "PENDING")
     assert pending["dest_msg_id"] is None  # never delivered → no dest message
+    # No mirror config for these dests → dest_server_id is None (bare-id fallback).
+    assert all(r["dest_server_id"] is None for r in rows)
+
+
+async def test_run_rows_dest_server_id_from_mirror_config() -> None:
+    now = schemas._utcnow()
+    await _insert([_row(600, 42, state=DeliveryState.DELIVERED.value, created_at=now)])
+    # A matching mirror config row supplies the destination's guild id for the link.
+    async with schemas.db_session() as session, session.begin():
+        session.add(
+            MirroredChannel(
+                src_id=1,
+                dest_id=42,
+                dest_server_id=9001,
+                legacy=True,
+                enabled=True,
+                role_mention_id=None,
+            )
+        )
+
+    (row,) = await MirrorDelivery.run_rows(600)
+    assert row["dest_server_id"] == 9001  # joined on the exact (src, dest) pair
 
 
 async def test_run_rows_caps_at_limit() -> None:
