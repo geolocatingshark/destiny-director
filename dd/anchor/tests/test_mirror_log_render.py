@@ -37,6 +37,7 @@ from dd.common.schemas import (
     MirrorDelivery,
     MirroredChannel,
     MirrorMessageVersion,
+    MirrorOperationLog,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -151,6 +152,37 @@ async def test_run_list_carries_summary_and_source_link() -> None:
 
     assert run["summary"] == "Latest headline"  # from the newest snapshot
     assert run["src_guild_id"] == "9001"  # enables the jump-to-source link
+
+
+async def test_detail_payload_includes_operations() -> None:
+    # The detail must carry each recorded operation's stats (so the version columns show
+    # real per-op numbers, not "counts not recorded"). Guards the duplicate-def
+    # regression where the payload silently dropped operations.
+    now = schemas._utcnow()
+    for op, ver in (("create", 1), ("update", 2)):
+        await MirrorOperationLog.record(
+            src_msg_id=900,
+            src_ch_id=1,
+            op_type=op,
+            version=ver,
+            started_at=now,
+            finished_at=now,
+            total=150,
+            delivered=150,
+            failed=0,
+            cancelled=0,
+            attempts=1,
+            failure_refs=None,
+        )
+
+    resp = await mirror_log._handle_data(_as_request({"src": "900"}))
+    payload = json.loads(resp.text or "{}")
+
+    ops = payload["operations"]
+    assert [(o["op_type"], o["version"], o["delivered"]) for o in ops] == [
+        ("create", 1, 150),
+        ("update", 2, 150),
+    ]
 
 
 async def test_detail_payload_includes_failure_breakdown() -> None:

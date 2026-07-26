@@ -163,31 +163,6 @@ async def _collect_detail(src_msg_id: int) -> dict:
     }
 
 
-async def _collect_detail(src_msg_id: int) -> dict:
-    # The detail carries the mirrored *message* (the version render pane) plus the run's
-    # failure breakdown — the aggregate "why did it fail" the old progress card showed,
-    # grouped by error reference (the per-destination counts come from the run list).
-    versions = await schemas.MirrorMessageVersion.versions_for(src_msg_id)
-    failures = await schemas.MirrorDelivery.failure_breakdown(src_msg_id)
-    return {
-        "src_msg_id": str(src_msg_id),
-        # Version snapshots power the render pane; empty for sources predating capture.
-        "versions": [
-            {
-                "version": v["version"],
-                "captured_at": _iso_utc(v["captured_at"]),
-                "summary": v["summary"],
-                "kind": v["kind"],
-            }
-            for v in versions
-        ],
-        "failures": [
-            {"ref": ref, "error_class": err_class, "count": count, "sample": sample}
-            for (ref, err_class, count, sample) in failures
-        ],
-    }
-
-
 async def _handle_page(request: aiohttp.web.Request) -> aiohttp.web.Response:
     # Auth is enforced by the web_auth middleware; this just serves the shell.
     return aiohttp.web.Response(
