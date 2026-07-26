@@ -219,6 +219,23 @@ def test_iron_banner_week_drops_control_and_swaps_6v6_first_mode() -> None:
     assert "### CRUCIBLE OPS" in ib and "**Playlists**" in ib
 
 
+def test_crucible_base_playlists_show_without_a_featured_mode() -> None:
+    # No featured second mode and no 1v6 line: the base 3v3/6v6 playlists still render
+    # (Competitive/Control are permanent offerings, never hidden), no trailing comma.
+    ctx = wr.WeeklyResetContext(reset_ts=1)
+    ctx.crucible_1v6 = ""
+    body = wr.build_body(ctx)
+    assert "### CRUCIBLE OPS" in body and "**Playlists**" in body
+    assert "3v3: Competitive" in body and "3v3: Competitive," not in body
+    assert "6v6: Control" in body and "6v6: Control," not in body
+    assert "1v6:" not in body  # optional free text, cleared here
+
+    # Iron Banner still swaps the 6v6 first mode even with no featured second mode.
+    ctx.iron_banner = True
+    ib = wr.build_body(ctx)
+    assert "6v6: Iron Banner" in ib and "6v6: Iron Banner," not in ib
+
+
 def test_trials_line_shows_on_non_ib_week() -> None:
     ctx = _full_ctx()
     ctx.iron_banner = False

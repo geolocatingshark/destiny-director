@@ -584,6 +584,19 @@ def _weapon_emoji(weapon: WeaponRef) -> str:
     return weapon.emoji_name or "weapon"
 
 
+def _crucible_playlist(first: str, stored: str) -> str:
+    """A Crucible playlist line's text: the fixed first mode, plus the featured second
+    mode (the part after the first ``", "``) when one is set.
+
+    ``first`` is always shown — the base playlist (Competitive/Control, or Iron Banner
+    for the 6v6 slot on IB weeks) is a permanent Crucible offering, so the line never
+    hides just because no featured mode was chosen. Idempotent over the stored ``"First,
+    Second"`` value and back-compatible with a bare or empty stored value.
+    """
+    _, _, featured = stored.partition(", ")
+    return f"{first}, {featured}" if featured else first
+
+
 def build_body(ctx: WeeklyResetContext) -> str:
     """The full post markdown, with ``:emoji:`` tokens still un-substituted."""
     lines: list[str] = [
@@ -690,29 +703,27 @@ def build_body(ctx: WeeklyResetContext) -> str:
             f":{emoji}: {SEP} {ctx.zavala_weapon.markdown()} {ZAVALA_TIER_SUFFIX}",
         ]
 
-    # CRUCIBLE OPS — the featured playlists, plus the Control Challenge Reward weapon.
-    # On Iron Banner weeks the 6v6 Control playlist becomes Iron Banner: swap the fixed
-    # first mode of the 6v6 line and drop the (no-longer-featured) Control reward.
-    six = ctx.crucible_6v6
-    if six and ctx.iron_banner:
-        six = ", ".join([CRUCIBLE_6V6_FIRST_IB, *six.split(", ", 1)[1:]])
-    show_control = bool(ctx.control_weapon) and not ctx.iron_banner
-    if ctx.crucible_1v6 or ctx.crucible_3v3 or ctx.crucible_6v6 or show_control:
-        lines += ["### CRUCIBLE OPS", ""]
-        if ctx.crucible_1v6 or ctx.crucible_3v3 or ctx.crucible_6v6:
-            lines.append("**Playlists**")
-            if ctx.crucible_1v6:
-                lines.append(f":crucible: {SEP} 1v6: {ctx.crucible_1v6}")
-            if ctx.crucible_3v3:
-                lines.append(f":crucible: {SEP} 3v3: {ctx.crucible_3v3}")
-            if ctx.crucible_6v6:
-                lines.append(f":crucible: {SEP} 6v6: {six}")
-        if ctx.control_weapon and not ctx.iron_banner:
-            lines += ["", "**Control**"]
-            lines.append(
-                f":{_weapon_emoji(ctx.control_weapon)}: {SEP} "
-                f"Challenge Reward: {ctx.control_weapon.markdown()}"
-            )
+    # CRUCIBLE OPS — the base playlists always show (their fixed first mode is a
+    # permanent Crucible offering), with the featured second mode appended when set.
+    # 1v6 is optional free text. On Iron Banner weeks the 6v6 Control playlist becomes
+    # Iron Banner and the (no-longer-featured) Control Challenge Reward is dropped.
+    six_first = CRUCIBLE_6V6_FIRST_IB if ctx.iron_banner else CRUCIBLE_6V6_FIRST
+    lines += ["### CRUCIBLE OPS", "", "**Playlists**"]
+    if ctx.crucible_1v6:
+        lines.append(f":crucible: {SEP} 1v6: {ctx.crucible_1v6}")
+    lines.append(
+        f":crucible: {SEP} 3v3: "
+        f"{_crucible_playlist(CRUCIBLE_3V3_FIRST, ctx.crucible_3v3)}"
+    )
+    lines.append(
+        f":crucible: {SEP} 6v6: {_crucible_playlist(six_first, ctx.crucible_6v6)}"
+    )
+    if ctx.control_weapon and not ctx.iron_banner:
+        lines += ["", "**Control**"]
+        lines.append(
+            f":{_weapon_emoji(ctx.control_weapon)}: {SEP} "
+            f"Challenge Reward: {ctx.control_weapon.markdown()}"
+        )
 
     # MORE
     legacy = f"[**View Legacy Activities**]({LEGACY_ACTIVITIES_URL}) ↗"
