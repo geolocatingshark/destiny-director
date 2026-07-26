@@ -135,6 +135,35 @@ async def test_prune_drops_only_orphaned_snapshots() -> None:
     assert await MirrorMessageVersion.get_version(400, 1) is None  # orphan pruned
 
 
+async def test_capture_version_resolves_guild_from_channel() -> None:
+    # A REST-fetched source message has guild_id=None, so _capture_version must resolve
+    # the source guild from its channel (for the web log's channel/message links).
+    import typing as t
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import hikari as h
+
+    from dd.beacon.mirror_worker import MirrorWorker
+    from dd.common.bot import CachedFetchBot
+    from dd.hmessage import HMessage
+
+    worker = MirrorWorker()
+    msg = t.cast(h.Message, SimpleNamespace(guild_id=None, channel_id=555))
+    bot = SimpleNamespace(
+        fetch_channel=AsyncMock(return_value=SimpleNamespace(guild_id=42424242)),
+        entity_factory=SimpleNamespace(serialize_embed=None),
+    )
+    await worker._capture_version(
+        msg, 600, 1, HMessage(content="hi"), t.cast(CachedFetchBot, bot)
+    )
+
+    got = await MirrorMessageVersion.get_version(600, 1)
+    assert got is not None
+    assert got["src_guild_id"] == 42424242  # resolved from channel, not msg.guild_id
+    bot.fetch_channel.assert_awaited_once_with(555)
+
+
 async def test_summary_is_capped_to_column_width() -> None:
     await MirrorMessageVersion.capture(
         src_msg_id=500,

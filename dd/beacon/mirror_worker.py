@@ -530,11 +530,19 @@ class MirrorWorker:
         so everything is swallowed and logged (not alerted) — a missing render snapshot
         only degrades the web log, never the mirror."""
         try:
+            # A REST-fetched message carries no guild_id (only gateway events do), so
+            # resolve the source guild from its channel (cache-first) — the web log
+            # needs it for the channel + message links.
+            src_guild_id = msg.guild_id
+            if src_guild_id is None:
+                with contextlib.suppress(Exception):
+                    channel = await bot.fetch_channel(msg.channel_id)
+                    src_guild_id = getattr(channel, "guild_id", None)
             payload, kind, summary = _snapshot_payload(hmsg, bot)
             await MirrorMessageVersion.capture(
                 src_msg_id=src_msg_id,
                 version=version,
-                src_guild_id=int(msg.guild_id) if msg.guild_id is not None else None,
+                src_guild_id=int(src_guild_id) if src_guild_id is not None else None,
                 kind=kind,
                 summary=summary,
                 payload=payload,
