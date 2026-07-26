@@ -153,6 +153,36 @@ async def test_run_list_carries_summary_and_source_link() -> None:
     assert run["src_guild_id"] == "9001"  # enables the jump-to-source link
 
 
+async def test_detail_payload_includes_failure_breakdown() -> None:
+    # The detail carries the grouped failure breakdown (the old progress card's stat),
+    # so the web stats block can show *why* destinations failed.
+    now = schemas._utcnow()
+    async with schemas.db_session() as session, session.begin():
+        for dest in (10, 11):
+            session.add(
+                MirrorDelivery(
+                    src_msg_id=800,
+                    dest_ch_id=dest,
+                    src_ch_id=1,
+                    state=DeliveryState.FAILED.value,
+                    created_at=now,
+                    due_at=now,
+                    last_error_ref="PERM01",
+                    last_error_class="PERMANENT",
+                    last_error_msg="Missing Access",
+                )
+            )
+
+    resp = await mirror_log._handle_data(_as_request({"src": "800"}))
+    payload = json.loads(resp.text or "{}")
+
+    (fail,) = payload["failures"]
+    assert fail["ref"] == "PERM01"
+    assert fail["count"] == 2  # grouped by error reference
+    assert fail["error_class"] == "PERMANENT"
+    assert fail["sample"] == "Missing Access"
+
+
 async def test_run_list_without_snapshots_has_no_summary() -> None:
     await _seed_delivery(
         500

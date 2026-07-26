@@ -1,9 +1,11 @@
 // Copyright © 2019-present gsfernandes81 — AGPL-3.0-or-later (see repo LICENSE).
 //
-// Mirror-log page client. Fetches GET /mirror-logs/data (recent runs) and, per expanded
-// run, GET /mirror-logs/data?src=<id> (per-destination detail), rendering both tables.
-// While any run is still in progress it re-polls every few seconds; otherwise it renders
-// once. No live Discord message is involved — this is a stateless read of the ledger.
+// Mirror-log page client. Fetches GET /mirror-logs/data (recent runs + overview) and,
+// per expanded run, GET /mirror-logs/data?src=<id> (that run's stats + version list),
+// rendering the overview (KPIs, health bar, per-day chart via the shared DDCharts
+// engine), the run list with per-run progress bars, and the expandable run detail
+// (progress-card stats + the message render/diff). While any run is still in progress it
+// re-polls every few seconds. No live Discord message is involved — a stateless ledger read.
 
 "use strict";
 
@@ -20,7 +22,14 @@
     table: document.getElementById("runsTable"),
     tbody: document.querySelector("#runsTable tbody"),
     windowDays: document.getElementById("windowDays"),
+    overview: document.getElementById("overview"),
+    overviewStats: document.getElementById("overviewStats"),
+    overviewBar: document.getElementById("overviewBar"),
+    overviewChart: document.getElementById("overviewChart"),
   };
+
+  const cssVar = (name) =>
+    getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
   const expanded = new Set(); // src_msg_ids whose detail panel is open
   let pollToken = 0; // bumped to cancel an in-flight poll chain
@@ -104,6 +113,185 @@
       ? "running"
       : fmtDuration(run.started, run.last_at) || "";
     return `${esc(relTime(run.started))}${dur ? ` <span class="dur">· ${esc(dur)}</span>` : ""}`;
+  }
+
+  function fmtSecs(secs) {
+    if (!isFinite(secs) || secs < 0) return "";
+    const s = Math.round(secs);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ${s % 60}s`;
+    return `${Math.floor(m / 60)}h ${m % 60}m`;
+  }
+
+  // A stacked bar of the run state (delivered green / failed red / cancelled grey),
+  // proportional to total; the unfilled track is what's still pending. Mirrors the old
+  // Discord progress card's bar. `big` renders the taller detail variant with a % label.
+  function progressBar(run, big) {
+    const total = run.total || 1;
+    const pct = (n) => (100 * n) / total;
+    const resolved = run.delivered + run.failed + run.cancelled;
+    const resolvedPct = Math.round((resolved / total) * 100);
+    const seg = (cls, n) =>
+      n > 0 ? `<span class="pseg ${cls}" style="width:${pct(n)}%"></span>` : "";
+    const bar =
+      `<div class="pbar${big ? " big" : ""}" role="img" ` +
+      `aria-label="${resolvedPct}% resolved (${run.delivered} delivered, ` +
+      `${run.failed} failed, ${run.pending} pending)">` +
+      seg("done", run.delivered) +
+      seg("fail", run.failed) +
+      seg("cancel", run.cancelled) +
+      `</div>`;
+    return big
+      ? `<div class="pbar-row">${bar}<span class="pbar-pct">${resolvedPct}%</span></div>`
+      : bar;
+  }
+
+  // Rate + ETA off resolved (excluding cancels) over elapsed time — the old card's
+  // throughput line. ETA only while work remains; returns "" when not yet meaningful.
+  function throughputLine(run) {
+    const resolved = run.delivered + run.failed; // throughput_resolved
+    const start = run.started ? new Date(run.started).getTime() : 0;
+    const end = run.pending
+      ? Date.now()
+      : run.last_at
+        ? new Date(run.last_at).getTime()
+        : 0;
+    const secs = (end - start) / 1000;
+    if (!start || secs <= 0 || resolved === 0) return "";
+    const rate = resolved / secs;
+    const remaining = run.total - (run.delivered + run.failed + run.cancelled);
+    let out = `${rate.toFixed(1)} ch/s`;
+    if (remaining > 0) out += ` · ETA ~${fmtSecs(remaining / rate)}`;
+    return out;
+  }
+
+  // The run stats block shown above the message render (the old progress-card content):
+  // a big progress bar, a tile grid of the counts, timing/throughput, and — when there
+  // are failures — the grouped error breakdown.
+  function renderRunStats(run, detail) {
+    const remaining = run.total - (run.delivered + run.failed + run.cancelled);
+    const tile = (label, value, cls) =>
+      `<div class="stat-tile"><div class="stat-val ${cls || ""}">${value}</div>` +
+      `<div class="stat-label">${label}</div></div>`;
+    const tiles = [
+      tile("Delivered", run.delivered, run.delivered ? "ok" : ""),
+      tile("Failed", run.failed, run.failed ? "bad" : ""),
+      tile("Remaining", remaining, remaining ? "pend" : ""),
+      tile("Cancelled", run.cancelled, run.cancelled ? "muted" : ""),
+      tile("Crosspost", `${run.crosspost_done}${run.crosspost_pending ? `+${run.crosspost_pending}…` : ""}`),
+      tile("Attempts", run.max_attempts),
+      tile("Version", `v${run.version}`),
+    ].join("");
+
+    const dur = run.pending
+      ? `${fmtSecs((Date.now() - new Date(run.started).getTime()) / 1000)} (running)`
+      : fmtDuration(run.started, run.last_at) || "—";
+    const tp = throughputLine(run);
+    const meta = [
+      `<span title="wall-clock time from first to last delivery">⏱ ${esc(dur)}</span>`,
+      tp ? `<span title="resolved channels per second">⚡ ${esc(tp)}</span>` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+    const fails = detail.failures || [];
+    let breakdown = "";
+    if (fails.length) {
+      const rows = fails
+        .map(
+          (f) =>
+            `<li><code>${esc(f.ref || "—")}</code> ×${f.count}` +
+            `${f.error_class ? ` <span class="muted">(${esc(f.error_class.toLowerCase())})</span>` : ""}` +
+            `${f.sample ? `<div class="fail-sample">${esc(f.sample)}</div>` : ""}</li>`,
+        )
+        .join("");
+      breakdown = `<div class="fail-breakdown"><div class="stat-heading">Failure breakdown</div><ul>${rows}</ul></div>`;
+    }
+
+    return (
+      `<div class="run-stats">` +
+      progressBar(run, true) +
+      `<div class="stat-tiles">${tiles}</div>` +
+      `<div class="stat-meta">${meta}</div>` +
+      breakdown +
+      `</div>`
+    );
+  }
+
+  // The overview card: aggregate KPIs + a health bar over the shown runs, and a per-day
+  // "channels delivered" bar chart (reusing the shared DDCharts engine, as /stats does).
+  function sumRuns(runs) {
+    const acc = {
+      total: 0,
+      delivered: 0,
+      failed: 0,
+      pending: 0,
+      cancelled: 0,
+      crosspost_done: 0,
+    };
+    for (const r of runs) {
+      acc.total += r.total;
+      acc.delivered += r.delivered;
+      acc.failed += r.failed;
+      acc.pending += r.pending;
+      acc.cancelled += r.cancelled;
+      acc.crosspost_done += r.crosspost_done;
+    }
+    return acc;
+  }
+
+  let lastShown = [];
+
+  function renderOverview(runs) {
+    lastShown = runs;
+    if (!runs.length) {
+      els.overview.classList.add("hidden");
+      return;
+    }
+    const s = sumRuns(runs);
+    const resolvedTP = s.delivered + s.failed;
+    const successPct = resolvedTP ? Math.round((s.delivered / resolvedTP) * 100) : 100;
+    const tile = (label, value, cls) =>
+      `<div class="stat-tile"><div class="stat-val ${cls || ""}">${value}</div>` +
+      `<div class="stat-label">${label}</div></div>`;
+    els.overviewStats.innerHTML = [
+      tile("Runs", runs.length),
+      tile("Delivered", s.delivered, "ok"),
+      tile("Failed", s.failed, s.failed ? "bad" : ""),
+      tile("Success", successPct + "%", s.failed ? "" : "ok"),
+      tile("Crossposts", s.crosspost_done),
+    ].join("");
+    els.overviewBar.innerHTML = progressBar(s, true);
+    // Unhide before drawing so the chart reads a real container width (it sizes to
+    // clientWidth; a display:none container measures 0).
+    els.overview.classList.remove("hidden");
+    renderOverviewChart(runs);
+  }
+
+  function renderOverviewChart(runs) {
+    if (!window.DDCharts || !els.overviewChart) return;
+    const byDay = new Map(); // day-epoch -> delivered count
+    for (const r of runs) {
+      if (!r.started) continue;
+      const d = new Date(r.started);
+      d.setHours(0, 0, 0, 0);
+      byDay.set(d.getTime(), (byDay.get(d.getTime()) || 0) + r.delivered);
+    }
+    const bars = [...byDay.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([k, v]) => ({
+        label: new Date(k).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        }),
+        value: v,
+      }));
+    window.DDCharts.barChart(els.overviewChart, {
+      bars,
+      color: cssVar("--accent"),
+      unit: "",
+    });
   }
 
   // A "Jump to source ↗" button for the mirrored message, when we know its source guild
@@ -213,7 +401,7 @@
       const data = await fetchJSON(
         `/mirror-logs/data?src=${encodeURIComponent(run.src_msg_id)}`,
       );
-      container.innerHTML = renderVersionPane(data, run);
+      container.innerHTML = renderRunStats(run, data) + renderVersionPane(data, run);
       setupVersionPane(run.src_msg_id, container, data.versions || []);
     } catch (e) {
       container.innerHTML = `<p class="detail-error">Failed to load detail: ${esc(e.message)}</p>`;
@@ -239,6 +427,7 @@
     const shown = selectedSrc
       ? runs.filter((r) => r.src_ch_id === selectedSrc)
       : runs;
+    renderOverview(shown);
     els.noMatches.classList.toggle("hidden", shown.length > 0 || !runs.length);
     for (const run of shown) {
       const st = statusOf(run);
@@ -247,7 +436,7 @@
       tr.innerHTML =
         `<td><span class="chip ${st.cls}">${esc(st.label)}</span></td>` +
         `<td>${sourceCell(run)}</td>` +
-        `<td class="num">${countsCell(run)}</td>` +
+        `<td class="num">${countsCell(run)}${progressBar(run)}</td>` +
         `<td class="num">${crosspostCell(run)}</td>` +
         `<td><span class="when">${whenCell(run)}</span></td>`;
       tr.addEventListener("click", () => toggle(run.src_msg_id));
@@ -317,6 +506,7 @@
         els.table.classList.add("hidden");
         els.filterBar.classList.add("hidden");
         els.noMatches.classList.add("hidden");
+        els.overview.classList.add("hidden");
       } else {
         els.empty.classList.add("hidden");
         els.table.classList.remove("hidden");
@@ -334,6 +524,16 @@
       els.error.classList.remove("hidden");
     }
   }
+
+  // Charts size to their container width, so re-draw the overview chart on resize
+  // (debounced) — matching the /stats page's behaviour.
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (lastShown.length) renderOverviewChart(lastShown);
+    }, 150);
+  });
 
   load();
 })();

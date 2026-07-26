@@ -3,10 +3,11 @@
   Anchor mirror-log page — renders the durable mirror_delivery ledger (how each mirrored
   announcement fanned out to its follower channels). Served by
   dd.anchor.extensions.mirror_log: GET /mirror-logs returns this static shell; the page
-  fetches GET /mirror-logs/data (JSON, DB-only) for the recent-runs list and
-  GET /mirror-logs/data?src=<id> for one run's per-destination detail + captured version
-  list, then GET /mirror-logs/render?src=<id>&v=<n>[&diff=<m>] for each version's safe
-  rendered HTML (or a word-level diff), rendering everything client-side (mirror_log.js).
+  fetches GET /mirror-logs/data (JSON, DB-only) for the recent-runs list + overview, and
+  GET /mirror-logs/data?src=<id> for one run's stats + captured version list, then
+  GET /mirror-logs/render?src=<id>&v=<n>[&diff=<m>] for each version's safe rendered HTML
+  (or a word-level diff). Charts reuse the shared DDCharts engine (charts.js). Rendered
+  client-side (mirror_log.js).
   This is the web-native replacement for the beacon Discord progress card — nothing here
   is a live Discord message, so there is nothing to supersede or freeze. Auth is the
   shared OAuth middleware (web_auth).
@@ -26,8 +27,8 @@
       <h1>Mirror logs</h1>
       <p class="muted">
         How each mirrored announcement fanned out to its follower channels, read live
-        from the delivery ledger. Click a run to see its per-destination detail. History
-        reaches back <span id="windowDays">30</span> days.
+        from the delivery ledger. Click a run for its stats and the mirrored message (with
+        version diffs). History reaches back <span id="windowDays">30</span> days.
       </p>
     </header>
 
@@ -35,6 +36,13 @@
       <p id="loading" class="muted">Loading…</p>
       <p id="error" class="err hidden"></p>
       <p id="empty" class="muted hidden">No mirror runs in the log window.</p>
+
+      <section id="overview" class="overview hidden">
+        <div id="overviewStats" class="stat-tiles"></div>
+        <div id="overviewBar"></div>
+        <div class="overview-chart-label muted">Channels delivered per day</div>
+        <div id="overviewChart" class="chart"></div>
+      </section>
 
       <div id="filterBar" class="filter-bar hidden">
         <label for="srcFilter">Source channel</label>
@@ -58,6 +66,7 @@
       </table>
     </main>
 
+    <script src="/static/charts.js" defer></script>
     <script src="/static/mirror_log.js" defer></script>
   </body>
 </html>

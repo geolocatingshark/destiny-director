@@ -442,3 +442,207 @@ tr.detail-row > td {
 .jump-source:hover {
   border-color: var(--accent);
 }
+
+/* -- overview card ------------------------------------------------------- */
+
+.overview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 0.9rem 1rem;
+  margin: 0 0 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.overview-chart-label {
+  font-size: 0.74rem;
+  margin: 0.2rem 0 -0.2rem;
+}
+
+/* -- stat tiles (overview + run detail) ---------------------------------- */
+
+.stat-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.1rem 1.6rem;
+}
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+}
+.stat-val {
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+  line-height: 1.2;
+}
+.stat-val.ok {
+  color: var(--ok);
+}
+.stat-val.bad {
+  color: var(--err);
+}
+.stat-val.pend {
+  color: var(--link);
+}
+.stat-val.muted {
+  color: var(--text-muted);
+}
+.stat-label {
+  font-size: 0.73rem;
+  color: var(--text-faint);
+}
+.stat-heading {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 0.3rem;
+}
+
+/* -- progress bar (run list + detail) ------------------------------------ */
+
+.pbar {
+  display: flex;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-3); /* unfilled track = still pending */
+  margin-top: 0.35rem;
+}
+.pbar.big {
+  height: 12px;
+}
+.pbar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.pbar-row .pbar {
+  flex: 1;
+  margin-top: 0;
+}
+.pbar-pct {
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  min-width: 3ch;
+  text-align: right;
+}
+.pseg {
+  height: 100%;
+}
+.pseg.done {
+  background: var(--ok);
+}
+.pseg.fail {
+  background: var(--err);
+}
+.pseg.cancel {
+  background: var(--text-muted);
+}
+
+/* -- run detail stats ---------------------------------------------------- */
+
+.run-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-bottom: 0.7rem;
+  margin-bottom: 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+.stat-meta {
+  font-size: 0.8rem;
+  color: var(--text-3);
+}
+.fail-breakdown ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+}
+.fail-breakdown li {
+  margin-bottom: 0.2rem;
+}
+.fail-breakdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--err);
+}
+.fail-breakdown .muted {
+  color: var(--text-muted);
+}
+.fail-sample {
+  color: var(--text-muted);
+  font-size: 0.73rem;
+}
+
+/* -- charts (shared DDCharts output; mirrors stats.css) ------------------ */
+
+.chart {
+  position: relative;
+  min-height: 40px;
+}
+.chart-svg {
+  display: block;
+}
+.chart-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.chart-tick {
+  fill: var(--text-faint);
+  font-size: 11px;
+}
+.chart-bar {
+  transition: opacity 0.1s ease;
+}
+.chart-bar:hover {
+  opacity: 0.85;
+}
+.chart-crosshair {
+  stroke: var(--border-hover);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.chart-overlay {
+  cursor: crosshair;
+}
+.chart-empty {
+  padding: 0.8rem 0;
+}
+.chart-tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
+  min-width: 90px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.55rem;
+  font-size: 0.8rem;
+  color: var(--text-1);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+.chart-tooltip .tt-date {
+  color: var(--text-faint);
+  margin-bottom: 0.25rem;
+  font-size: 0.75rem;
+}
+.chart-tooltip .tt-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.chart-tooltip .tt-key {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+.chart-tooltip .tt-name {
+  color: var(--text-2);
+}
+.chart-tooltip .tt-val {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}

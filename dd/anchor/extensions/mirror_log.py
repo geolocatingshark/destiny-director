@@ -102,9 +102,11 @@ async def _collect_runs() -> dict:
 
 
 async def _collect_detail(src_msg_id: int) -> dict:
-    # The detail is now the mirrored *message* itself (the version render pane), not the
-    # per-destination delivery list — so we only ship the captured version snapshots.
+    # The detail carries the mirrored *message* (the version render pane) plus the run's
+    # failure breakdown — the aggregate "why did it fail" the old progress card showed,
+    # grouped by error reference (the per-destination counts come from the run list).
     versions = await schemas.MirrorMessageVersion.versions_for(src_msg_id)
+    failures = await schemas.MirrorDelivery.failure_breakdown(src_msg_id)
     return {
         "src_msg_id": str(src_msg_id),
         # Version snapshots power the render pane; empty for sources predating capture.
@@ -116,6 +118,10 @@ async def _collect_detail(src_msg_id: int) -> dict:
                 "kind": v["kind"],
             }
             for v in versions
+        ],
+        "failures": [
+            {"ref": ref, "error_class": err_class, "count": count, "sample": sample}
+            for (ref, err_class, count, sample) in failures
         ],
     }
 
