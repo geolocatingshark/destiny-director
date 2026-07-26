@@ -1550,6 +1550,27 @@ class MirrorDelivery(Base):
 
     @classmethod
     @ensure_session(db_session)
+    async def op_meta(
+        cls,
+        src_msg_id: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> tuple[int, int]:
+        """``(version, max_attempts)`` for a source — labels an operation-log row: the
+        version its fan-out converged and the worst per-row attempt count."""
+        row = (
+            await session.execute(
+                select(func.max(cls.desired_version), func.max(cls.attempts)).where(
+                    cls.src_msg_id == int(src_msg_id)
+                )
+            )
+        ).first()
+        if row is None or row[0] is None:
+            return (1, 0)
+        return (int(row[0]), int(row[1] or 0))
+
+    @classmethod
+    @ensure_session(db_session)
     async def recent_runs(
         cls,
         *,
@@ -1995,6 +2016,177 @@ class MirrorMessageVersion(Base):
             await session.execute(
                 delete(cls).where(cls.src_msg_id.in_(ids[i : i + 500]))
             )
+
+
+class MirrorOperationLog(Base):
+    """Append-only record of each completed mirror op (create / update / delete).
+
+    The delivery ledger (:class:`MirrorDelivery`) only ever holds a source's *current*
+    converged state, so it cannot answer "how did each individual operation do?". This
+    table does: the drain watcher writes one row when an operation's fan-out drains,
+    capturing that operation's own final counts + timing — the exact numbers the retired
+    Discord progress card showed live. In-flight operations read from the live ledger
+    (their counts *are* the current state); settled operations are read from here. No
+    backfill — history starts at deploy; earlier operations render as "counts not
+    recorded".
+
+    ``op_type`` is ``"create"`` | ``"update"`` | ``"delete"``. ``version`` is the source
+    version this operation converged (matches a :class:`MirrorMessageVersion` column;
+    NULL if unknown). ``failure_refs`` is the op's own failure breakdown
+    (``[{ref, error_class, count, sample}]``), like the ledger's per-run one.
+    """
+
+    __tablename__ = "mirror_operation_log"
+    __table_args__ = (
+        Index("ix_mirror_operation_log_src_msg_id", "src_msg_id"),  # per-message fetch
+        Index(
+            "ix_mirror_operation_log_finished_at", "finished_at"
+        ),  # prune + daily agg
+    )
+
+    id: Mapped[int] = mapped_column(
+        "id", Integer, primary_key=True, autoincrement=True
+    )
+    src_msg_id = Column("src_msg_id", BigInteger, nullable=False)
+    src_ch_id = Column("src_ch_id", BigInteger, nullable=True)
+    op_type = Column("op_type", String(8), nullable=False)
+    version = Column("version", Integer, nullable=True)
+    started_at = Column("started_at", DateTime, nullable=False)
+    finished_at = Column("finished_at", DateTime, nullable=False)
+    total = Column("total", Integer, nullable=False, default=0)
+    delivered = Column("delivered", Integer, nullable=False, default=0)
+    failed = Column("failed", Integer, nullable=False, default=0)
+    cancelled = Column("cancelled", Integer, nullable=False, default=0)
+    attempts = Column("attempts", Integer, nullable=False, default=0)
+    failure_refs = Column("failure_refs", JSON, nullable=True)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def record(
+        cls,
+        *,
+        src_msg_id: int,
+        src_ch_id: int | None,
+        op_type: str,
+        version: int | None,
+        started_at: dt.datetime,
+        finished_at: dt.datetime,
+        total: int,
+        delivered: int,
+        failed: int,
+        cancelled: int,
+        attempts: int,
+        failure_refs: list[dict[str, t.Any]] | None,
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        """Append one completed-operation row (called once per drain)."""
+        session.add(
+            cls(
+                src_msg_id=int(src_msg_id),
+                src_ch_id=int(src_ch_id) if src_ch_id is not None else None,
+                op_type=str(op_type),
+                version=int(version) if version is not None else None,
+                started_at=started_at,
+                finished_at=finished_at,
+                total=int(total),
+                delivered=int(delivered),
+                failed=int(failed),
+                cancelled=int(cancelled),
+                attempts=int(attempts),
+                failure_refs=failure_refs,
+            )
+        )
+        await session.flush()
+
+    @classmethod
+    @ensure_session(db_session)
+    async def for_message(
+        cls,
+        src_msg_id: int,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> list[dict[str, t.Any]]:
+        """Recorded operations for one source message, oldest first (detail view)."""
+        rows = (
+            (
+                await session.execute(
+                    select(cls)
+                    .where(cls.src_msg_id == int(src_msg_id))
+                    .order_by(cls.finished_at, cls.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [_operation_row(r) for r in rows]
+
+    @classmethod
+    @ensure_session(db_session)
+    async def recent(
+        cls,
+        *,
+        within_days: int = 30,
+        session: AsyncSession = _UNSET,
+    ) -> list[dict[str, t.Any]]:
+        """All operations finished within the window, newest first — the run-list op
+        chips + the overview's per-op-type daily chart read from this."""
+        cutoff = _utcnow() - dt.timedelta(days=within_days)
+        rows = (
+            (
+                await session.execute(
+                    select(cls)
+                    .where(cls.finished_at >= cutoff)
+                    .order_by(desc(cls.finished_at))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return [_operation_row(r) for r in rows]
+
+    @classmethod
+    @ensure_session(db_session)
+    async def prune(
+        cls,
+        *,
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        """Drop operation rows orphaned by the ledger prune (same lifetime as the
+        source's delivery rows). Run after ``MirrorDelivery.prune``."""
+        orphaned = (
+            (
+                await session.execute(
+                    select(cls.src_msg_id)
+                    .where(~exists().where(MirrorDelivery.src_msg_id == cls.src_msg_id))
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        ids = [int(smi) for smi in orphaned]
+        for i in range(0, len(ids), 500):
+            await session.execute(
+                delete(cls).where(cls.src_msg_id.in_(ids[i : i + 500]))
+            )
+
+
+def _operation_row(r: MirrorOperationLog) -> dict[str, t.Any]:
+    return {
+        "id": int(r.id),
+        "src_msg_id": int(r.src_msg_id),
+        "src_ch_id": int(r.src_ch_id) if r.src_ch_id is not None else None,
+        "op_type": str(r.op_type),
+        "version": int(r.version) if r.version is not None else None,
+        "started_at": r.started_at,
+        "finished_at": r.finished_at,
+        "total": int(r.total),
+        "delivered": int(r.delivered),
+        "failed": int(r.failed),
+        "cancelled": int(r.cancelled),
+        "attempts": int(r.attempts),
+        "failure_refs": r.failure_refs or [],
+    }
 
 
 class ServerStatistics(Base):

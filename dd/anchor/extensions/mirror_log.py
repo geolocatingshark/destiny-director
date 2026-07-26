@@ -98,7 +98,69 @@ async def _collect_runs() -> dict:
         run["src_ch_id"] = str(run["src_ch_id"])
         run["started"] = _iso_utc(run["started"])
         run["last_at"] = _iso_utc(run["last_at"])
-    return {"window_days": _WINDOW_DAYS, "run_limit": _RUN_LIMIT, "runs": runs}
+    # Settled operations across the window feed the per-row op chips + the overview's
+    # per-op-type daily chart (the live/in-flight op's numbers are the run row itself).
+    operations = await schemas.MirrorOperationLog.recent(within_days=_WINDOW_DAYS)
+    return {
+        "window_days": _WINDOW_DAYS,
+        "run_limit": _RUN_LIMIT,
+        "runs": runs,
+        "operations": [
+            {
+                "src_msg_id": str(op["src_msg_id"]),
+                "op_type": op["op_type"],
+                "version": op["version"],
+                "total": op["total"],
+                "delivered": op["delivered"],
+                "failed": op["failed"],
+                "finished_at": _iso_utc(op["finished_at"]),
+            }
+            for op in operations
+        ],
+    }
+
+
+def _op_json(op: dict) -> dict:
+    return {
+        "op_type": op["op_type"],
+        "version": op["version"],
+        "started_at": _iso_utc(op["started_at"]),
+        "finished_at": _iso_utc(op["finished_at"]),
+        "total": op["total"],
+        "delivered": op["delivered"],
+        "failed": op["failed"],
+        "cancelled": op["cancelled"],
+        "attempts": op["attempts"],
+        "failures": op["failure_refs"],
+    }
+
+
+async def _collect_detail(src_msg_id: int) -> dict:
+    # The detail carries the mirrored *message* (the version render columns), each
+    # operation's own recorded stats (create/update/delete — the durable op log), and
+    # the run's current failure breakdown (for the in-flight op, which has no log row).
+    versions = await schemas.MirrorMessageVersion.versions_for(src_msg_id)
+    failures = await schemas.MirrorDelivery.failure_breakdown(src_msg_id)
+    operations = await schemas.MirrorOperationLog.for_message(src_msg_id)
+    return {
+        "src_msg_id": str(src_msg_id),
+        # Version snapshots power the render columns; empty pre-capture-deploy.
+        "versions": [
+            {
+                "version": v["version"],
+                "captured_at": _iso_utc(v["captured_at"]),
+                "summary": v["summary"],
+                "kind": v["kind"],
+            }
+            for v in versions
+        ],
+        # Per-operation stats (create/update/delete), oldest first; empty pre-deploy.
+        "operations": [_op_json(op) for op in operations],
+        "failures": [
+            {"ref": ref, "error_class": err_class, "count": count, "sample": sample}
+            for (ref, err_class, count, sample) in failures
+        ],
+    }
 
 
 async def _collect_detail(src_msg_id: int) -> dict:

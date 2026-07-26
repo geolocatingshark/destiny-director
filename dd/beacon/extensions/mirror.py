@@ -30,6 +30,7 @@ perm-probing.
 import asyncio as aio
 import collections.abc
 import contextlib
+import datetime as dt
 import logging
 import math
 import typing as t
@@ -49,6 +50,7 @@ from ...common.schemas import (
     MirrorDelivery,
     MirroredChannel,
     MirrorMessageVersion,
+    MirrorOperationLog,
     ServerStatistics,
 )
 from ...common.utils import (
@@ -190,6 +192,62 @@ def _log_run_summary(view: RunView) -> None:
     )
 
 
+# Ledger op enum → the web log's op-type string (send is a "create" to the reader).
+_OP_TYPE = {
+    MirrorOperationType.SEND: "create",
+    MirrorOperationType.UPDATE: "update",
+    MirrorOperationType.DELETE: "delete",
+}
+
+
+async def _record_operation(view: RunView) -> None:
+    """Append this completed operation's own final counts to the operation log.
+
+    The web mirror-log reads *settled* operations from here (the ledger only holds the
+    latest converged state), so each create/update/delete keeps its own numbers. This is
+    the durable form of the one-line summary :func:`_log_run_summary` already logs.
+    Best-effort — a write failure never affects the run or its summary."""
+    try:
+        counts = view.counts
+        elapsed = max(0.0, perf_counter() - view.start_time)
+        finished = dt.datetime.now(dt.UTC).replace(
+            tzinfo=None
+        )  # naive-UTC, like ledger
+        started = finished - dt.timedelta(seconds=elapsed)
+        version, attempts = await MirrorDelivery.op_meta(view.src_msg_id)
+        refs = (
+            [
+                {"ref": ref, "error_class": cls_, "count": count, "sample": sample}
+                for (
+                    ref,
+                    cls_,
+                    count,
+                    sample,
+                ) in await MirrorDelivery.failure_breakdown(view.src_msg_id)
+            ]
+            if counts.failed
+            else None
+        )
+        await MirrorOperationLog.record(
+            src_msg_id=view.src_msg_id,
+            src_ch_id=view.src_ch_id,
+            op_type=_OP_TYPE.get(view.op, view.op.name.lower()),
+            version=version,
+            started_at=started,
+            finished_at=finished,
+            total=counts.total,
+            delivered=counts.delivered,
+            failed=counts.failed,
+            cancelled=counts.cancelled,
+            attempts=attempts,
+            failure_refs=refs,
+        )
+    except Exception:
+        logging.exception(
+            "Failed to record mirror operation-log row for %s", view.src_msg_id
+        )
+
+
 # --- drain watcher (card-free run completion) --------------------------------
 #
 # The web mirror-log page (dd.anchor /mirror-logs) is now the live view of a run, so the
@@ -257,8 +315,10 @@ async def _run_drain_watcher(
         complete = view.counts.total > 0 and view.counts.is_complete
         if complete or (perf_counter() - started > _WATCHER_MAX_LIFETIME):
             if complete:
-                # Failure escalation + dedup (unchanged), then the visible result line.
+                # Failure escalation + dedup (unchanged), the durable op-log row, then
+                # the visible result line.
                 _log_run_summary(view)
+                await _record_operation(view)
                 await _post_run_summary_line(bot, view, source_message)
             return
         await aio.sleep(_WATCHER_POLL_INTERVAL)
@@ -792,9 +852,10 @@ async def prune_message_db(bot: CachedFetchBot = lb.di.INJECTED):
     await aio.sleep(randint(120, 1800))
     try:
         await MirrorDelivery.prune()
-        # After the ledger prune, drop version snapshots orphaned by it (a snapshot
-        # lives exactly as long as its source keeps any delivery row).
+        # After the ledger prune, drop the version snapshots + operation-log rows
+        # orphaned by it (both live as long as their source keeps a delivery row).
         await MirrorMessageVersion.prune()
+        await MirrorOperationLog.prune()
     except Exception as e:
         e.add_note("Exception during routine pruning of the mirror delivery ledger")
         await discord_error_logger(e, operation="Mirror DB prune")

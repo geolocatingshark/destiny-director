@@ -288,10 +288,11 @@ tr.detail-row > td {
   border-color: color-mix(in srgb, var(--link) 45%, transparent);
   background: color-mix(in srgb, var(--link) 12%, transparent);
 }
+/* Delete is a routine op — slate/grey, NOT red (red reads as a failure). */
 .op-tag.delete {
-  color: var(--err);
-  border-color: color-mix(in srgb, var(--err) 45%, transparent);
-  background: color-mix(in srgb, var(--err) 12%, transparent);
+  color: var(--text-3);
+  border-color: var(--border);
+  background: var(--surface-3);
 }
 .vcol-ver {
   font-size: 0.76rem;
@@ -690,4 +691,119 @@ tr.detail-row > td {
 .chart-tooltip .tt-val {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
+}
+
+/* -- per-operation stat header (in a version/delete column) -------------- */
+
+.op-stat {
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.76rem;
+}
+.op-stat.none {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.op-stat .pbar {
+  margin-top: 0;
+  height: 5px;
+}
+.op-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.op-line .ok {
+  color: var(--ok);
+}
+.op-line .bad {
+  color: var(--err);
+}
+.op-line .muted {
+  color: var(--text-muted);
+}
+.op-tp {
+  color: var(--text-muted);
+}
+.op-expand {
+  margin-left: auto;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  color: var(--err);
+  background: none;
+  border: none;
+  padding: 0;
+}
+.op-fails {
+  margin: 0.1rem 0 0;
+  padding-left: 1rem;
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.op-fails code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--err);
+}
+.op-fails .muted {
+  color: var(--text-muted);
+}
+
+/* delete tombstone column */
+.vcol-delete {
+  border-style: dashed;
+  background: var(--surface-2);
+}
+.vcol-body.tombstone {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* -- run-list op-chip strip ---------------------------------------------- */
+
+.opchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+.opchip {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.02rem 0.32rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.opchip.create {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+.opchip.update {
+  color: var(--link);
+  border-color: color-mix(in srgb, var(--link) 40%, transparent);
+  background: color-mix(in srgb, var(--link) 10%, transparent);
+}
+.opchip.delete {
+  color: var(--text-3);
+  border-color: var(--border);
+  background: var(--surface-3);
+}
+.opchip .bad {
+  color: var(--err);
+}
+
+/* overview per-op-type failure line */
+.overview-fails {
+  font-size: 0.76rem;
+  color: var(--err);
+}
+.overview-fails:empty {
+  display: none;
 }

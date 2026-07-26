@@ -25,6 +25,7 @@
     overview: document.getElementById("overview"),
     overviewStats: document.getElementById("overviewStats"),
     overviewBar: document.getElementById("overviewBar"),
+    overviewFails: document.getElementById("overviewFails"),
     overviewChart: document.getElementById("overviewChart"),
   };
 
@@ -137,7 +138,7 @@
     const bar =
       `<div class="pbar${big ? " big" : ""}" role="img" ` +
       `aria-label="${resolvedPct}% resolved (${run.delivered} delivered, ` +
-      `${run.failed} failed, ${run.pending} pending)">` +
+      `${run.failed} failed, ${run.pending || 0} pending)">` +
       seg("done", run.delivered) +
       seg("fail", run.failed) +
       seg("cancel", run.cancelled) +
@@ -166,10 +167,10 @@
     return out;
   }
 
-  // The run stats block shown above the message render (the old progress-card content):
-  // a big progress bar, a tile grid of the counts, timing/throughput, and — when there
-  // are failures — the grouped error breakdown.
-  function renderRunStats(run, detail) {
+  // The message's current/aggregate state — a health bar + count tiles, and (while a run
+  // is still in flight, before it has an operation-log row) its live duration + ETA.
+  // Per-operation timing / throughput / failures now live on the operation columns.
+  function renderRunStats(run) {
     const remaining = run.total - (run.delivered + run.failed + run.cancelled);
     const tile = (label, value, cls) =>
       `<div class="stat-tile"><div class="stat-val ${cls || ""}">${value}</div>` +
@@ -179,43 +180,27 @@
       tile("Failed", run.failed, run.failed ? "bad" : ""),
       tile("Remaining", remaining, remaining ? "pend" : ""),
       tile("Cancelled", run.cancelled, run.cancelled ? "muted" : ""),
-      tile("Crosspost", `${run.crosspost_done}${run.crosspost_pending ? `+${run.crosspost_pending}…` : ""}`),
+      tile(
+        "Crosspost",
+        `${run.crosspost_done}${run.crosspost_pending ? `+${run.crosspost_pending}…` : ""}`,
+      ),
       tile("Attempts", run.max_attempts),
       tile("Version", `v${run.version}`),
     ].join("");
 
-    const dur = run.pending
-      ? `${fmtSecs((Date.now() - new Date(run.started).getTime()) / 1000)} (running)`
-      : fmtDuration(run.started, run.last_at) || "—";
-    const tp = throughputLine(run);
-    const meta = [
-      `<span title="wall-clock time from first to last delivery">⏱ ${esc(dur)}</span>`,
-      tp ? `<span title="resolved channels per second">⚡ ${esc(tp)}</span>` : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-
-    const fails = detail.failures || [];
-    let breakdown = "";
-    if (fails.length) {
-      const rows = fails
-        .map(
-          (f) =>
-            `<li><code>${esc(f.ref || "—")}</code> ×${f.count}` +
-            `${f.error_class ? ` <span class="muted">(${esc(f.error_class.toLowerCase())})</span>` : ""}` +
-            `${f.sample ? `<div class="fail-sample">${esc(f.sample)}</div>` : ""}</li>`,
-        )
-        .join("");
-      breakdown = `<div class="fail-breakdown"><div class="stat-heading">Failure breakdown</div><ul>${rows}</ul></div>`;
+    let live = "";
+    if (run.pending) {
+      const dur = fmtSecs((Date.now() - new Date(run.started).getTime()) / 1000);
+      const tp = throughputLine(run);
+      live =
+        `<div class="stat-meta">⏳ ${esc(dur)} in flight` +
+        `${tp ? ` · ⚡ ${esc(tp)}` : ""}</div>`;
     }
 
     return (
       `<div class="run-stats">` +
       progressBar(run, true) +
-      `<div class="stat-tiles">${tiles}</div>` +
-      `<div class="stat-meta">${meta}</div>` +
-      breakdown +
-      `</div>`
+      `<div class="stat-tiles">${tiles}</div>${live}</div>`
     );
   }
 
@@ -242,6 +227,31 @@
   }
 
   let lastShown = [];
+  let lastOps = []; // all recorded operations in the window (from /mirror-logs/data)
+  const opsByMsg = new Map(); // src_msg_id -> [op, …], rebuilt each load
+
+  // A compact op-chip strip for a run row: one chip per recorded operation (+ create,
+  // ~ update, × delete), so a failed edit/delete is spottable without expanding.
+  function opChips(run) {
+    const ops = opsByMsg.get(run.src_msg_id) || [];
+    if (!ops.length) return "";
+    const sym = { create: "+", update: "~", delete: "×" };
+    const chips = ops
+      .map((o) => {
+        const v =
+          o.op_type !== "delete" && o.version != null ? `v${esc(o.version)}` : "";
+        const fail = o.failed ? `<span class="bad"> ✗${o.failed}</span>` : "";
+        return `<span class="opchip ${o.op_type}">${sym[o.op_type] || "•"}${v}${fail}</span>`;
+      })
+      .join("");
+    return `<div class="opchips">${chips}</div>`;
+  }
+
+  // Ops for the shown messages only (the overview + list track the current filter).
+  function shownOps(runs) {
+    const ids = new Set(runs.map((r) => r.src_msg_id));
+    return lastOps.filter((o) => ids.has(o.src_msg_id));
+  }
 
   function renderOverview(runs) {
     lastShown = runs;
@@ -250,47 +260,71 @@
       return;
     }
     const s = sumRuns(runs);
+    const ops = shownOps(runs);
     const resolvedTP = s.delivered + s.failed;
     const successPct = resolvedTP ? Math.round((s.delivered / resolvedTP) * 100) : 100;
     const tile = (label, value, cls) =>
       `<div class="stat-tile"><div class="stat-val ${cls || ""}">${value}</div>` +
       `<div class="stat-label">${label}</div></div>`;
     els.overviewStats.innerHTML = [
-      tile("Runs", runs.length),
+      tile("Messages", runs.length),
+      tile("Operations", ops.length),
       tile("Delivered", s.delivered, "ok"),
       tile("Failed", s.failed, s.failed ? "bad" : ""),
       tile("Success", successPct + "%", s.failed ? "" : "ok"),
       tile("Crossposts", s.crosspost_done),
     ].join("");
     els.overviewBar.innerHTML = progressBar(s, true);
+    // A per-op-type failure line, only when there are failures (op-type breakdown earns
+    // pixels exactly when something's wrong — send/edit/delete failures differ in cause).
+    els.overviewFails.innerHTML = failsByOpLine(ops);
     // Unhide before drawing so the chart reads a real container width (it sizes to
     // clientWidth; a display:none container measures 0).
     els.overview.classList.remove("hidden");
     renderOverviewChart(runs);
   }
 
+  function failsByOpLine(ops) {
+    const by = { create: 0, update: 0, delete: 0 };
+    for (const o of ops) if (o.op_type in by) by[o.op_type] += o.failed || 0;
+    if (!by.create && !by.update && !by.delete) return "";
+    const parts = ["create", "update", "delete"]
+      .filter((tp) => by[tp])
+      .map((tp) => `${by[tp]} ${tp}`);
+    return `failures: ${esc(parts.join(" · "))}`;
+  }
+
+  // Channels delivered per day, split into create / update / delete series — an edit
+  // storm and a posting spike look identical collapsed, distinct here. Reuses DDCharts.
   function renderOverviewChart(runs) {
     if (!window.DDCharts || !els.overviewChart) return;
-    const byDay = new Map(); // day-epoch -> delivered count
-    for (const r of runs) {
-      if (!r.started) continue;
-      const d = new Date(r.started);
+    const ops = shownOps(runs);
+    const byType = { create: new Map(), update: new Map(), delete: new Map() };
+    for (const o of ops) {
+      if (!o.finished_at || !(o.op_type in byType)) continue;
+      const d = new Date(o.finished_at);
       d.setHours(0, 0, 0, 0);
-      byDay.set(d.getTime(), (byDay.get(d.getTime()) || 0) + r.delivered);
+      const m = byType[o.op_type];
+      m.set(d.getTime(), (m.get(d.getTime()) || 0) + o.delivered);
     }
-    const bars = [...byDay.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([k, v]) => ({
-        label: new Date(k).toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric",
-        }),
-        value: v,
+    const colors = {
+      create: cssVar("--accent-strong"),
+      update: cssVar("--accent"),
+      delete: cssVar("--text-muted"),
+    };
+    const series = ["create", "update", "delete"]
+      .filter((tp) => byType[tp].size)
+      .map((tp) => ({
+        name: OP_LABEL[tp],
+        color: colors[tp],
+        points: [...byType[tp].entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([k, v]) => [new Date(k), v]),
       }));
-    window.DDCharts.barChart(els.overviewChart, {
-      bars,
-      color: cssVar("--accent"),
-      unit: "",
+    window.DDCharts.lineChart(els.overviewChart, {
+      resolution: "daily",
+      series,
+      height: 200,
     });
   }
 
@@ -305,15 +339,70 @@
     );
   }
 
-  // The expandable detail's message view: every captured version rendered as its own
-  // column in a horizontally-scrollable row (no vertical scroll), oldest→newest, each
-  // labelled by the operation it was (v1 = Create, later = Update). A "highlight changes
-  // vs previous" toggle re-renders every v2+ column as an inline diff against the one
-  // before it. Plus the jump-to-source button.
+  const OP_LABEL = { create: "Create", update: "Update", delete: "Delete" };
+
+  function opDurationSecs(op) {
+    const s = op.started_at ? new Date(op.started_at).getTime() : 0;
+    const f = op.finished_at ? new Date(op.finished_at).getTime() : 0;
+    return s && f ? Math.max(0, (f - s) / 1000) : 0;
+  }
+
+  // One operation's compact stat header for a version/delete column: a slim progress
+  // bar + counts + time/throughput, expandable to its own failure breakdown. When we
+  // have no recorded op for this column (pre-deploy history), say so honestly rather
+  // than borrowing another op's numbers.
+  function opStatHeader(op) {
+    if (!op) return `<div class="op-stat none">counts not recorded</div>`;
+    const secs = opDurationSecs(op);
+    const rate = secs > 0 ? (op.delivered + op.failed) / secs : 0;
+    const counts =
+      `<span class="ok">${op.delivered} ok</span>` +
+      (op.failed ? ` · <span class="bad">${op.failed} fail</span>` : "") +
+      (op.cancelled ? ` · <span class="muted">${op.cancelled} ⊘</span>` : "");
+    const tp = `${fmtSecs(secs)}${rate ? ` · ${rate.toFixed(1)} ch/s` : ""}`;
+    const fails = op.failures || [];
+    const expand = fails.length
+      ? `<button type="button" class="op-expand" title="Show failures">▸ ${fails.length}</button>`
+      : "";
+    const breakdown = fails.length
+      ? `<ul class="op-fails hidden">` +
+        fails
+          .map(
+            (f) =>
+              `<li><code>${esc(f.ref || "—")}</code> ×${f.count}` +
+              (f.error_class
+                ? ` <span class="muted">(${esc(f.error_class.toLowerCase())})</span>`
+                : "") +
+              (f.sample ? ` — ${esc(f.sample)}` : "") +
+              `</li>`,
+          )
+          .join("") +
+        `</ul>`
+      : "";
+    return (
+      `<div class="op-stat">${progressBar(op)}` +
+      `<div class="op-line"><span>${counts}</span>` +
+      `<span class="op-tp">${tp}</span>${expand}</div>${breakdown}</div>`
+    );
+  }
+
+  // The expandable detail's message view: every operation as its own column in a
+  // horizontally-scrollable row (no vertical scroll), oldest→newest. Create/update
+  // columns carry the captured version render (with a per-op stat header); a delete is a
+  // dashed tombstone column (real stats, no content snapshot). A "highlight changes vs
+  // previous" toggle re-renders every v2+ render as an inline diff. Plus jump-to-source.
   function renderVersionColumns(data, run) {
     const vs = data.versions || [];
+    const ops = data.operations || [];
+    const opByVersion = new Map(); // version -> its create/update op-event
+    const deletes = [];
+    for (const op of ops) {
+      if (op.op_type === "delete") deletes.push(op);
+      else if (op.version != null && !opByVersion.has(op.version))
+        opByVersion.set(op.version, op);
+    }
     const jump = sourceButton(run);
-    if (!vs.length) {
+    if (!vs.length && !deletes.length) {
       return (
         `<div class="versions"><div class="version-head">` +
         `<span class="version-label">Message</span>${jump}</div>` +
@@ -325,43 +414,54 @@
       vs.length > 1
         ? `<label class="diff-toggle"><input type="checkbox" class="diff-check" /> ` +
           `Highlight changes vs previous</label>`
-        : `<span class="version-hint">only version so far — edits are captured as ` +
-          `new versions and shown as diffs</span>`;
-    const cols = vs
-      .map((v, i) => {
-        const op = i === 0 ? "Create" : "Update";
-        const opCls = i === 0 ? "create" : "update";
-        const abs = v.captured_at ? new Date(v.captured_at).toLocaleString() : "";
-        return (
-          `<div class="vcol" data-idx="${i}">` +
-          `<div class="vcol-head">` +
-          `<span class="op-tag ${opCls}">${op}</span>` +
+        : vs.length === 1
+          ? `<span class="version-hint">one version so far — edits are captured as ` +
+            `new versions and shown as diffs</span>`
+          : "";
+    const cols = [];
+    vs.forEach((v, i) => {
+      const op = opByVersion.get(v.version);
+      const opType = op ? op.op_type : i === 0 ? "create" : "update";
+      const abs = v.captured_at ? new Date(v.captured_at).toLocaleString() : "";
+      cols.push(
+        `<div class="vcol" data-idx="${i}">` +
+          `<div class="vcol-head"><span class="op-tag ${opType}">` +
+          `${OP_LABEL[opType] || "Update"}</span>` +
           `<span class="vcol-ver">v${esc(v.version)}</span>` +
           `<span class="vcol-time" title="${esc(abs)}">${esc(relTime(v.captured_at))}</span>` +
-          `</div>` +
-          `<div class="vcol-body"><p class="detail-loading">Loading…</p></div>` +
-          `</div>`
-        );
-      })
-      .join("");
+          `</div>${opStatHeader(op)}` +
+          `<div class="vcol-body"><p class="detail-loading">Loading…</p></div></div>`,
+      );
+    });
+    deletes.forEach((d) => {
+      const abs = d.finished_at ? new Date(d.finished_at).toLocaleString() : "";
+      const ver = d.version != null ? ` v${esc(d.version)}` : "";
+      cols.push(
+        `<div class="vcol vcol-delete">` +
+          `<div class="vcol-head"><span class="op-tag delete">Delete</span>` +
+          `<span class="vcol-time" title="${esc(abs)}">${esc(relTime(d.finished_at))}</span>` +
+          `</div>${opStatHeader(d)}` +
+          `<div class="vcol-body tombstone">Source deleted — removed${ver} from ` +
+          `${d.delivered} channel${d.delivered === 1 ? "" : "s"}. No content snapshot.` +
+          `</div></div>`,
+      );
+    });
     return (
       `<div class="versions">` +
-      `<div class="version-head"><span class="version-label">Versions</span>` +
+      `<div class="version-head"><span class="version-label">Operations</span>` +
       control +
       jump +
-      `</div>` +
-      `<div class="vcols">${cols}</div>` +
-      `</div>`
+      `</div><div class="vcols">${cols.join("")}</div></div>`
     );
   }
 
-  // Fetch each version column's render (or its diff-vs-previous when the toggle is on).
-  // The server returns pre-escaped safe HTML (cv2_render) → innerHTML; an error body is
-  // untrusted → textContent. Each column carries its own token so a toggle mid-fetch
-  // can't land a stale render.
+  // Fetch each version column's render (or its diff-vs-previous when the toggle is on)
+  // and wire the per-op failure expanders. Delete columns have no render to fetch. The
+  // server returns pre-escaped safe HTML (cv2_render) → innerHTML; an error body is
+  // untrusted → textContent. Each column carries a token so a toggle mid-fetch can't
+  // land a stale render.
   function setupVersionColumns(srcId, container, versions) {
-    if (!versions.length) return;
-    const cols = [...container.querySelectorAll(".vcol")];
+    const cols = [...container.querySelectorAll(".vcol[data-idx]")];
     const diffCheck = container.querySelector(".diff-check");
     const tokens = new WeakMap();
 
@@ -389,6 +489,15 @@
     cols.forEach(renderCol);
     if (diffCheck)
       diffCheck.addEventListener("change", () => cols.forEach(renderCol));
+
+    container.querySelectorAll(".op-expand").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const fails = btn.closest(".op-stat").querySelector(".op-fails");
+        if (!fails) return;
+        const hidden = fails.classList.toggle("hidden");
+        btn.textContent = `${hidden ? "▸" : "▾"} ${fails.children.length}`;
+      });
+    });
   }
 
   async function loadDetail(run, container) {
@@ -398,7 +507,7 @@
         `/mirror-logs/data?src=${encodeURIComponent(run.src_msg_id)}`,
       );
       container.innerHTML =
-        renderRunStats(run, data) + renderVersionColumns(data, run);
+        renderRunStats(run) + renderVersionColumns(data, run);
       setupVersionColumns(run.src_msg_id, container, data.versions || []);
     } catch (e) {
       container.innerHTML = `<p class="detail-error">Failed to load detail: ${esc(e.message)}</p>`;
@@ -429,7 +538,8 @@
     return (
       `<div class="src-channel">${channel}</div>` +
       (summary ? `<div class="src-summary">${summary}</div>` : "") +
-      `<div class="src-sub">msg ${esc(run.src_msg_id)}</div>`
+      `<div class="src-sub">msg ${esc(run.src_msg_id)}</div>` +
+      opChips(run)
     );
   }
 
@@ -508,6 +618,13 @@
       const data = await fetchJSON("/mirror-logs/data");
       if (token !== pollToken) return; // superseded by a newer load
       lastRuns = data.runs;
+      lastOps = data.operations || [];
+      opsByMsg.clear();
+      for (const op of lastOps) {
+        const list = opsByMsg.get(op.src_msg_id);
+        if (list) list.push(op);
+        else opsByMsg.set(op.src_msg_id, [op]);
+      }
       if (els.windowDays) els.windowDays.textContent = String(data.window_days);
       els.loading.classList.add("hidden");
       els.error.classList.add("hidden");
