@@ -281,6 +281,10 @@ def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
             out.append(f"<em>{html.escape(m.group('i_inner'))}</em>")
         elif m.group("link") is not None:
             url = m.group("url")
+            # Discord's ``[label](<url>)`` form wraps the URL in angle brackets to
+            # suppress its preview embed; the real URL is inside them.
+            if len(url) > 1 and url.startswith("<") and url.endswith(">"):
+                url = url[1:-1]
             if url.startswith(("http://", "https://")):
                 href = html.escape(url, quote=True)
                 # The label may itself carry markdown (e.g. "[**View…**](url)").

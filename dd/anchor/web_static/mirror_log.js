@@ -514,15 +514,13 @@
     }
   }
 
-  // Source message column: the channel name links to the source *message*, and the
-  // message summary links to the source *channel* (per request). Both need the source
-  // guild id (from the latest snapshot); without it they fall back to plain text.
+  // Source column: the channel name links to the source *message*, and the message
+  // summary links to the source *channel* — two links, no visible ids/snowflakes. Both
+  // need the source guild id (from the latest snapshot); without it, plain text.
   function sourceCell(run) {
     const name = run.src_name ? `#${run.src_name}` : `#${run.src_ch_id}`;
     const g = run.src_guild_id;
-    const msgHref = g
-      ? `${DISCORD}/${g}/${run.src_ch_id}/${run.src_msg_id}`
-      : null;
+    const msgHref = g ? `${DISCORD}/${g}/${run.src_ch_id}/${run.src_msg_id}` : null;
     const chHref = g ? `${DISCORD}/${g}/${run.src_ch_id}` : null;
     const channel = msgHref
       ? `<a href="${esc(msgHref)}" target="_blank" rel="noopener" ` +
@@ -538,7 +536,6 @@
     return (
       `<div class="src-channel">${channel}</div>` +
       (summary ? `<div class="src-summary">${summary}</div>` : "") +
-      `<div class="src-sub">msg ${esc(run.src_msg_id)}</div>` +
       opChips(run)
     );
   }

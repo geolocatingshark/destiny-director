@@ -96,8 +96,32 @@ def test_media_gallery_and_link_button_row() -> None:
         ),
         "cv2",
     )
-    assert '<img class="cv2-media-item" src="https://cdn.ex/a.png"' in out
+    # A gallery tile is a clickable <a> (to the full image) wrapping the <img>.
+    assert '<div class="cv2-media n1">' in out
+    assert '<a class="cv2-media-item" href="https://cdn.ex/a.png"' in out
+    assert '<img src="https://cdn.ex/a.png"' in out
     assert '<a class="cv2-button" href="https://g.ex"' in out and ">Guide</a>" in out
+
+
+def test_angle_bracket_masked_link_renders_as_link() -> None:
+    # Discord's [label](<url>) — angle brackets suppress the preview — still links, and
+    # the brackets aren't shown (this was rendering as raw text before).
+    out = r.render_snapshot(
+        _cv2(_text("[The Broken Deep](<https://kyber3000.com/x>)")), "cv2"
+    )
+    assert '<a href="https://kyber3000.com/x">The Broken Deep</a>' in out
+    assert "&lt;https" not in out and "](" not in out
+
+
+def test_media_gallery_grid_layout_by_count() -> None:
+    def gallery(n):
+        items = [{"media": {"url": f"https://cdn.ex/{i}.png"}} for i in range(n)]
+        return r.render_snapshot(_cv2({"type": 12, "items": items}), "cv2")
+
+    assert 'class="cv2-media n2"' in gallery(2)
+    assert 'class="cv2-media n3"' in gallery(3)
+    assert 'class="cv2-media n4"' in gallery(4)
+    assert 'class="cv2-media many"' in gallery(6)  # 5+ → multi-column grid
 
 
 def test_urlless_button_dropped_and_unknown_node_degrades() -> None:

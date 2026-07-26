@@ -174,6 +174,17 @@ def test_render_post_html_renders_footer_buttons() -> None:
     assert "post-button" not in dropped
 
 
+def test_render_post_html_angle_bracket_masked_link() -> None:
+    # Discord's [label](<url>) form (angle brackets suppress the preview embed) must
+    # still render as a link — the real url is inside the brackets.
+    out = hpc.render_post_html(
+        "[The Broken Deep](<https://kyber3000.com/LS-TheBrokenDeep>)",
+        t.cast("dict[str, h.Emoji]", {}),
+    )
+    assert '<a href="https://kyber3000.com/LS-TheBrokenDeep">The Broken Deep</a>' in out
+    assert "&lt;https" not in out  # angle brackets consumed, not shown as text
+
+
 def test_render_post_spec_renders_h2_heading() -> None:
     # '## ' is an H2 heading (used by the Lost Sector post); rendered as an md-h2 span
     # with the inline link, not left as literal '## ' text.

@@ -188,15 +188,26 @@ def _render_section(node: t.Any, sub: EmojiSub) -> str:
 
 
 def _render_media(node: t.Any) -> str:
-    items = []
+    """A media gallery → a Discord-style image grid; each tile links to the full image.
+
+    The item count drives the grid layout (1 / 2 / 3 / 4 / many) via a CSS class, so the
+    tiles split the way Discord's galleries do rather than stacking full-width."""
+    urls = []
     for item in node.get("items") or []:
         url = _media_url(item.get("media")) if isinstance(item, dict) else None
         if url:
-            items.append(
-                f'<img class="cv2-media-item" src="{html.escape(url, quote=True)}" '
-                'alt="image">'
-            )
-    return f'<div class="cv2-media">{"".join(items)}</div>' if items else ""
+            urls.append(url)
+    if not urls:
+        return ""
+    n = len(urls)
+    layout = {1: "n1", 2: "n2", 3: "n3", 4: "n4"}.get(n, "many")
+    tiles = "".join(
+        f'<a class="cv2-media-item" href="{html.escape(u, quote=True)}" '
+        'target="_blank" rel="noopener noreferrer">'
+        f'<img src="{html.escape(u, quote=True)}" alt="image" loading="lazy"></a>'
+        for u in urls
+    )
+    return f'<div class="cv2-media {layout}">{tiles}</div>'
 
 
 def _render_separator(node: t.Any) -> str:
