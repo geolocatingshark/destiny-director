@@ -19,6 +19,9 @@ Run with ``python -OOm dd.beacon``. Wires up the hikari client and
 lightbulb, loads the ``dd.beacon.extensions`` and starts the gateway.
 """
 
+import asyncio
+import logging
+
 import hikari as h
 import lightbulb as lb
 
@@ -39,11 +42,53 @@ from ..common.extension_loader import load_extensions_strict
 from ..common.lifecycle import consume_exit_code
 from .mirror_worker import mirror_worker
 
+# Live set of channel ids the gateway cache is allowed to keep (mirror sources +
+# destinations). Populated from the DB before the gateway connects and refreshed
+# periodically; held by reference by the scoped cache below. See
+# dd.common.scoped_cache for why beacon scopes its channel cache at all.
+_relevant_channel_ids: set[int] = set()
+
+
+async def _refresh_relevant_channel_ids() -> None:
+    """Refresh ``_relevant_channel_ids`` in place from the mirror config.
+
+    Grows-then-shrinks (``|=`` then ``&=``) so a currently-relevant channel is never
+    momentarily absent from the set while a ``GUILD_CREATE`` burst is being filtered.
+    """
+    ids = await schemas.MirroredChannel.fetch_all_channel_ids()
+    # In-place (no rebind, so no ``global`` needed): add the current ids, then drop only
+    # the ones no longer present — an id that is still relevant is never momentarily
+    # absent while a GUILD_CREATE burst is being filtered.
+    _relevant_channel_ids.update(ids)
+    _relevant_channel_ids.difference_update(_relevant_channel_ids - ids)
+
+
 bot = ServerEmojiEnabledBot(
     token=cfg.discord_token_beacon,
     intents=h.Intents.ALL_UNPRIVILEGED | h.Intents.MESSAGE_CONTENT,
     max_rate_limit=600,
     emoji_servers=[cfg.kyber_discord_server_id],
+    # Beacon is in thousands of guilds but only reads a handful of channels. Trim the
+    # gateway cache to what the code actually reads: keep guilds + roles (permission
+    # checks resolve guild.get_roles()), the bot's own member only (only_my_member),
+    # messages (bounded, mirror source reads) and channels — but scope the channel
+    # cache to mirror sources/destinations via scoped_channel_ids. Everything else
+    # (emojis, voice states, invites, stickers, threads, presences) is never read, so
+    # it is dropped. All reads are fetch-through with a REST fallback (CachedFetchBot).
+    cache_settings=h.impl.CacheSettings(
+        components=(
+            h.api.CacheComponents.GUILDS
+            | h.api.CacheComponents.GUILD_CHANNELS
+            | h.api.CacheComponents.ROLES
+            | h.api.CacheComponents.MEMBERS
+            | h.api.CacheComponents.MESSAGES
+            | h.api.CacheComponents.ME
+            | h.api.CacheComponents.DM_CHANNEL_IDS
+        ),
+        only_my_member=True,
+        max_messages=100,
+    ),
+    scoped_channel_ids=_relevant_channel_ids,
 )
 
 client = lb.client_from_app(
@@ -77,9 +122,29 @@ install_command_error_reporting(client)
 @bot.listen(h.StartingEvent)
 async def on_starting_event(_event: h.StartingEvent):
     await schemas.wait_for_db()
+    # Warm the scoped-cache channel set from the DB *before* the gateway connects, so
+    # the initial GUILD_CREATE burst is filtered against a populated set (an empty set
+    # would refuse every channel until the first refresh).
+    await _refresh_relevant_channel_ids()
     await load_extensions_strict(client, dd.beacon.extensions)
     await dd.beacon.extensions.user_commands.resync_user_commands(client, sync=False)
     await client.start()
+
+
+@bot.listen(h.StartedEvent)
+async def on_start_refresh_relevant_channels(_event: h.StartedEvent):
+    # Keep the scoped-cache channel set current with the mirror config so channels for
+    # mirrors added at runtime are cached on the next gateway reconnect. Cache misses in
+    # between are harmless (fetch-through REST fallback), so a coarse interval is fine.
+    async def _loop(interval: int = 300):
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await _refresh_relevant_channel_ids()
+            except Exception:
+                logging.exception("Failed to refresh scoped-cache channel set")
+
+    _ = asyncio.create_task(_loop())
 
 
 @bot.listen(h.StartedEvent)

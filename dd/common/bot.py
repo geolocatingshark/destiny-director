@@ -149,9 +149,19 @@ class CachedFetchBot(h.GatewayBot):
 
 class ServerEmojiEnabledBot(CachedFetchBot):
     def __init__(
-        self, *args: t.Any, emoji_servers: list[int] | None = None, **kwargs: t.Any
+        self,
+        *args: t.Any,
+        emoji_servers: list[int] | None = None,
+        scoped_channel_ids: set[int] | None = None,
+        **kwargs: t.Any,
     ):
         super().__init__(*args, **kwargs)
+        # When ``scoped_channel_ids`` is passed, swap hikari's channel-caching cache for
+        # one that only stores guild channels in that (live) set — see
+        # ``dd.common.scoped_cache``. Done before the gateway connects so the first
+        # ``GUILD_CREATE`` burst is already scoped.
+        if scoped_channel_ids is not None:
+            self._install_scoped_channel_cache(scoped_channel_ids)
         self._emoji_servers: list[int] = (
             emoji_servers if emoji_servers is not None else []
         )
@@ -161,6 +171,32 @@ class ServerEmojiEnabledBot(CachedFetchBot):
         # lightbulb.ext.tasks no longer exists in v3, so we self-schedule with
         # an asyncio loop instead.
         _ = self.listen(h.StartingEvent)(self._refresh_emoji_on_start)
+
+    def _install_scoped_channel_cache(self, relevant_channels: set[int]) -> None:
+        """Replace the gateway cache with a channel-scoped one and re-point holders.
+
+        hikari builds the cache inline in ``GatewayBot.__init__`` and hands the *same*
+        instance to the event manager and REST client, exposing no injection seam — so
+        we rebuild it here (reusing the settings the bot was constructed with) and
+        reassign every holder. ``entity_factory`` reads ``app.cache`` (a property), so
+        it picks up the swap for free. The explicit check guards against a future hikari
+        that stops sharing one instance (it would silently un-scope the cache); it is a
+        plain ``raise`` rather than ``assert`` so it survives ``python -OO`` in prod.
+        """
+        from dd.common.scoped_cache import ScopedChannelCacheImpl
+
+        scoped = ScopedChannelCacheImpl(self, self._cache.settings, relevant_channels)
+        self._cache = scoped
+        self._event_manager._cache = scoped
+        self._rest._cache = scoped
+        if not (
+            self.cache is scoped
+            and self._event_manager._cache is scoped
+            and self._rest._cache is scoped
+        ):
+            raise RuntimeError(
+                "scoped channel cache wiring failed — hikari cache internals changed"
+            )
 
     async def refresh_emoji(self):
         for server in reversed(self._emoji_servers):
