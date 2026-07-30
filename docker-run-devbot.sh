@@ -68,16 +68,24 @@ async def main() -> None:
                 user=os.environ["DEVBOT_DB_ADMIN_USER"],
                 password=os.environ["DEVBOT_DB_ADMIN_PASSWORD"],
             )
-            async with conn.cursor() as cur:
-                await cur.execute(f"CREATE DATABASE IF NOT EXISTS `{schema}`")
-                await cur.execute(f"GRANT ALL PRIVILEGES ON `{schema}`.* TO '{user}'@'%'")
-                await cur.execute("FLUSH PRIVILEGES")
-            conn.close()
-            return
-        except Exception as exc:  # noqa: BLE001 — retry any conn-time failure
+        except Exception as exc:  # noqa: BLE001 — retry only while MySQL isn't ready yet
             last = exc
             await asyncio.sleep(2)
-    raise SystemExit(f"could not provision `{schema}` — is the mysql service up? ({last})")
+            continue
+        try:
+            async with conn.cursor() as cur:
+                try:
+                    await cur.execute(f"CREATE DATABASE IF NOT EXISTS `{schema}`")
+                except Exception as exc:  # noqa: BLE001
+                    # The sibling bot may create it concurrently (errno 1007) — fine.
+                    if "exist" not in str(exc).lower():
+                        raise
+                await cur.execute(f"GRANT ALL PRIVILEGES ON `{schema}`.* TO '{user}'@'%'")
+                await cur.execute("FLUSH PRIVILEGES")
+            return
+        finally:
+            conn.close()
+    raise SystemExit(f"could not connect to provision `{schema}` — is mysql up? ({last})")
 
 
 asyncio.run(main())
@@ -94,4 +102,5 @@ atlas migrate apply -u "$devbot_url"
 export MYSQL_URL="$devbot_url" MYSQL_PRIVATE_URL="$devbot_url"
 oom_adj="${DEVBOT_OOM_SCORE_ADJ:-800}"
 echo "devbot: starting $bot against '$schema' (oom_score_adj=$oom_adj)"
-exec choom -n "$oom_adj" uv run python -OOm "dd.$bot"
+# `--` stops choom parsing python's -OOm flags as its own options.
+exec choom -n "$oom_adj" -- uv run python -OOm "dd.$bot"
