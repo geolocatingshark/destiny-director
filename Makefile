@@ -66,6 +66,66 @@ run-beacon-local: .env
 run-anchor-local: .env
 	uv run python -OOm dd.anchor
 
+# --- Spin-up-to-test DEV bots (docker-run-devbot.sh) -------------------------------
+# Unlike run-*-local (raw, uncapped, shared `kyber` DB), these run against an isolated
+# `kyber_devbot` schema and are biased to be the first OOM victim under the dd-dev memory
+# cap — so a throwaway test bot can't clobber the shared DB or OOM-kill a neighbour.
+# `.devbot-logs/<bot>.{log,pid}` hold the background logs + process-group ids.
+
+# Guard: refuse to launch unless dd-dev is memory-capped, so an OOM can only ever hit this
+# container's cgroup (never a neighbour). memory.max=="max" means uncapped — apply the cap
+# from the Pi HOST by recreating the container so the compose mem_limit takes effect.
+_require-mem-cap:
+	@[ "$$(cat /sys/fs/cgroup/memory.max 2>/dev/null)" != "max" ] || { \
+		echo "REFUSING: dd-dev is not memory-capped (cgroup memory.max=max)." >&2; \
+		echo "A runaway devbot could OOM-kill a neighbour container. Cap it on the Pi HOST first:" >&2; \
+		echo "    make dev-up     # recreate dd-dev with the docker-compose.dev.yml mem_limit" >&2; \
+		exit 1; }
+
+# Foreground, single bot (focused debugging).
+run-beacon-devbot: .env _require-mem-cap
+	./docker-run-devbot.sh beacon
+
+run-anchor-devbot: .env _require-mem-cap
+	./docker-run-devbot.sh anchor
+
+# Background lifecycle for both bots. setsid detaches each into its own session so it
+# survives this shell; $$! is the session leader == process-group id, recorded so
+# devbot-down can signal the whole group (uv run's child python included).
+devbot-up: .env _require-mem-cap
+	@mkdir -p .devbot-logs
+	@for b in beacon anchor; do \
+		if [ -f .devbot-logs/$$b.pid ] && kill -0 -"$$(cat .devbot-logs/$$b.pid)" 2>/dev/null; then \
+			echo "$$b devbot already running (pgid $$(cat .devbot-logs/$$b.pid))"; \
+		else \
+			setsid ./docker-run-devbot.sh $$b >.devbot-logs/$$b.log 2>&1 & \
+			echo $$! >.devbot-logs/$$b.pid; \
+			echo "started $$b devbot (pgid $$!) -> .devbot-logs/$$b.log"; \
+		fi; \
+	done
+
+devbot-down:
+	@for b in beacon anchor; do \
+		if [ -f .devbot-logs/$$b.pid ]; then \
+			pgid=$$(cat .devbot-logs/$$b.pid); \
+			kill -TERM -"$$pgid" 2>/dev/null && echo "stopped $$b devbot (pgid $$pgid)" \
+				|| echo "$$b devbot not running (pgid $$pgid)"; \
+			rm -f .devbot-logs/$$b.pid; \
+		else echo "$$b devbot: no pidfile"; fi; \
+	done
+
+devbot-logs:
+	tail -n 50 -f .devbot-logs/beacon.log .devbot-logs/anchor.log
+
+devbot-status:
+	@for b in beacon anchor; do \
+		if [ -f .devbot-logs/$$b.pid ] && kill -0 -"$$(cat .devbot-logs/$$b.pid)" 2>/dev/null; then \
+			pgid=$$(cat .devbot-logs/$$b.pid); \
+			mb=$$(ps -eo pgid=,rss= | awk -v g=$$pgid '$$1==g{s+=$$2} END{printf "%d", s/1024}'); \
+			echo "$$b: UP   (pgid $$pgid, ~$${mb}MB rss, schema $${DEVBOT_SCHEMA:-kyber_devbot})"; \
+		else echo "$$b: down"; fi; \
+	done
+
 destroy-schemas: .env
 	uv run python -m dd.common.schemas --destroy-all
 
