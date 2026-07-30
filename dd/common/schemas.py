@@ -254,6 +254,24 @@ class MirroredChannel(Base):
 
     @classmethod
     @ensure_session(db_session)
+    async def fetch_all_channel_ids(
+        cls,
+        session: AsyncSession = _UNSET,
+    ) -> set[int]:
+        """Every distinct source + destination channel id across all mirrors.
+
+        Scopes the beacon gateway channel cache (see
+        ``dd.common.scoped_cache.ScopedChannelCacheImpl``): only channels that are a
+        mirror source or destination are ever read from the cache, so only these are
+        worth keeping resident. Disabled mirrors are included so a temporarily-disabled
+        destination stays cache-warm for the reachability sweep.
+        """
+        srcs = await session.execute(select(cls.src_id).distinct())
+        dests = await session.execute(select(cls.dest_id).distinct())
+        return {int(r[0]) for r in srcs} | {int(r[0]) for r in dests}
+
+    @classmethod
+    @ensure_session(db_session)
     async def fetch_mirror_and_role_mention_id(
         cls,
         src_id: int,

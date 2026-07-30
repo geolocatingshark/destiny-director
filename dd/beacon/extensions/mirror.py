@@ -779,7 +779,12 @@ async def message_delete_repeater_impl(
     mirror_worker.nudge()
 
 
-@loader.task(lb.uniformtrigger(hours=24 * 7, wait_first=False), max_failures=-1)
+# wait_first=True: this weekly task fetches every guild's member count individually
+# (~one REST call per guild — thousands of them). Running it on *every* startup
+# (wait_first=False) meant rapid redeploys fired that burst repeatedly and tripped
+# Discord's per-IP rate limit (Cloudflare 429s on /gateway/bot), crash-looping the bot.
+# A weekly population refresh has no reason to run at boot.
+@loader.task(lb.uniformtrigger(hours=24 * 7, wait_first=True), max_failures=-1)
 async def refresh_server_sizes(bot: CachedFetchBot = lb.di.INJECTED):
     await aio.sleep(randint(30, 60))
 
