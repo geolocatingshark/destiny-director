@@ -129,7 +129,12 @@ polls auth every ~10s), so you can drive this container's sessions from
 `--no-create-session-in-dir` means an unused daemon sits at a true **0/32** (no phantom
 cwd session). sshd now runs in the background; the supervisor loops forever
 (re-launching the daemon on exit), so it's what keeps the container alive. Its output
-goes to `docker logs` and is also mirrored to `~/.local/share/remote-control.log`.
+goes to `docker logs` verbatim (the live TUI, escape codes and all) and is *also*
+mirrored to `~/.local/share/remote-control.log` — but the file gets a cleaned view:
+escape sequences stripped, repeated TUI repaints collapsed to one copy (with a
+`(suppressed N repeated TUI line(s))` note so nothing looks quieter than it was), and
+the file rotated at `RC_LOG_MAX_BYTES` (default 5MiB) keeping one `.1` generation.
+Teeing the raw stream used to grow that file ~5MB/day of cursor-control noise.
 
 *Why a supervisor and not just restart-on-crash:* Claude Code's remote-control server
 has a known class of upstream hangs where the **process stays alive but wedges** and
@@ -142,7 +147,8 @@ left alone until it has served ≥1 session; once it has been used and then drop
 sessions, it gets `RC_IDLE_RECYCLE_SECS` (default 300s) of continuous idle and is then
 recycled once. So you always return to a fresh, unwedged daemon after an idle gap, but
 an untouched one is never churned. Tunables (env): `RC_POLL_SECS`,
-`RC_IDLE_RECYCLE_SECS`, `RC_PERMISSION_MODE` (default keeps prompts on). A daemon that
+`RC_IDLE_RECYCLE_SECS`, `RC_PERMISSION_MODE` (default keeps prompts on),
+`RC_LOG_MAX_BYTES`. A daemon that
 wedges *mid-session* is deliberately left until that session ends — end the stuck
 session from claude.ai/code (or `docker exec`) and the idle recycle takes it from there.
 

@@ -40,15 +40,92 @@ set -u
 LOG="$HOME/.local/share/remote-control.log"
 mkdir -p "$(dirname "$LOG")"
 
-# As the container's foreground process, our stdout/stderr IS `docker logs`. Mirror
-# everything to both there and the persisted logfile (still handy from `docker exec`),
-# so the supervisor's own lines and the daemon's output both show up in `docker logs`.
-exec > >(tee -a "$LOG") 2>&1
-
 RC_POLL_SECS=${RC_POLL_SECS:-30}            # how often to sample the session count
 RC_IDLE_RECYCLE_SECS=${RC_IDLE_RECYCLE_SECS:-300}   # continuous 0/32 before recycle
 RC_REPO=${RC_REPO:-/workspace}              # repo where --spawn worktree operates
 RC_PERMISSION_MODE=${RC_PERMISSION_MODE:-}  # empty => daemon default (keep prompting)
+RC_LOG_MAX_BYTES=${RC_LOG_MAX_BYTES:-5242880}  # rotate the logfile past this (5MiB)
+
+# --- log plumbing -------------------------------------------------------------------
+# As the container's foreground process, our stdout/stderr IS `docker logs`, which is
+# how you watch the live Claude TUI. So `docker logs` keeps getting the stream VERBATIM
+# (escape codes and all) — do not filter that.
+#
+# The PERSISTED logfile is a different job: it's the forensic record you grep from a
+# `docker exec` days later. Teeing the raw stream into it was wrong on both counts — the
+# TUI repaints itself every few seconds, so the file grew ~5MB/day unbounded AND buried
+# the handful of real supervisor lines under megabytes of cursor-control escapes.
+#
+# So the logfile gets a cleaned, de-duplicated, size-rotated view:
+#   * ANSI CSI/OSC sequences stripped, blank lines dropped;
+#   * `[rc-supervisor]` lines ALWAYS kept — they are the state changes we care about;
+#   * every other line kept only if it isn't a repeat of one already seen, which
+#     collapses the TUI repaint block to a single copy. This is deliberately keyed on
+#     the line text rather than on matching known TUI wording, so an upstream rewording
+#     of the TUI can't silently start leaking noise back in.
+#   * the dedupe table is CLEARED on each supervisor line (i.e. on a real state change)
+#     and capped, so a genuine error recurring later still gets recorded rather than
+#     being suppressed forever by a match from hours ago.
+#   * suppressed repeats are counted and reported, so the file never implies a quiet
+#     period that wasn't.
+# Rotation keeps one previous generation ($LOG.1) — enough to span a recycle or two
+# without the file ever being a disk risk on the Pi.
+#
+# NOTE the plumbing shape below: `tee` still owns the docker-logs path exactly as before,
+# and the filter hangs off tee's SECOND output. The filter is line-oriented (awk), so
+# putting it inline would hold a partial line — a spinner or prompt that repaints without
+# a trailing newline — until the line completed, making the live TUI feel laggy. Keeping
+# tee in front means the interactive path is byte-for-byte unchanged and only the file
+# branch pays for filtering.
+rc_log_to_file() {
+  awk -v logf="$LOG" -v maxbytes="$RC_LOG_MAX_BYTES" '
+    function emit(line) {
+      if (bytes + length(line) + 1 > maxbytes) {   # rotate BEFORE overflowing
+        close(logf)
+        system("mv -f \"" logf "\" \"" logf ".1\" 2>/dev/null")
+        bytes = 0
+      }
+      print line >> logf
+      fflush(logf)
+      bytes += length(line) + 1
+    }
+    function flush_suppressed() {
+      if (nsupp > 0) { emit("  (suppressed " nsupp " repeated TUI line(s))"); nsupp = 0 }
+    }
+    BEGIN {
+      # Start accounting from the file as it already is, so an oversized log left by a
+      # previous build rotates away on the first write instead of growing further.
+      # `wc -c <file>` (not a redirect) so wc itself reports a missing file to the
+      # stderr we are discarding, rather than the shell announcing it on ours.
+      cmd = "wc -c \"" logf "\" 2>/dev/null"
+      if ((cmd | getline line) > 0) { split(line, f, " "); bytes = f[1] + 0 }
+      close(cmd)
+      nseen = 0; nsupp = 0
+    }
+    {
+      line = $0
+      gsub(/\033\][^\007\033]*(\007|\033\\)/, "", line)   # OSC (e.g. the ]8;; links)
+      gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", line)        # CSI (cursor moves, colour)
+      gsub(/\r/, "", line)
+      sub(/[ \t]+$/, "", line)
+      if (line ~ /^[ \t]*$/) next
+      if (line ~ /\[rc-supervisor\]/) {
+        flush_suppressed()
+        delete seen; nseen = 0                 # state change → forget the old repaints
+        emit(line)
+        next
+      }
+      if (line in seen) { nsupp++; next }
+      if (nseen >= 500) { delete seen; nseen = 0 }        # bound the table
+      seen[line] = 1; nseen++
+      flush_suppressed()
+      emit(line)
+    }
+    END { flush_suppressed() }
+  '
+}
+
+exec > >(tee >(rc_log_to_file) ) 2>&1
 
 log() { printf '%s [rc-supervisor] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
