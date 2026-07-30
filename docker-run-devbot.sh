@@ -100,6 +100,26 @@ atlas migrate apply -u "$devbot_url"
 # (it prefers MYSQL_PRIVATE_URL when set). choom biases the bot up the OOM-kill list so it,
 # not the Claude session, is reaped first if the container cap is ever hit.
 export MYSQL_URL="$devbot_url" MYSQL_PRIVATE_URL="$devbot_url"
+
+# Mirror prod's allocator (docker-entrypoint.sh preload_jemalloc): glibc retains freed
+# arenas, jemalloc returns them to the OS via a background decay thread. anchor caps
+# narenas:2 (its small, single-loop process gained nothing from the default 4*ncpu and
+# paid the per-arena overhead); beacon keeps the default. Needs libjemalloc2 in the image
+# (Dockerfile.dev) — absent until the container is rebuilt, in which case we fall back to
+# glibc, same as before. Set DEVBOT_JEMALLOC=0 to force glibc for an A/B RAM comparison.
+# Keep MALLOC_CONF in sync with docker-entrypoint.sh.
+jemalloc="/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2"
+if [ "${DEVBOT_JEMALLOC:-1}" = "0" ]; then
+  echo "devbot: jemalloc disabled via DEVBOT_JEMALLOC=0 (glibc malloc)"
+elif [ -f "$jemalloc" ]; then
+  export LD_PRELOAD="$jemalloc"
+  malloc_prefix=""; [ "$bot" = "anchor" ] && malloc_prefix="narenas:2,"
+  export MALLOC_CONF="${malloc_prefix}background_thread:true,dirty_decay_ms:10000,muzzy_decay_ms:10000"
+  echo "devbot: jemalloc preloaded (MALLOC_CONF=$MALLOC_CONF)"
+else
+  echo "devbot: jemalloc not in image (glibc malloc) — rebuild dd-dev (make dev-up) to enable"
+fi
+
 oom_adj="${DEVBOT_OOM_SCORE_ADJ:-800}"
 echo "devbot: starting $bot against '$schema' (oom_score_adj=$oom_adj)"
 # `--` stops choom parsing python's -OOm flags as its own options.
