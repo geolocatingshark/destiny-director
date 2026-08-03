@@ -474,6 +474,10 @@ body.cv2b-dragging-now * {
   flex-direction: column;
   gap: 0.8rem;
 }
+/* The sheet grab bar exists only where the inspector IS a sheet. */
+.cv2b .cv2b-sheet-grip {
+  display: none;
+}
 .cv2b-insp-head h3 {
   margin: 0;
   font-size: 0.82rem;
@@ -762,10 +766,28 @@ body.cv2b-dragging-now * {
     font-size: 0.92rem;
   }
   /* Touch has no hover, so the drag handle must always be visible or it may as well
-     not exist. */
+     not exist — but "always visible" then has to actually read as a control. A faint
+     glyph floating over a container's coloured accent bar reads as an artefact, so it
+     gets a chip of its own and the container gets a gutter to hold it. */
   .cv2b-blk > .cv2b-grip {
     display: grid;
-    opacity: 0.55;
+    opacity: 1;
+    left: -1.55rem;
+    width: 1.25rem;
+    height: 1.6rem;
+    background: var(--surface-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-size: 0.72rem;
+  }
+  .cv2b-blk.cv2b-sel > .cv2b-grip {
+    border-color: var(--accent);
+    color: var(--text-1);
+  }
+  /* Room for a nested block's grip, so it never lands on the accent bar. */
+  .cv2b-canvas .cv2-container {
+    padding-left: 1.9rem;
   }
 
   /* Inspector as a bottom sheet. */
@@ -787,16 +809,46 @@ body.cv2b-dragging-now * {
   .cv2b-inspector.cv2b-sheet-open {
     transform: translateY(0);
   }
-  /* A grab bar, so the sheet reads as dismissable. */
-  .cv2b-inspector::before {
-    content: "";
+  /* The grab bar is a real button: a sheet you cannot dismiss is a sheet that eats
+     half the screen for the rest of the session. Wide and short, so it is an easy
+     thumb target without looking like a form control. */
+  .cv2b .cv2b-sheet-grip {
     display: block;
-    width: 2.2rem;
-    height: 0.25rem;
-    border-radius: 999px;
-    background: var(--border);
-    margin: 0 auto 0.5rem;
+    width: 100%;
+    height: 1.6rem;
+    padding: 0;
+    margin: -0.2rem 0 0.35rem;
+    border: none;
+    background: transparent;
     flex: none;
+    position: relative;
+  }
+  .cv2b .cv2b-sheet-grip::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 0.5rem;
+    transform: translateX(-50%);
+    width: 2.6rem;
+    height: 0.28rem;
+    border-radius: 999px;
+    background: var(--text-muted);
+  }
+  .cv2b .cv2b-sheet-grip:active::before {
+    background: var(--accent);
+  }
+
+  /* Scroll clearance: without this the sheet permanently covers the bottom of the
+     message and there is no way to scroll the covered part into view. The height is
+     measured at runtime (syncSheet) rather than assumed. */
+  .cv2b-canvas-wrap {
+    padding-bottom: calc(5rem + var(--cv2b-sheet-h, 0px));
+    scroll-padding-bottom: var(--cv2b-sheet-h, 0px);
+  }
+
+  /* Keyboard hints in the context menu are meaningless on touch. */
+  .cv2b-menu .cv2b-kbd {
+    display: none;
   }
 
   .cv2b-bar {

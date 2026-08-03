@@ -424,9 +424,38 @@
       }
     }
 
+    // The properties sheet (mobile) must be dismissable and must not trap content behind
+    // it. `sheetFor` tracks which block it is showing so dismissing one block's sheet
+    // doesn't suppress the next one's.
+    let sheetFor = null;
+    let sheetDismissed = false;
+
+    function syncSheet(hasNode) {
+      const key = state.sel ? pk(state.sel) : null;
+      if (key !== sheetFor) {
+        sheetFor = key;
+        sheetDismissed = false;
+      }
+      const open = hasNode && !sheetDismissed;
+      el.inspector.classList.toggle("cv2b-sheet-open", open);
+      // Reserve scroll room equal to the sheet's real height, so the bottom of the
+      // message stays reachable instead of being permanently covered. Measured rather
+      // than assumed, or a short sheet leaves a big dead gap.
+      requestAnimationFrame(() => {
+        const h = open ? el.inspector.getBoundingClientRect().height : 0;
+        root.style.setProperty("--cv2b-sheet-h", (h ? Math.round(h) : 0) + "px");
+      });
+    }
+
     function renderInspector() {
       const node = state.sel ? safeResolve(state.sel) : null;
       const parts = [];
+      // A real element, not the CSS ::before bar — the grab handle has to be tappable
+      // or there is no way to get the sheet off the screen.
+      parts.push(
+        '<button type="button" class="cv2b-sheet-grip" data-a="sheet-close" ' +
+          'aria-label="Close properties"></button>',
+      );
       if (!node) {
         parts.push(
           '<div class="cv2b-insp-empty"><div class="cv2b-insp-head"><h3>Nothing selected</h3></div>' +
@@ -465,9 +494,9 @@
       el.inspector.innerHTML = parts.join("");
       el.publish.disabled = state.problems.length > 0;
       // On a phone the inspector is a bottom sheet (see cv2_builder.css): open it only
-      // when there is actually something to edit, so it isn't permanently covering the
-      // message. The class is inert on desktop, where it is a static column.
-      el.inspector.classList.toggle("cv2b-sheet-open", !!node);
+      // when there is something to edit AND the author hasn't dismissed it. The class is
+      // inert on desktop, where it is a static column.
+      syncSheet(!!node);
       // The status line is hidden on mobile because it carries desktop-only advice —
       // except once it holds the posted-message link, which is the one thing you do
       // want to tap.
@@ -672,6 +701,11 @@
     el.inspector.addEventListener("click", (e) => {
       const btn = e.target.closest("button");
       if (!btn) return;
+      if (btn.dataset.a === "sheet-close") {
+        sheetDismissed = true;
+        syncSheet(false);
+        return;
+      }
       if (btn.dataset.problem !== undefined) {
         const p = state.problems[Number(btn.dataset.problem)];
         if (p && p.path) {
@@ -717,6 +751,9 @@
         return;
       }
       const path = JSON.parse(blk.dataset.path);
+      // Tapping a block is an explicit request to inspect it, so it re-opens a sheet
+      // that was dismissed for this same block.
+      sheetDismissed = false;
       // A click on words should put a caret there, not select a "block" and make you
       // click again.
       if (blk.dataset.kind === "text") {
