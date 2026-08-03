@@ -927,6 +927,13 @@
       box.addEventListener("input", () => updateEmojiPicker(box));
       box.addEventListener("keydown", (ev) => {
         if (emojiPickerKeydown(ev)) return; // the picker owns arrows/Enter/Esc while open
+        if (
+          (ev.key === "Backspace" || ev.key === "Delete") &&
+          deleteEmojiAtom(box, ev.key === "Delete")
+        ) {
+          ev.preventDefault();
+          return;
+        }
         if (ev.key === "Escape") {
           ev.preventDefault();
           box.blur();
@@ -950,6 +957,58 @@
         closeEmojiPicker();
         commitEdit();
       });
+    }
+
+    /**
+     * Delete the emoji atom on one side of a collapsed caret. Returns true when it did,
+     * so the caller can suppress the browser's own delete.
+     *
+     * Chromium will not delete a contenteditable="false" <img> when the caret sits at an
+     * ELEMENT-level offset beside it, and that is exactly where the caret lands after
+     * accepting a suggestion at the end of a block. Backspace there is a silent no-op:
+     * the emoji you just inserted cannot be removed at all, in either direction. Own the
+     * atom rather than hoping the editing command grows the case.
+     */
+    function deleteEmojiAtom(box, forward) {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return false;
+      const at = sel.getRangeAt(0);
+      if (!at.collapsed || !box.contains(at.startContainer)) return false;
+
+      let node = at.startContainer;
+      let offset = at.startOffset;
+      // Normalise a caret resting against the edge of a text node up to its parent, so
+      // "after the image" and "at offset 0 of the text after the image" are one case.
+      if (node.nodeType === 3) {
+        if (forward ? offset !== node.nodeValue.length : offset !== 0) return false;
+        const i = Array.prototype.indexOf.call(node.parentNode.childNodes, node);
+        offset = forward ? i + 1 : i;
+        node = node.parentNode;
+      }
+      let index = forward ? offset : offset - 1;
+      // A contenteditable strews empty text nodes about — accepting a suggestion at the
+      // end of a block leaves one right after the image. They are not a character, so
+      // step over them rather than spending a keypress on each.
+      while (
+        node.childNodes[index] &&
+        node.childNodes[index].nodeType === 3 &&
+        node.childNodes[index].nodeValue === ""
+      ) {
+        index += forward ? 1 : -1;
+      }
+      const atom = node.childNodes[index];
+      if (!atom || atom.nodeName !== "IMG" || !atom.hasAttribute("data-token")) {
+        return false;
+      }
+      // A live range placed where the atom is collapses onto the gap it leaves behind,
+      // so the caret ends up exactly where the emoji was.
+      const caret = document.createRange();
+      caret.setStart(node, index);
+      caret.collapse(true);
+      atom.remove();
+      sel.removeAllRanges();
+      sel.addRange(caret);
+      return true;
     }
 
     function placeCaretAtEnd(box) {
