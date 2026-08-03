@@ -922,4 +922,28 @@ body.cv2b-dragging-now * {
     display: block;
     font-size: 0.72rem;
   }
+
+  /* The send confirmation's header is one row of four things. At 390px that wrapped
+     the title onto three lines and the explanation onto three more — around 170px of
+     chrome sitting above the render, which is the entire reason the dialog exists. Give
+     the title its own line and drop the explanation: the render below says the same
+     thing by being there. */
+  .cv2b-confirm {
+    width: 94vw;
+  }
+  .cv2b-dlg-head {
+    flex-wrap: wrap;
+    gap: 0.4rem 0.5rem;
+    padding: 0.5rem 0.6rem;
+  }
+  .cv2b-dlg-head h3 {
+    flex: 1 0 100%;
+    font-size: 0.85rem;
+  }
+  .cv2b-dlg-head .cv2b-help {
+    display: none;
+  }
+  .cv2b-confirm-body {
+    max-height: 70vh;
+  }
 }
