@@ -99,17 +99,30 @@ real MySQL 8 for the JSON round-trip, creator scoping and the prune `DATETIME` c
 ## 6. Interactions no automated test covers
 
 There is no browser on the dev box, so every DOM behaviour below was verified by hand on
-a phone, not by a test. A browser-driving harness (Playwright) would be the single
-highest-value addition to this area:
+a phone, not by a test.
+
+**Driven once in a real Chromium** (Playwright, a throwaway page hosting the widget with
+sample nodes over `python3 -m http.server`, at 390×844 with touch and at 1440×900). That
+pass found and fixed four defects hand-testing had missed — trailing-emoji backspace,
+held-still autoscroll, the posted-message link, the 3-up gallery — plus the phone
+confirmation header and the empty-canvas hint. Everything else on the list behaved.
+
+Still **not covered by any committed test**, and still the highest-value addition here:
 
 - pointer-event drag: reorder, re-parent, the accessory slot, edge autoscroll
 - long-press → context menu, and its swallowing of the synthesized click
 - the contenteditable editor: caret position after accepting an emoji suggestion,
-  backspacing across an emoji atom, IME/autocorrect on Android
+  backspacing across an emoji atom, IME/autocorrect on Android (untried — Chromium's
+  synthesized touch is not an IME)
 - the properties sheet: dismissal, scroll clearance, re-opening
 - the mobile media queries (a cascade-order mistake once silently killed **all** of them,
   and only a screenshot caught it — see the warning comment at the end of
-  `cv2_builder.css`)
+  `cv2_builder.css`). `web_static/tests/cv2_builder_css.test.js` now guards the *ordering*
+  that made that failure invisible; it cannot check that the layout is right.
+
+The harness page was deliberately not committed: it is a fixture with no assertions, and
+half of what it proved needed a human looking at a screenshot. Turning it into a real
+Playwright lane means picking assertions that will not rot — that is the work left.
 
 `web_static/tests/cv2_model.test.js` covers the pure model well (65 tests); it is
 specifically the DOM layer that is untested.
