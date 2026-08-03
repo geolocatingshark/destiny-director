@@ -45,6 +45,13 @@
   font-size: 0.74rem;
   color: var(--text-muted);
 }
+.cv2b-count.cv2b-count-warn {
+  color: var(--text-1);
+}
+.cv2b-count.cv2b-count-over {
+  color: var(--err);
+  font-weight: 600;
+}
 
 .cv2b button {
   padding: 0.36rem 0.7rem;
@@ -904,6 +911,12 @@ body.cv2b-dragging-now * {
   .cv2b-status,
   .cv2b-count {
     display: none;
+  }
+  /* Over budget, the counter stops being trivia and becomes the reason Save will
+     fail — so it earns its space even on a phone. */
+  .cv2b-count.cv2b-count-over {
+    display: block;
+    font-size: 0.72rem;
   }
   .cv2b-bar .cv2b-status.cv2b-has-link {
     display: block;

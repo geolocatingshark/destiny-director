@@ -207,13 +207,21 @@
       renderInspector();
       el.undo.disabled = !state.undo.length;
       el.redo.disabled = !state.redo.length;
+      // Show the text budget, not just block counts: the 4000-character cap is the
+      // limit a real post actually hits, and it is invisible until Discord refuses the
+      // send. Warn before the cap so there is room to react.
+      const textLen = M.totalTextLength(state.nodes);
       el.count.textContent =
         countNodes(state.nodes) +
         " blocks · " +
-        state.nodes.length +
+        textLen +
         "/" +
-        M.MAX_TOP_LEVEL +
-        " top level";
+        M.MAX_TEXT +
+        " chars";
+      el.count.classList.toggle("cv2b-count-warn", textLen > M.MAX_TEXT * 0.9);
+      el.count.classList.toggle("cv2b-count-over", textLen > M.MAX_TEXT);
+      el.count.title =
+        state.nodes.length + " of " + M.MAX_TOP_LEVEL + " top-level blocks";
     }
 
     /** Repaint error outlines + the inspector without rebuilding the canvas DOM. */

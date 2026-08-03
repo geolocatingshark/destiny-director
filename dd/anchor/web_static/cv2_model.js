@@ -44,6 +44,10 @@
   const MAX_SECTION_TEXTS = 3;
   const MAX_TOP_LEVEL = 10;
   const MAX_ROW_BUTTONS = 5; // Discord's per-action-row cap
+  const MAX_BUTTON_LABEL = 80;
+  // Discord caps a CV2 message's total text at 4000 UTF-16 units (an astral glyph
+  // counts as 2). Mirrors CV2_TEXT_LIMIT in dd/common/components.py.
+  const MAX_TEXT = 4000;
 
   const KIND_BY_TYPE = {
     [CONTAINER]: "container",
@@ -318,6 +322,22 @@
   // caused it, so the UI can select and scroll to the offender instead of printing a
   // wall of prose the way the in-Discord builder had to.
 
+  /**
+   * Total displayable text across the tree, in the UTF-16 units Discord counts.
+   *
+   * A JS string's `.length` already IS its UTF-16 code-unit count, so an astral glyph
+   * counts as 2 here exactly as it does for Discord — and exactly as
+   * `cv2_utf16_len` computes it server-side.
+   */
+  function totalTextLength(nodes) {
+    let total = 0;
+    for (const node of nodes) {
+      if (kind(node) === "text") total += String(node.content || "").length;
+      if (Array.isArray(node.components)) total += totalTextLength(node.components);
+    }
+    return total;
+  }
+
   function validate(nodes) {
     const problems = [];
     const push = (path, msg) => problems.push({ path: path, msg: msg });
@@ -331,6 +351,22 @@
           "); Discord allows " +
           MAX_TOP_LEVEL +
           ". Group some inside a container.",
+      );
+    }
+
+    // The cap Discord enforces at send time; without checking it here the only symptom
+    // is a rejected send long after the text was written.
+    const textLen = totalTextLength(nodes);
+    if (textLen > MAX_TEXT) {
+      push(
+        null,
+        "Too much text (" +
+          textLen +
+          " of " +
+          MAX_TEXT +
+          " characters). Shorten it by about " +
+          (textLen - MAX_TEXT) +
+          " characters.",
       );
     }
 
@@ -376,18 +412,61 @@
         } else if (k === "text") {
           if (!String(node.content || "").trim()) push(path, "A text block is empty.");
         } else if (k === "media") {
-          if (!(node.items || []).length) push(path, "A media gallery has no images.");
+          const items = node.items || [];
+          if (!items.length) push(path, "A media gallery has no images.");
+          else if (items.length > MAX_GALLERY_ITEMS) {
+            push(
+              path,
+              "A media gallery has " +
+                items.length +
+                " images; Discord allows " +
+                MAX_GALLERY_ITEMS +
+                ".",
+            );
+          }
         } else if (k === "link_button") {
           const btns = buttonsOf(node);
           if (!btns.length) push(path, "A button row has no buttons.");
-          btns.forEach((b, bi) => {
-            if (b.label && b.url) return;
+          if (btns.length > MAX_ROW_BUTTONS) {
             push(
               path,
-              btns.length > 1
-                ? "Button " + (bi + 1) + " needs both a label and a URL."
-                : "A link button needs both a label and a URL.",
+              "A button row has " +
+                btns.length +
+                " buttons; Discord allows " +
+                MAX_ROW_BUTTONS +
+                ". Split them across two rows.",
             );
+          }
+          btns.forEach((b, bi) => {
+            const many = btns.length > 1;
+            const where = many ? "Button " + (bi + 1) : "A link button";
+            const label = String(b.label || "");
+            const url = String(b.url || "");
+            if (!(label && url)) {
+              push(
+                path,
+                many
+                  ? where + " needs both a label and a URL."
+                  : "A link button needs both a label and a URL.",
+              );
+              return;
+            }
+            // A scheme-less URL is the common typo; the preview silently drops such a
+            // button (only http(s) becomes an href) so nothing else would flag it.
+            if (!/^https?:\/\//.test(url)) {
+              push(path, where + "'s URL must start with http:// or https://.");
+            }
+            if (label.length > MAX_BUTTON_LABEL) {
+              push(
+                path,
+                where +
+                  "'s label is " +
+                  label.length +
+                  " characters; Discord allows " +
+                  MAX_BUTTON_LABEL +
+                  ".",
+              );
+            }
           });
         }
       });
@@ -706,6 +785,8 @@
     MAX_SECTION_TEXTS,
     MAX_TOP_LEVEL,
     MAX_ROW_BUTTONS,
+    MAX_BUTTON_LABEL,
+    MAX_TEXT,
     // labels
     KIND_LABEL,
     // classification
@@ -741,6 +822,7 @@
     setAccessory,
     // validation
     validate,
+    totalTextLength,
     // markdown
     esc,
     inlineMd,

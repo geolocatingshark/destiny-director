@@ -308,3 +308,64 @@ def test_sanitize_degrades_a_row_whose_second_button_is_incomplete():
 def test_sanitize_keeps_a_complete_multi_button_row():
     row = _row(_btn("A", "https://e.invalid/a"), _btn("B", "https://e.invalid/b"))
     assert cn.sanitize_for_preview([row]) == [row]
+
+
+# --- Discord limits the validator previously let through -----------------------------
+# Each of these was silently valid and only failed when Discord refused the send.
+
+
+def test_validate_refuses_text_over_the_4000_cap():
+    long_text = {"type": cn.TEXT_DISPLAY, "content": "x" * 4001}
+    assert any("Too much text" in p for p in cn.validate([long_text]))
+
+
+def test_validate_counts_text_across_the_whole_tree():
+    nested = {
+        "type": cn.CONTAINER,
+        "components": [
+            {"type": cn.TEXT_DISPLAY, "content": "x" * 2500},
+            {"type": cn.TEXT_DISPLAY, "content": "y" * 2500},
+        ],
+    }
+    assert cn._total_text_len([nested]) == 5000
+    assert any("Too much text" in p for p in cn.validate([nested]))
+
+
+def test_validate_counts_an_astral_glyph_as_two():
+    # Discord counts CV2 text in UTF-16 units; counting characters would under-report.
+    assert cn._total_text_len([{"type": cn.TEXT_DISPLAY, "content": "🎃"}]) == 2
+
+
+def test_validate_allows_exactly_the_cap():
+    at_cap = {"type": cn.TEXT_DISPLAY, "content": "x" * 4000}
+    assert not any("Too much text" in p for p in cn.validate([at_cap]))
+
+
+def test_validate_refuses_more_than_five_buttons_in_a_row():
+    six = _row(*[_btn(f"b{i}", f"https://e.invalid/{i}") for i in range(6)])
+    assert any("Discord allows 5" in p for p in cn.validate([six]))
+
+
+def test_validate_refuses_a_scheme_less_button_url():
+    # The common typo; the renderer drops such a button silently, so nothing else
+    # would flag it.
+    problems = cn.validate([_row(_btn("Go", "kyber3000.com"))])
+    assert any("http://" in p for p in problems), problems
+
+
+def test_validate_refuses_a_javascript_button_url():
+    problems = cn.validate([_row(_btn("Go", "javascript:alert(1)"))])
+    assert any("http://" in p for p in problems), problems
+
+
+def test_validate_refuses_an_over_long_button_label():
+    problems = cn.validate([_row(_btn("L" * 81, "https://e.invalid"))])
+    assert any("Discord allows 80" in p for p in problems), problems
+
+
+def test_validate_refuses_more_than_ten_gallery_images():
+    many = {
+        "type": cn.MEDIA_GALLERY,
+        "items": [{"media": {"url": f"https://e.invalid/{i}.png"}} for i in range(11)],
+    }
+    assert any("Discord allows 10" in p for p in cn.validate([many]))

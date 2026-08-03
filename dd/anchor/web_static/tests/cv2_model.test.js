@@ -453,3 +453,80 @@ test("shortcodeBefore only looks behind the caret", () => {
   assert.equal(M.shortcodeBefore(text, 7).query, "kyb");
   assert.equal(M.shortcodeBefore(text, 3), null); // caret before the colon
 });
+
+// --- Discord limits the builder previously let through --------------------------------
+// Each of these was silently valid client- and server-side, and only failed when Discord
+// refused the send — the exact failure the validator exists to prevent.
+
+test("total text over 4000 UTF-16 units is refused", () => {
+  const long = { type: M.TEXT_DISPLAY, content: "x".repeat(4001) };
+  const problem = M.validate([long]).find((p) => /Too much text/.test(p.msg));
+  assert.ok(problem, "4001 chars passed validation");
+  assert.match(problem.msg, /Shorten it by about 1 characters/);
+  assert.equal(problem.path, null); // a whole-message problem, not one block's
+});
+
+test("text is counted across the whole tree, not just top level", () => {
+  const nested = {
+    type: M.CONTAINER,
+    components: [
+      { type: M.TEXT_DISPLAY, content: "x".repeat(2500) },
+      { type: M.TEXT_DISPLAY, content: "y".repeat(2500) },
+    ],
+  };
+  assert.equal(M.totalTextLength([nested]), 5000);
+  assert.ok(M.validate([nested]).some((p) => /Too much text/.test(p.msg)));
+});
+
+test("an astral glyph counts as 2, like Discord counts it", () => {
+  // Matches cv2_utf16_len server-side; counting characters would under-report and let
+  // an over-long message through.
+  assert.equal(M.totalTextLength([{ type: M.TEXT_DISPLAY, content: "🎃" }]), 2);
+});
+
+test("exactly at the cap is allowed", () => {
+  const atCap = { type: M.TEXT_DISPLAY, content: "x".repeat(4000) };
+  assert.ok(!M.validate([atCap]).some((p) => /Too much text/.test(p.msg)));
+});
+
+test("more than 5 buttons in one row is refused", () => {
+  const six = {
+    type: M.ACTION_ROW,
+    components: Array.from({ length: 6 }, (_, i) => ({
+      type: M.BUTTON,
+      style: 5,
+      label: "b" + i,
+      url: "https://e.invalid/" + i,
+    })),
+  };
+  assert.ok(M.validate([six]).some((p) => /Discord allows 5/.test(p.msg)));
+});
+
+test("a scheme-less button URL is refused", () => {
+  // The common typo. The preview drops such a button silently (only http(s) becomes an
+  // href), so nothing else in the UI would flag it.
+  const bad = linkButton("Go", "kyber3000.com");
+  assert.ok(M.validate([bad]).some((p) => /must start with http/.test(p.msg)));
+  const ok = linkButton("Go", "https://kyber3000.com");
+  assert.deepEqual(M.validate([ok]), []);
+});
+
+test("a javascript: button URL is refused", () => {
+  const bad = linkButton("Go", "javascript:alert(1)");
+  assert.ok(M.validate([bad]).some((p) => /must start with http/.test(p.msg)));
+});
+
+test("a button label over 80 characters is refused", () => {
+  const bad = linkButton("L".repeat(81), "https://e.invalid");
+  assert.ok(M.validate([bad]).some((p) => /Discord allows 80/.test(p.msg)));
+});
+
+test("more than 10 gallery images is refused", () => {
+  const many = {
+    type: M.MEDIA_GALLERY,
+    items: Array.from({ length: 11 }, (_, i) => ({
+      media: { url: "https://e.invalid/" + i + ".png" },
+    })),
+  };
+  assert.ok(M.validate([many]).some((p) => /Discord allows 10/.test(p.msg)));
+});

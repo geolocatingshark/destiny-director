@@ -45,6 +45,7 @@ import typing as t
 import hikari as h
 
 from ..common import cfg
+from ..common.components import CV2_TEXT_LIMIT, cv2_utf16_len
 
 # --- Discord component type ids ---------------------------------------------------
 
@@ -62,6 +63,8 @@ _LINK_BUTTON_STYLE = 5  # hikari.ButtonStyle.LINK
 _MAX_GALLERY_ITEMS = 10
 _MAX_SECTION_TEXTS = 3
 _MAX_TOP_LEVEL = 10
+_MAX_ROW_BUTTONS = 5  # Discord's per-action-row cap
+_MAX_BUTTON_LABEL = 80
 
 Node = dict[str, t.Any]
 # (label, current value, required, multi-line) for one modal text input.
@@ -525,6 +528,19 @@ def _sanitize_node(node: Node) -> Node:
 # --- validation -------------------------------------------------------------------
 
 
+def _total_text_len(nodes: list[Node]) -> int:
+    """Total displayable text across the tree, in the UTF-16 units Discord counts."""
+    total = 0
+    for node in nodes:
+        k = kind(node)
+        if k == "text":
+            total += cv2_utf16_len(str(node.get("content") or ""))
+        children = node.get("components")
+        if isinstance(children, list):
+            total += _total_text_len(children)
+    return total
+
+
 def validate(nodes: list[Node]) -> list[str]:
     """Return human-readable problems that would make the message invalid to send."""
     problems: list[str] = []
@@ -534,6 +550,16 @@ def validate(nodes: list[Node]) -> list[str]:
         problems.append(
             f"Too many top-level blocks ({len(nodes)}); Discord allows "
             f"{_MAX_TOP_LEVEL}. Group some inside a container."
+        )
+    # Discord caps a CV2 message's total text at 4000 UTF-16 units. Without this the
+    # only symptom is Discord rejecting the send, long after the text was written —
+    # ``dd.common.components`` has enforced it for autoposts all along, but the builder
+    # never consulted it.
+    text_len = _total_text_len(nodes)
+    if text_len > CV2_TEXT_LIMIT:
+        problems.append(
+            f"Too much text ({text_len} of {CV2_TEXT_LIMIT} characters). "
+            f"Shorten it by about {text_len - CV2_TEXT_LIMIT} characters."
         )
     for node in nodes:
         _validate_node(node, problems)
@@ -561,17 +587,44 @@ def _validate_node(node: Node, problems: list[str]) -> None:
         if not (node.get("content") or "").strip():
             problems.append("A text block is empty.")
     elif k == "media":
-        if not node.get("items"):
+        items = node.get("items") or []
+        if not items:
             problems.append("A media gallery has no images.")
+        elif len(items) > _MAX_GALLERY_ITEMS:
+            problems.append(
+                f"A media gallery has {len(items)} images; Discord allows "
+                f"{_MAX_GALLERY_ITEMS}."
+            )
     elif k == "link_button":
         buttons = _buttons_of(node)
         if not buttons:
             problems.append("A button row has no buttons.")
-        for index, button in enumerate(buttons, start=1):
-            if button.get("label") and button.get("url"):
-                continue
+        if len(buttons) > _MAX_ROW_BUTTONS:
             problems.append(
-                f"Button {index} needs both a label and a URL."
-                if len(buttons) > 1
-                else "A link button needs both a label and a URL."
+                f"A button row has {len(buttons)} buttons; Discord allows "
+                f"{_MAX_ROW_BUTTONS}. Split them across two rows."
             )
+        for index, button in enumerate(buttons, start=1):
+            where = f"Button {index}" if len(buttons) > 1 else "A link button"
+            label = str(button.get("label") or "")
+            url = str(button.get("url") or "")
+            if not (label and url):
+                problems.append(
+                    f"{where} needs both a label and a URL."
+                    if len(buttons) > 1
+                    else "A link button needs both a label and a URL."
+                )
+                continue
+            # A URL without a scheme is the common typo ("kyber3000.com"). The preview
+            # silently drops such a button (the renderer only emits http(s) hrefs), so
+            # without this the first sign of trouble is Discord refusing the send.
+            if not url.startswith(("http://", "https://")):
+                problems.append(
+                    f"{where}'s URL must start with http:// or https:// (got "
+                    f"{url[:40]!r})."
+                )
+            if len(label) > _MAX_BUTTON_LABEL:
+                problems.append(
+                    f"{where}'s label is {len(label)} characters; Discord allows "
+                    f"{_MAX_BUTTON_LABEL}."
+                )
