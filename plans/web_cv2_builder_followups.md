@@ -1,6 +1,6 @@
 # Web CV2 builder — follow-ups
 
-## Status: the builder is BUILT and on `dev`; these are the known remainders
+## Status: §1–§3 are DONE (2026-08-03). §4–§6 stand.
 
 Everything implemented is on `origin/dev` (`74c920f` … `2926827`). The decisions behind it
 are in **`plans/web_cv2_builder.md`** — read that first; this file is only what is *left*.
@@ -11,68 +11,45 @@ has been deleted.
 
 ---
 
-## 1. Custom emoji on buttons don't work
+## 1. Custom emoji on buttons — DONE
 
-**The Emoji field on a link button invites input that silently does nothing.**
+The Emoji field stored `{"name": …}`, valid only for a *unicode* emoji; a custom one
+needs its id. The page's emoji payload now carries `{url, id, animated}` per name, a
+typed name / `:name:` / pasted `<a:name:id>` resolves to `{id, name, animated}`, and
+anything unmatched is treated as a literal character. The model accepts both the object
+map and the old `{name: url}` one, so rendering-only callers are unaffected.
 
-`mutate_link_button` (and the web inspector's `btnEmoji` handler) store
-`{"name": "<whatever was typed>"}`. That shape is only valid for a **unicode** emoji.
-A custom guild emoji needs `{"id": "849727805994565662", "name": "LS"}` — without the id,
-Discord renders no emoji at all.
+Two supporting fixes, because the failure was *undetectable* rather than merely wrong:
+the canvas now draws a button's emoji (it drew none before), and the field shows what it
+resolved to — a matched name renders as its image, an unmatched one does not.
 
-**Fix sketch.** The page already loads a guild emoji map for the preview
-(`cv2_builder_page._emoji_map`, `{name: url}`), and the id is embedded in the CDN URL
-(`…/emojis/<id>.png`). Either parse it out, or — cleaner — widen the payload to
-`{name: {url, id, animated}}` and have the inspector resolve a typed `:name:` (or a bare
-name) to `{id, name}`, falling back to `{name}` for a literal unicode character.
-Server-side `mutate_link_button` is currently dead code (see §3) so only the web path
-needs changing, but keep the two in step if that layer is revived.
+## 2. Media gallery alt text + spoiler — DONE
 
-**Test it with:** a button whose emoji is a real guild emoji, sent for real — the preview
-already resolves custom emoji correctly, so a green preview proves nothing here.
+Both are editable per image and both render: alt into the `img` on the canvas and in
+`cv2_render`, spoiler as a blur with a SPOILER overlay so a spoilered image is not
+previewed as an ordinary one. `cv2_render`'s thumbnails gained the same two fields —
+they had been dropping a description Discord shows — and that render is shared, so the
+mirror-log pane gets the alt text too.
 
----
+## 3. Dead code from the in-Discord builder — DONE
 
-## 2. Media gallery items have no alt text or spoiler
+`cv2_nodes.py` went from 631 to ~290 lines; with its tests, **548 lines removed**. The
+whole modal-driven layer went: field specs, mutators, the add-flow catalogue, the
+tree-op state machine, label helpers, and the `make_*` constructors.
 
-Discord supports `description` (alt text) and `spoiler` per gallery item; we only author
-`items[i].media.url`. Existing values **survive** an edit (the inspector reassigns
-`.media` only, leaving siblings intact) — they are simply not editable, and the preview
-ignores them.
+The surviving public API is exactly:
 
-Alt text is an accessibility gap, not just a missing feature. The inspector's per-image
-rows are the obvious home for both fields; the pattern to copy is the per-button field
-groups added for multi-button rows (`.cv2b-btn-list`).
+> the type constants, `kind`, `sanitize_for_preview`, `validate`
 
----
+A correction to this file's earlier claim: the first "verified by grep" pass counted
+*test* references as live callers, which overstated what was still in use. Re-measured
+separating production from test-only callers — production code outside `cv2_nodes` uses
+only `kind`, `sanitize_for_preview` and `validate`. Tests that existed solely to cover
+the dead layer went with it; the ones covering surviving behaviour were rewritten
+against literal node dicts, which also states the shape under test outright instead of
+hiding it behind a constructor.
 
-## 3. Dead code left by deleting the in-Discord builder
-
-`cv2_nodes.py` was written to serve `cv2_builder.py`'s modal-driven UI. That UI is gone
-(`51b4e0a`), and the web builder mirrors the model in JS (`web_static/cv2_model.js`) and
-does tree operations client-side. What the server still genuinely uses is small:
-
-> `Node`, the type constants, `kind`, `_button_of` / `_buttons_of`,
-> `sanitize_for_preview`, `validate`
-
-Orphaned (verified by grep — no non-test caller outside `cv2_nodes` itself):
-
-- **Field-spec / mutator layer:** `text_fields`, `container_fields`, `separator_fields`,
-  `media_fields`, `link_button_fields`, `thumbnail_fields`, every `mutate_*`, `_FIELDS`,
-  `_MUTATORS`, `fields_for`, `mutator_for`, `has_modal`, `_parse_bool`
-- **Add-flow catalogue:** `ADD_LABELS`, `_IMMEDIATE_ADD`, `_ADD_CONSTRUCTORS`,
-  `new_node_for`, `opens_modal_on_add`, `is_accessory_kind`, `addable_kinds`
-- **Tree-op state machine:** `children_ref`, `resolve_path`, `scope_children`,
-  `scope_is_section`, `insert_node`, `delete_node`, `move_node`, `set_accessory`
-- **Labels:** `node_label`, `_preview`, `is_container_like`
-- Most `make_*` constructors (the web builder constructs nodes client-side)
-
-Roughly 250 lines. Deliberately **not** removed alongside the correctness fixes so the
-two are reviewable apart. Delete the tests that only cover the dead layer with it, and
-keep `addable_kinds`' nesting rules documented somewhere — `cv2_model.js` is the live
-copy of those rules now.
-
----
+**Keep it that way:** node construction and tree editing belong to `cv2_model.js` now.
 
 ## 4. Deliberately out of scope (record, don't re-litigate)
 
