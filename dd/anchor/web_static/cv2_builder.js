@@ -110,6 +110,7 @@
       inspector: root.querySelector(".cv2b-inspector"),
       undo: root.querySelector('[data-a="undo"]'),
       redo: root.querySelector('[data-a="redo"]'),
+      add: root.querySelector('[data-a="add"]'),
       publish: root.querySelector('[data-a="publish"]'),
       status: root.querySelector(".cv2b-status"),
       count: root.querySelector(".cv2b-count"),
@@ -1105,15 +1106,26 @@
       (kbd || "") +
       "</span></button>";
 
-    function openPalette(e, scope, index) {
-      const legal = M.allowedIn(state.nodes, scope);
-      const items = PALETTE.filter((p) => legal.indexOf(p.kind) !== -1)
+    function openPalette(e, scope, index, label) {
+      // Filter by canDrop, not allowedIn: inside a section that already holds its three
+      // text blocks, "text" is an allowed *kind* but not an allowed *insert* — offering
+      // it would let the menu build a tree the validator immediately rejects.
+      const items = PALETTE.filter((p) =>
+        M.canDrop(state.nodes, scope, p.kind, null),
+      )
         .map((p) => mi("add:" + p.kind, p.glyph, p.label))
         .join("");
+      if (!items) {
+        toast(M.refusalReason(state.nodes, scope, "text"), true);
+        return;
+      }
       const menu = showMenu(
         e.clientX,
         e.clientY,
-        '<div class="cv2b-menu-label">Add here</div>' + items,
+        '<div class="cv2b-menu-label">' +
+          esc(label || "Add here") +
+          "</div>" +
+          items,
       );
       menu.addEventListener("click", (ev) => {
         const b = ev.target.closest("button");
@@ -1305,6 +1317,51 @@
     el.undo.addEventListener("click", undo);
     el.redo.addEventListener("click", redo);
 
+    // The collapsed "Add" control (small screens only — the palette rail is hidden
+    // there). A permanent list of six block types costs a band of vertical space on
+    // every screen for something used a handful of times per message, and vertical space
+    // is the scarce resource on a phone. Behind one button it costs nothing until asked
+    // for, and it reuses the exact menu the "+" rails and right-click already open, so
+    // there is one code path for "choose a block type" rather than two.
+    //
+    // Where it lands is the same rule as clicking a palette item on desktop — after the
+    // selection, or at the end — but stated in the menu header, because a button far
+    // from the insertion point has to say where it will drop things.
+    function addTarget() {
+      const sel = state.sel;
+      if (sel && sel[sel.length - 1] !== "acc") {
+        const scope = sel.slice(0, -1);
+        const index = sel[sel.length - 1] + 1;
+        // Only honour the selection if something can actually go beside it (a full
+        // section can't take a fourth text block); otherwise fall back to the end.
+        const anyLegal = PALETTE.some((p) =>
+          M.canDrop(state.nodes, scope, p.kind, null),
+        );
+        if (anyLegal) {
+          const kindLabel = M.KIND_LABEL[M.kind(M.resolve(state.nodes, sel))] || "block";
+          return { scope, index, label: "Add after this " + kindLabel.toLowerCase() };
+        }
+      }
+      return {
+        scope: [],
+        index: state.nodes.length,
+        label: state.nodes.length ? "Add at the end" : "Add the first block",
+      };
+    }
+
+    el.add.addEventListener("click", () => {
+      const box = el.add.getBoundingClientRect();
+      const target = addTarget();
+      // Anchor under the button rather than at the pointer, so it reads as that
+      // button's menu.
+      openPalette(
+        { clientX: box.left, clientY: box.bottom + 6 },
+        target.scope,
+        target.index,
+        target.label,
+      );
+    });
+
     el.publish.addEventListener("click", async () => {
       if (state.problems.length) {
         const first = state.problems.find((p) => p.path);
@@ -1421,6 +1478,7 @@
       '<header class="cv2b-bar">' +
       '<button type="button" class="cv2b-icon" data-a="undo" title="Undo (Ctrl/Cmd+Z)">↶</button>' +
       '<button type="button" class="cv2b-icon" data-a="redo" title="Redo (Ctrl/Cmd+Shift+Z)">↷</button>' +
+      '<button type="button" class="cv2b-add" data-a="add">+ Add</button>' +
       '<span class="cv2b-status"></span>' +
       '<span class="cv2b-grow"></span>' +
       '<span class="cv2b-count"></span>' +

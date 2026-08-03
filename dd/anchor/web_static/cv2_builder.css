@@ -72,6 +72,11 @@
   padding: 0.28rem 0.44rem;
   line-height: 1;
 }
+/* The collapsed add-a-block control. Hidden on desktop, where the palette rail is
+   already visible and there is horizontal room for it. */
+.cv2b .cv2b-add {
+  display: none;
+}
 
 /* --- three-column body --------------------------------------------------- */
 .cv2b-main {
@@ -83,114 +88,6 @@
 @media (max-width: 1250px) {
   .cv2b-main {
     grid-template-columns: 11rem minmax(0, 1fr) 16rem;
-  }
-}
-
-/* --- narrow screens ------------------------------------------------------
-   A phone gets a genuinely different layout rather than the three-column desktop one
-   squeezed: stacking it put the palette in a cramped rail and pushed the inspector off
-   the bottom, which meant properties (button URLs, image URLs, accent colour) were
-   effectively unreachable on mobile — the canvas alone cannot edit those.
-
-   So: the palette becomes a horizontal strip under the toolbar, the canvas takes the
-   whole remaining height, and the inspector becomes a bottom sheet that only appears
-   when something is selected. */
-@media (max-width: 900px) {
-  .cv2b {
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-  .cv2b-main {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  /* Palette: one scrollable row, not a rail. */
-  .cv2b-palette {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.4rem;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    padding: 0.4rem 0.6rem;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-  }
-  .cv2b-palette::-webkit-scrollbar {
-    display: none;
-  }
-  .cv2b-rail-title,
-  .cv2b-pal-hint {
-    display: none;
-  }
-  .cv2b .cv2b-pal {
-    width: auto;
-    flex: none;
-    border-color: var(--border);
-    background: var(--surface-2);
-    padding: 0.3rem 0.5rem;
-    font-size: 0.76rem;
-    white-space: nowrap;
-  }
-
-  .cv2b-canvas-wrap {
-    padding: 0.7rem 0.6rem 5rem;
-  }
-  .cv2b-canvas {
-    padding-left: 1.6rem;
-    font-size: 0.92rem;
-  }
-  /* Touch has no hover, so the drag handle must always be visible or it may as well
-     not exist. */
-  .cv2b-blk > .cv2b-grip {
-    display: grid;
-    opacity: 0.55;
-  }
-
-  /* Inspector as a bottom sheet. */
-  .cv2b-inspector {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 50;
-    max-height: 55vh;
-    border-left: none;
-    border-top: 1px solid var(--border);
-    border-radius: var(--radius) var(--radius) 0 0;
-    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
-    padding: 0.6rem 0.8rem 1.2rem;
-    transform: translateY(100%);
-    transition: transform 0.16s ease-out;
-  }
-  .cv2b-inspector.cv2b-sheet-open {
-    transform: translateY(0);
-  }
-  /* A grab bar, so the sheet reads as dismissable. */
-  .cv2b-inspector::before {
-    content: "";
-    display: block;
-    width: 2.2rem;
-    height: 0.25rem;
-    border-radius: 999px;
-    background: var(--border);
-    margin: 0 auto 0.5rem;
-    flex: none;
-  }
-
-  .cv2b-bar {
-    padding: 0.4rem 0.6rem;
-    gap: 0.4rem;
-  }
-  /* Desktop-only advice ("Right-click anything · Ctrl/Cmd+Z undoes") is worse than
-     useless on a phone — there is no right-click and no Ctrl. */
-  .cv2b-status,
-  .cv2b-count {
-    display: none;
-  }
-  .cv2b-bar .cv2b-status.cv2b-has-link {
-    display: block;
-    font-size: 0.72rem;
   }
 }
 
@@ -752,4 +649,110 @@ body.cv2b-dragging-now * {
   max-height: 60vh;
   overflow: auto;
   background: var(--surface-0);
+}
+
+/* --- narrow screens -------------------------------------------------------
+   MUST STAY LAST IN THIS FILE. These rules override base rules of the SAME
+   specificity (.cv2b-palette, .cv2b-inspector, …), so cascade order is the only
+   thing making them win. Sitting earlier in the file — where they originally were —
+   silently did nothing: the palette kept its desktop column layout and the inspector
+   never became a sheet, on every phone. */
+@media (max-width: 900px) {
+  .cv2b {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  /* The palette rail is gone entirely here; adding a block goes through the "+ Add"
+     button in the toolbar, which opens the same menu the rails and long-press use.
+     A permanent list of six block types cost a band of vertical space on every screen
+     for something used a handful of times per message — and on a phone vertical space
+     is the whole budget. With the rail hidden, the canvas is the only row left. */
+  .cv2b-palette {
+    display: none;
+  }
+  .cv2b-main {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .cv2b .cv2b-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex: none;
+    background: var(--surface-2);
+    font-weight: 600;
+  }
+
+  .cv2b-canvas-wrap {
+    padding: 0.7rem 0.6rem 5rem;
+  }
+  /* A 10px rail is a fine mouse target and a hopeless finger one, and touch has no
+     hover to reveal it — so the "+" shows permanently, faintly. The rail LINE stays
+     hidden until armed: drawn in every gap it reads as a divider, which fights the
+     actual Separator blocks in the message being edited. */
+  .cv2b-rail {
+    height: 1.35rem;
+  }
+  .cv2b-rail::after {
+    display: grid;
+    opacity: 0.4;
+  }
+  .cv2b-rail.cv2b-armed::after {
+    opacity: 1;
+  }
+  .cv2b-canvas {
+    padding-left: 1.6rem;
+    font-size: 0.92rem;
+  }
+  /* Touch has no hover, so the drag handle must always be visible or it may as well
+     not exist. */
+  .cv2b-blk > .cv2b-grip {
+    display: grid;
+    opacity: 0.55;
+  }
+
+  /* Inspector as a bottom sheet. */
+  .cv2b-inspector {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    max-height: 55vh;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
+    padding: 0.6rem 0.8rem 1.2rem;
+    transform: translateY(100%);
+    transition: transform 0.16s ease-out;
+  }
+  .cv2b-inspector.cv2b-sheet-open {
+    transform: translateY(0);
+  }
+  /* A grab bar, so the sheet reads as dismissable. */
+  .cv2b-inspector::before {
+    content: "";
+    display: block;
+    width: 2.2rem;
+    height: 0.25rem;
+    border-radius: 999px;
+    background: var(--border);
+    margin: 0 auto 0.5rem;
+    flex: none;
+  }
+
+  .cv2b-bar {
+    padding: 0.4rem 0.6rem;
+    gap: 0.4rem;
+  }
+  /* Desktop-only advice ("Right-click anything · Ctrl/Cmd+Z undoes") is worse than
+     useless on a phone — there is no right-click and no Ctrl. */
+  .cv2b-status,
+  .cv2b-count {
+    display: none;
+  }
+  .cv2b-bar .cv2b-status.cv2b-has-link {
+    display: block;
+    font-size: 0.72rem;
+  }
 }
