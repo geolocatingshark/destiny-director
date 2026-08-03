@@ -430,6 +430,16 @@
     let sheetFor = null;
     let sheetDismissed = false;
 
+    // Kinds whose properties can ONLY be reached through the sheet. Text is edited in
+    // place on the canvas and a section has no fields of its own, so auto-opening for
+    // those puts a second editor over the message for no gain — on a phone it covers the
+    // thing you are editing with a duplicate of itself.
+    const SHEET_KINDS = ["container", "media", "separator", "link_button", "thumbnail"];
+
+    function sheetWorthOpening(node) {
+      return !!node && SHEET_KINDS.indexOf(M.kind(node)) !== -1;
+    }
+
     function syncSheet(hasNode) {
       const key = state.sel ? pk(state.sel) : null;
       if (key !== sheetFor) {
@@ -449,19 +459,15 @@
 
     function renderInspector() {
       const node = state.sel ? safeResolve(state.sel) : null;
-      // The sheet's dismiss controls live in a fixed header, and everything else in a
-      // scrolling body. They are REAL elements, not the CSS ::before bar, because the
-      // grab handle has to be tappable or there is no way off the screen — and they sit
-      // outside the scroll area, or on a long sheet (a gallery with ten URLs) the close
-      // button scrolls away exactly when you want it.
+      // The close control lives in a fixed header, everything else in a scrolling body —
+      // outside the scroll area, or on a long sheet (a gallery with ten URLs) the ✕
+      // scrolls away exactly when you want it.
       //
-      // Two ways out on purpose: the grab bar is the conventional gesture affordance but
-      // an invisible convention; an explicit ✕ is what people look for. Both carry the
-      // same data-a, so they share one handler.
+      // There is deliberately no grab-bar pill. It looked like a drag handle, which on a
+      // bottom sheet promises swipe-to-dismiss, but it only ever answered a tap. A
+      // control that lies about its gesture is worse than one fewer control.
       const header =
         '<div class="cv2b-insp-bar">' +
-        '<button type="button" class="cv2b-sheet-grip" data-a="sheet-close" ' +
-        'aria-label="Close properties"></button>' +
         '<button type="button" class="cv2b-sheet-close" data-a="sheet-close" ' +
         'aria-label="Close properties" title="Close">✕</button>' +
         "</div>";
@@ -507,7 +513,7 @@
       // On a phone the inspector is a bottom sheet (see cv2_builder.css): open it only
       // when there is something to edit AND the author hasn't dismissed it. The class is
       // inert on desktop, where it is a static column.
-      syncSheet(!!node);
+      syncSheet(sheetWorthOpening(node));
       // The status line is hidden on mobile because it carries desktop-only advice —
       // except once it holds the posted-message link, which is the one thing you do
       // want to tap.

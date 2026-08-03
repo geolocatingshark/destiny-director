@@ -15,7 +15,8 @@
 
 """Unit tests for the Components V2 node model's pure pieces (no Discord I/O).
 
-The interactive menu/modal flow in ``cv2_builder`` is verified manually on dev; here we
+The authoring UI is now the web builder (its client mirror of this model is covered by
+``web_static/tests/cv2_model.test.js``, run by ``make test-js``); here we
 exercise the constructors, field specs, mutators, tree ops, add-flow catalogue, preview
 sanitiser and validation.
 """

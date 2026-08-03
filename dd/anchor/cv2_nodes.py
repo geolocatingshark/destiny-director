@@ -17,7 +17,9 @@
 
 A "node" is a raw Discord component-payload dict (the same JSON shape the REST API sends
 and accepts). The builder holds an ordered ``list[Node]`` of top-level nodes and mutates
-it via the pure helpers here; the interactive/menu layer lives in ``cv2_builder``.
+it via the pure helpers here. The authoring UI is the web builder
+(``extensions.cv2_builder_page`` + ``web_static/cv2_model.js``, which mirrors this
+module client-side); the in-Discord builder this model was written for is gone.
 
 Nesting mirrors Discord's real rules, not an idealised tree:
 
