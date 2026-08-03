@@ -1224,6 +1224,10 @@
     const DRAG_THRESHOLD = 6; // px before a press becomes a drag (vs. a tap)
     const LONG_PRESS_MS = 450;
     const EDGE = 60; // autoscroll band at the top/bottom of the canvas
+    const AUTOSCROLL_PX = 10; // per frame, while the pointer rests in that band
+    const lastPoint = { x: 0, y: 0 };
+    let scrollDir = 0;
+    let scrollRaf = 0;
 
     function makeGhost(label, x, y) {
       const ghost = document.createElement("div");
@@ -1309,18 +1313,11 @@
       return null;
     }
 
-    function updateDrag(x, y) {
-      moveGhost(drag.ghost, x, y);
+    /** Highlight (or refuse) the drop target under a point. */
+    function armTarget(x, y) {
       el.canvas
         .querySelectorAll(".cv2b-armed")
         .forEach((n) => n.classList.remove("cv2b-armed"));
-
-      // Autoscroll near the edges — on a phone the canvas is far taller than the
-      // viewport, so without this you can only drop what is already on screen.
-      const box = el.canvas.parentElement.getBoundingClientRect();
-      if (y < box.top + EDGE) el.canvas.parentElement.scrollTop -= 12;
-      else if (y > box.bottom - EDGE) el.canvas.parentElement.scrollTop += 12;
-
       const target = targetAt(x, y);
       if (!target) return hideToast();
       if (target.kind === "blocked") {
@@ -1331,8 +1328,45 @@
       hideToast();
     }
 
+    // Autoscroll runs on its own frame loop rather than off pointermove. A finger (or a
+    // mouse) held still at the edge of the canvas emits no further events, so a
+    // move-driven scroll stopped dead exactly when the author was asking it to keep
+    // going — on a phone, where the message is several viewports tall, that meant
+    // jiggling at the edge dozens of times to reach the top.
+    function setAutoScroll(dir) {
+      if (dir === scrollDir) return;
+      scrollDir = dir;
+      if (dir && !scrollRaf) scrollRaf = requestAnimationFrame(autoScrollStep);
+      if (!dir && scrollRaf) {
+        cancelAnimationFrame(scrollRaf);
+        scrollRaf = 0;
+      }
+    }
+
+    function autoScrollStep() {
+      scrollRaf = 0;
+      if (!drag || !scrollDir) return;
+      const wrap = el.canvas.parentElement;
+      const before = wrap.scrollTop;
+      wrap.scrollTop = before + scrollDir * AUTOSCROLL_PX;
+      // The content moved under a stationary pointer, so the armed rail has to be
+      // re-hit-tested or the drop lands where the target used to be.
+      if (wrap.scrollTop !== before) armTarget(lastPoint.x, lastPoint.y);
+      scrollRaf = requestAnimationFrame(autoScrollStep);
+    }
+
+    function updateDrag(x, y) {
+      lastPoint.x = x;
+      lastPoint.y = y;
+      moveGhost(drag.ghost, x, y);
+      const box = el.canvas.parentElement.getBoundingClientRect();
+      setAutoScroll(y < box.top + EDGE ? -1 : y > box.bottom - EDGE ? 1 : 0);
+      armTarget(x, y);
+    }
+
     function endDrag(x, y) {
       const d = drag;
+      setAutoScroll(0);
       const target = targetAt(x, y);
       if (d.ghost) d.ghost.remove();
       drag = null;
@@ -1374,6 +1408,7 @@
 
     function cancelDrag() {
       if (!drag) return;
+      setAutoScroll(0);
       if (drag.ghost) drag.ghost.remove();
       drag = null;
       clearDragMarks();
