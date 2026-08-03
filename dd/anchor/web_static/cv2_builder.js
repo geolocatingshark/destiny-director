@@ -1389,10 +1389,14 @@
         });
         return;
       }
+      const node = d.from
+        ? clone(M.resolve(state.nodes, d.from))
+        : M.makeNode(d.kind, defaultAccent);
+      // An accessory holds exactly one button, so dragging a row of several in keeps
+      // the first and drops the rest. Say so — otherwise the buttons vanish between two
+      // frames and the author is left wondering whether they were ever there.
+      const dropped = M.buttonsOf(node).length - 1;
       commit("Accessory set", () => {
-        const node = d.from
-          ? clone(M.resolve(state.nodes, d.from))
-          : M.makeNode(d.kind, defaultAccent);
         // Hold the section by reference: removing the source can rebase its path, but
         // the object itself never moves.
         const section = M.resolve(state.nodes, target.sectionPath);
@@ -1404,6 +1408,14 @@
         section.accessory = node.type === M.ACTION_ROW ? node.components[0] : node;
         state.sel = at.concat(["acc"]);
       });
+      if (dropped > 0) {
+        toast(
+          "An accessory holds one button — the other " +
+            (dropped > 1 ? dropped + " were" : "one was") +
+            " dropped.",
+          true,
+        );
+      }
     }
 
     function cancelDrag() {
