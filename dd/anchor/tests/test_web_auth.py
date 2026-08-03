@@ -62,6 +62,18 @@ class _FakeRequest:
         self.cookies = cookies or {}
         self.headers = headers or {}
         self.path_qs = path_qs if path_qs is not None else path
+        # A real Request is a MutableMapping; the middleware stashes the authenticated
+        # owner id in it (AUTH_USER_KEY) for handlers to read via authed_user_id.
+        self._state: dict[str, t.Any] = {}
+
+    def __setitem__(self, key: str, value: t.Any) -> None:
+        self._state[key] = value
+
+    def __getitem__(self, key: str) -> t.Any:
+        return self._state[key]
+
+    def get(self, key: str, default: t.Any = None) -> t.Any:
+        return self._state.get(key, default)
 
 
 def _req(**kwargs: t.Any) -> aiohttp.web.Request:
@@ -257,10 +269,18 @@ async def test_middleware_owner_cookie_runs_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(auth, "_bot", _StubBot([123]))
-    resp = await auth._auth_middleware(
-        _req(path="/rotation", cookies=_owner_cookie(123)), _ok_handler
-    )
+    request = _req(path="/rotation", cookies=_owner_cookie(123))
+    resp = await auth._auth_middleware(request, _ok_handler)
     assert resp.status == 200
+    # The middleware also publishes *which* owner was admitted, so a handler can scope
+    # its own data (e.g. the CV2 builder's drafts) without re-parsing the cookie.
+    assert auth.authed_user_id(request) == 123
+
+
+async def test_authed_user_id_rejects_a_request_the_middleware_never_admitted() -> None:
+    """A route reachable without the middleware must fail loudly, not act as someone."""
+    with pytest.raises(aiohttp.web.HTTPUnauthorized):
+        auth.authed_user_id(_req(path="/rotation"))
 
 
 async def test_middleware_non_owner_cookie_is_403(

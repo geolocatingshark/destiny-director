@@ -1,0 +1,50 @@
+/*
+  Layout for the standalone CV2 builder page (cv2_builder.html). The widget itself is
+  styled by cv2_builder.css; this only gives it a full-height home, since shared.css's
+  body is a centred 880px reading column and the builder wants the whole viewport.
+*/
+
+body.cv2b-page {
+  max-width: none;
+  height: 100vh;
+  padding: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.cv2b-page-head {
+  padding: 0.9rem 1.2rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+.cv2b-page-head h1 {
+  font-size: 1.05rem;
+  margin: 0 0 0.15rem;
+}
+.cv2b-page-head p.nav {
+  margin: 0 0 0.3rem;
+}
+.cv2b-page-head .muted {
+  margin: 0;
+}
+.cv2b-page-head a {
+  color: var(--link);
+}
+
+.cv2b-mount {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cv2b-page-error {
+  margin: 1.2rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+.cv2b-page-error.hidden {
+  display: none;
+}

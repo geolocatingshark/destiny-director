@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
+import asyncio
 import contextlib
 import logging
 import typing as t
@@ -23,11 +24,19 @@ from lightbulb import components as lbc
 
 from ...common import cfg, utils
 from ...common.bot import CachedFetchBot
-from ...common.components import cv2_error, cv2_notice, cv2_success, embeds_to_container
+from ...common.components import (
+    CV2_NEUTRAL_COLOR,
+    cv2_error,
+    cv2_notice,
+    cv2_success,
+    embeds_to_container,
+)
+from ...common.schemas import Cv2Draft
 from ..cv2_builder import build_components_with_user
 from ..cv2_nodes import Node
 from ..cv2_raw import RawComponentBuilder, fetch_raw_message_components
 from ..embeds import build_embed_with_user
+from .cv2_builder_page import new_draft
 
 loader = lb.Loader()
 
@@ -98,6 +107,124 @@ def _is_cv2(msg: h.Message) -> bool:
     return h.MessageFlag.IS_COMPONENTS_V2 in (msg.flags or h.MessageFlag.NONE)
 
 
+# --- web handoff --------------------------------------------------------------------
+#
+# Components V2 authoring now happens on the web (extensions.cv2_builder_page): a
+# command writes a draft carrying the publish target and replies with a link. The
+# in-Discord builder stays reachable behind one button for a release, so a gap in the
+# web flow can't leave anyone unable to post — see the "Edit in Discord instead" escape.
+#
+# The link is a plain link button, so the common path is one click and no interaction
+# round-trip. The escape hatch is a second, quieter button; pressing it runs the old
+# builder as a followup (Context.respond falls through to interaction.execute once the
+# initial response is sent), which is why cv2_builder now edits by response id.
+
+_IN_DISCORD = "cv2:in_discord"
+_HANDOFF_TIMEOUT = 300
+
+_HANDOFF_BODY = {
+    Cv2Draft.ACTION_POST: (
+        "### Build your message\n"
+        "Open the builder to write it — click blocks to edit them, drag to rearrange, "
+        "right-click for more.\n"
+        "-# Your work saves as you go. Nothing is posted until you press **Post**."
+    ),
+    Cv2Draft.ACTION_EDIT: (
+        "### Edit this message\n"
+        "The builder opens with the current post loaded.\n"
+        "-# Your work saves as you go. The live message only changes when you press "
+        "**Save changes**."
+    ),
+    Cv2Draft.ACTION_COPY: (
+        "### Copy this message\n"
+        "The builder opens with a copy loaded — change whatever you like.\n"
+        "-# Your work saves as you go. Nothing is sent until you press **Send copy**."
+    ),
+}
+
+
+async def _hand_off_to_web(
+    ctx: lb.Context,
+    *,
+    action: str,
+    nodes: list[Node] | None,
+    channel_id: int,
+    message_id: int | None = None,
+    fallback: t.Callable[[], t.Awaitable[None]],
+) -> None:
+    """Reply with a link to the web builder, keeping an in-Discord escape hatch.
+
+    Falls straight through to ``fallback`` when there is no public base URL to link to
+    (a local dev box without a tunnel) — a dead link is worse than the old builder.
+    """
+    if not cfg.public_base_url:
+        await fallback()
+        return
+
+    try:
+        url = await new_draft(
+            user_id=int(ctx.user.id),
+            action=action,
+            nodes=nodes,
+            guild_id=int(ctx.guild_id) if ctx.guild_id else None,
+            channel_id=channel_id,
+            message_id=message_id,
+        )
+    except Exception as e:
+        # Losing the draft store shouldn't lose the ability to post.
+        logging.exception(e)
+        await _respond_cv2(
+            ctx,
+            cv2_notice(
+                "Couldn't open the web builder just now — using the Discord one "
+                "instead."
+            ),
+        )
+        await fallback()
+        return
+
+    container = h.impl.ContainerComponentBuilder(accent_color=CV2_NEUTRAL_COLOR)
+    container.add_text_display(_HANDOFF_BODY[action])
+    row = h.impl.MessageActionRowBuilder()
+    row.add_component(h.impl.LinkButtonBuilder(url=url, label="Open the builder"))
+    row.add_component(
+        h.impl.InteractiveButtonBuilder(
+            style=h.ButtonStyle.SECONDARY,
+            custom_id=_IN_DISCORD,
+            label="Edit in Discord instead",
+        )
+    )
+    container.add_component(row)
+
+    menu = lbc.Menu()
+    used_fallback = asyncio.Event()
+
+    async def on_in_discord(mctx: lbc.MenuContext) -> None:
+        # Drop the chooser's buttons so the two builders can't be driven at once.
+        await mctx.respond(
+            edit=True,
+            flags=h.MessageFlag.IS_COMPONENTS_V2,
+            components=[cv2_notice("Opening the Discord builder…")],
+        )
+        used_fallback.set()
+        mctx.stop_interacting()
+
+    menu.add_interactive_button(
+        h.ButtonStyle.SECONDARY, on_in_discord, custom_id=_IN_DISCORD, label=_IN_DISCORD
+    )
+
+    await ctx.respond(
+        components=[container],
+        flags=h.MessageFlag.IS_COMPONENTS_V2,
+        ephemeral=True,
+    )
+    with contextlib.suppress(TimeoutError):
+        await menu.attach(ctx.client, timeout=_HANDOFF_TIMEOUT)
+
+    if used_fallback.is_set():
+        await fallback()
+
+
 def _is_own(message: h.Message, bot: CachedFetchBot) -> bool:
     """Whether ``message`` was posted by this bot."""
     bot_user = bot.get_me()
@@ -146,11 +273,23 @@ class PostComponents(
 
     @lb.invoke
     async def invoke(self, ctx: lb.Context, bot: CachedFetchBot = lb.di.INJECTED):
+        target_id = int(self.channel.id if self.channel else ctx.channel_id)
+        await _hand_off_to_web(
+            ctx,
+            action=Cv2Draft.ACTION_POST,
+            nodes=None,
+            channel_id=target_id,
+            fallback=lambda: self._build_in_discord(ctx, bot, target_id),
+        )
+
+    async def _build_in_discord(
+        self, ctx: lb.Context, bot: CachedFetchBot, target_id: int
+    ) -> None:
+        """The pre-web flow, kept for one release as the escape hatch."""
         nodes = await build_components_with_user(ctx, done_button_text="Post")
         if not nodes:
             return
 
-        target_id = self.channel.id if self.channel else ctx.channel_id
         channel = t.cast(h.TextableChannel, await bot.fetch_channel(target_id))
         try:
             posted = await channel.send(components=_to_builders(nodes))
@@ -176,6 +315,50 @@ class PostComponents(
         await _respond_cv2(ctx, cv2_success(f"Posted: {link}"))
 
 
+async def _edit_cv2_in_discord(
+    ctx: lb.Context, message: h.Message, nodes: list[Node]
+) -> None:
+    """The pre-web CV2 edit flow, kept for one release as the escape hatch."""
+    edited = await build_components_with_user(
+        ctx, done_button_text="Save", existing_nodes=nodes
+    )
+    if not edited:
+        return
+    try:
+        await message.edit(
+            components=_to_builders(edited),
+            flags=h.MessageFlag.IS_COMPONENTS_V2,
+        )
+    except h.BadRequestError as e:
+        await _respond_cv2(
+            ctx,
+            cv2_error("Discord rejected the update", _CV2_LIMIT_HINT.format(error=e)),
+        )
+        return
+    await _respond_cv2(ctx, cv2_success(f"Updated: {message.make_link(ctx.guild_id)}"))
+
+
+async def _copy_cv2_in_discord(
+    ctx: lb.Context, bot: CachedFetchBot, nodes: list[Node]
+) -> None:
+    """The pre-web CV2 copy flow, kept for one release as the escape hatch."""
+    edited = await build_components_with_user(
+        ctx, done_button_text="Send", existing_nodes=nodes
+    )
+    if not edited:
+        return
+    channel = t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id))
+    try:
+        posted = await channel.send(components=_to_builders(edited))
+    except h.BadRequestError as e:
+        await _respond_cv2(
+            ctx,
+            cv2_error("Discord rejected the message", _CV2_LIMIT_HINT.format(error=e)),
+        )
+        return
+    await _respond_cv2(ctx, cv2_success(f"Posted: {posted.make_link(ctx.guild_id)}"))
+
+
 class EditPost(
     lb.MessageCommand,
     name="Edit post",
@@ -197,28 +380,14 @@ class EditPost(
             if nodes is None:
                 return
 
-            edited = await build_components_with_user(
-                ctx, done_button_text="Save", existing_nodes=nodes
+            await _hand_off_to_web(
+                ctx,
+                action=Cv2Draft.ACTION_EDIT,
+                nodes=nodes,
+                channel_id=int(message.channel_id),
+                message_id=int(message.id),
+                fallback=lambda: _edit_cv2_in_discord(ctx, message, nodes),
             )
-            if not edited:
-                return
-
-            try:
-                await message.edit(
-                    components=_to_builders(edited),
-                    flags=h.MessageFlag.IS_COMPONENTS_V2,
-                )
-            except h.BadRequestError as e:
-                await _respond_cv2(
-                    ctx,
-                    cv2_error(
-                        "Discord rejected the update", _CV2_LIMIT_HINT.format(error=e)
-                    ),
-                )
-                return
-
-            link = message.make_link(ctx.guild_id)
-            await _respond_cv2(ctx, cv2_success(f"Updated: {link}"))
             return
 
         if not _single_embed(message):
@@ -256,26 +425,13 @@ class CopyPost(
             if nodes is None:
                 return
 
-            edited = await build_components_with_user(
-                ctx, done_button_text="Send", existing_nodes=nodes
+            await _hand_off_to_web(
+                ctx,
+                action=Cv2Draft.ACTION_COPY,
+                nodes=nodes,
+                channel_id=int(ctx.channel_id),
+                fallback=lambda: _copy_cv2_in_discord(ctx, bot, nodes),
             )
-            if not edited:
-                return
-
-            channel = t.cast(h.TextableChannel, await bot.fetch_channel(ctx.channel_id))
-            try:
-                posted = await channel.send(components=_to_builders(edited))
-            except h.BadRequestError as e:
-                await _respond_cv2(
-                    ctx,
-                    cv2_error(
-                        "Discord rejected the message", _CV2_LIMIT_HINT.format(error=e)
-                    ),
-                )
-                return
-
-            link = posted.make_link(ctx.guild_id)
-            await _respond_cv2(ctx, cv2_success(f"Posted: {link}"))
             return
 
         if not _single_embed(message):

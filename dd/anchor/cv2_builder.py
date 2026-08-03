@@ -279,7 +279,12 @@ async def build_components_with_user(
             h.ButtonStyle.SECONDARY, callback, custom_id=custom_id, label=custom_id
         )
 
-    await ctx.respond(
+    # Capture the response id: since the web handoff landed, this builder can also run
+    # as a *followup* (the "Edit in Discord instead" escape hatch), and
+    # edit_initial_response would then clobber the wrong message. ctx.edit_response
+    # resolves the initial-response identifier back to edit_initial_response, so this is
+    # correct either way.
+    response_id = await ctx.respond(
         flags=h.MessageFlag.IS_COMPONENTS_V2 | h.MessageFlag.EPHEMERAL,
         components=render(),
     )
@@ -287,9 +292,7 @@ async def build_components_with_user(
         await menu.attach(ctx.client, timeout=_SESSION_TIMEOUT)
     if state.result is None:
         with contextlib.suppress(h.NotFoundError, h.UnauthorizedError):
-            await ctx.interaction.edit_initial_response(
-                components=_final_components(state)
-            )
+            await ctx.edit_response(response_id, components=_final_components(state))
     return state.result
 
 

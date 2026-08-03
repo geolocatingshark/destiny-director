@@ -173,6 +173,13 @@ typecheck:
 test: .env
 	uv run --env-file .env python -m pytest -m "not discord"
 
+# The web_static JS unit tests (node --test, no bundler, no browser). Currently the CV2
+# builder's pure node model — the client mirror of dd/anchor/cv2_nodes.py, which is worth
+# testing directly because the builder UI renders straight out of it. Separate from
+# `test` because it needs node rather than the Python env; `check` runs both.
+test-js:
+	node --test "dd/*/web_static/tests/*.test.js"
+
 test-unit: .env
 	uv run --env-file .env python -m pytest -m "not integration"
 
@@ -197,7 +204,7 @@ test-mirror-integration: .env
 test-all: .env
 	uv run --env-file .env python -m pytest -v
 
-check: lint typecheck test
+check: lint typecheck test test-js
 
 .env:
 	@echo "Please create a .env file with all variables as per beacon.cfg"

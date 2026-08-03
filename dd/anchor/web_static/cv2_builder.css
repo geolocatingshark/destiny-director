@@ -1,0 +1,618 @@
+/*
+  Web Components-V2 builder chrome (cv2_builder.js).
+
+  This sheet styles only the *editor* — the palette rail, insertion rails, drag
+  affordances, inspector, menus. The rendered post itself is styled by the shared
+  cv2_preview.css (the canvas carries `cv2-preview`), so the thing you are editing looks
+  identical to the mirror-log render pane. Load order: shared.css, cv2_preview.css, then
+  this.
+
+  Everything is prefixed `cv2b-` so mounting the widget inside a host page (the standalone
+  builder page today, a form tomorrow) cannot collide with the host's classes — the one
+  exception being the `.cv2-*` render classes, which are deliberately shared.
+*/
+
+.cv2b {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+/* --- top bar ------------------------------------------------------------- */
+.cv2b-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+.cv2b-grow {
+  flex: 1;
+}
+.cv2b-status {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+.cv2b-status.cv2b-err {
+  color: var(--err);
+}
+.cv2b-status a {
+  color: var(--link);
+}
+.cv2b-count {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.cv2b button {
+  padding: 0.36rem 0.7rem;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-1);
+}
+.cv2b button:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+.cv2b button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.cv2b .cv2b-primary {
+  background: var(--accent-strong);
+  color: var(--accent-text-strong);
+  border-color: transparent;
+}
+.cv2b .cv2b-icon {
+  padding: 0.28rem 0.44rem;
+  line-height: 1;
+}
+
+/* --- three-column body --------------------------------------------------- */
+.cv2b-main {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr) 19rem;
+  min-height: 0;
+  overflow: hidden;
+}
+@media (max-width: 1100px) {
+  .cv2b-main {
+    grid-template-columns: 11rem minmax(0, 1fr);
+  }
+  .cv2b-inspector {
+    display: none;
+  }
+}
+
+/* --- palette rail -------------------------------------------------------- */
+.cv2b-palette {
+  border-right: 1px solid var(--border);
+  background: var(--surface-1);
+  padding: 0.7rem 0.6rem;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.cv2b-rail-title {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 0.2rem 0.2rem 0.35rem;
+}
+.cv2b .cv2b-pal {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.42rem 0.5rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  cursor: grab;
+}
+.cv2b .cv2b-pal:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text-1);
+}
+.cv2b .cv2b-pal:active {
+  cursor: grabbing;
+}
+.cv2b-glyph {
+  width: 1.35rem;
+  height: 1.35rem;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: var(--surface-3);
+  font-size: 0.75rem;
+}
+.cv2b-pal-hint {
+  margin-top: auto;
+  padding: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+}
+.cv2b kbd {
+  font: inherit;
+  font-size: 0.95em;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 0.25em;
+}
+
+/* --- canvas -------------------------------------------------------------- */
+.cv2b-canvas-wrap {
+  overflow: auto;
+  padding: 1.1rem 1.3rem 4rem;
+  min-width: 0;
+}
+.cv2b-canvas {
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem 0.7rem;
+  max-width: 46rem;
+  min-height: 6rem;
+  /* Room in the left gutter for the drag handle, which sits outside each block. */
+  padding-left: 2rem;
+}
+.cv2b-empty {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1.6rem 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+.cv2b-empty b {
+  color: var(--text-2);
+}
+.cv2b-scope {
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- block affordances --------------------------------------------------- */
+.cv2b-blk {
+  position: relative;
+  border-radius: var(--radius-sm);
+}
+.cv2b-blk > .cv2b-body {
+  border-radius: var(--radius-sm);
+  outline: 1px solid transparent;
+  outline-offset: 2px;
+}
+.cv2b-blk:hover > .cv2b-body {
+  outline-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.cv2b-blk.cv2b-sel > .cv2b-body {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.cv2b-blk.cv2b-dragging {
+  opacity: 0.35;
+}
+.cv2b-blk.cv2b-invalid > .cv2b-body {
+  outline-color: var(--err);
+}
+
+.cv2b-grip {
+  position: absolute;
+  left: -1.35rem;
+  top: 0.1rem;
+  width: 1.1rem;
+  height: 1.3rem;
+  display: none;
+  place-items: center;
+  cursor: grab;
+  color: var(--text-muted);
+  border-radius: 3px;
+  font-size: 0.8rem;
+  user-select: none;
+}
+.cv2b-blk:hover > .cv2b-grip,
+.cv2b-blk.cv2b-sel > .cv2b-grip {
+  display: grid;
+}
+.cv2b-grip:hover {
+  background: var(--surface-3);
+  color: var(--text-1);
+}
+.cv2b-tag {
+  position: absolute;
+  right: 0.25rem;
+  top: -0.62rem;
+  z-index: 3;
+  display: none;
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.cv2b-blk.cv2b-sel > .cv2b-tag {
+  display: block;
+}
+
+/* Insertion rail: the "+" that appears in the gap you point at. Kept at ~10px so it is
+   a real pointer target rather than a hairline you have to hunt for. */
+.cv2b-rail {
+  position: relative;
+  height: 0.62rem;
+  margin: 0 -0.15rem;
+  display: flex;
+  align-items: center;
+  cursor: copy;
+}
+.cv2b-rail::before {
+  content: "";
+  flex: 1;
+  height: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.08s;
+}
+.cv2b-rail:hover::before,
+.cv2b-rail.cv2b-armed::before {
+  background: var(--accent);
+}
+.cv2b-rail::after {
+  content: "+";
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1.05rem;
+  height: 1.05rem;
+  display: none;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.cv2b-rail:hover::after,
+.cv2b-rail.cv2b-armed::after {
+  display: grid;
+}
+.cv2b-rail.cv2b-blocked {
+  cursor: not-allowed;
+}
+.cv2b-rail.cv2b-blocked:hover::before,
+.cv2b-rail.cv2b-blocked.cv2b-armed::before {
+  background: var(--err);
+}
+.cv2b-rail.cv2b-blocked:hover::after,
+.cv2b-rail.cv2b-blocked.cv2b-armed::after {
+  display: none;
+}
+
+/* A section's accessory slot is a REAL slot — the rule is visible rather than hidden
+   behind a dropdown that silently omits the option. */
+.cv2b-acc-slot {
+  flex: none;
+  width: 84px;
+  min-height: 56px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border);
+  display: grid;
+  place-items: center;
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 0.3rem;
+  cursor: copy;
+}
+.cv2b-acc-slot:hover,
+.cv2b-acc-slot.cv2b-armed {
+  border-color: var(--accent);
+  color: var(--text-2);
+}
+.cv2b-acc-slot.cv2b-blocked {
+  border-color: var(--err);
+  cursor: not-allowed;
+}
+.cv2b-acc-filled {
+  flex: none;
+}
+.cv2b-acc-empty {
+  width: 84px;
+  min-height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border);
+  font-size: 0.62rem;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 0.3rem;
+}
+.cv2b-acc-empty.cv2b-acc-bad {
+  border-color: var(--err);
+  color: var(--danger-text);
+}
+
+/* In-place text editing: raw markdown while focused. */
+.cv2b-edit {
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  font: inherit;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--surface-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.45rem;
+  display: block;
+}
+.cv2b-edit-hint {
+  position: absolute;
+  right: 0.3rem;
+  bottom: -1.05rem;
+  z-index: 3;
+  font-size: 0.64rem;
+  color: var(--text-muted);
+}
+
+/* --- inspector ----------------------------------------------------------- */
+.cv2b-inspector {
+  border-left: 1px solid var(--border);
+  background: var(--surface-1);
+  overflow: auto;
+  padding: 0.7rem 0.75rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+.cv2b-insp-head h3 {
+  margin: 0;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+.cv2b-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.cv2b-field > label {
+  font-size: 0.74rem;
+  color: var(--text-2);
+}
+.cv2b-help {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+.cv2b input[type="text"],
+.cv2b input[type="url"],
+.cv2b textarea,
+.cv2b select {
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  font: inherit;
+  font-size: 0.8rem;
+  background: var(--surface-3);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.cv2b input:focus,
+.cv2b textarea:focus,
+.cv2b select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.cv2b textarea {
+  min-height: 4rem;
+  resize: vertical;
+}
+.cv2b-inline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.cv2b input[type="checkbox"],
+.cv2b input[type="radio"] {
+  accent-color: var(--accent);
+}
+.cv2b-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.cv2b-row > input[type="color"] {
+  width: 2.1rem;
+  height: 1.9rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+}
+.cv2b-insp-empty {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+.cv2b-insp-empty ul {
+  padding-left: 1.05rem;
+  margin: 0.4rem 0 0;
+}
+.cv2b-insp-empty li {
+  margin: 0.18rem 0;
+}
+.cv2b-url-row {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+.cv2b-url-row input {
+  flex: 1;
+  font-size: 0.74rem;
+}
+
+/* Validation, anchored: clicking a problem selects the block that caused it. */
+.cv2b-problems {
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.55rem;
+}
+.cv2b-problems h4 {
+  margin: 0 0 0.3rem;
+  font-size: 0.72rem;
+  color: var(--danger-text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cv2b .cv2b-problems button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0.18rem 0.1rem;
+  color: var(--err);
+  font-size: 0.74rem;
+}
+.cv2b .cv2b-problems button:hover {
+  text-decoration: underline;
+}
+.cv2b-ok {
+  color: var(--ok);
+  font-size: 0.76rem;
+}
+.cv2b-err {
+  color: var(--err);
+}
+
+/* --- floating layers ----------------------------------------------------- */
+.cv2b-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 12.5rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.25rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.cv2b-menu button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0.34rem 0.5rem;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.cv2b-menu button:hover:not(:disabled) {
+  background: var(--accent-tint);
+  color: var(--text-1);
+}
+.cv2b-menu button.cv2b-danger {
+  color: var(--danger-text);
+}
+.cv2b-menu .cv2b-glyph {
+  background: transparent;
+  width: 1.1rem;
+  height: auto;
+}
+.cv2b-menu .cv2b-kbd {
+  margin-left: auto;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+.cv2b-menu hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.22rem 0.3rem;
+}
+.cv2b-menu-label {
+  padding: 0.3rem 0.5rem 0.18rem;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.cv2b-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 2.4rem;
+  transform: translateX(-50%);
+  z-index: 80;
+  padding: 0.4rem 0.8rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 0.76rem;
+  color: var(--text-2);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cv2b-toast.cv2b-show {
+  opacity: 1;
+}
+.cv2b-toast.cv2b-warn {
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+  background: var(--danger-bg);
+}
+
+.cv2b-confirm {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-1);
+  max-width: 44rem;
+  width: 90vw;
+  padding: 0;
+}
+.cv2b-confirm::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.cv2b-dlg-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+.cv2b-dlg-head h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+.cv2b-confirm-body {
+  padding: 0.9rem;
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--surface-0);
+}

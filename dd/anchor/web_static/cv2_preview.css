@@ -1,0 +1,202 @@
+/*
+  Shared Components-V2 preview styling — the rendered appearance of a CV2 node tree,
+  used by every surface that shows one:
+
+  - the mirror-log render/diff pane (`dd.anchor.extensions.mirror_log`), and
+  - the web CV2 builder canvas (`cv2_builder.js`), where this *is* the editing surface.
+
+  These rules style `cv2_render.py`'s output (`.cv2-container`, `.cv2-text`,
+  `.cv2-section`, `.md-*`, …), so one sheet keeps every preview looking like the same
+  post. Extracted from mirror_log.css and re-anchored `.vcol-body` -> `.cv2-preview`;
+  a host opts in by putting `cv2-preview` on the element it injects the render into.
+
+  Diff marks (`ins`/`del`, `.cv2-added`/`.cv2-removed`) deliberately stayed in
+  mirror_log.css — only the mirror log renders a diff.
+
+  Consumes the design tokens in shared.css; load that first.
+*/
+/* -- rendered CV2 / classic message (cv2_render output) ------------------- */
+
+.cv2-preview .cv2-root {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.86rem;
+  color: var(--text-1);
+}
+.cv2-preview .cv2-container {
+  border-left: 3px solid var(--accent);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.cv2-preview .cv2-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+.cv2-preview .md-h1 {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+.cv2-preview .md-h2 {
+  font-size: 1.02rem;
+  font-weight: 700;
+}
+.cv2-preview .md-h3 {
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+.cv2-preview .md-small {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.cv2-preview .md-bullet::before {
+  content: "• ";
+  color: var(--text-3);
+}
+.cv2-preview .emoji {
+  width: 1.2em;
+  height: 1.2em;
+  vertical-align: -0.2em;
+  object-fit: contain;
+}
+.cv2-preview .cv2-section {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.cv2-preview .cv2-section-body {
+  flex: 1;
+  min-width: 0;
+}
+.cv2-preview .cv2-accessory .cv2-thumb,
+.cv2-preview .cv2-thumb {
+  max-width: 84px;
+  max-height: 84px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+/* Media gallery — a Discord-style grid; tiles crop (cover) except a lone image, which
+   shows at its natural aspect. Each tile links to the full image. */
+.cv2-preview .cv2-media {
+  display: grid;
+  gap: 3px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin: 0.15rem 0;
+}
+.cv2-preview .cv2-media-item {
+  display: block;
+  overflow: hidden;
+  min-width: 0;
+}
+.cv2-preview .cv2-media-item img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.cv2-preview .cv2-media.n1 {
+  grid-template-columns: 1fr;
+}
+.cv2-preview .cv2-media.n1 .cv2-media-item img {
+  width: auto;
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+}
+.cv2-preview .cv2-media.n2 {
+  grid-template-columns: 1fr 1fr;
+}
+.cv2-preview .cv2-media.n2 .cv2-media-item {
+  aspect-ratio: 1;
+}
+/* 3: one large tile on the left, two stacked on the right (Discord's 3-up). */
+.cv2-preview .cv2-media.n3 {
+  grid-template-columns: 2fr 1fr;
+}
+.cv2-preview .cv2-media.n3 .cv2-media-item:first-child {
+  grid-row: span 2;
+  aspect-ratio: 1;
+}
+.cv2-preview .cv2-media.n3 .cv2-media-item:not(:first-child) {
+  aspect-ratio: 2 / 1;
+}
+.cv2-preview .cv2-media.n4 {
+  grid-template-columns: 1fr 1fr;
+}
+.cv2-preview .cv2-media.n4 .cv2-media-item {
+  aspect-ratio: 1;
+}
+.cv2-preview .cv2-media.many {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+.cv2-preview .cv2-media.many .cv2-media-item {
+  aspect-ratio: 1;
+}
+.cv2-preview .embed-image {
+  max-width: 100%;
+  max-height: 240px;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+.cv2-preview .cv2-sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.15rem 0;
+}
+.cv2-preview .cv2-spacer {
+  height: 0.5rem;
+}
+.cv2-preview .cv2-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.cv2-preview .cv2-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--link);
+  font-size: 0.78rem;
+  text-decoration: none;
+}
+.cv2-preview .cv2-button:hover {
+  border-color: var(--accent);
+}
+.cv2-preview .cv2-placeholder,
+.cv2-preview .cv2-note {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.cv2-preview .cv2-embed {
+  border-left: 3px solid var(--text-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.cv2-preview .embed-title {
+  font-weight: 700;
+}
+.cv2-preview .embed-author,
+.cv2-preview .embed-footer {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+.cv2-preview .embed-field-name {
+  font-weight: 600;
+  font-size: 0.8rem;
+}

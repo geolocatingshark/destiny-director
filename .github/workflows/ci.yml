@@ -55,6 +55,22 @@ jobs:
         # bot token + guild and are opt-in via `make test-integration`).
         run: uv run python -m pytest -m "not discord" --cov=dd --cov-report=term-missing
 
+  js:
+    # web_static JS unit tests (node --test). The CV2 builder's node model is a client
+    # mirror of dd/anchor/cv2_nodes.py and the builder UI renders straight out of it, so
+    # it is worth testing directly rather than only through the Python side. No bundler,
+    # no browser, no dependencies — hence its own tiny lane rather than a step in `check`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Test (node --test)
+        run: make test-js
+
   mysql:
     # Real-MySQL dialect lane. The `check` job runs the DB tests on SQLite, which hides
     # MySQL-only bugs (DATETIME(0) rounding, self-referencing DELETE / error 1093, the

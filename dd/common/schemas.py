@@ -3235,6 +3235,157 @@ class BungieCredentials(Base):
             )
 
 
+class Cv2Draft(Base):
+    """A handoff session for the web Components-V2 builder.
+
+    The in-Discord ``/post components`` builder kept its whole state in one ephemeral
+    message. The web builder can't: the Discord command and the browser are different
+    processes, so the command writes a draft row and replies with a link, and the page
+    reads it back. The row also carries **what to do on publish** — post to a channel,
+    edit an existing message, or send a copy — so the browser never has to be told a
+    target it could tamper with.
+
+    **This is not an auth token.** ``id`` is a UUID for tidy, non-enumerable URLs, but
+    every anchor HTTP surface is already gated by Discord OAuth to bot owners
+    (:mod:`dd.anchor.extensions.web_auth`), and :meth:`get_for_user` additionally
+    requires the row's ``created_by`` to match the logged-in id. Possession of the link
+    grants nothing on its own.
+
+    ``nodes`` is the raw CV2 node list (:mod:`dd.anchor.cv2_nodes`) — the same JSON the
+    REST API accepts — autosaved as the author edits, so a closed tab or an expired
+    session loses nothing. :meth:`prune` drops rows past
+    :data:`DRAFT_RETENTION_DAYS`; drafts are scratch space, not history.
+    """
+
+    __tablename__ = "cv2_draft"
+    __mapper_args__ = {"eager_defaults": True}
+
+    # Publish actions. Mirrors the three surfaces in dd/anchor/extensions/posts.py.
+    ACTION_POST = "post"  # /post components   -> send to target_channel_id
+    ACTION_EDIT = "edit"  # Edit post          -> edit target_message_id in place
+    ACTION_COPY = "copy"  # Copy post          -> send a copy to target_channel_id
+    ACTIONS = frozenset({ACTION_POST, ACTION_EDIT, ACTION_COPY})
+
+    id = Column("id", VARCHAR(36), primary_key=True)
+    created_by = Column("created_by", BigInteger, nullable=False)
+    action = Column("action", VARCHAR(8), nullable=False, default=ACTION_POST)
+    nodes = Column("nodes", JSON, nullable=False)
+    guild_id = Column("guild_id", BigInteger, nullable=True)
+    target_channel_id = Column("target_channel_id", BigInteger, nullable=True)
+    target_message_id = Column("target_message_id", BigInteger, nullable=True)
+    # Set once the draft has been posted/edited, so the page can show "already
+    # published" instead of silently double-posting on a browser back-button.
+    published_message_id = Column("published_message_id", BigInteger, nullable=True)
+    created_at = Column("created_at", DateTime, nullable=False)
+    updated_at = Column("updated_at", DateTime, nullable=False)
+
+    __table_args__ = (Index("ix_cv2_draft_created_at", "created_at"),)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def create(
+        cls,
+        id: str,
+        created_by: int,
+        action: str,
+        nodes: list[dict[str, t.Any]],
+        guild_id: int | None = None,
+        target_channel_id: int | None = None,
+        target_message_id: int | None = None,
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        """Insert a new draft. ``id`` is caller-supplied (a UUID4 hex string)."""
+        if action not in cls.ACTIONS:
+            raise FriendlyValueError(f"Unknown draft action {action!r}")
+        now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
+        await session.execute(
+            insert(cls).values(
+                {
+                    cls.id: id,
+                    cls.created_by: created_by,
+                    cls.action: action,
+                    cls.nodes: nodes,
+                    cls.guild_id: guild_id,
+                    cls.target_channel_id: target_channel_id,
+                    cls.target_message_id: target_message_id,
+                    cls.created_at: now,
+                    cls.updated_at: now,
+                }
+            )
+        )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def get_for_user(
+        cls, id: str, user_id: int, session: AsyncSession = _UNSET
+    ) -> Self | None:
+        """The draft, but only if ``user_id`` created it.
+
+        Scoping the read to the creator means one owner can't stumble into another's
+        in-progress draft via a shared or guessed link — the OAuth middleware has
+        already established *that* they are an owner, this establishes *which* one.
+        """
+        return (
+            await session.execute(
+                select(cls).where(and_(cls.id == id, cls.created_by == user_id))
+            )
+        ).scalar_one_or_none()
+
+    @classmethod
+    @ensure_session(db_session)
+    async def save_nodes(
+        cls,
+        id: str,
+        user_id: int,
+        nodes: list[dict[str, t.Any]],
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        """Autosave the node list, stamping ``updated_at`` (creator-scoped)."""
+        await session.execute(
+            update(cls)
+            .values(
+                {
+                    cls.nodes: nodes,
+                    cls.updated_at: dt.datetime.now(dt.UTC).replace(tzinfo=None),
+                }
+            )
+            .where(and_(cls.id == id, cls.created_by == user_id))
+        )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def mark_published(
+        cls,
+        id: str,
+        user_id: int,
+        message_id: int,
+        session: AsyncSession = _UNSET,
+    ) -> None:
+        """Record the message this draft produced (creator-scoped)."""
+        await session.execute(
+            update(cls)
+            .values(
+                {
+                    cls.published_message_id: message_id,
+                    cls.updated_at: dt.datetime.now(dt.UTC).replace(tzinfo=None),
+                }
+            )
+            .where(and_(cls.id == id, cls.created_by == user_id))
+        )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def prune(
+        cls, older_than_days: int = 30, session: AsyncSession = _UNSET
+    ) -> int:
+        """Delete drafts older than ``older_than_days``; returns the row count."""
+        cutoff = dt.datetime.now(dt.UTC).replace(tzinfo=None) - dt.timedelta(
+            days=older_than_days
+        )
+        result = await session.execute(delete(cls).where(cls.created_at < cutoff))
+        return int(result.rowcount or 0)
+
+
 _LOCAL_DB_HOSTS = frozenset({None, "", "localhost", "127.0.0.1", "::1"})
 
 

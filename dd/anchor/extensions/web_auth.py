@@ -143,6 +143,26 @@ def mint_session(user_id: int) -> str:
     return _sign(user_id, int(expiry.timestamp()))
 
 
+# Request key holding the authenticated owner's Discord id, set by the middleware once
+# a request is admitted. Routes that need to know *which* owner is acting (rather than
+# just that one is) read it via :func:`authed_user_id` instead of re-parsing the cookie
+# — one place decides what a valid session is.
+AUTH_USER_KEY = "dd_auth_user_id"
+
+
+def authed_user_id(request: aiohttp.web.Request) -> int:
+    """The Discord id of the owner making this request.
+
+    Only ever called from a handler behind the middleware, which sets the key before
+    dispatching — so a missing key means the route was allowlisted by mistake, and
+    failing loudly is right.
+    """
+    user_id = request.get(AUTH_USER_KEY)
+    if user_id is None:
+        raise aiohttp.web.HTTPUnauthorized(text="Not signed in.")
+    return int(user_id)
+
+
 def resolve_session(cookie: str) -> int | None:
     """The user id from a well-signed, unexpired cookie, else ``None`` (fails closed).
 
@@ -510,6 +530,7 @@ async def _auth_middleware(
 
     # Dev bypass (triple-gated; only ever active on a local dev box): treat as owner.
     if _dev_bypass_active():
+        request[AUTH_USER_KEY] = int(cfg.dev_auth_user_id)
         return await handler(request)
 
     # Origin defence for state-changing requests (belt-and-suspenders atop SameSite).
@@ -531,6 +552,7 @@ async def _auth_middleware(
         return _reject(request, 503, "Bot is still starting — try again in a moment.")
     if not await _is_owner(_bot, user_id):
         return _reject(request, 403, "This account is not authorized to use this tool.")
+    request[AUTH_USER_KEY] = user_id
     return await handler(request)
 
 

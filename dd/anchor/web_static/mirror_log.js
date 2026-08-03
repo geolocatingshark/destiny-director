@@ -430,7 +430,10 @@
           `<span class="vcol-ver">v${esc(v.version)}</span>` +
           `<span class="vcol-time" title="${esc(abs)}">${esc(relTime(v.captured_at))}</span>` +
           `</div>${opStatHeader(op)}` +
-          `<div class="vcol-body"><p class="detail-loading">Loading…</p></div></div>`,
+          // `cv2-preview` opts this pane into the shared CV2 render styling
+          // (cv2_preview.css), which the builder canvas also uses. The tombstone
+          // column below carries no render, so it does not need the class.
+          `<div class="vcol-body cv2-preview"><p class="detail-loading">Loading…</p></div></div>`,
       );
     });
     deletes.forEach((d) => {

@@ -1,0 +1,1290 @@
+// Copyright © 2019-present gsfernandes81
+//
+// This file is part of "dd" henceforth referred to as "destiny-director".
+// Licensed under the GNU AGPL v3 or later; see the project LICENSE.
+
+// The web Components-V2 builder — a mountable widget over the pure model in
+// cv2_model.js. Framework-free; a host page calls window.initCv2Builder(el, opts).
+//
+// WHY THIS IS NOT A PORT OF cv2_builder.py
+// ----------------------------------------
+// The in-Discord builder's interaction model is five workarounds for Discord's component
+// budget, and a faithful port would import all five for problems a web page does not
+// have:
+//
+//   can't click a rendered post -> a <select> listing "Text: Weekly res…" labels
+//   no drag                     -> "Move up" / "Move down" buttons
+//   5 components per row        -> "Open ▸" / "◂ Back" scope drilling, so you only ever
+//                                  see ONE level of the tree at a time
+//   no inline editing           -> a modal round-trip per field edit
+//   no free-form layout         -> add-always-lands-after-the-selection
+//
+// Here instead:
+//
+//   1. THE CANVAS IS THE PREVIEW. Click a block in the rendered post to select it; the
+//      picker <select> and its synthesized labels are gone, because you can see the
+//      thing itself.
+//   2. TEXT EDITS IN PLACE. Click text and type — raw markdown while focused, rendered
+//      on blur. No modal.
+//   3. DRAG REORDERS *AND* RE-PARENTS. This kills Move up/down AND Open/Back together:
+//      the whole tree is on screen (depth is <= 3, so it always fits), which makes
+//      "drag into that container" the same gesture as "drag one slot down".
+//   4. RIGHT-CLICK ANYWHERE. On a block: edit / duplicate / wrap / add above / add below
+//      / delete. On empty canvas: add a block.
+//   5. INSERT WHERE YOU POINT. Hover a gap for a "+" rail; click it for a palette
+//      filtered to what is legal *there*.
+//
+// Plus three things Discord structurally cannot offer: undo/redo, validation anchored to
+// the offending block (click a problem, it selects and scrolls), and nesting rules taught
+// rather than hidden — a section's accessory is a visible slot, and an illegal drag says
+// why instead of silently omitting the option.
+//
+// Rendering: the canvas is rendered client-side (cv2_model.renderMd) because it is the
+// live editing surface — a server round-trip per keystroke is not an option. The
+// authoritative render is cv2_html.render_cv2_nodes_html, shown in the publish
+// confirmation, and the server re-sanitizes and re-validates on publish regardless. See
+// the module docstring in dd/anchor/cv2_html.py.
+
+(function () {
+  "use strict";
+
+  const M = window.CV2Model;
+
+  // Palette entries. Accessory kinds are deliberately absent: they are reachable only
+  // from a section's own slot, which is where the rule is legible.
+  const PALETTE = [
+    { kind: "text", label: "Text", glyph: "T", hint: "Markdown text — headings, bullets, links, emoji." },
+    { kind: "container", label: "Container", glyph: "▤", hint: "A coloured card. Top level only." },
+    { kind: "section", label: "Section", glyph: "◧", hint: "1–3 text blocks beside a thumbnail or button." },
+    { kind: "media", label: "Image gallery", glyph: "▣", hint: "Up to 10 images in a grid." },
+    { kind: "separator", label: "Separator", glyph: "—", hint: "A divider line or a gap." },
+    { kind: "link_button", label: "Link button", glyph: "⬒", hint: "A row of link buttons." },
+  ];
+
+  const UNDO_LIMIT = 60;
+  const AUTOSAVE_MS = 1200;
+
+  const clone = (v) => JSON.parse(JSON.stringify(v));
+  const pk = (p) => JSON.stringify(p);
+  const esc = (s) => M.esc(s);
+
+  /**
+   * Mount the builder.
+   *
+   * opts:
+   *   nodes         initial node list (raw CV2 dicts)
+   *   emoji         {name: url} map for :shortcode: preview substitution
+   *   defaultAccent int seeded into a new container (cfg.embed_default_color)
+   *   actionLabel   text for the publish button ("Post" / "Save" / "Send")
+   *   onSave(nodes)          -> Promise, autosave
+   *   onPublish(nodes)       -> Promise<{link}>, the real send/edit
+   *   onPreview(nodes)       -> Promise<string>, server-rendered HTML for confirmation
+   */
+  function initCv2Builder(root, opts) {
+    const options = opts || {};
+    const state = {
+      nodes: clone(options.nodes || []),
+      sel: null,
+      editing: null,
+      editOrigin: "",
+      undo: [],
+      redo: [],
+      problems: [],
+      dirty: false,
+    };
+    const emoji = options.emoji || null;
+    const defaultAccent = options.defaultAccent;
+
+    root.innerHTML = SHELL_HTML(options.actionLabel || "Post");
+    const el = {
+      palette: root.querySelector(".cv2b-palette"),
+      canvas: root.querySelector(".cv2b-canvas"),
+      inspector: root.querySelector(".cv2b-inspector"),
+      undo: root.querySelector('[data-a="undo"]'),
+      redo: root.querySelector('[data-a="redo"]'),
+      publish: root.querySelector('[data-a="publish"]'),
+      status: root.querySelector(".cv2b-status"),
+      count: root.querySelector(".cv2b-count"),
+      toast: root.querySelector(".cv2b-toast"),
+      dialog: root.querySelector(".cv2b-confirm"),
+      confirmBody: root.querySelector(".cv2b-confirm-body"),
+    };
+
+    // ---- undo/redo -------------------------------------------------------------
+    let liveKey = null; // coalesces a run of keystrokes in one inspector field
+
+    function snapshot() {
+      state.undo.push({ nodes: clone(state.nodes), sel: state.sel && state.sel.slice() });
+      if (state.undo.length > UNDO_LIMIT) state.undo.shift();
+      state.redo.length = 0;
+    }
+    function commit(label, fn) {
+      snapshot();
+      liveKey = null;
+      fn();
+      markDirty();
+      render();
+      setStatus(label);
+    }
+    function undo() {
+      if (!state.undo.length) return;
+      state.redo.push({ nodes: clone(state.nodes), sel: state.sel });
+      const prev = state.undo.pop();
+      state.nodes = prev.nodes;
+      state.sel = prev.sel;
+      state.editing = null;
+      liveKey = null;
+      markDirty();
+      render();
+      setStatus("Undone");
+    }
+    function redo() {
+      if (!state.redo.length) return;
+      state.undo.push({ nodes: clone(state.nodes), sel: state.sel });
+      const next = state.redo.pop();
+      state.nodes = next.nodes;
+      state.sel = next.sel;
+      state.editing = null;
+      liveKey = null;
+      markDirty();
+      render();
+      setStatus("Redone");
+    }
+
+    // ---- autosave --------------------------------------------------------------
+    let saveTimer = null;
+    function markDirty() {
+      state.dirty = true;
+      if (!options.onSave) return;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(flush, AUTOSAVE_MS);
+    }
+    async function flush() {
+      if (!options.onSave || !state.dirty) return;
+      const payload = clone(state.nodes);
+      try {
+        await options.onSave(payload);
+        state.dirty = false;
+        setStatus("Saved");
+      } catch (e) {
+        setStatus("Couldn't save — retrying on the next change", true);
+      }
+    }
+    // A drive-by close shouldn't drop the last edit.
+    window.addEventListener("beforeunload", (e) => {
+      if (!state.dirty) return;
+      flush();
+      e.preventDefault();
+      e.returnValue = "";
+    });
+
+    // ---- render ----------------------------------------------------------------
+
+    function problemPaths() {
+      const set = new Set();
+      state.problems.forEach((p) => p.path && set.add(pk(p.path)));
+      return set;
+    }
+
+    function paintCanvas() {
+      state.problems = M.validate(state.nodes);
+      el.canvas.innerHTML = state.nodes.length
+        ? renderScope([], state.nodes, problemPaths())
+        : '<div class="cv2b-empty">Nothing here yet.<br>Drag a block from the left, or <b>right-click</b> for the menu.</div>';
+    }
+
+    function render() {
+      paintCanvas();
+      renderInspector();
+      el.undo.disabled = !state.undo.length;
+      el.redo.disabled = !state.redo.length;
+      el.count.textContent =
+        countNodes(state.nodes) +
+        " blocks · " +
+        state.nodes.length +
+        "/" +
+        M.MAX_TOP_LEVEL +
+        " top level";
+    }
+
+    /** Repaint error outlines + the inspector without rebuilding the canvas DOM. */
+    function refreshValidity() {
+      state.problems = M.validate(state.nodes);
+      const bad = problemPaths();
+      el.canvas.querySelectorAll(".cv2b-blk").forEach((n) => {
+        n.classList.toggle("cv2b-invalid", bad.has(n.dataset.path));
+      });
+      renderInspector();
+      el.undo.disabled = !state.undo.length;
+    }
+
+    function countNodes(list) {
+      return list.reduce(
+        (n, x) => n + 1 + countNodes(x.components || []) + (x.accessory ? 1 : 0),
+        0,
+      );
+    }
+
+    function renderScope(scope, list, bad) {
+      const out = ['<div class="cv2b-scope">', rail(scope, 0)];
+      list.forEach((node, i) => {
+        out.push(renderBlock(scope.concat([i]), node, bad));
+        out.push(rail(scope, i + 1));
+      });
+      out.push("</div>");
+      return out.join("");
+    }
+
+    function rail(scope, index) {
+      return (
+        '<div class="cv2b-rail" data-scope="' +
+        esc(pk(scope)) +
+        '" data-index="' +
+        index +
+        '"></div>'
+      );
+    }
+
+    function renderBlock(path, node, bad) {
+      const k = M.kind(node);
+      const cls = ["cv2b-blk"];
+      if (M.samePath(path, state.sel)) cls.push("cv2b-sel");
+      if (bad.has(pk(path))) cls.push("cv2b-invalid");
+      return (
+        '<div class="' +
+        cls.join(" ") +
+        '" data-path="' +
+        esc(pk(path)) +
+        '" data-kind="' +
+        k +
+        '" draggable="true">' +
+        '<span class="cv2b-grip" title="Drag to move">⠿</span>' +
+        '<span class="cv2b-tag">' +
+        esc(M.KIND_LABEL[k] || k) +
+        "</span>" +
+        '<div class="cv2b-body">' +
+        renderBody(path, node, k, bad) +
+        "</div></div>"
+      );
+    }
+
+    function renderBody(path, node, k, bad) {
+      switch (k) {
+        case "container": {
+          const accent = Number.isInteger(node.accent_color)
+            ? ' style="border-left-color:#' +
+              (node.accent_color & 0xffffff).toString(16).padStart(6, "0") +
+              '"'
+            : "";
+          const inner = (node.components || []).length
+            ? renderScope(path, node.components, bad)
+            : '<div class="cv2-placeholder">Empty container — drop blocks in.</div>' +
+              rail(path, 0);
+          return '<div class="cv2-container"' + accent + ">" + inner + "</div>";
+        }
+        case "text": {
+          if (M.samePath(path, state.editing)) {
+            return (
+              '<textarea class="cv2b-edit" data-editing="1">' +
+              esc(node.content || "") +
+              "</textarea>" +
+              '<span class="cv2b-edit-hint">markdown · Esc to finish</span>'
+            );
+          }
+          const body = String(node.content || "").trim()
+            ? M.renderMd(node.content, emoji)
+            : '<span class="cv2-placeholder">Empty text — click to write.</span>';
+          return '<div class="cv2-text">' + body + "</div>";
+        }
+        case "section":
+          return (
+            '<div class="cv2-section"><div class="cv2-section-body">' +
+            renderScope(path, node.components || [], bad) +
+            "</div>" +
+            renderAccessory(path, node.accessory) +
+            "</div>"
+          );
+        case "media": {
+          const urls = (node.items || [])
+            .map((i) => (i.media || {}).url)
+            .filter(Boolean);
+          if (!urls.length) {
+            return '<div class="cv2-placeholder">Image gallery — add URLs on the right.</div>';
+          }
+          const layout = { 1: "n1", 2: "n2", 3: "n3", 4: "n4" }[urls.length] || "many";
+          return (
+            '<div class="cv2-media ' +
+            layout +
+            '">' +
+            urls
+              .map(
+                (u) =>
+                  '<span class="cv2-media-item"><img src="' +
+                  esc(u) +
+                  '" alt="" loading="lazy"></span>',
+              )
+              .join("") +
+            "</div>"
+          );
+        }
+        case "separator":
+          return node.divider === false
+            ? '<div class="cv2-spacer"></div>'
+            : '<hr class="cv2-sep"' +
+                (node.spacing === 2 ? ' style="margin:.5rem 0"' : "") +
+                ">";
+        case "link_button": {
+          const btns = node.type === M.ACTION_ROW ? node.components || [] : [node];
+          return (
+            '<div class="cv2-buttons">' +
+            btns
+              .map(
+                (b) =>
+                  '<span class="cv2-button">' +
+                  esc(b.label || "(no label)") +
+                  "</span>",
+              )
+              .join("") +
+            "</div>"
+          );
+        }
+        case "thumbnail": {
+          const url = (node.media || {}).url;
+          return url
+            ? '<img class="cv2-thumb" src="' + esc(url) + '" alt="">'
+            : '<div class="cv2b-acc-empty">no image URL</div>';
+        }
+        default:
+          return (
+            '<div class="cv2-placeholder">Unsupported component (type ' +
+            esc(node.type) +
+            ")</div>"
+          );
+      }
+    }
+
+    // A section's accessory is a real, visible slot. The in-Discord builder could only
+    // express this rule as two "acc_*" options that appear in a dropdown once you have
+    // drilled into a section — invisible until you already knew about it.
+    function renderAccessory(sectionPath, acc) {
+      const path = sectionPath.concat(["acc"]);
+      if (!acc) {
+        return (
+          '<div class="cv2b-acc-slot" data-accslot="' +
+          esc(pk(sectionPath)) +
+          '">drop a thumbnail<br>or button</div>'
+        );
+      }
+      const k = M.kind(acc);
+      const sel = M.samePath(path, state.sel) ? " cv2b-sel" : "";
+      const body =
+        k === "thumbnail"
+          ? (acc.media || {}).url
+            ? '<img class="cv2-thumb" src="' + esc(acc.media.url) + '" alt="">'
+            : '<div class="cv2b-acc-empty cv2b-acc-bad">image URL missing</div>'
+          : '<span class="cv2-button">' +
+            esc(M.buttonOf(acc).label || "(no label)") +
+            "</span>";
+      return (
+        '<div class="cv2b-blk cv2b-acc-filled' +
+        sel +
+        '" data-path="' +
+        esc(pk(path)) +
+        '" data-kind="' +
+        k +
+        '" draggable="true"><span class="cv2b-tag">' +
+        esc(M.KIND_LABEL[k]) +
+        '</span><div class="cv2b-body">' +
+        body +
+        "</div></div>"
+      );
+    }
+
+    // ---- inspector -------------------------------------------------------------
+
+    function safeResolve(path) {
+      try {
+        return M.resolve(state.nodes, path);
+      } catch (e) {
+        state.sel = null;
+        return null;
+      }
+    }
+
+    function renderInspector() {
+      const node = state.sel ? safeResolve(state.sel) : null;
+      const parts = [];
+      if (!node) {
+        parts.push(
+          '<div class="cv2b-insp-empty"><div class="cv2b-insp-head"><h3>Nothing selected</h3></div>' +
+            "<p>Click a block in the message to edit it.</p><ul>" +
+            "<li><b>Click</b> text to type into it</li>" +
+            "<li><b>Right-click</b> any block for its actions</li>" +
+            "<li><b>Drag</b> the ⠿ handle to move or re-nest</li>" +
+            "<li>Hover a gap for the <b>+</b> insert point</li>" +
+            "<li><kbd>Ctrl/Cmd</kbd>+<kbd>Z</kbd> undoes anything</li></ul></div>",
+        );
+      } else {
+        const k = M.kind(node);
+        parts.push(
+          '<div class="cv2b-insp-head"><h3>' +
+            esc(M.KIND_LABEL[k] || k) +
+            "</h3></div>" +
+            fieldsFor(k, node),
+        );
+      }
+      parts.push(
+        state.problems.length
+          ? '<div class="cv2b-problems"><h4>Not ready to post</h4>' +
+              state.problems
+                .map(
+                  (p, i) =>
+                    '<button type="button" data-problem="' +
+                    i +
+                    '">• ' +
+                    esc(p.msg) +
+                    "</button>",
+                )
+                .join("") +
+              "</div>"
+          : '<div class="cv2b-ok">✓ Ready to post.</div>',
+      );
+      el.inspector.innerHTML = parts.join("");
+      el.publish.disabled = state.problems.length > 0;
+    }
+
+    function fieldsFor(k, node) {
+      switch (k) {
+        case "container": {
+          const has = Number.isInteger(node.accent_color);
+          const hex = has
+            ? "#" + (node.accent_color & 0xffffff).toString(16).padStart(6, "0")
+            : "#ec42a5";
+          return (
+            '<div class="cv2b-field"><label>Accent colour</label><div class="cv2b-row">' +
+            '<input type="color" data-prop="accent" value="' +
+            esc(hex) +
+            '">' +
+            '<input type="text" data-prop="accentHex" value="' +
+            (has ? esc(hex) : "") +
+            '" placeholder="none"></div>' +
+            '<label class="cv2b-inline"><input type="checkbox" data-prop="accentOff"' +
+            (has ? "" : " checked") +
+            "> No accent bar</label></div>" +
+            '<label class="cv2b-inline"><input type="checkbox" data-prop="spoiler"' +
+            (node.spoiler ? " checked" : "") +
+            "> Spoiler</label>"
+          );
+        }
+        case "text":
+          return (
+            '<div class="cv2b-field"><label>Content</label>' +
+            '<textarea data-prop="content" rows="8">' +
+            esc(node.content || "") +
+            "</textarea>" +
+            '<span class="cv2b-help"><code># ## ###</code> headings · <code>-#</code> small · ' +
+            "<code>- </code> bullet · <code>**bold**</code> · <code>[text](url)</code> · " +
+            "<code>:emoji:</code></span></div>"
+          );
+        case "separator":
+          return (
+            '<label class="cv2b-inline"><input type="checkbox" data-prop="divider"' +
+            (node.divider !== false ? " checked" : "") +
+            "> Show a divider line</label>" +
+            '<div class="cv2b-field"><label>Spacing</label><select data-prop="spacing">' +
+            '<option value="1"' +
+            (node.spacing !== 2 ? " selected" : "") +
+            ">Small</option>" +
+            '<option value="2"' +
+            (node.spacing === 2 ? " selected" : "") +
+            ">Large</option></select></div>"
+          );
+        case "media": {
+          const items = node.items || [];
+          const rows = items
+            .map(
+              (it, i) =>
+                '<div class="cv2b-url-row"><input type="url" data-prop="mediaUrl" data-i="' +
+                i +
+                '" value="' +
+                esc((it.media || {}).url || "") +
+                '" placeholder="https://…">' +
+                '<button type="button" class="cv2b-icon" data-act="mediaDel" data-i="' +
+                i +
+                '" title="Remove">✕</button></div>',
+            )
+            .join("");
+          return (
+            '<div class="cv2b-field"><label>Images <span class="cv2b-help">(' +
+            items.length +
+            "/" +
+            M.MAX_GALLERY_ITEMS +
+            ')</span></label>' +
+            (rows || '<span class="cv2b-help">No images yet.</span>') +
+            '<button type="button" data-act="mediaAdd"' +
+            (items.length >= M.MAX_GALLERY_ITEMS ? " disabled" : "") +
+            ">Add image URL</button></div>"
+          );
+        }
+        case "link_button": {
+          const b = M.buttonOf(node);
+          return (
+            '<div class="cv2b-field"><label>Label</label><input type="text" data-prop="btnLabel" value="' +
+            esc(b.label || "") +
+            '"></div>' +
+            '<div class="cv2b-field"><label>URL</label><input type="url" data-prop="btnUrl" value="' +
+            esc(b.url || "") +
+            '" placeholder="https://…"></div>' +
+            '<div class="cv2b-field"><label>Emoji <span class="cv2b-help">optional</span></label>' +
+            '<input type="text" data-prop="btnEmoji" maxlength="8" value="' +
+            esc((b.emoji || {}).name || "") +
+            '"></div>'
+          );
+        }
+        case "thumbnail":
+          return (
+            '<div class="cv2b-field"><label>Image URL</label><input type="url" data-prop="thumbUrl" value="' +
+            esc((node.media || {}).url || "") +
+            '" placeholder="https://…"></div>' +
+            '<div class="cv2b-field"><label>Alt text <span class="cv2b-help">optional</span></label>' +
+            '<input type="text" data-prop="thumbDesc" value="' +
+            esc(node.description || "") +
+            '"></div>' +
+            '<label class="cv2b-inline"><input type="checkbox" data-prop="thumbSpoiler"' +
+            (node.spoiler ? " checked" : "") +
+            "> Spoiler</label>"
+          );
+        case "section":
+          return (
+            '<div class="cv2b-insp-empty"><p>A section pairs <b>1–' +
+            M.MAX_SECTION_TEXTS +
+            " text blocks</b> with one accessory — a thumbnail or a link button.</p>" +
+            "<p>Click the text on the left to edit it, or the accessory slot on the right to fill it.</p></div>"
+          );
+        default:
+          return '<div class="cv2b-insp-empty">Nothing to edit here.</div>';
+      }
+    }
+
+    function applyProp(prop, input) {
+      const node = safeResolve(state.sel);
+      if (!node) return;
+      // One undo step per field-editing run, not per keystroke.
+      const key = prop + pk(state.sel);
+      if (liveKey !== key) {
+        snapshot();
+        liveKey = key;
+      }
+      const b = M.kind(node) === "link_button" ? M.buttonOf(node) : null;
+      switch (prop) {
+        case "accent":
+        case "accentHex": {
+          const v = input.value.trim();
+          const m = /^#?([0-9a-fA-F]{6})$/.exec(v);
+          if (m) node.accent_color = parseInt(m[1], 16);
+          else if (!v) delete node.accent_color;
+          break;
+        }
+        case "accentOff":
+          if (input.checked) delete node.accent_color;
+          else node.accent_color = Number.isInteger(defaultAccent) ? defaultAccent : 0xec42a5;
+          break;
+        case "spoiler":
+          node.spoiler = input.checked;
+          break;
+        case "content":
+          node.content = input.value;
+          break;
+        case "divider":
+          node.divider = input.checked;
+          break;
+        case "spacing":
+          node.spacing = Number(input.value);
+          break;
+        case "mediaUrl": {
+          const i = Number(input.dataset.i);
+          if (!node.items[i]) node.items[i] = { media: { url: "" } };
+          node.items[i].media = { url: input.value.trim() };
+          break;
+        }
+        case "btnLabel":
+          b.label = input.value;
+          break;
+        case "btnUrl":
+          b.url = input.value.trim();
+          break;
+        case "btnEmoji":
+          if (input.value.trim()) b.emoji = { name: input.value.trim() };
+          else delete b.emoji;
+          break;
+        case "thumbUrl":
+          node.media = { url: input.value.trim() };
+          break;
+        case "thumbDesc":
+          if (input.value.trim()) node.description = input.value;
+          else delete node.description;
+          break;
+        case "thumbSpoiler":
+          node.spoiler = input.checked;
+          break;
+      }
+      markDirty();
+      // Repaint the canvas only — rebuilding the inspector would replace the input
+      // being typed into and drop the caret.
+      paintCanvas();
+      el.undo.disabled = !state.undo.length;
+    }
+
+    el.inspector.addEventListener("input", (e) => {
+      if (e.target.dataset.prop) applyProp(e.target.dataset.prop, e.target);
+    });
+    el.inspector.addEventListener("change", (e) => {
+      if (e.target.dataset.prop) {
+        applyProp(e.target.dataset.prop, e.target);
+        liveKey = null;
+        render();
+      }
+    });
+    el.inspector.addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      if (btn.dataset.problem !== undefined) {
+        const p = state.problems[Number(btn.dataset.problem)];
+        if (p && p.path) {
+          state.sel = p.path;
+          render();
+          scrollToSel();
+        }
+        return;
+      }
+      const node = safeResolve(state.sel);
+      if (!node) return;
+      if (btn.dataset.act === "mediaAdd") {
+        commit("Image added", () => {
+          if (!node.items) node.items = [];
+          node.items.push({ media: { url: "" } });
+        });
+      }
+      if (btn.dataset.act === "mediaDel") {
+        commit("Image removed", () => node.items.splice(Number(btn.dataset.i), 1));
+      }
+    });
+
+    // ---- canvas interaction ----------------------------------------------------
+
+    el.canvas.addEventListener("click", (e) => {
+      if (e.target.closest("[data-editing]")) return;
+
+      const railEl = e.target.closest(".cv2b-rail");
+      if (railEl) {
+        openPalette(e, JSON.parse(railEl.dataset.scope), Number(railEl.dataset.index));
+        return;
+      }
+      const slot = e.target.closest(".cv2b-acc-slot");
+      if (slot) {
+        openAccessoryMenu(e, JSON.parse(slot.dataset.accslot));
+        return;
+      }
+      const blk = e.target.closest(".cv2b-blk");
+      if (!blk) {
+        state.sel = null;
+        render();
+        return;
+      }
+      const path = JSON.parse(blk.dataset.path);
+      // A click on words should put a caret there, not select a "block" and make you
+      // click again.
+      if (blk.dataset.kind === "text") {
+        state.sel = path;
+        startEdit(path);
+        return;
+      }
+      state.sel = path;
+      render();
+    });
+
+    el.canvas.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const blk = e.target.closest(".cv2b-blk");
+      if (blk) {
+        state.sel = JSON.parse(blk.dataset.path);
+        render();
+        openBlockMenu(e, state.sel);
+      } else {
+        openPalette(e, [], state.nodes.length);
+      }
+    });
+
+    // ---- in-place text editing --------------------------------------------------
+    // Commit is SURGICAL: it swaps only the edited block's DOM. A full re-render here
+    // would tear the DOM out from under an in-flight click, so clicking straight from
+    // one text block into another would lose the second click.
+
+    function startEdit(path) {
+      state.editing = path;
+      const node = safeResolve(path);
+      if (!node) return;
+      state.editOrigin = String(node.content || "");
+      render();
+      const ta = el.canvas.querySelector("[data-editing]");
+      if (!ta) return;
+      autosize(ta);
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      ta.addEventListener("input", () => autosize(ta));
+      ta.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape") {
+          ev.preventDefault();
+          ta.blur();
+        }
+        // Ctrl/Cmd+Enter finishes; plain Enter is a newline, as in a Discord message.
+        if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+          ev.preventDefault();
+          ta.blur();
+        }
+      });
+      ta.addEventListener("blur", commitEdit);
+    }
+
+    function autosize(ta) {
+      ta.style.height = "auto";
+      ta.style.height = ta.scrollHeight + "px";
+    }
+
+    function commitEdit() {
+      const ta = el.canvas.querySelector("[data-editing]");
+      const path = state.editing;
+      if (!ta || !path) return;
+      state.editing = null;
+      const node = safeResolve(path);
+      if (!node) {
+        render();
+        return;
+      }
+      if (ta.value !== state.editOrigin) {
+        // Snapshot the pre-edit tree so one editing session is one undo step.
+        node.content = state.editOrigin;
+        snapshot();
+        node.content = ta.value;
+        markDirty();
+        setStatus("Text updated");
+      }
+      const blk = ta.closest(".cv2b-blk");
+      if (blk) blk.outerHTML = renderBlock(path, node, problemPaths());
+      refreshValidity();
+    }
+
+    function scrollToSel() {
+      if (!state.sel) return;
+      const want = pk(state.sel);
+      const found = Array.prototype.find.call(
+        el.canvas.querySelectorAll(".cv2b-blk"),
+        (n) => n.dataset.path === want,
+      );
+      if (found) found.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+
+    // ---- drag & drop ------------------------------------------------------------
+    // Drop targets are the insertion rails and the accessory slots, so the drop point
+    // is always exact. An illegal rail turns red and says why.
+
+    let drag = null;
+
+    el.palette.addEventListener("dragstart", (e) => {
+      const item = e.target.closest(".cv2b-pal");
+      if (!item) return;
+      drag = { kind: item.dataset.kind, from: null };
+      e.dataTransfer.effectAllowed = "copy";
+      e.dataTransfer.setData("text/plain", item.dataset.kind);
+      markValidTargets();
+    });
+
+    el.canvas.addEventListener("dragstart", (e) => {
+      const blk = e.target.closest(".cv2b-blk");
+      if (!blk) return;
+      e.stopPropagation();
+      drag = { kind: blk.dataset.kind, from: JSON.parse(blk.dataset.path) };
+      blk.classList.add("cv2b-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", blk.dataset.kind);
+      markValidTargets();
+    });
+
+    document.addEventListener("dragend", () => {
+      drag = null;
+      el.canvas
+        .querySelectorAll(".cv2b-dragging, .cv2b-armed, .cv2b-blocked")
+        .forEach((n) =>
+          n.classList.remove("cv2b-dragging", "cv2b-armed", "cv2b-blocked"),
+        );
+      hideToast();
+    });
+
+    /** Mark every rail the moment you pick something up, so the legal drops are visible
+     *  before you go hunting — you learn the rules by looking, not by failing. */
+    function markValidTargets() {
+      if (!drag) return;
+      el.canvas.querySelectorAll(".cv2b-rail").forEach((r) => {
+        const scope = JSON.parse(r.dataset.scope);
+        r.classList.toggle(
+          "cv2b-blocked",
+          !M.canDrop(state.nodes, scope, drag.kind, drag.from),
+        );
+      });
+      const accOk = M.isAccessoryKind(drag.kind);
+      el.canvas
+        .querySelectorAll(".cv2b-acc-slot")
+        .forEach((s) => s.classList.toggle("cv2b-blocked", !accOk));
+    }
+
+    el.canvas.addEventListener("dragover", (e) => {
+      if (!drag) return;
+      const railEl = e.target.closest(".cv2b-rail");
+      const slot = e.target.closest(".cv2b-acc-slot");
+      el.canvas
+        .querySelectorAll(".cv2b-armed")
+        .forEach((n) => n.classList.remove("cv2b-armed"));
+
+      if (railEl) {
+        const scope = JSON.parse(railEl.dataset.scope);
+        if (M.canDrop(state.nodes, scope, drag.kind, drag.from)) {
+          e.preventDefault();
+          railEl.classList.add("cv2b-armed");
+          hideToast();
+        } else {
+          toast(M.refusalReason(state.nodes, scope, drag.kind), true);
+        }
+        return;
+      }
+      if (slot && M.isAccessoryKind(drag.kind)) {
+        e.preventDefault();
+        slot.classList.add("cv2b-armed");
+        hideToast();
+      }
+    });
+
+    el.canvas.addEventListener("drop", (e) => {
+      if (!drag) return;
+      e.preventDefault();
+      const railEl = e.target.closest(".cv2b-rail");
+      const slot = e.target.closest(".cv2b-acc-slot");
+      const d = drag;
+      drag = null;
+
+      if (railEl) {
+        const scope = JSON.parse(railEl.dataset.scope);
+        const index = Number(railEl.dataset.index);
+        if (!M.canDrop(state.nodes, scope, d.kind, d.from)) return;
+        commit(d.from ? "Moved" : M.KIND_LABEL[d.kind] + " added", () => {
+          state.sel = d.from
+            ? M.moveNode(state.nodes, d.from, scope, index)
+            : M.insertAt(state.nodes, scope, index, M.makeNode(d.kind, defaultAccent));
+        });
+        return;
+      }
+      if (slot) {
+        const sectionPath = JSON.parse(slot.dataset.accslot);
+        commit("Accessory set", () => {
+          const node = d.from
+            ? clone(M.resolve(state.nodes, d.from))
+            : M.makeNode(d.kind, defaultAccent);
+          // Hold the section by reference: removing the source can rebase its path,
+          // but the object itself never moves.
+          const section = M.resolve(state.nodes, sectionPath);
+          let target = sectionPath;
+          if (d.from) {
+            M.removeAt(state.nodes, d.from);
+            target = M.adjustAfterRemoval(sectionPath, d.from);
+          }
+          section.accessory =
+            node.type === M.ACTION_ROW ? node.components[0] : node;
+          state.sel = target.concat(["acc"]);
+        });
+      }
+    });
+
+    // ---- context menus ----------------------------------------------------------
+
+    let menuEl = null;
+    function closeMenu() {
+      if (menuEl) {
+        menuEl.remove();
+        menuEl = null;
+      }
+    }
+    document.addEventListener("mousedown", (e) => {
+      if (menuEl && !e.target.closest(".cv2b-menu")) closeMenu();
+    });
+
+    function showMenu(x, y, html) {
+      closeMenu();
+      menuEl = document.createElement("div");
+      menuEl.className = "cv2b-menu";
+      menuEl.innerHTML = html;
+      document.body.appendChild(menuEl);
+      const r = menuEl.getBoundingClientRect();
+      menuEl.style.left = Math.min(x, window.innerWidth - r.width - 8) + "px";
+      menuEl.style.top = Math.min(y, window.innerHeight - r.height - 8) + "px";
+      return menuEl;
+    }
+    const mi = (act, glyph, label, kbd, cls) =>
+      '<button type="button" data-act="' +
+      act +
+      '" class="' +
+      (cls || "") +
+      '"><span class="cv2b-glyph">' +
+      glyph +
+      "</span>" +
+      esc(label) +
+      '<span class="cv2b-kbd">' +
+      (kbd || "") +
+      "</span></button>";
+
+    function openPalette(e, scope, index) {
+      const legal = M.allowedIn(state.nodes, scope);
+      const items = PALETTE.filter((p) => legal.indexOf(p.kind) !== -1)
+        .map((p) => mi("add:" + p.kind, p.glyph, p.label))
+        .join("");
+      const menu = showMenu(
+        e.clientX,
+        e.clientY,
+        '<div class="cv2b-menu-label">Add here</div>' + items,
+      );
+      menu.addEventListener("click", (ev) => {
+        const b = ev.target.closest("button");
+        if (!b) return;
+        const k = b.dataset.act.slice(4);
+        closeMenu();
+        commit(M.KIND_LABEL[k] + " added", () => {
+          state.sel = M.insertAt(
+            state.nodes,
+            scope,
+            index,
+            M.makeNode(k, defaultAccent),
+          );
+        });
+        if (k === "text") startEdit(state.sel);
+      });
+    }
+
+    function openAccessoryMenu(e, sectionPath) {
+      const menu = showMenu(
+        e.clientX,
+        e.clientY,
+        '<div class="cv2b-menu-label">Section accessory</div>' +
+          mi("acc:thumbnail", "▣", "Thumbnail image") +
+          mi("acc:link_button", "⬒", "Link button"),
+      );
+      menu.addEventListener("click", (ev) => {
+        const b = ev.target.closest("button");
+        if (!b) return;
+        const k = b.dataset.act.slice(4);
+        closeMenu();
+        commit("Accessory added", () => {
+          state.sel = M.setAccessory(
+            state.nodes,
+            sectionPath,
+            M.makeNode(k, defaultAccent),
+          );
+        });
+      });
+    }
+
+    function openBlockMenu(e, path) {
+      const node = M.resolve(state.nodes, path);
+      const k = M.kind(node);
+      const scope = path.slice(0, -1);
+      const idx = path[path.length - 1];
+      const isAcc = idx === "acc";
+      const list = isAcc ? [] : M.childList(state.nodes, scope);
+      // Wrapping only makes sense at the top level: containers cannot nest.
+      const canWrap = !isAcc && !scope.length && k !== "container";
+
+      const menu = showMenu(
+        e.clientX,
+        e.clientY,
+        [
+          k === "text" ? mi("edit", "✎", "Edit text", "Click") : "",
+          isAcc ? "" : mi("dup", "⧉", "Duplicate", "Ctrl+D"),
+          canWrap ? mi("wrap", "▤", "Wrap in a container") : "",
+          "<hr>",
+          isAcc ? "" : mi("above", "↑", "Add block above"),
+          isAcc ? "" : mi("below", "↓", "Add block below"),
+          isAcc || list.length < 2 ? "" : mi("top", "⤒", "Move to top"),
+          isAcc || list.length < 2 ? "" : mi("bottom", "⤓", "Move to bottom"),
+          "<hr>",
+          mi("del", "✕", isAcc ? "Remove accessory" : "Delete", "Del", "cv2b-danger"),
+        ].join(""),
+      );
+
+      menu.addEventListener("click", (ev) => {
+        const b = ev.target.closest("button");
+        if (!b) return;
+        const act = b.dataset.act;
+        closeMenu();
+        if (act === "edit") return startEdit(path);
+        if (act === "above") return openPalette(e, scope, idx);
+        if (act === "below") return openPalette(e, scope, idx + 1);
+        if (act === "dup") {
+          return commit("Duplicated", () => {
+            state.sel = M.insertAt(state.nodes, scope, idx + 1, clone(node));
+          });
+        }
+        if (act === "wrap") {
+          return commit("Wrapped in a container", () => {
+            const wrapper = M.makeContainer(defaultAccent);
+            wrapper.components = [clone(node)];
+            M.childList(state.nodes, scope).splice(idx, 1, wrapper);
+            state.sel = scope.concat([idx]);
+          });
+        }
+        if (act === "top") {
+          return commit("Moved to top", () => {
+            state.sel = M.moveNode(state.nodes, path, scope, 0);
+          });
+        }
+        if (act === "bottom") {
+          return commit("Moved to bottom", () => {
+            state.sel = M.moveNode(state.nodes, path, scope, list.length);
+          });
+        }
+        if (act === "del") {
+          return commit("Deleted", () => {
+            state.sel = M.removeAt(state.nodes, path);
+          });
+        }
+      });
+    }
+
+    // ---- keyboard ---------------------------------------------------------------
+
+    root.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey);
+
+    function onKey(e) {
+      if (!root.isConnected) return;
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+      const mod = e.metaKey || e.ctrlKey;
+
+      if (e.key === "Escape" && menuEl) {
+        closeMenu();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "z" && !typing) {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "y" && !typing) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (typing) return;
+
+      if (mod && e.key.toLowerCase() === "d" && state.sel) {
+        const idx = state.sel[state.sel.length - 1];
+        if (idx === "acc") return;
+        e.preventDefault();
+        const scope = state.sel.slice(0, -1);
+        const node = clone(M.resolve(state.nodes, state.sel));
+        commit("Duplicated", () => {
+          state.sel = M.insertAt(state.nodes, scope, idx + 1, node);
+        });
+        return;
+      }
+      if ((e.key === "Delete" || e.key === "Backspace") && state.sel) {
+        e.preventDefault();
+        commit("Deleted", () => {
+          state.sel = M.removeAt(state.nodes, state.sel);
+        });
+        return;
+      }
+      if (e.key === "Enter" && state.sel) {
+        const idx = state.sel[state.sel.length - 1];
+        if (idx === "acc") return;
+        const scope = state.sel.slice(0, -1);
+        if (!M.canDrop(state.nodes, scope, "text", null)) return;
+        e.preventDefault();
+        commit("Text added", () => {
+          state.sel = M.insertAt(state.nodes, scope, idx + 1, M.makeText(""));
+        });
+        startEdit(state.sel);
+        return;
+      }
+      if (e.key === "Escape") {
+        state.sel = null;
+        render();
+      }
+    }
+
+    // ---- toolbar / toast / publish ----------------------------------------------
+
+    let toastTimer = null;
+    function toast(msg, warn) {
+      el.toast.textContent = msg;
+      el.toast.classList.toggle("cv2b-warn", !!warn);
+      el.toast.classList.add("cv2b-show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(hideToast, 2400);
+    }
+    function hideToast() {
+      el.toast.classList.remove("cv2b-show");
+    }
+    function setStatus(msg, isError) {
+      el.status.textContent = msg || "";
+      el.status.classList.toggle("cv2b-err", !!isError);
+    }
+
+    el.undo.addEventListener("click", undo);
+    el.redo.addEventListener("click", redo);
+
+    el.publish.addEventListener("click", async () => {
+      if (state.problems.length) {
+        const first = state.problems.find((p) => p.path);
+        if (first) {
+          state.sel = first.path;
+          render();
+          scrollToSel();
+        }
+        toast(
+          state.problems.length +
+            " problem" +
+            (state.problems.length > 1 ? "s" : "") +
+            " to fix first",
+          true,
+        );
+        return;
+      }
+      await flush();
+      // The server render is the authoritative one — confirm against it, not against
+      // the client's approximation of the markdown.
+      if (options.onPreview) {
+        el.confirmBody.innerHTML = '<p class="cv2b-help">Rendering…</p>';
+        el.dialog.showModal();
+        try {
+          el.confirmBody.innerHTML = await options.onPreview(clone(state.nodes));
+        } catch (err) {
+          el.confirmBody.innerHTML =
+            '<p class="cv2b-err">Could not render a preview. You can still post.</p>';
+        }
+      } else {
+        el.dialog.showModal();
+      }
+    });
+
+    root.querySelector('[data-a="cancel-confirm"]').addEventListener("click", () => {
+      el.dialog.close();
+    });
+
+    root.querySelector('[data-a="confirm"]').addEventListener("click", async () => {
+      const btn = root.querySelector('[data-a="confirm"]');
+      btn.disabled = true;
+      try {
+        const result = await options.onPublish(clone(state.nodes));
+        el.dialog.close();
+        state.dirty = false;
+        setStatus(result && result.link ? "Posted: " + result.link : "Posted");
+        if (result && result.link) {
+          el.status.innerHTML =
+            'Posted — <a href="' +
+            esc(result.link) +
+            '" target="_blank" rel="noopener noreferrer">open in Discord</a>';
+        }
+        el.publish.disabled = true;
+      } catch (err) {
+        el.confirmBody.innerHTML =
+          '<p class="cv2b-err">' +
+          esc((err && err.message) || "Discord rejected the message.") +
+          "</p>";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // Palette rail
+    PALETTE.forEach((p) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "cv2b-pal";
+      b.draggable = true;
+      b.dataset.kind = p.kind;
+      b.title = p.hint;
+      b.innerHTML = '<span class="cv2b-glyph">' + p.glyph + "</span>" + esc(p.label);
+      b.addEventListener("click", () => {
+        // Click = "put it after what I have selected" — the one behaviour worth keeping
+        // from the in-Discord builder (_insert_at_selection).
+        let scope = [];
+        let index = state.nodes.length;
+        if (state.sel && state.sel[state.sel.length - 1] !== "acc") {
+          const s = state.sel.slice(0, -1);
+          if (M.canDrop(state.nodes, s, p.kind, null)) {
+            scope = s;
+            index = state.sel[state.sel.length - 1] + 1;
+          }
+        }
+        if (!M.canDrop(state.nodes, scope, p.kind, null)) {
+          toast(M.refusalReason(state.nodes, scope, p.kind), true);
+          return;
+        }
+        commit(p.label + " added", () => {
+          state.sel = M.insertAt(state.nodes, scope, index, M.makeNode(p.kind, defaultAccent));
+        });
+        if (p.kind === "text") startEdit(state.sel);
+      });
+      el.palette.insertBefore(b, el.palette.querySelector(".cv2b-pal-hint"));
+    });
+
+    render();
+    setStatus("Right-click anything · Ctrl/Cmd+Z undoes");
+
+    return {
+      getNodes: () => clone(state.nodes),
+      setNodes: (nodes) => {
+        state.nodes = clone(nodes);
+        state.sel = null;
+        state.undo.length = 0;
+        state.redo.length = 0;
+        render();
+      },
+    };
+  }
+
+  function SHELL_HTML(actionLabel) {
+    return (
+      '<div class="cv2b">' +
+      '<header class="cv2b-bar">' +
+      '<button type="button" class="cv2b-icon" data-a="undo" title="Undo (Ctrl/Cmd+Z)">↶</button>' +
+      '<button type="button" class="cv2b-icon" data-a="redo" title="Redo (Ctrl/Cmd+Shift+Z)">↷</button>' +
+      '<span class="cv2b-status"></span>' +
+      '<span class="cv2b-grow"></span>' +
+      '<span class="cv2b-count"></span>' +
+      '<button type="button" class="cv2b-primary" data-a="publish">' +
+      M.esc(actionLabel) +
+      "</button>" +
+      "</header>" +
+      '<div class="cv2b-main">' +
+      '<nav class="cv2b-palette"><div class="cv2b-rail-title">Blocks</div>' +
+      '<div class="cv2b-pal-hint">Drag onto the message, or click to drop it after the selection.' +
+      "<br><br><kbd>right-click</kbd> anything for its actions.</div></nav>" +
+      '<div class="cv2b-canvas-wrap"><div class="cv2b-canvas cv2-preview"></div></div>' +
+      '<aside class="cv2b-inspector"></aside>' +
+      "</div>" +
+      '<div class="cv2b-toast"></div>' +
+      '<dialog class="cv2b-confirm">' +
+      '<div class="cv2b-dlg-head"><h3>Ready to send?</h3>' +
+      '<span class="cv2b-help">This is exactly how Discord will render it.</span>' +
+      '<span class="cv2b-grow"></span>' +
+      '<button type="button" data-a="cancel-confirm">Back</button>' +
+      '<button type="button" class="cv2b-primary" data-a="confirm">' +
+      M.esc(actionLabel) +
+      "</button></div>" +
+      '<div class="cv2b-confirm-body cv2-preview"></div>' +
+      "</dialog>" +
+      "</div>"
+    );
+  }
+
+  window.initCv2Builder = initCv2Builder;
+})();

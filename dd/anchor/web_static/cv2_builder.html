@@ -1,0 +1,41 @@
+<!doctype html>
+<!--
+  Web Components-V2 builder page — the replacement for the in-Discord /post components
+  builder. Served by dd.anchor.extensions.cv2_builder_page: GET /cv2-builder/{draft}
+  returns this static shell, which then fetches GET /cv2-builder/{draft}/data for the
+  seed nodes + publish target + guild emoji, autosaves to POST …/save, renders the
+  authoritative confirmation via POST …/preview, and sends via POST …/publish.
+
+  The editing UX is direct manipulation, deliberately NOT a port of cv2_builder.py's
+  select-and-button state machine — see the header comment in cv2_builder.js for why.
+
+  Auth is the shared Discord OAuth middleware (web_auth); the draft id in the URL is not
+  a secret, and every route re-checks that the logged-in owner created the draft.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Message builder — Destiny Director</title>
+    <link rel="stylesheet" href="/static/shared.css" />
+    <link rel="stylesheet" href="/static/cv2_preview.css" />
+    <link rel="stylesheet" href="/static/cv2_builder.css" />
+    <link rel="stylesheet" href="/static/cv2_builder_page.css" />
+  </head>
+  <body class="cv2b-page">
+    <header class="cv2b-page-head">
+      <p class="nav"><a href="/" class="backlink">← Control panel</a></p>
+      <h1 id="pageTitle">Message builder</h1>
+      <p class="muted" id="pageSubtitle">Loading…</p>
+    </header>
+
+    <main id="mount" class="cv2b-mount"></main>
+
+    <p id="loadError" class="cv2b-page-error hidden"></p>
+
+    <script src="/static/cv2_model.js"></script>
+    <script src="/static/cv2_builder.js"></script>
+    <script src="/static/cv2_builder_page.js"></script>
+  </body>
+</html>
