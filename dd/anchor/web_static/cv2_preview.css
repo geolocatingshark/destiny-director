@@ -116,16 +116,16 @@
 .cv2-preview .cv2-media.n2 .cv2-media-item {
   aspect-ratio: 1;
 }
-/* 3: one large tile on the left, two stacked on the right (Discord's 3-up). */
+/* 3: one large tile on the left, two stacked on the right (Discord's 3-up). The right
+   tiles take their height from the two rows the left tile's square defines — giving
+   them an aspect-ratio of their own instead left a hole under each one, because a fixed
+   ratio beats the grid's stretch and the row is taller than the ratio allows. */
 .cv2-preview .cv2-media.n3 {
   grid-template-columns: 2fr 1fr;
 }
 .cv2-preview .cv2-media.n3 .cv2-media-item:first-child {
   grid-row: span 2;
   aspect-ratio: 1;
-}
-.cv2-preview .cv2-media.n3 .cv2-media-item:not(:first-child) {
-  aspect-ratio: 2 / 1;
 }
 .cv2-preview .cv2-media.n4 {
   grid-template-columns: 1fr 1fr;
