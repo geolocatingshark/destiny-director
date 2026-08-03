@@ -392,56 +392,180 @@
     );
   }
 
-  /**
-   * Inline markdown. `emoji` is an optional {name: url} map for `:shortcode:`
-   * substitution — the client mirror of hybrid_post_core._html_emoji_substituter. An
-   * unknown shortcode stays as escaped text, exactly as the server leaves it.
-   */
-  function inlineMd(s, emoji) {
-    let out = esc(s);
-    out = out.replace(
-      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
-    );
-    out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    out = out.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
-    out = out.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-    if (emoji) {
-      out = out.replace(/:(\w+):/g, (whole, name) => {
-        const url = emoji[name] || emoji[name.toLowerCase()];
-        if (!url) return whole;
-        return (
-          '<img class="emoji" src="' + esc(url) + '" alt=":' + esc(name) + ':">'
-        );
-      });
-    }
-    return out;
+  const EMOJI_CDN = "https://cdn.discordapp.com/emojis/";
+  const MONTHS_SHORT = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
+  const MONTHS_LONG = (
+    "January February March April May June July " +
+    "August September October November December"
+  ).split(" ");
+
+  // One inline-markdown token, mirroring hybrid_post_core._INLINE_MD — same alternation
+  // in the same ORDER, so *** beats ** beats *, and a <t:…> timestamp beats the emoji arm
+  // (both can start with "<").
+  //
+  // A single ordered pass is not a stylistic choice: a chain of .replace() calls
+  // substitutes into HTML the earlier passes already emitted. That is what mangled real
+  // posts — a custom emoji `<:name:123>` had its inner `:name:` swapped for an <img>,
+  // leaving a stray "<" and "123>" around it on screen.
+  const INLINE = new RegExp(
+    "(?<bi>\\*\\*\\*(?<biInner>.+?)\\*\\*\\*)" +
+      "|(?<b>\\*\\*(?<bInner>.+?)\\*\\*)" +
+      "|(?<i>\\*(?<iInner>.+?)\\*)" +
+      "|(?<code>`(?<codeInner>[^`\\n]+)`)" +
+      "|(?<link>\\[(?<label>[^\\]]+)\\]\\((?<url>[^)\\s]+)\\))" +
+      "|(?<ts><t:(?<tsval>\\d+):(?<tsfmt>[A-Za-z])>)" +
+      "|(?<emoji>(?<eprefix><a?)?:(?<ename>\\w+)(?:~\\d)*:(?<eid>\\d+>)?)",
+    "g",
+  );
+
+  function _img(url, name) {
+    return '<img class="emoji" src="' + esc(url) + '" alt=":' + esc(name) + ':">';
   }
 
-  function lineMd(line, emoji) {
+  /**
+   * One emoji token → an <img>, or its escaped literal text.
+   *
+   * Merges the two server-side substituters, because the builder sees both shapes:
+   * content seeded from a live post carries full `<:name:id>` / `<a:name:id>` (resolved
+   * straight off the CDN, like cv2_render's substituter — so it renders even when the
+   * guild emoji fetch failed), while content the author types carries a bare `:name:`
+   * (resolved through the name map, like hybrid_post_core's).
+   */
+  function _emojiHtml(whole, prefix, name, idGroup, emoji) {
+    if (idGroup) {
+      const id = idGroup.replace(">", "");
+      if (/^\d+$/.test(id)) {
+        return _img(EMOJI_CDN + id + (prefix === "<a" ? ".gif" : ".png"), name);
+      }
+    }
+    const url = emoji && (emoji[name] || emoji[name.toLowerCase()]);
+    return url ? _img(url, name) : esc(whole);
+  }
+
+  /** A `<t:UNIX:X>` token, mirroring hybrid_post_core._format_ts (UTC, like the server). */
+  function _timestampText(unix, fmt, now) {
+    const d = new Date(unix * 1000);
+    const hour24 = d.getUTCHours();
+    const h12 = hour24 % 12 || 12;
+    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    const ampm = hour24 < 12 ? "AM" : "PM";
+    if (fmt === "R") {
+      const delta = unix - Math.floor((now === undefined ? Date.now() : now) / 1000);
+      const future = delta >= 0;
+      let secs = Math.abs(delta);
+      let unit = "second";
+      let n = secs;
+      for (const [label, size] of [["day", 86400], ["hour", 3600], ["minute", 60]]) {
+        if (secs >= size) {
+          unit = label;
+          n = Math.floor(secs / size);
+          break;
+        }
+      }
+      const text = n + " " + unit + (n !== 1 ? "s" : "");
+      return future ? "in " + text : text + " ago";
+    }
+    if (fmt === "t" || fmt === "T") {
+      const ss = fmt === "T" ? ":" + String(d.getUTCSeconds()).padStart(2, "0") : "";
+      return h12 + ":" + mm + ss + " " + ampm + " (UTC)";
+    }
+    if (fmt === "d") {
+      return (
+        String(d.getUTCMonth() + 1).padStart(2, "0") +
+        "/" +
+        String(d.getUTCDate()).padStart(2, "0") +
+        "/" +
+        d.getUTCFullYear()
+      );
+    }
+    if (fmt === "D") {
+      return MONTHS_LONG[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + d.getUTCFullYear();
+    }
+    // f / F / anything else: Discord's long-date short-time.
+    return (
+      MONTHS_SHORT[d.getUTCMonth()] +
+      " " +
+      d.getUTCDate() +
+      ", " +
+      d.getUTCFullYear() +
+      " " +
+      h12 +
+      ":" +
+      mm +
+      " " +
+      ampm +
+      " (UTC)"
+    );
+  }
+
+  /**
+   * Inline markdown → safe HTML.
+   *
+   * `emoji` is an optional {name: url} map for bare `:shortcode:`; `now` is an injectable
+   * epoch-ms clock so relative timestamps are testable. Text outside a token is escaped,
+   * and only http(s) links become anchors.
+   */
+  function inlineMd(s, emoji, now) {
+    const text = String(s);
+    let out = "";
+    let last = 0;
+    // matchAll, not exec-in-a-loop: this function RECURSES (for the inner text of bold
+    // and italic), and a shared /g regex driven by .exec would have the inner call
+    // clobber the outer call's lastIndex — which spins forever. matchAll clones the
+    // regex internally and never writes back to it.
+    for (const m of text.matchAll(INLINE)) {
+      out += esc(text.slice(last, m.index));
+      last = m.index + m[0].length;
+      const g = m.groups;
+      if (g.bi !== undefined) {
+        out += "<strong><em>" + inlineMd(g.biInner, emoji, now) + "</em></strong>";
+      } else if (g.b !== undefined) {
+        out += "<strong>" + inlineMd(g.bInner, emoji, now) + "</strong>";
+      } else if (g.i !== undefined) {
+        out += "<em>" + inlineMd(g.iInner, emoji, now) + "</em>";
+      } else if (g.code !== undefined) {
+        out += "<code>" + esc(g.codeInner) + "</code>";
+      } else if (g.link !== undefined) {
+        out += /^https?:\/\//.test(g.url)
+          ? '<a href="' +
+            esc(g.url) +
+            '" target="_blank" rel="noopener noreferrer">' +
+            esc(g.label) +
+            "</a>"
+          : esc(m[0]);
+      } else if (g.ts !== undefined) {
+        out += esc(_timestampText(Number(g.tsval), g.tsfmt, now));
+      } else {
+        out += _emojiHtml(m[0], g.eprefix, g.ename, g.eid, emoji);
+      }
+    }
+    return out + esc(text.slice(last));
+  }
+
+  function lineMd(line, emoji, now) {
     if (line.startsWith("-# ")) {
-      return '<span class="md-small">' + inlineMd(line.slice(3), emoji) + "</span>";
+      return '<span class="md-small">' + inlineMd(line.slice(3), emoji, now) + "</span>";
     }
     if (line.startsWith("### ")) {
-      return '<span class="md-h3">' + inlineMd(line.slice(4), emoji) + "</span>";
+      return '<span class="md-h3">' + inlineMd(line.slice(4), emoji, now) + "</span>";
     }
     if (line.startsWith("## ")) {
-      return '<span class="md-h2">' + inlineMd(line.slice(3), emoji) + "</span>";
+      return '<span class="md-h2">' + inlineMd(line.slice(3), emoji, now) + "</span>";
     }
     if (line.startsWith("# ")) {
-      return '<span class="md-h1">' + inlineMd(line.slice(2), emoji) + "</span>";
+      return '<span class="md-h1">' + inlineMd(line.slice(2), emoji, now) + "</span>";
     }
     if (/^[-*] /.test(line)) {
-      return '<span class="md-bullet">' + inlineMd(line.slice(2), emoji) + "</span>";
+      return '<span class="md-bullet">' + inlineMd(line.slice(2), emoji, now) + "</span>";
     }
-    return inlineMd(line, emoji);
+    return inlineMd(line, emoji, now);
   }
 
   /** Render a text leaf's content. Newlines survive via the .cv2-text pre-wrap. */
-  function renderMd(content, emoji) {
+  function renderMd(content, emoji, now) {
     return String(content)
       .split("\n")
-      .map((line) => lineMd(line, emoji))
+      .map((line) => lineMd(line, emoji, now))
       .join("\n");
   }
 

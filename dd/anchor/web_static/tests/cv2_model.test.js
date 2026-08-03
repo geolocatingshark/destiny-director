@@ -256,6 +256,59 @@ test("known emoji shortcodes resolve, unknown ones stay as text", () => {
   assert.ok(!M.renderMd("hi :nope:", emoji).includes("<img"));
 });
 
+test("a full custom emoji from a live post resolves off the CDN, intact", () => {
+  // The regression: a chain of .replace() passes swapped the inner `:name:` of
+  // `<:name:id>` for an <img> and left a stray "<" and "id>" on screen. Content seeded
+  // from a real post is full of these, and no emoji map is needed to render them.
+  const out = M.renderMd("<:champion_barrier:849727805994565662> Excavation Site");
+  assert.match(out, /cdn\.discordapp\.com\/emojis\/849727805994565662\.png/);
+  assert.ok(!out.includes("&lt;"), "stray < left over: " + out);
+  assert.ok(!out.includes("849727805994565662<"), "stray id left over: " + out);
+  assert.ok(!out.includes("&gt;"), "stray > left over: " + out);
+  assert.match(out, /Excavation Site/);
+});
+
+test("an animated custom emoji resolves to .gif", () => {
+  assert.match(M.renderMd("<a:spin:123456789>"), /emojis\/123456789\.gif/);
+});
+
+test("a custom emoji renders without any emoji map at all", () => {
+  // The map comes from a REST fetch that is allowed to fail; seeded posts must still
+  // render, so the id path must not depend on it.
+  assert.match(M.renderMd("<:x:99>", null), /emojis\/99\.png/);
+});
+
+test("emoji inside bold still resolves", () => {
+  const out = M.renderMd("**hit :kyber: hard**", { kyber: "https://cdn.invalid/1.png" });
+  assert.match(out, /<strong>/);
+  assert.match(out, /<img class="emoji"/);
+});
+
+test("a <t:...> timestamp renders like the server, not as raw text", () => {
+  // 1753894800 = 2025-07-30 17:00:00 UTC
+  const at = 1753894800;
+  assert.match(M.renderMd(`Changes daily at <t:${at}:t> local time.`), /5:00 PM \(UTC\)/);
+  assert.match(M.renderMd(`<t:${at}:T>`), /5:00:00 PM \(UTC\)/);
+  assert.match(M.renderMd(`<t:${at}:d>`), /07\/30\/2025/);
+  assert.match(M.renderMd(`<t:${at}:D>`), /July 30, 2025/);
+  assert.match(M.renderMd(`<t:${at}:f>`), /Jul 30, 2025 5:00 PM \(UTC\)/);
+  // None of them should leak the raw token.
+  assert.ok(!M.renderMd(`<t:${at}:t>`).includes("&lt;t:"));
+});
+
+test("a relative timestamp reads off the injected clock", () => {
+  const at = 1753894800;
+  const now = (at - 3 * 86400) * 1000;
+  assert.match(M.renderMd(`<t:${at}:R>`, null, now), /in 3 days/);
+  const later = (at + 60 * 60) * 1000;
+  assert.match(M.renderMd(`<t:${at}:R>`, null, later), /1 hour ago/);
+});
+
+test("a timestamp beats the emoji arm — both can start with '<'", () => {
+  const out = M.renderMd("<t:1753894800:t>", { t: "https://cdn.invalid/t.png" });
+  assert.ok(!out.includes("<img"), "the emoji arm swallowed a timestamp: " + out);
+});
+
 test("an emoji URL is escaped into the src attribute", () => {
   const out = M.renderMd(":x:", { x: 'https://e.invalid/a.png"onload="y' });
   assert.ok(!out.includes('"onload="'));

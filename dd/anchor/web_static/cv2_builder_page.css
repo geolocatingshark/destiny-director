@@ -6,11 +6,19 @@
 
 body.cv2b-page {
   max-width: none;
-  height: 100vh;
+  /* dvh, not vh: on mobile browsers 100vh is the viewport with the URL bar *retracted*,
+     so a vh-sized grid overflows by the height of the chrome and the bottom of the
+     layout (on a phone, the inspector sheet) sits off-screen. */
+  height: 100dvh;
   padding: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
+}
+@supports not (height: 100dvh) {
+  body.cv2b-page {
+    height: 100vh;
+  }
 }
 
 .cv2b-page-head {
@@ -47,4 +55,48 @@ body.cv2b-page {
 }
 .cv2b-page-error.hidden {
   display: none;
+}
+
+/* On a phone the header was taking roughly 40% of the viewport before a single block
+   was visible. Vertical space is the scarce resource here, so the header collapses to
+   one line: the back-link becomes a bare arrow beside the title, and the explanatory
+   subtitle (useful on desktop, redundant once you can see the message) is dropped. */
+@media (max-width: 900px) {
+  .cv2b-page-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.45rem 0.7rem;
+  }
+  .cv2b-page-head h1 {
+    font-size: 0.92rem;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cv2b-page-head p.nav {
+    margin: 0;
+    flex: none;
+  }
+  /* Keep the label for screen readers; show only the arrow. */
+  .cv2b-page-head .backlink {
+    font-size: 1rem;
+    text-decoration: none;
+  }
+  .cv2b-page-head .backlink-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .cv2b-page-head .muted {
+    display: none;
+  }
+  .cv2b-page-head .muted.cv2b-keep {
+    display: block;
+    font-size: 0.72rem;
+  }
 }

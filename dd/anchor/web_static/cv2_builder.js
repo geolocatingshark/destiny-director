@@ -30,9 +30,17 @@
 //      the whole tree is on screen (depth is <= 3, so it always fits), which makes
 //      "drag into that container" the same gesture as "drag one slot down".
 //   4. RIGHT-CLICK ANYWHERE. On a block: edit / duplicate / wrap / add above / add below
-//      / delete. On empty canvas: add a block.
+//      / delete. On empty canvas: add a block. On touch, a long-press does the same —
+//      there is no right mouse button on a phone.
 //   5. INSERT WHERE YOU POINT. Hover a gap for a "+" rail; click it for a palette
 //      filtered to what is legal *there*.
+//
+// TOUCH IS A FIRST-CLASS TARGET, not a smaller desktop. Dragging uses pointer events
+// rather than HTML5 drag-and-drop, because dragstart/dragover/drop never fire on touch —
+// so the entire rearranging model was dead on mobile. One pointer-event path now serves
+// mouse, touch and pen. On narrow screens the layout changes shape too (palette as a
+// strip, inspector as a bottom sheet); see the media queries in cv2_builder.css for why
+// stacking the desktop columns was not enough.
 //
 // Plus three things Discord structurally cannot offer: undo/redo, validation anchored to
 // the offending block (click a problem, it selects and scrolls), and nesting rules taught
@@ -257,7 +265,7 @@
         esc(pk(path)) +
         '" data-kind="' +
         k +
-        '" draggable="true">' +
+        '">' +
         '<span class="cv2b-grip" title="Drag to move">⠿</span>' +
         '<span class="cv2b-tag">' +
         esc(M.KIND_LABEL[k] || k) +
@@ -392,7 +400,7 @@
         esc(pk(path)) +
         '" data-kind="' +
         k +
-        '" draggable="true"><span class="cv2b-tag">' +
+        '"><span class="cv2b-tag">' +
         esc(M.KIND_LABEL[k]) +
         '</span><div class="cv2b-body">' +
         body +
@@ -451,6 +459,17 @@
       );
       el.inspector.innerHTML = parts.join("");
       el.publish.disabled = state.problems.length > 0;
+      // On a phone the inspector is a bottom sheet (see cv2_builder.css): open it only
+      // when there is actually something to edit, so it isn't permanently covering the
+      // message. The class is inert on desktop, where it is a static column.
+      el.inspector.classList.toggle("cv2b-sheet-open", !!node);
+      // The status line is hidden on mobile because it carries desktop-only advice —
+      // except once it holds the posted-message link, which is the one thing you do
+      // want to tap.
+      el.status.classList.toggle(
+        "cv2b-has-link",
+        el.status.querySelector("a") !== null,
+      );
     }
 
     function fieldsFor(k, node) {
@@ -673,6 +692,7 @@
     // ---- canvas interaction ----------------------------------------------------
 
     el.canvas.addEventListener("click", (e) => {
+      if (shouldSwallow()) return; // the tail of a long-press, not a tap
       if (e.target.closest("[data-editing]")) return;
 
       const railEl = e.target.closest(".cv2b-rail");
@@ -784,44 +804,66 @@
       if (found) found.scrollIntoView({ block: "center", behavior: "smooth" });
     }
 
-    // ---- drag & drop ------------------------------------------------------------
-    // Drop targets are the insertion rails and the accessory slots, so the drop point
-    // is always exact. An illegal rail turns red and says why.
+    // ---- drag & drop (pointer events) -------------------------------------------
+    // Deliberately NOT HTML5 drag-and-drop: dragstart/dragover/drop never fire on
+    // touch, so the whole rearranging model was dead on mobile. Pointer events cover
+    // mouse, touch and pen in one code path, so there is no desktop/mobile fork here.
+    //
+    // Drop targets stay the insertion rails and accessory slots, hit-tested with
+    // elementFromPoint, so the drop point is always exact rather than "nearest guess".
+    // An illegal rail turns red and says why.
 
-    let drag = null;
+    let drag = null; // {kind, from, ghost, moved}
+    let longPress = null; // pending touch long-press -> context menu
+    // A touch that opens the long-press menu is still followed by synthesized
+    // mouse/click events on release. Without swallowing those, the menu is dismissed by
+    // the very gesture that opened it, and the block underneath gets tapped as well.
+    let swallowUntil = 0;
+    const swallowSyntheticClick = () => {
+      swallowUntil = Date.now() + 700;
+    };
+    const shouldSwallow = () => Date.now() < swallowUntil;
+    const DRAG_THRESHOLD = 6; // px before a press becomes a drag (vs. a tap)
+    const LONG_PRESS_MS = 450;
+    const EDGE = 60; // autoscroll band at the top/bottom of the canvas
 
-    el.palette.addEventListener("dragstart", (e) => {
-      const item = e.target.closest(".cv2b-pal");
-      if (!item) return;
-      drag = { kind: item.dataset.kind, from: null };
-      e.dataTransfer.effectAllowed = "copy";
-      e.dataTransfer.setData("text/plain", item.dataset.kind);
+    function makeGhost(label, x, y) {
+      const ghost = document.createElement("div");
+      ghost.className = "cv2b-ghost";
+      ghost.textContent = label;
+      document.body.appendChild(ghost);
+      moveGhost(ghost, x, y);
+      return ghost;
+    }
+    function moveGhost(ghost, x, y) {
+      ghost.style.left = x + "px";
+      ghost.style.top = y + "px";
+    }
+
+    function beginDrag(kind, from, x, y) {
+      cancelLongPress();
+      const label = from
+        ? M.KIND_LABEL[kind] || kind
+        : "New " + (M.KIND_LABEL[kind] || kind).toLowerCase();
+      drag = { kind, from, ghost: makeGhost(label, x, y) };
+      document.body.classList.add("cv2b-dragging-now");
+      if (from) {
+        const el0 = blockEl(from);
+        if (el0) el0.classList.add("cv2b-dragging");
+      }
       markValidTargets();
-    });
+    }
 
-    el.canvas.addEventListener("dragstart", (e) => {
-      const blk = e.target.closest(".cv2b-blk");
-      if (!blk) return;
-      e.stopPropagation();
-      drag = { kind: blk.dataset.kind, from: JSON.parse(blk.dataset.path) };
-      blk.classList.add("cv2b-dragging");
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", blk.dataset.kind);
-      markValidTargets();
-    });
+    function blockEl(path) {
+      const want = pk(path);
+      return Array.prototype.find.call(
+        el.canvas.querySelectorAll(".cv2b-blk"),
+        (n) => n.dataset.path === want,
+      );
+    }
 
-    document.addEventListener("dragend", () => {
-      drag = null;
-      el.canvas
-        .querySelectorAll(".cv2b-dragging, .cv2b-armed, .cv2b-blocked")
-        .forEach((n) =>
-          n.classList.remove("cv2b-dragging", "cv2b-armed", "cv2b-blocked"),
-        );
-      hideToast();
-    });
-
-    /** Mark every rail the moment you pick something up, so the legal drops are visible
-     *  before you go hunting — you learn the rules by looking, not by failing. */
+    /** Mark every rail as soon as something is picked up, so the legal drops are
+     *  visible before you go hunting — you learn the rules by looking, not by failing. */
     function markValidTargets() {
       if (!drag) return;
       el.canvas.querySelectorAll(".cv2b-rail").forEach((r) => {
@@ -837,72 +879,194 @@
         .forEach((s) => s.classList.toggle("cv2b-blocked", !accOk));
     }
 
-    el.canvas.addEventListener("dragover", (e) => {
-      if (!drag) return;
-      const railEl = e.target.closest(".cv2b-rail");
-      const slot = e.target.closest(".cv2b-acc-slot");
+    function clearDragMarks() {
+      el.canvas
+        .querySelectorAll(".cv2b-dragging, .cv2b-armed, .cv2b-blocked")
+        .forEach((n) =>
+          n.classList.remove("cv2b-dragging", "cv2b-armed", "cv2b-blocked"),
+        );
+      document.body.classList.remove("cv2b-dragging-now");
+    }
+
+    /** The drop target under the pointer, or null. The ghost is pointer-events:none so
+     *  it never hit-tests as itself. */
+    function targetAt(x, y) {
+      const under = document.elementFromPoint(x, y);
+      if (!under) return null;
+      const rail = under.closest(".cv2b-rail");
+      if (rail) {
+        const scope = JSON.parse(rail.dataset.scope);
+        return M.canDrop(state.nodes, scope, drag.kind, drag.from)
+          ? { el: rail, kind: "rail", scope, index: Number(rail.dataset.index) }
+          : { el: rail, kind: "blocked", scope };
+      }
+      const slot = under.closest(".cv2b-acc-slot");
+      if (slot && M.isAccessoryKind(drag.kind)) {
+        return {
+          el: slot,
+          kind: "acc",
+          sectionPath: JSON.parse(slot.dataset.accslot),
+        };
+      }
+      return null;
+    }
+
+    function updateDrag(x, y) {
+      moveGhost(drag.ghost, x, y);
       el.canvas
         .querySelectorAll(".cv2b-armed")
         .forEach((n) => n.classList.remove("cv2b-armed"));
 
-      if (railEl) {
-        const scope = JSON.parse(railEl.dataset.scope);
-        if (M.canDrop(state.nodes, scope, drag.kind, drag.from)) {
-          e.preventDefault();
-          railEl.classList.add("cv2b-armed");
-          hideToast();
-        } else {
-          toast(M.refusalReason(state.nodes, scope, drag.kind), true);
-        }
+      // Autoscroll near the edges — on a phone the canvas is far taller than the
+      // viewport, so without this you can only drop what is already on screen.
+      const box = el.canvas.parentElement.getBoundingClientRect();
+      if (y < box.top + EDGE) el.canvas.parentElement.scrollTop -= 12;
+      else if (y > box.bottom - EDGE) el.canvas.parentElement.scrollTop += 12;
+
+      const target = targetAt(x, y);
+      if (!target) return hideToast();
+      if (target.kind === "blocked") {
+        toast(M.refusalReason(state.nodes, target.scope, drag.kind), true);
         return;
       }
-      if (slot && M.isAccessoryKind(drag.kind)) {
-        e.preventDefault();
-        slot.classList.add("cv2b-armed");
-        hideToast();
-      }
-    });
+      target.el.classList.add("cv2b-armed");
+      hideToast();
+    }
 
-    el.canvas.addEventListener("drop", (e) => {
-      if (!drag) return;
-      e.preventDefault();
-      const railEl = e.target.closest(".cv2b-rail");
-      const slot = e.target.closest(".cv2b-acc-slot");
+    function endDrag(x, y) {
       const d = drag;
+      const target = targetAt(x, y);
+      if (d.ghost) d.ghost.remove();
       drag = null;
-
-      if (railEl) {
-        const scope = JSON.parse(railEl.dataset.scope);
-        const index = Number(railEl.dataset.index);
-        if (!M.canDrop(state.nodes, scope, d.kind, d.from)) return;
+      clearDragMarks();
+      hideToast();
+      if (!target || target.kind === "blocked") {
+        render();
+        return;
+      }
+      if (target.kind === "rail") {
         commit(d.from ? "Moved" : M.KIND_LABEL[d.kind] + " added", () => {
           state.sel = d.from
-            ? M.moveNode(state.nodes, d.from, scope, index)
-            : M.insertAt(state.nodes, scope, index, M.makeNode(d.kind, defaultAccent));
+            ? M.moveNode(state.nodes, d.from, target.scope, target.index)
+            : M.insertAt(
+                state.nodes,
+                target.scope,
+                target.index,
+                M.makeNode(d.kind, defaultAccent),
+              );
         });
         return;
       }
-      if (slot) {
-        const sectionPath = JSON.parse(slot.dataset.accslot);
-        commit("Accessory set", () => {
-          const node = d.from
-            ? clone(M.resolve(state.nodes, d.from))
-            : M.makeNode(d.kind, defaultAccent);
-          // Hold the section by reference: removing the source can rebase its path,
-          // but the object itself never moves.
-          const section = M.resolve(state.nodes, sectionPath);
-          let target = sectionPath;
-          if (d.from) {
-            M.removeAt(state.nodes, d.from);
-            target = M.adjustAfterRemoval(sectionPath, d.from);
-          }
-          section.accessory =
-            node.type === M.ACTION_ROW ? node.components[0] : node;
-          state.sel = target.concat(["acc"]);
-        });
+      commit("Accessory set", () => {
+        const node = d.from
+          ? clone(M.resolve(state.nodes, d.from))
+          : M.makeNode(d.kind, defaultAccent);
+        // Hold the section by reference: removing the source can rebase its path, but
+        // the object itself never moves.
+        const section = M.resolve(state.nodes, target.sectionPath);
+        let at = target.sectionPath;
+        if (d.from) {
+          M.removeAt(state.nodes, d.from);
+          at = M.adjustAfterRemoval(target.sectionPath, d.from);
+        }
+        section.accessory = node.type === M.ACTION_ROW ? node.components[0] : node;
+        state.sel = at.concat(["acc"]);
+      });
+    }
+
+    function cancelDrag() {
+      if (!drag) return;
+      if (drag.ghost) drag.ghost.remove();
+      drag = null;
+      clearDragMarks();
+      hideToast();
+      render();
+    }
+
+    function cancelLongPress() {
+      if (longPress) {
+        clearTimeout(longPress.timer);
+        longPress = null;
       }
+    }
+
+    // A press starts a *pending* gesture; what it becomes depends on what happens next.
+    // Moving past the threshold makes it a drag; holding still makes it a long-press
+    // context menu (the touch equivalent of right-click); releasing makes it a tap,
+    // which the existing click handler deals with.
+    function onPointerDown(e, kind, from, gripOnly) {
+      if (e.button !== undefined && e.button > 0) return; // right-click stays right-click
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let started = false;
+
+      const move = (ev) => {
+        const dx = Math.abs(ev.clientX - startX);
+        const dy = Math.abs(ev.clientY - startY);
+        if (!started && (dx > DRAG_THRESHOLD || dy > DRAG_THRESHOLD)) {
+          // A press on the block body (not the grip) that turns into a move is a scroll
+          // on touch, not a drag — only the grip and the palette initiate dragging.
+          if (!gripOnly) {
+            cleanup();
+            return;
+          }
+          started = true;
+          beginDrag(kind, from, ev.clientX, ev.clientY);
+        }
+        if (started) {
+          ev.preventDefault();
+          updateDrag(ev.clientX, ev.clientY);
+        }
+      };
+      const up = (ev) => {
+        cleanup();
+        if (started) endDrag(ev.clientX, ev.clientY);
+      };
+      const cancel = () => {
+        cleanup();
+        cancelDrag();
+      };
+      function cleanup() {
+        cancelLongPress();
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", cancel);
+      }
+      window.addEventListener("pointermove", move, { passive: false });
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", cancel);
+
+      // Touch has no right-click, so a hold opens the same context menu.
+      if (e.pointerType === "touch" && from) {
+        cancelLongPress();
+        longPress = {
+          timer: setTimeout(() => {
+            longPress = null;
+            if (started) return;
+            cleanup();
+            swallowSyntheticClick();
+            state.sel = from;
+            render();
+            openBlockMenu({ clientX: startX, clientY: startY }, from);
+          }, LONG_PRESS_MS),
+        };
+      }
+    }
+
+    el.palette.addEventListener("pointerdown", (e) => {
+      const item = e.target.closest(".cv2b-pal");
+      if (!item) return;
+      onPointerDown(e, item.dataset.kind, null, true);
     });
 
+    el.canvas.addEventListener("pointerdown", (e) => {
+      if (e.target.closest("[data-editing]")) return;
+      const blk = e.target.closest(".cv2b-blk");
+      if (!blk) return;
+      const path = JSON.parse(blk.dataset.path);
+      const onGrip = !!e.target.closest(".cv2b-grip");
+      onPointerDown(e, blk.dataset.kind, path, onGrip);
+    });
     // ---- context menus ----------------------------------------------------------
 
     let menuEl = null;
@@ -913,6 +1077,7 @@
       }
     }
     document.addEventListener("mousedown", (e) => {
+      if (shouldSwallow()) return;
       if (menuEl && !e.target.closest(".cv2b-menu")) closeMenu();
     });
 
@@ -1208,7 +1373,6 @@
       const b = document.createElement("button");
       b.type = "button";
       b.className = "cv2b-pal";
-      b.draggable = true;
       b.dataset.kind = p.kind;
       b.title = p.hint;
       b.innerHTML = '<span class="cv2b-glyph">' + p.glyph + "</span>" + esc(p.label);
