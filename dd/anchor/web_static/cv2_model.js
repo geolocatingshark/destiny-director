@@ -569,6 +569,105 @@
       .join("\n");
   }
 
+  // --- editor segmentation ----------------------------------------------------------
+  // The inline editor shows emoji as images while you type, which a <textarea> cannot
+  // do — so the editor is a contenteditable built from these segments. Kept here (pure,
+  // no DOM) so the tokenising rules stay tested and identical to the render path.
+
+  // Same two arms as INLINE, same order, for the same reason: `<t:1753894800:t>` contains
+  // `:1753894800:`, which the emoji arm would otherwise happily claim as a shortcode.
+  const EDIT_TOKEN = new RegExp(
+    "(?<ts><t:\\d+:[A-Za-z]>)" +
+      "|(?<emoji>(?<eprefix><a?)?:(?<ename>\\w+)(?:~\\d)*:(?<eid>\\d+>)?)",
+    "g",
+  );
+
+  /** The image URL a token resolves to, or null if it cannot be resolved. */
+  function emojiUrlFor(prefix, name, idGroup, emoji) {
+    if (idGroup) {
+      const id = idGroup.replace(">", "");
+      if (/^\d+$/.test(id)) {
+        return EMOJI_CDN + id + (prefix === "<a" ? ".gif" : ".png");
+      }
+    }
+    return (emoji && (emoji[name] || emoji[name.toLowerCase()])) || null;
+  }
+
+  /**
+   * Split raw content into segments for the inline editor.
+   *
+   * Returns `{type:"text", value}` and `{type:"emoji", token, name, url}` in order.
+   * An UNRESOLVABLE token stays text on purpose: a typo like `:kybber:` must remain
+   * editable characters, not become an opaque atom you cannot fix. Timestamps likewise
+   * stay text — they are something you edit, not a picture.
+   */
+  function emojiSegments(text, emoji) {
+    const src = String(text);
+    const out = [];
+    let last = 0;
+    const pushText = (value) => {
+      if (!value) return;
+      const prev = out[out.length - 1];
+      if (prev && prev.type === "text") prev.value += value;
+      else out.push({ type: "text", value });
+    };
+    for (const m of src.matchAll(EDIT_TOKEN)) {
+      const g = m.groups;
+      if (g.ts !== undefined) continue; // leave timestamps in the surrounding text
+      const url = emojiUrlFor(g.eprefix, g.ename, g.eid, emoji);
+      if (!url) continue;
+      pushText(src.slice(last, m.index));
+      out.push({ type: "emoji", token: m[0], name: g.ename, url });
+      last = m.index + m[0].length;
+    }
+    pushText(src.slice(last));
+    return out;
+  }
+
+  /**
+   * Emoji names matching a `:partial` the author is typing, best-first.
+   *
+   * Prefix matches rank above substring matches, so `:arc` offers `arc` before
+   * `sparc`. `limit` keeps the popup to a glanceable size.
+   */
+  function emojiSuggestions(query, emoji, limit) {
+    if (!emoji) return [];
+    const q = String(query || "").toLowerCase();
+    const names = Object.keys(emoji);
+    const starts = [];
+    const contains = [];
+    for (const name of names) {
+      const lower = name.toLowerCase();
+      if (!q) starts.push(name);
+      else if (lower.startsWith(q)) starts.push(name);
+      else if (lower.indexOf(q) !== -1) contains.push(name);
+    }
+    starts.sort();
+    contains.sort();
+    return starts.concat(contains).slice(0, limit || 8).map((name) => ({
+      name,
+      url: emoji[name],
+      token: ":" + name + ":",
+    }));
+  }
+
+  /**
+   * The `:partial` shortcode immediately before `caret` in `text`, or null.
+   *
+   * Requires a boundary before the colon so a `:` in `https://x` or mid-word never opens
+   * the picker, and refuses one containing whitespace.
+   */
+  function shortcodeBefore(text, caret) {
+    const src = String(text).slice(0, caret);
+    const colon = src.lastIndexOf(":");
+    if (colon === -1) return null;
+    const query = src.slice(colon + 1);
+    if (/[^\w]/.test(query)) return null;
+    const before = colon === 0 ? "" : src[colon - 1];
+    if (before && !/[\s(>]/.test(before)) return null;
+    return { start: colon, query };
+  }
+
   // --- exports ----------------------------------------------------------------------
 
   const CV2Model = {
@@ -626,6 +725,10 @@
     inlineMd,
     lineMd,
     renderMd,
+    // editor segmentation + emoji autocomplete
+    emojiSegments,
+    emojiSuggestions,
+    shortcodeBefore,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = CV2Model;

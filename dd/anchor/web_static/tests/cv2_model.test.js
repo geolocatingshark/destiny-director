@@ -317,3 +317,92 @@ test("an emoji URL is escaped into the src attribute", () => {
 test("newlines survive so the pre-wrap canvas keeps line breaks", () => {
   assert.equal(M.renderMd("a\nb").split("\n").length, 2);
 });
+
+// --- editor segmentation (emoji visible while editing) -------------------------------
+
+const EMOJI = { kyber: "https://cdn.invalid/kyber.png", arc: "https://cdn.invalid/arc.png" };
+
+test("segments split text around resolvable emoji", () => {
+  const segs = M.emojiSegments("hit :kyber: hard", EMOJI);
+  assert.deepEqual(
+    segs.map((s) => s.type),
+    ["text", "emoji", "text"],
+  );
+  assert.equal(segs[0].value, "hit ");
+  assert.equal(segs[1].token, ":kyber:");
+  assert.equal(segs[1].url, EMOJI.kyber);
+  assert.equal(segs[2].value, " hard");
+});
+
+test("a full custom emoji segments off its id, with no map", () => {
+  const segs = M.emojiSegments("<:boss:123456789> down", null);
+  assert.equal(segs[0].type, "emoji");
+  assert.match(segs[0].url, /emojis\/123456789\.png/);
+  assert.equal(segs[0].token, "<:boss:123456789>");
+});
+
+test("an UNRESOLVABLE shortcode stays editable text", () => {
+  // The point: a typo must remain characters you can fix, not an opaque image atom.
+  const segs = M.emojiSegments("oops :kybber: here", EMOJI);
+  assert.deepEqual(segs.map((s) => s.type), ["text"]);
+  assert.equal(segs[0].value, "oops :kybber: here");
+});
+
+test("a timestamp is never mistaken for an emoji in the editor", () => {
+  // `<t:1753894800:t>` contains `:1753894800:`, which the emoji arm would claim.
+  const segs = M.emojiSegments("at <t:1753894800:t> ok", { 1753894800: "x" });
+  assert.deepEqual(segs.map((s) => s.type), ["text"]);
+});
+
+test("segments round-trip back to the original content", () => {
+  const original = "a :kyber: b <:boss:99> c :unknown: d";
+  const segs = M.emojiSegments(original, EMOJI);
+  const back = segs.map((s) => (s.type === "text" ? s.value : s.token)).join("");
+  assert.equal(back, original);
+});
+
+test("adjacent text segments are merged, so the DOM stays flat", () => {
+  const segs = M.emojiSegments(":nope: :alsonope:", EMOJI);
+  assert.equal(segs.length, 1);
+});
+
+// --- emoji autocomplete ---------------------------------------------------------------
+
+test("suggestions prefer prefix matches over substring matches", () => {
+  const emoji = { arc: "a", sparc: "b", archer: "c" };
+  const names = M.emojiSuggestions("arc", emoji).map((s) => s.name);
+  assert.deepEqual(names.slice(0, 2), ["arc", "archer"]); // prefix first, alphabetical
+  assert.equal(names[2], "sparc"); // substring match last
+});
+
+test("suggestions are capped and carry an insertable token", () => {
+  const many = {};
+  for (let i = 0; i < 50; i++) many["emoji" + i] = "u" + i;
+  const out = M.emojiSuggestions("emoji", many, 5);
+  assert.equal(out.length, 5);
+  assert.equal(out[0].token, ":" + out[0].name + ":");
+});
+
+test("an empty query lists everything (the picker opens on a bare colon)", () => {
+  assert.equal(M.emojiSuggestions("", EMOJI).length, 2);
+});
+
+test("shortcodeBefore finds the partial being typed", () => {
+  const at = "hi :kyb".length;
+  assert.deepEqual(M.shortcodeBefore("hi :kyb", at), { start: 3, query: "kyb" });
+  assert.deepEqual(M.shortcodeBefore("hi :", 4), { start: 3, query: "" });
+});
+
+test("shortcodeBefore ignores a colon that is not opening a shortcode", () => {
+  // A URL, and a colon glued to the end of a word — neither should open the picker.
+  assert.equal(M.shortcodeBefore("see https://x", "see https://x".length), null);
+  assert.equal(M.shortcodeBefore("time12:30", "time12:30".length), null);
+  // Whitespace after the colon means the author moved on.
+  assert.equal(M.shortcodeBefore("hi : there", "hi : there".length), null);
+});
+
+test("shortcodeBefore only looks behind the caret", () => {
+  const text = "hi :kyb more";
+  assert.equal(M.shortcodeBefore(text, 7).query, "kyb");
+  assert.equal(M.shortcodeBefore(text, 3), null); // caret before the colon
+});

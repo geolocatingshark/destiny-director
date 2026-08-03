@@ -382,20 +382,78 @@ body.cv2b-dragging-now * {
   color: var(--danger-text);
 }
 
-/* In-place text editing: raw markdown while focused. */
+/* In-place text editing: raw markdown while focused, but emoji stay as images.
+   A contenteditable rather than a textarea, so those images can exist at all —
+   white-space:pre-wrap makes plain "\n" in the text render as line breaks, which is
+   what readEditor() writes back. */
 .cv2b-edit {
   width: 100%;
-  resize: none;
-  overflow: hidden;
+  min-height: 1.6em;
   font: inherit;
   font-size: 0.86rem;
   line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--text-1);
   background: var(--surface-3);
   border: 1px solid var(--accent);
   border-radius: var(--radius-sm);
   padding: 0.35rem 0.45rem;
   display: block;
+  outline: none;
+}
+/* Emoji inside the editor are atoms: contenteditable="false" makes the caret step over
+   them whole, so backspace deletes the emoji rather than half a shortcode. */
+.cv2b-edit .cv2b-emoji {
+  width: 1.3em;
+  height: 1.3em;
+  vertical-align: -0.25em;
+  object-fit: contain;
+  margin: 0 0.05em;
+  border-radius: 3px;
+}
+.cv2b-edit .cv2b-emoji::selection {
+  background: var(--accent-tint);
+}
+
+/* --- emoji autocomplete --------------------------------------------------- */
+.cv2b-emoji-picker {
+  position: fixed;
+  z-index: 85;
+  min-width: 11rem;
+  max-height: 15rem;
+  overflow-y: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.2rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.cv2b-emoji-picker button {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0.3rem 0.45rem;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.cv2b-emoji-picker button img {
+  width: 1.35rem;
+  height: 1.35rem;
+  object-fit: contain;
+  flex: none;
+}
+.cv2b-emoji-picker button.cv2b-pick-on,
+.cv2b-emoji-picker button:hover {
+  background: var(--accent-tint);
+  color: var(--text-1);
 }
 .cv2b-edit-hint {
   position: absolute;

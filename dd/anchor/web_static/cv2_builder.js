@@ -293,11 +293,15 @@
         }
         case "text": {
           if (M.samePath(path, state.editing)) {
+            // A contenteditable, not a <textarea>: a textarea can only hold characters,
+            // so emoji would drop back to raw `<:name:123>` the moment you started
+            // editing — exactly the text you came to the builder to avoid reading.
             return (
-              '<textarea class="cv2b-edit" data-editing="1">' +
-              esc(node.content || "") +
-              "</textarea>" +
-              '<span class="cv2b-edit-hint">markdown · Esc to finish</span>'
+              '<div class="cv2b-edit" data-editing="1" contenteditable="true" ' +
+              'spellcheck="true" autocapitalize="sentences">' +
+              editorHtml(node.content || "") +
+              "</div>" +
+              '<span class="cv2b-edit-hint">markdown · type : for emoji · Esc to finish</span>'
             );
           }
           const body = String(node.content || "").trim()
@@ -737,9 +741,67 @@
     });
 
     // ---- in-place text editing --------------------------------------------------
+    // The editor is a contenteditable holding real <img> emoji, not a <textarea>. A
+    // textarea can only hold characters, so the moment you clicked into a block every
+    // emoji would revert to raw `<:name:123>` — the thing the builder exists to hide.
+    //
     // Commit is SURGICAL: it swaps only the edited block's DOM. A full re-render here
-    // would tear the DOM out from under an in-flight click, so clicking straight from
-    // one text block into another would lose the second click.
+    // would tear the DOM out from under an in-flight click, so clicking straight from one
+    // text block into another would lose the second click.
+
+    /** The editor's inner HTML for `content`: escaped text with emoji as images. */
+    function editorHtml(content) {
+      return M.emojiSegments(content, emoji)
+        .map((seg) =>
+          seg.type === "text"
+            ? esc(seg.value)
+            : '<img class="emoji cv2b-emoji" src="' +
+              esc(seg.url) +
+              '" alt="' +
+              esc(seg.token) +
+              '" data-token="' +
+              esc(seg.token) +
+              '" contenteditable="false">',
+        )
+        .join("");
+    }
+
+    const BLOCKISH = /^(DIV|P)$/;
+
+    /**
+     * Read the editor back to raw content.
+     *
+     * Emoji images carry the token they came from, so they round-trip to exactly the
+     * text that produced them. Enter in a contenteditable produces <div>/<p> wrappers
+     * (and `<div><br></div>` for a blank line) rather than "\n", so those are folded
+     * back into newlines here.
+     */
+    function readEditor(root) {
+      const parts = [];
+      (function walk(node) {
+        node.childNodes.forEach((child) => {
+          if (child.nodeType === 3) {
+            parts.push(child.nodeValue);
+          } else if (child.nodeName === "IMG") {
+            parts.push(child.getAttribute("data-token") || "");
+          } else if (child.nodeName === "BR") {
+            parts.push("\n");
+          } else if (BLOCKISH.test(child.nodeName)) {
+            if (parts.length) parts.push("\n");
+            // `<div><br></div>` is one blank line, not two.
+            const only = child.childNodes.length === 1 && child.firstChild;
+            if (!(only && only.nodeName === "BR")) walk(child);
+          } else {
+            walk(child);
+          }
+        });
+      })(root);
+      return parts.join("");
+    }
+
+    function editorEl() {
+      return el.canvas.querySelector("[data-editing]");
+    }
 
     function startEdit(path) {
       state.editing = path;
@@ -747,52 +809,218 @@
       if (!node) return;
       state.editOrigin = String(node.content || "");
       render();
-      const ta = el.canvas.querySelector("[data-editing]");
-      if (!ta) return;
-      autosize(ta);
-      ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
-      ta.addEventListener("input", () => autosize(ta));
-      ta.addEventListener("keydown", (ev) => {
+      const box = editorEl();
+      if (!box) return;
+      box.focus();
+      placeCaretAtEnd(box);
+
+      box.addEventListener("input", () => updateEmojiPicker(box));
+      box.addEventListener("keydown", (ev) => {
+        if (emojiPickerKeydown(ev)) return; // the picker owns arrows/Enter/Esc while open
         if (ev.key === "Escape") {
           ev.preventDefault();
-          ta.blur();
+          box.blur();
         }
         // Ctrl/Cmd+Enter finishes; plain Enter is a newline, as in a Discord message.
         if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
           ev.preventDefault();
-          ta.blur();
+          box.blur();
         }
       });
-      ta.addEventListener("blur", commitEdit);
+      // Paste as plain text: pasted markup would otherwise land as real HTML inside the
+      // editor and readEditor would flatten it to something the author never typed.
+      box.addEventListener("paste", (ev) => {
+        ev.preventDefault();
+        const text = (ev.clipboardData || window.clipboardData).getData("text");
+        document.execCommand("insertText", false, text);
+      });
+      box.addEventListener("blur", () => {
+        // A tap on the picker moves focus out of the editor; don't commit mid-pick.
+        if (pickerEl && pickerEl.contains(document.activeElement)) return;
+        closeEmojiPicker();
+        commitEdit();
+      });
     }
 
-    function autosize(ta) {
-      ta.style.height = "auto";
-      ta.style.height = ta.scrollHeight + "px";
+    function placeCaretAtEnd(box) {
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
     }
 
     function commitEdit() {
-      const ta = el.canvas.querySelector("[data-editing]");
+      const box = editorEl();
       const path = state.editing;
-      if (!ta || !path) return;
+      if (!box || !path) return;
       state.editing = null;
       const node = safeResolve(path);
       if (!node) {
         render();
         return;
       }
-      if (ta.value !== state.editOrigin) {
+      const next = readEditor(box);
+      if (next !== state.editOrigin) {
         // Snapshot the pre-edit tree so one editing session is one undo step.
         node.content = state.editOrigin;
         snapshot();
-        node.content = ta.value;
+        node.content = next;
         markDirty();
         setStatus("Text updated");
       }
-      const blk = ta.closest(".cv2b-blk");
+      const blk = box.closest(".cv2b-blk");
       if (blk) blk.outerHTML = renderBlock(path, node, problemPaths());
       refreshValidity();
+    }
+
+    // ---- emoji autocomplete ------------------------------------------------------
+    // Typing ":" opens a picker over the guild emoji already loaded for the preview, so
+    // an author never has to know a shortcode by heart or leave to look one up.
+
+    let pickerEl = null;
+    let pickerItems = [];
+    let pickerIndex = 0;
+
+    function closeEmojiPicker() {
+      if (pickerEl) {
+        pickerEl.remove();
+        pickerEl = null;
+      }
+      pickerItems = [];
+      pickerIndex = 0;
+    }
+
+    /** The text node + caret offset, if the caret is inside the editor's text. */
+    function caretInText(box) {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return null;
+      const range = sel.getRangeAt(0);
+      const node = range.startContainer;
+      if (node.nodeType !== 3 || !box.contains(node)) return null;
+      return { node, offset: range.startOffset };
+    }
+
+    function updateEmojiPicker(box) {
+      const at = caretInText(box);
+      if (!at) return closeEmojiPicker();
+      const found = M.shortcodeBefore(at.node.nodeValue, at.offset);
+      if (!found) return closeEmojiPicker();
+      const items = M.emojiSuggestions(found.query, emoji, 8);
+      if (!items.length) return closeEmojiPicker();
+      renderEmojiPicker(items);
+    }
+
+    function renderEmojiPicker(items) {
+      pickerItems = items;
+      if (pickerIndex >= items.length) pickerIndex = 0;
+      if (!pickerEl) {
+        pickerEl = document.createElement("div");
+        pickerEl.className = "cv2b-emoji-picker";
+        document.body.appendChild(pickerEl);
+        // pointerdown, not click: the editor's blur fires first on click and would
+        // commit before the pick landed.
+        pickerEl.addEventListener("pointerdown", (ev) => {
+          const row = ev.target.closest("[data-i]");
+          if (!row) return;
+          ev.preventDefault();
+          acceptSuggestion(pickerItems[Number(row.dataset.i)]);
+        });
+      }
+      pickerEl.innerHTML = items
+        .map(
+          (s, i) =>
+            '<button type="button" data-i="' +
+            i +
+            '" class="' +
+            (i === pickerIndex ? "cv2b-pick-on" : "") +
+            '"><img src="' +
+            esc(s.url) +
+            '" alt=""><span>' +
+            esc(s.name) +
+            "</span></button>",
+        )
+        .join("");
+      positionEmojiPicker();
+    }
+
+    function positionEmojiPicker() {
+      const sel = window.getSelection();
+      const box = editorEl();
+      if (!pickerEl || !box) return;
+      let rect = null;
+      if (sel && sel.rangeCount) {
+        rect = sel.getRangeAt(0).getBoundingClientRect();
+      }
+      // A collapsed range can report a zero rect; fall back to the editor itself.
+      if (!rect || (!rect.width && !rect.height)) rect = box.getBoundingClientRect();
+      const pr = pickerEl.getBoundingClientRect();
+      const left = Math.min(rect.left, window.innerWidth - pr.width - 8);
+      // Prefer below the caret, flip above when there is no room (phone keyboards eat
+      // the bottom half of the screen).
+      const below = rect.bottom + 6;
+      const top = below + pr.height > window.innerHeight - 8 ? rect.top - pr.height - 6 : below;
+      pickerEl.style.left = Math.max(8, left) + "px";
+      pickerEl.style.top = Math.max(8, top) + "px";
+    }
+
+    /** Returns true when the picker consumed the key. */
+    function emojiPickerKeydown(ev) {
+      if (!pickerEl || !pickerItems.length) return false;
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        const delta = ev.key === "ArrowDown" ? 1 : -1;
+        pickerIndex = (pickerIndex + delta + pickerItems.length) % pickerItems.length;
+        renderEmojiPicker(pickerItems);
+        return true;
+      }
+      if (ev.key === "Enter" || ev.key === "Tab") {
+        ev.preventDefault();
+        acceptSuggestion(pickerItems[pickerIndex]);
+        return true;
+      }
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeEmojiPicker();
+        return true;
+      }
+      return false;
+    }
+
+    /** Replace the `:partial` before the caret with the chosen emoji image. */
+    function acceptSuggestion(suggestion) {
+      const box = editorEl();
+      if (!box || !suggestion) return closeEmojiPicker();
+      const at = caretInText(box);
+      if (!at) return closeEmojiPicker();
+      const found = M.shortcodeBefore(at.node.nodeValue, at.offset);
+      if (!found) return closeEmojiPicker();
+
+      const text = at.node.nodeValue;
+      const tail = document.createTextNode(text.slice(at.offset));
+      const img = document.createElement("img");
+      img.className = "emoji cv2b-emoji";
+      img.src = suggestion.url;
+      img.alt = suggestion.token;
+      img.setAttribute("data-token", suggestion.token);
+      img.contentEditable = "false";
+
+      const parent = at.node.parentNode;
+      at.node.nodeValue = text.slice(0, found.start);
+      parent.insertBefore(tail, at.node.nextSibling);
+      parent.insertBefore(img, tail);
+
+      const range = document.createRange();
+      range.setStart(tail, 0);
+      range.collapse(true);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+
+      closeEmojiPicker();
+      box.focus();
+      markDirty();
     }
 
     function scrollToSel() {
@@ -1240,7 +1468,12 @@
 
     function onKey(e) {
       if (!root.isConnected) return;
-      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+      // isContentEditable is load-bearing since the inline editor became a <div>:
+      // without it Backspace here deletes the whole BLOCK instead of a character,
+      // and Enter inserts a new block instead of a newline.
+      const typing =
+        /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) ||
+        !!(e.target && e.target.isContentEditable);
       const mod = e.metaKey || e.ctrlKey;
 
       if (e.key === "Escape" && menuEl) {
