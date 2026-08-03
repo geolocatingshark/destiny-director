@@ -522,13 +522,6 @@
       // when there is something to edit AND the author hasn't dismissed it. The class is
       // inert on desktop, where it is a static column.
       syncSheet(sheetWorthOpening(node));
-      // The status line is hidden on mobile because it carries desktop-only advice —
-      // except once it holds the posted-message link, which is the one thing you do
-      // want to tap.
-      el.status.classList.toggle(
-        "cv2b-has-link",
-        el.status.querySelector("a") !== null,
-      );
     }
 
     function fieldsFor(k, node) {
@@ -1761,6 +1754,23 @@
     function setStatus(msg, isError) {
       el.status.textContent = msg || "";
       el.status.classList.toggle("cv2b-err", !!isError);
+      syncStatusLink();
+    }
+    /** Status text carrying a link, e.g. the posted message. */
+    function setStatusLink(html) {
+      el.status.innerHTML = html;
+      el.status.classList.remove("cv2b-err");
+      syncStatusLink();
+    }
+    // The status line is hidden on mobile because it carries desktop-only advice —
+    // except once it holds the posted-message link, which is the one thing you do want
+    // to tap. Every writer of el.status goes through setStatus/setStatusLink so that
+    // exception cannot be forgotten by one of them.
+    function syncStatusLink() {
+      el.status.classList.toggle(
+        "cv2b-has-link",
+        el.status.querySelector("a") !== null,
+      );
     }
 
     el.undo.addEventListener("click", undo);
@@ -1856,12 +1866,14 @@
         const result = await options.onPublish(clone(state.nodes));
         el.dialog.close();
         state.dirty = false;
-        setStatus(result && result.link ? "Posted: " + result.link : "Posted");
         if (result && result.link) {
-          el.status.innerHTML =
+          setStatusLink(
             'Posted — <a href="' +
-            esc(result.link) +
-            '" target="_blank" rel="noopener noreferrer">open in Discord</a>';
+              esc(result.link) +
+              '" target="_blank" rel="noopener noreferrer">open in Discord</a>',
+          );
+        } else {
+          setStatus("Posted");
         }
         el.publish.disabled = true;
       } catch (err) {
