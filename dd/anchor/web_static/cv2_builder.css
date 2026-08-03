@@ -567,6 +567,27 @@ body.cv2b-dragging-now * {
 .cv2b-insp-empty li {
   margin: 0.18rem 0;
 }
+/* One field group per button in a row, visually separated so it is obvious which
+   Label/URL pair belongs to which button. */
+.cv2b-btn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.cv2b-btn-list > :not(:first-child) {
+  border-top: 1px solid var(--border);
+  padding-top: 0.55rem;
+}
+.cv2b-btn-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 0.15rem;
+}
 .cv2b-url-row {
   display: flex;
   gap: 0.3rem;

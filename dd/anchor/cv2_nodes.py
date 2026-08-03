@@ -220,10 +220,23 @@ def mutate_media(node: Node, values: list[str]) -> Node | None:
 
 
 def _button_of(node: Node) -> Node:
-    """The button dict inside a link-button node (unwrapping the action row)."""
+    """The FIRST button inside a link-button node (unwrapping the action row).
+
+    Only correct where exactly one button is possible — a section accessory, or a label
+    preview. For validating or sanitizing a row, use :func:`_buttons_of`: a row loaded
+    from an existing post can carry up to five.
+    """
     if node.get("type") == ACTION_ROW:
         return node["components"][0]
     return node
+
+
+def _buttons_of(node: Node) -> list[Node]:
+    """Every button in a link-button node (a row may hold several; a bare
+    button, one)."""
+    if node.get("type") == ACTION_ROW:
+        return node.get("components", [])
+    return [node]
 
 
 def link_button_fields(node: Node) -> list[_FieldSpec]:
@@ -502,8 +515,8 @@ def _sanitize_node(node: Node) -> Node:
             return _placeholder("empty media gallery")
         return {**node, "items": items}
     if k == "link_button":
-        button = _button_of(node)
-        if not (button.get("label") and button.get("url")):
+        buttons = _buttons_of(node)
+        if not buttons or not all(b.get("label") and b.get("url") for b in buttons):
             return _placeholder("incomplete link button")
         return node
     return node
@@ -551,6 +564,14 @@ def _validate_node(node: Node, problems: list[str]) -> None:
         if not node.get("items"):
             problems.append("A media gallery has no images.")
     elif k == "link_button":
-        button = _button_of(node)
-        if not (button.get("label") and button.get("url")):
-            problems.append("A link button needs both a label and a URL.")
+        buttons = _buttons_of(node)
+        if not buttons:
+            problems.append("A button row has no buttons.")
+        for index, button in enumerate(buttons, start=1):
+            if button.get("label") and button.get("url"):
+                continue
+            problems.append(
+                f"Button {index} needs both a label and a URL."
+                if len(buttons) > 1
+                else "A link button needs both a label and a URL."
+            )

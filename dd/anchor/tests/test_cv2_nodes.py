@@ -261,3 +261,50 @@ def test_validate_passes_a_complete_message():
     container = cn.make_container()
     container["components"] = [cn.make_text("hello")]
     assert cn.validate([container]) == []
+
+
+# --- multi-button rows ---------------------------------------------------------------
+# An action row loaded from a live post can hold up to five buttons. `_button_of`
+# returns only the first, so validating/sanitizing through it let a broken second
+# button reach Discord — and left it uneditable in the web builder.
+
+
+def _row(*buttons: dict) -> cn.Node:
+    return {"type": cn.ACTION_ROW, "components": list(buttons)}
+
+
+def _btn(label: str = "", url: str = "") -> dict:
+    return {"type": cn.BUTTON, "style": 5, "label": label, "url": url}
+
+
+def test_validate_catches_an_incomplete_second_button():
+    problems = cn.validate([_row(_btn("Ok", "https://e.invalid"), _btn("Broken"))])
+    assert any("Button 2" in p for p in problems), problems
+
+
+def test_validate_passes_a_complete_multi_button_row():
+    row = _row(_btn("A", "https://e.invalid/a"), _btn("B", "https://e.invalid/b"))
+    assert cn.validate([row]) == []
+
+
+def test_validate_keeps_the_singular_message_for_a_one_button_row():
+    problems = cn.validate([_row(_btn("Ok"))])
+    assert problems == ["A link button needs both a label and a URL."]
+
+
+def test_validate_reports_an_empty_row():
+    assert any("no buttons" in p for p in cn.validate([_row()]))
+
+
+def test_sanitize_degrades_a_row_whose_second_button_is_incomplete():
+    # Previewing it as-is would make Discord reject the live-preview edit.
+    (node,) = cn.sanitize_for_preview(
+        [_row(_btn("Ok", "https://e.invalid"), _btn("Broken"))]
+    )
+    assert node["type"] == cn.TEXT_DISPLAY
+    assert "incomplete link button" in node["content"]
+
+
+def test_sanitize_keeps_a_complete_multi_button_row():
+    row = _row(_btn("A", "https://e.invalid/a"), _btn("B", "https://e.invalid/b"))
+    assert cn.sanitize_for_preview([row]) == [row]

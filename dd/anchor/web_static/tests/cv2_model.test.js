@@ -201,6 +201,53 @@ test("an incomplete accessory is reported against the accessory itself", () => {
   assert.deepEqual(btnProblem.path, [0, "acc"]);
 });
 
+// --- multi-button rows ---------------------------------------------------------------
+// A row loaded from a live post can hold up to five buttons. Assuming one meant the
+// second was rendered but not editable, and its missing URL slipped past validation.
+
+const twoButtonRow = (b2) => ({
+  type: M.ACTION_ROW,
+  components: [
+    { type: M.BUTTON, style: 5, label: "More Details", url: "https://e.invalid/a" },
+    Object.assign({ type: M.BUTTON, style: 5 }, b2),
+  ],
+});
+
+test("buttonsOf returns every button in a row", () => {
+  const row = twoButtonRow({ label: "Support Us", url: "https://e.invalid/b" });
+  assert.equal(M.buttonsOf(row).length, 2);
+  assert.equal(M.buttonsOf(row)[1].label, "Support Us");
+  // buttonOf still means "the first", for the accessory/label cases that want it.
+  assert.equal(M.buttonOf(row).label, "More Details");
+});
+
+test("buttonsOf treats a bare accessory button as a row of one", () => {
+  const bare = { type: M.BUTTON, style: 5, label: "Go", url: "https://e.invalid" };
+  assert.deepEqual(M.buttonsOf(bare), [bare]);
+});
+
+test("an incomplete SECOND button is caught, naming which one", () => {
+  const problems = M.validate([twoButtonRow({ label: "Support Us" })]); // no url
+  const hit = problems.find((p) => /Button 2/.test(p.msg));
+  assert.ok(hit, "second button not validated: " + JSON.stringify(problems));
+  assert.match(hit.msg, /label and a URL/);
+});
+
+test("a complete two-button row validates clean", () => {
+  const row = twoButtonRow({ label: "Support Us", url: "https://e.invalid/b" });
+  assert.deepEqual(M.validate([row]), []);
+});
+
+test("a single-button row keeps the original message, not 'Button 1'", () => {
+  const problems = M.validate([linkButton("Go", "")]);
+  assert.match(problems[0].msg, /^A link button needs/);
+});
+
+test("an empty row is reported rather than silently passing", () => {
+  const problems = M.validate([{ type: M.ACTION_ROW, components: [] }]);
+  assert.ok(problems.some((p) => /no buttons/.test(p.msg)));
+});
+
 test("a link button needs both a label and a URL", () => {
   assert.ok(M.validate([linkButton("Go", "")]).some((p) => /label and a URL/.test(p.msg)));
   assert.ok(M.validate([linkButton("", "https://e.invalid")]).length > 0);

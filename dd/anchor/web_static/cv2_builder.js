@@ -597,18 +597,53 @@
           );
         }
         case "link_button": {
-          const b = M.buttonOf(node);
-          return (
-            '<div class="cv2b-field"><label>Label</label><input type="text" data-prop="btnLabel" value="' +
+          // A row can hold up to five buttons. Editing only the first (which is what
+          // buttonOf gives you) left every other button in a row visible but
+          // uneditable — reachable only by deleting the row and rebuilding it.
+          const btns = M.buttonsOf(node);
+          const isRow = node.type === M.ACTION_ROW;
+          const group = (b, i) =>
+            (btns.length > 1
+              ? '<div class="cv2b-btn-head"><span>Button ' +
+                (i + 1) +
+                "</span>" +
+                '<button type="button" class="cv2b-icon" data-act="btnDel" data-i="' +
+                i +
+                '" title="Remove this button">✕</button></div>'
+              : "") +
+            '<div class="cv2b-field"><label>Label</label>' +
+            '<input type="text" data-prop="btnLabel" data-i="' +
+            i +
+            '" value="' +
             esc(b.label || "") +
             '"></div>' +
-            '<div class="cv2b-field"><label>URL</label><input type="url" data-prop="btnUrl" value="' +
+            '<div class="cv2b-field"><label>URL</label>' +
+            '<input type="url" data-prop="btnUrl" data-i="' +
+            i +
+            '" value="' +
             esc(b.url || "") +
             '" placeholder="https://…"></div>' +
-            '<div class="cv2b-field"><label>Emoji <span class="cv2b-help">optional</span></label>' +
-            '<input type="text" data-prop="btnEmoji" maxlength="8" value="' +
+            '<div class="cv2b-field"><label>Emoji <span class="cv2b-help">optional</span>' +
+            '</label><input type="text" data-prop="btnEmoji" data-i="' +
+            i +
+            '" maxlength="8" value="' +
             esc((b.emoji || {}).name || "") +
-            '"></div>'
+            '"></div>';
+          return (
+            '<div class="cv2b-btn-list">' +
+            btns.map(group).join("") +
+            "</div>" +
+            // A section accessory is exactly one bare button, so it never grows a row.
+            (isRow
+              ? '<button type="button" data-act="btnAdd"' +
+                (btns.length >= M.MAX_ROW_BUTTONS ? " disabled" : "") +
+                ">Add another button</button>" +
+                '<span class="cv2b-help">' +
+                btns.length +
+                "/" +
+                M.MAX_ROW_BUTTONS +
+                " in this row</span>"
+              : "")
           );
         }
         case "thumbnail":
@@ -645,7 +680,9 @@
         snapshot();
         liveKey = key;
       }
-      const b = M.kind(node) === "link_button" ? M.buttonOf(node) : null;
+      const btnIndex = input.dataset && input.dataset.i ? Number(input.dataset.i) : 0;
+      const b =
+        M.kind(node) === "link_button" ? M.buttonsOf(node)[btnIndex] : null;
       switch (prop) {
         case "accent":
         case "accentHex": {
@@ -742,6 +779,17 @@
       }
       if (btn.dataset.act === "mediaDel") {
         commit("Image removed", () => node.items.splice(Number(btn.dataset.i), 1));
+      }
+      if (btn.dataset.act === "btnAdd") {
+        commit("Button added", () => {
+          if (!node.components) node.components = [];
+          node.components.push(M.makeButton());
+        });
+      }
+      if (btn.dataset.act === "btnDel") {
+        commit("Button removed", () =>
+          node.components.splice(Number(btn.dataset.i), 1),
+        );
       }
     });
 

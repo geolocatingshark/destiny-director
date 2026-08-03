@@ -43,6 +43,7 @@
   const MAX_GALLERY_ITEMS = 10;
   const MAX_SECTION_TEXTS = 3;
   const MAX_TOP_LEVEL = 10;
+  const MAX_ROW_BUTTONS = 5; // Discord's per-action-row cap
 
   const KIND_BY_TYPE = {
     [CONTAINER]: "container",
@@ -73,9 +74,20 @@
     return (node && KIND_BY_TYPE[node.type]) || "unknown";
   }
 
-  /** The button dict inside a link-button node, unwrapping the action row. */
+  /**
+   * The FIRST button inside a link-button node, unwrapping the action row.
+   *
+   * Only correct where exactly one button is possible — a section accessory, or a label
+   * preview. For editing or validating a ROW use `buttonsOf`: a row loaded from a live
+   * post can carry up to five, and assuming one meant the others could not be edited.
+   */
   function buttonOf(node) {
     return node.type === ACTION_ROW ? node.components[0] : node;
+  }
+
+  /** Every button in a link-button node (a row may hold several; a bare button, one). */
+  function buttonsOf(node) {
+    return node.type === ACTION_ROW ? node.components || [] : [node];
   }
 
   // --- constructors -----------------------------------------------------------------
@@ -366,10 +378,17 @@
         } else if (k === "media") {
           if (!(node.items || []).length) push(path, "A media gallery has no images.");
         } else if (k === "link_button") {
-          const b = buttonOf(node);
-          if (!(b.label && b.url)) {
-            push(path, "A link button needs both a label and a URL.");
-          }
+          const btns = buttonsOf(node);
+          if (!btns.length) push(path, "A button row has no buttons.");
+          btns.forEach((b, bi) => {
+            if (b.label && b.url) return;
+            push(
+              path,
+              btns.length > 1
+                ? "Button " + (bi + 1) + " needs both a label and a URL."
+                : "A link button needs both a label and a URL.",
+            );
+          });
         }
       });
     })(nodes, []);
@@ -686,11 +705,13 @@
     MAX_GALLERY_ITEMS,
     MAX_SECTION_TEXTS,
     MAX_TOP_LEVEL,
+    MAX_ROW_BUTTONS,
     // labels
     KIND_LABEL,
     // classification
     kind,
     buttonOf,
+    buttonsOf,
     // constructors
     makeContainer,
     makeText,
