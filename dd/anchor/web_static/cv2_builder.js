@@ -199,7 +199,15 @@
       state.problems = M.validate(state.nodes);
       el.canvas.innerHTML = state.nodes.length
         ? renderScope([], state.nodes, problemPaths())
-        : '<div class="cv2b-empty">Nothing here yet.<br>Drag a block from the left, or <b>right-click</b> for the menu.</div>';
+        : // The first thing an author with a blank draft sees, so it has to name a
+          // gesture they actually have: there is no palette rail and no right-click on
+          // a phone. Both phrasings ship and the media query picks one.
+          '<div class="cv2b-empty">Nothing here yet.<br>' +
+          '<span class="cv2b-wide-only">Drag a block from the left, or ' +
+          "<b>right-click</b> for the menu.</span>" +
+          // Not "press and hold" — the long-press menu hangs off a block, and there is
+          // no block yet.
+          '<span class="cv2b-narrow-only">Tap <b>+ Add</b> to start.</span></div>';
     }
 
     function render() {

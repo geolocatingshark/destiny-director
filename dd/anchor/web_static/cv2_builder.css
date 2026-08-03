@@ -188,6 +188,11 @@
 .cv2b-empty b {
   color: var(--text-2);
 }
+/* Advice that only makes sense on one class of device — the narrow half is swapped in
+   by the media query at the end of this file. */
+.cv2b-narrow-only {
+  display: none;
+}
 .cv2b-scope {
   display: flex;
   flex-direction: column;
@@ -784,6 +789,14 @@ body.cv2b-dragging-now * {
 
   .cv2b-canvas-wrap {
     padding: 0.7rem 0.6rem 5rem;
+  }
+  /* There is no palette rail and no right mouse button here, so the empty-canvas hint
+     names the gestures that do exist. */
+  .cv2b-wide-only {
+    display: none;
+  }
+  .cv2b-narrow-only {
+    display: inline;
   }
   /* A 10px rail is a fine mouse target and a hopeless finger one, and touch has no
      hover to reveal it — so the "+" shows permanently, faintly. The rail LINE stays
