@@ -474,9 +474,20 @@ body.cv2b-dragging-now * {
   flex-direction: column;
   gap: 0.8rem;
 }
-/* The sheet grab bar exists only where the inspector IS a sheet. */
-.cv2b .cv2b-sheet-grip {
+/* The sheet's dismiss controls exist only where the inspector IS a sheet; on desktop
+   the bar collapses and the body flows as the column always did. */
+.cv2b-insp-bar {
   display: none;
+}
+.cv2b .cv2b-sheet-grip,
+.cv2b .cv2b-sheet-close {
+  display: none;
+}
+.cv2b-insp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  min-height: 0;
 }
 .cv2b-insp-head h3 {
   margin: 0;
@@ -809,6 +820,20 @@ body.cv2b-dragging-now * {
   .cv2b-inspector.cv2b-sheet-open {
     transform: translateY(0);
   }
+  /* Header outside the scroll area so the close control is always reachable; only the
+     body scrolls. */
+  .cv2b-inspector {
+    overflow: hidden;
+  }
+  .cv2b-insp-bar {
+    display: block;
+    position: relative;
+    flex: none;
+  }
+  .cv2b-insp-body {
+    overflow-y: auto;
+    min-height: 0;
+  }
   /* The grab bar is a real button: a sheet you cannot dismiss is a sheet that eats
      half the screen for the rest of the session. Wide and short, so it is an easy
      thumb target without looking like a form control. */
@@ -836,6 +861,34 @@ body.cv2b-dragging-now * {
   }
   .cv2b .cv2b-sheet-grip:active::before {
     background: var(--accent);
+  }
+
+  /* The explicit way out, for anyone who doesn't read a grab bar as tappable. Sized as
+     a real thumb target and pinned clear of the sheet's first field. */
+  .cv2b .cv2b-sheet-close {
+    display: grid;
+    place-items: center;
+    position: absolute;
+    top: -0.1rem;
+    right: 0;
+    width: 2.1rem;
+    height: 2.1rem;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--surface-3);
+    color: var(--text-2);
+    font-size: 0.85rem;
+    line-height: 1;
+    z-index: 2;
+  }
+  .cv2b .cv2b-sheet-close:active {
+    border-color: var(--accent);
+    color: var(--text-1);
+  }
+  /* Keep the heading clear of the close button. */
+  .cv2b-inspector .cv2b-insp-head {
+    padding-right: 2.6rem;
   }
 
   /* Scroll clearance: without this the sheet permanently covers the bottom of the

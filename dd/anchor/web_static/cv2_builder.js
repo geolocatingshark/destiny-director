@@ -449,13 +449,23 @@
 
     function renderInspector() {
       const node = state.sel ? safeResolve(state.sel) : null;
-      const parts = [];
-      // A real element, not the CSS ::before bar — the grab handle has to be tappable
-      // or there is no way to get the sheet off the screen.
-      parts.push(
+      // The sheet's dismiss controls live in a fixed header, and everything else in a
+      // scrolling body. They are REAL elements, not the CSS ::before bar, because the
+      // grab handle has to be tappable or there is no way off the screen — and they sit
+      // outside the scroll area, or on a long sheet (a gallery with ten URLs) the close
+      // button scrolls away exactly when you want it.
+      //
+      // Two ways out on purpose: the grab bar is the conventional gesture affordance but
+      // an invisible convention; an explicit ✕ is what people look for. Both carry the
+      // same data-a, so they share one handler.
+      const header =
+        '<div class="cv2b-insp-bar">' +
         '<button type="button" class="cv2b-sheet-grip" data-a="sheet-close" ' +
-          'aria-label="Close properties"></button>',
-      );
+        'aria-label="Close properties"></button>' +
+        '<button type="button" class="cv2b-sheet-close" data-a="sheet-close" ' +
+        'aria-label="Close properties" title="Close">✕</button>' +
+        "</div>";
+      const parts = [];
       if (!node) {
         parts.push(
           '<div class="cv2b-insp-empty"><div class="cv2b-insp-head"><h3>Nothing selected</h3></div>' +
@@ -491,7 +501,8 @@
               "</div>"
           : '<div class="cv2b-ok">✓ Ready to post.</div>',
       );
-      el.inspector.innerHTML = parts.join("");
+      el.inspector.innerHTML =
+        header + '<div class="cv2b-insp-body">' + parts.join("") + "</div>";
       el.publish.disabled = state.problems.length > 0;
       // On a phone the inspector is a bottom sheet (see cv2_builder.css): open it only
       // when there is something to edit AND the author hasn't dismissed it. The class is
