@@ -145,6 +145,29 @@
   border-radius: var(--radius-sm);
   object-fit: contain;
 }
+/* Discord blurs a spoilered image until it is clicked. The preview cannot reproduce the
+   click-to-reveal, but it must not show a spoiler as though it were an ordinary image —
+   the whole point is that it is hidden on arrival. */
+.cv2-preview .cv2-spoiler img,
+.cv2-preview img.cv2-spoiler {
+  filter: blur(14px);
+}
+.cv2-preview .cv2-spoiler {
+  position: relative;
+  overflow: hidden;
+}
+.cv2-preview .cv2-spoiler::after {
+  content: "SPOILER";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-1);
+  pointer-events: none;
+}
 .cv2-preview .cv2-sep {
   border: none;
   border-top: 1px solid var(--border);

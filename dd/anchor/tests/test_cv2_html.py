@@ -154,3 +154,73 @@ def test_media_gallery_keeps_only_http_items():
 
 def test_empty_node_list_renders_a_placeholder_not_an_exception():
     assert "cv2-placeholder" in render_cv2_nodes_html([], {})
+
+
+# --- media alt text + spoiler ---------------------------------------------------------
+# Discord supports both per gallery item; the render dropped them, so an image-only post
+# reached a screen reader with nothing to describe it and a spoiler previewed unblurred.
+
+
+def test_gallery_item_description_becomes_alt_text():
+    html_out = render_cv2_nodes_html(
+        [
+            {
+                "type": MEDIA_GALLERY,
+                "items": [
+                    {
+                        "media": {"url": "https://example.invalid/a.png"},
+                        "description": "The Corrupted, Master",
+                    }
+                ],
+            }
+        ],
+        {},
+    )
+    assert 'alt="The Corrupted, Master"' in html_out
+
+
+def test_gallery_item_alt_text_is_escaped():
+    html_out = render_cv2_nodes_html(
+        [
+            {
+                "type": MEDIA_GALLERY,
+                "items": [
+                    {
+                        "media": {"url": "https://example.invalid/a.png"},
+                        "description": '"><script>alert(1)</script>',
+                    }
+                ],
+            }
+        ],
+        {},
+    )
+    assert "<script>" not in html_out
+    assert "&quot;" in html_out
+
+
+def test_a_spoilered_gallery_item_is_marked():
+    html_out = render_cv2_nodes_html(
+        [
+            {
+                "type": MEDIA_GALLERY,
+                "items": [
+                    {"media": {"url": "https://example.invalid/a.png"}, "spoiler": True}
+                ],
+            }
+        ],
+        {},
+    )
+    assert "cv2-spoiler" in html_out
+
+
+def test_a_plain_gallery_item_is_not_marked_spoiler():
+    html_out = render_cv2_nodes_html(
+        [
+            {
+                "type": MEDIA_GALLERY,
+                "items": [{"media": {"url": "https://example.invalid/a.png"}}],
+            }
+        ],
+        {},
+    )
+    assert "cv2-spoiler" not in html_out

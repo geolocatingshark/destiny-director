@@ -159,8 +159,11 @@ def _render_thumbnail(node: t.Any) -> str:
     url = _media_url(node.get("media")) if isinstance(node, dict) else None
     if not url:
         return ""
+    alt = html.escape(str(node.get("description") or "thumbnail"), quote=True)
+    spoiler = " cv2-spoiler" if node.get("spoiler") else ""
     return (
-        f'<img class="cv2-thumb" src="{html.escape(url, quote=True)}" alt="thumbnail">'
+        f'<img class="cv2-thumb{spoiler}" src="{html.escape(url, quote=True)}" '
+        f'alt="{alt}">'
     )
 
 
@@ -191,21 +194,31 @@ def _render_media(node: t.Any) -> str:
     """A media gallery → a Discord-style image grid; each tile links to the full image.
 
     The item count drives the grid layout (1 / 2 / 3 / 4 / many) via a CSS class, so the
-    tiles split the way Discord's galleries do rather than stacking full-width."""
-    urls = []
+    tiles split the way Discord's galleries do rather than stacking full-width.
+
+    Per-item ``description`` becomes the ``alt`` (Discord's alt text — the only thing a
+    screen reader has to go on for an image-only post) and ``spoiler`` adds the blur
+    class, so the render matches what Discord will show rather than quietly dropping
+    both."""
+    items: list[tuple[str, str, bool]] = []
     for item in node.get("items") or []:
-        url = _media_url(item.get("media")) if isinstance(item, dict) else None
+        if not isinstance(item, dict):
+            continue
+        url = _media_url(item.get("media"))
         if url:
-            urls.append(url)
-    if not urls:
+            items.append(
+                (url, str(item.get("description") or ""), bool(item.get("spoiler")))
+            )
+    if not items:
         return ""
-    n = len(urls)
-    layout = {1: "n1", 2: "n2", 3: "n3", 4: "n4"}.get(n, "many")
+    layout = {1: "n1", 2: "n2", 3: "n3", 4: "n4"}.get(len(items), "many")
     tiles = "".join(
-        f'<a class="cv2-media-item" href="{html.escape(u, quote=True)}" '
+        f'<a class="cv2-media-item{" cv2-spoiler" if spoiler else ""}" '
+        f'href="{html.escape(url, quote=True)}" '
         'target="_blank" rel="noopener noreferrer">'
-        f'<img src="{html.escape(u, quote=True)}" alt="image" loading="lazy"></a>'
-        for u in urls
+        f'<img src="{html.escape(url, quote=True)}" '
+        f'alt="{html.escape(alt, quote=True)}" loading="lazy"></a>'
+        for url, alt, spoiler in items
     )
     return f'<div class="cv2-media {layout}">{tiles}</div>'
 

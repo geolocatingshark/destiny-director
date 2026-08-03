@@ -581,6 +581,24 @@ body.cv2b-dragging-now * {
 }
 /* One field group per button in a row, visually separated so it is obvious which
    Label/URL pair belongs to which button. */
+/* Shows what the Emoji field resolved to — a matched server-emoji name renders as its
+   image, so it is visibly different from one that did not match. */
+.cv2b-emoji-preview {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 0.95rem;
+}
+.cv2b-emoji-preview img {
+  width: 1.2rem;
+  height: 1.2rem;
+  object-fit: contain;
+}
 .cv2b-btn-list {
   display: flex;
   flex-direction: column;

@@ -334,23 +334,25 @@
             "</div>"
           );
         case "media": {
-          const urls = (node.items || [])
-            .map((i) => (i.media || {}).url)
-            .filter(Boolean);
-          if (!urls.length) {
+          const shown = (node.items || []).filter((i) => (i.media || {}).url);
+          if (!shown.length) {
             return '<div class="cv2-placeholder">Image gallery — add URLs on the right.</div>';
           }
-          const layout = { 1: "n1", 2: "n2", 3: "n3", 4: "n4" }[urls.length] || "many";
+          const layout = { 1: "n1", 2: "n2", 3: "n3", 4: "n4" }[shown.length] || "many";
           return (
             '<div class="cv2-media ' +
             layout +
             '">' +
-            urls
+            shown
               .map(
-                (u) =>
-                  '<span class="cv2-media-item"><img src="' +
-                  esc(u) +
-                  '" alt="" loading="lazy"></span>',
+                (it) =>
+                  '<span class="cv2-media-item' +
+                  (it.spoiler ? " cv2-spoiler" : "") +
+                  '"><img src="' +
+                  esc(it.media.url) +
+                  '" alt="' +
+                  esc(it.description || "") +
+                  '" loading="lazy"></span>',
               )
               .join("") +
             "</div>"
@@ -370,6 +372,7 @@
               .map(
                 (b) =>
                   '<span class="cv2-button">' +
+                  M.buttonEmojiHtml(b.emoji) +
                   esc(b.label || "(no label)") +
                   "</span>",
               )
@@ -583,14 +586,29 @@
           const rows = items
             .map(
               (it, i) =>
-                '<div class="cv2b-url-row"><input type="url" data-prop="mediaUrl" data-i="' +
+                '<div class="cv2b-media-item">' +
+                '<div class="cv2b-url-row"><input type="url" data-prop="mediaUrl" ' +
+                'data-i="' +
                 i +
                 '" value="' +
                 esc((it.media || {}).url || "") +
                 '" placeholder="https://…">' +
                 '<button type="button" class="cv2b-icon" data-act="mediaDel" data-i="' +
                 i +
-                '" title="Remove">✕</button></div>',
+                '" title="Remove">✕</button></div>' +
+                // Alt text is an accessibility field, not a nicety — an image-only post
+                // is unreadable to a screen reader without it.
+                '<input type="text" data-prop="mediaAlt" data-i="' +
+                i +
+                '" value="' +
+                esc(it.description || "") +
+                '" placeholder="Alt text (describes the image)">' +
+                '<label class="cv2b-inline"><input type="checkbox" ' +
+                'data-prop="mediaSpoiler" data-i="' +
+                i +
+                '"' +
+                (it.spoiler ? " checked" : "") +
+                "> Spoiler</label></div>",
             )
             .join("");
           return (
@@ -632,12 +650,20 @@
             '" value="' +
             esc(b.url || "") +
             '" placeholder="https://…"></div>' +
-            '<div class="cv2b-field"><label>Emoji <span class="cv2b-help">optional</span>' +
-            '</label><input type="text" data-prop="btnEmoji" data-i="' +
+            '<div class="cv2b-field"><label>Emoji <span class="cv2b-help">optional' +
+            "</span></label>" +
+            '<div class="cv2b-row"><input type="text" data-prop="btnEmoji" data-i="' +
             i +
-            '" maxlength="8" value="' +
+            '" maxlength="32" value="' +
             esc((b.emoji || {}).name || "") +
-            '"></div>';
+            '" placeholder="name or 🙂">' +
+            // Show what it resolved to: a server emoji renders as its image, so a name
+            // that matched is visibly different from one that did not.
+            '<span class="cv2b-emoji-preview">' +
+            M.buttonEmojiHtml(b.emoji) +
+            "</span></div>" +
+            '<span class="cv2b-help">A server emoji\u2019s name, or a plain ' +
+            "emoji character.</span></div>";
           return (
             '<div class="cv2b-btn-list">' +
             btns.map(group).join("") +
@@ -723,16 +749,33 @@
           node.items[i].media = { url: input.value.trim() };
           break;
         }
+        case "mediaAlt": {
+          const i = Number(input.dataset.i);
+          if (!node.items[i]) node.items[i] = { media: { url: "" } };
+          if (input.value.trim()) node.items[i].description = input.value;
+          else delete node.items[i].description;
+          break;
+        }
+        case "mediaSpoiler": {
+          const i = Number(input.dataset.i);
+          if (!node.items[i]) node.items[i] = { media: { url: "" } };
+          if (input.checked) node.items[i].spoiler = true;
+          else delete node.items[i].spoiler;
+          break;
+        }
         case "btnLabel":
           b.label = input.value;
           break;
         case "btnUrl":
           b.url = input.value.trim();
           break;
-        case "btnEmoji":
-          if (input.value.trim()) b.emoji = { name: input.value.trim() };
+        case "btnEmoji": {
+          // A bare {name} only works for unicode; a custom guild emoji needs its id.
+          const resolved = M.buttonEmojiFor(input.value, emoji);
+          if (resolved) b.emoji = resolved;
           else delete b.emoji;
           break;
+        }
         case "thumbUrl":
           node.media = { url: input.value.trim() };
           break;

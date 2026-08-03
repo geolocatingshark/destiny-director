@@ -491,6 +491,21 @@
   }
 
   const EMOJI_CDN = "https://cdn.discordapp.com/emojis/";
+
+  /**
+   * Look a name up in the emoji map, tolerating both entry shapes.
+   *
+   * The page supplies `{name: {url, id, animated}}` — the id is what a *button* needs,
+   * since Discord renders a custom emoji on one only from `{id, name}`. A bare URL
+   * string is still accepted so callers (and tests) that only care about rendering can
+   * pass the simpler map.
+   */
+  function emojiEntry(emoji, name) {
+    if (!emoji || !name) return null;
+    const hit = emoji[name] || emoji[String(name).toLowerCase()];
+    if (!hit) return null;
+    return typeof hit === "string" ? { url: hit } : hit;
+  }
   const MONTHS_SHORT = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
   const MONTHS_LONG = (
     "January February March April May June July " +
@@ -536,8 +551,8 @@
         return _img(EMOJI_CDN + id + (prefix === "<a" ? ".gif" : ".png"), name);
       }
     }
-    const url = emoji && (emoji[name] || emoji[name.toLowerCase()]);
-    return url ? _img(url, name) : esc(whole);
+    const entry = emojiEntry(emoji, name);
+    return entry && entry.url ? _img(entry.url, name) : esc(whole);
   }
 
   /** A `<t:UNIX:X>` token, mirroring hybrid_post_core._format_ts (UTC, like the server). */
@@ -688,7 +703,8 @@
         return EMOJI_CDN + id + (prefix === "<a" ? ".gif" : ".png");
       }
     }
-    return (emoji && (emoji[name] || emoji[name.toLowerCase()])) || null;
+    const entry = emojiEntry(emoji, name);
+    return (entry && entry.url) || null;
   }
 
   /**
@@ -744,9 +760,56 @@
     contains.sort();
     return starts.concat(contains).slice(0, limit || 8).map((name) => ({
       name,
-      url: emoji[name],
+      url: (emojiEntry(emoji, name) || {}).url,
       token: ":" + name + ":",
     }));
+  }
+
+  /**
+   * Renderable HTML for a button's emoji object, or "" when there isn't one.
+   *
+   * A custom emoji resolves to its CDN image off the id; a unicode one is just its
+   * character. Used by the canvas, which previously drew button labels with no emoji at
+   * all — so setting one showed nothing and there was no way to tell it had not worked.
+   */
+  function buttonEmojiHtml(emojiObj) {
+    if (!emojiObj || typeof emojiObj !== "object") return "";
+    const name = String(emojiObj.name || "");
+    if (emojiObj.id && /^\d+$/.test(String(emojiObj.id))) {
+      const ext = emojiObj.animated ? ".gif" : ".png";
+      return _img(EMOJI_CDN + emojiObj.id + ext, name);
+    }
+    return name ? esc(name) + " " : "";
+  }
+
+  /**
+   * The Discord emoji object for what an author typed in a button's Emoji field.
+   *
+   * A custom guild emoji MUST carry its id — `{"name": "kyber"}` is a valid shape only
+   * for a *unicode* emoji, and Discord renders nothing at all for a custom one. So a
+   * name that matches the guild map resolves to `{id, name, animated}`; anything else
+   * is treated as a literal unicode character. Returns null for empty input, meaning
+   * "no emoji".
+   */
+  function buttonEmojiFor(raw, emoji) {
+    const text = String(raw || "").trim();
+    if (!text) return null;
+    // Accept ":name:" and the full "<:name:id>" as well as a bare name, since all three
+    // are things an author might paste in.
+    const custom = /^<(a?):(\w+):(\d+)>$/.exec(text);
+    if (custom) {
+      return {
+        id: custom[3],
+        name: custom[2],
+        animated: custom[1] === "a",
+      };
+    }
+    const name = text.replace(/^:|:$/g, "");
+    const entry = emojiEntry(emoji, name);
+    if (entry && entry.id) {
+      return { id: String(entry.id), name: name, animated: !!entry.animated };
+    }
+    return { name: text };
   }
 
   /**
@@ -829,7 +892,10 @@
     lineMd,
     renderMd,
     // editor segmentation + emoji autocomplete
+    emojiEntry,
     emojiSegments,
+    buttonEmojiFor,
+    buttonEmojiHtml,
     emojiSuggestions,
     shortcodeBefore,
   };

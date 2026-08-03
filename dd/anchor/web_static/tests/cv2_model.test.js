@@ -530,3 +530,64 @@ test("more than 10 gallery images is refused", () => {
   };
   assert.ok(M.validate([many]).some((p) => /Discord allows 10/.test(p.msg)));
 });
+
+// --- button emoji ---------------------------------------------------------------------
+// Discord renders a custom emoji on a button only from {id, name}. Storing {name} alone
+// — what the field did — is valid for a unicode emoji and silently nothing for a custom
+// one, so the field invited input that did nothing.
+
+const EMOJI_MAP = {
+  kyber: { url: "https://cdn.discordapp.com/emojis/123.png", id: "123", animated: false },
+  spin: { url: "https://cdn.discordapp.com/emojis/456.gif", id: "456", animated: true },
+};
+
+test("a server emoji name resolves to an id, not just a name", () => {
+  assert.deepEqual(M.buttonEmojiFor("kyber", EMOJI_MAP), {
+    id: "123",
+    name: "kyber",
+    animated: false,
+  });
+});
+
+test("the :name: and <:name:id> forms resolve too", () => {
+  assert.equal(M.buttonEmojiFor(":kyber:", EMOJI_MAP).id, "123");
+  assert.deepEqual(M.buttonEmojiFor("<a:spin:456>", null), {
+    id: "456",
+    name: "spin",
+    animated: true,
+  });
+});
+
+test("an animated emoji keeps its animated flag", () => {
+  assert.equal(M.buttonEmojiFor("spin", EMOJI_MAP).animated, true);
+});
+
+test("an unmatched value is treated as a literal unicode emoji", () => {
+  assert.deepEqual(M.buttonEmojiFor("🙂", EMOJI_MAP), { name: "🙂" });
+  assert.deepEqual(M.buttonEmojiFor("nosuch", EMOJI_MAP), { name: "nosuch" });
+});
+
+test("empty input means no emoji", () => {
+  assert.equal(M.buttonEmojiFor("", EMOJI_MAP), null);
+  assert.equal(M.buttonEmojiFor("   ", EMOJI_MAP), null);
+});
+
+test("buttonEmojiHtml draws a custom emoji as its CDN image", () => {
+  const html = M.buttonEmojiHtml({ id: "123", name: "kyber" });
+  assert.match(html, /emojis\/123\.png/);
+  assert.match(M.buttonEmojiHtml({ id: "456", name: "spin", animated: true }), /\.gif/);
+});
+
+test("buttonEmojiHtml draws a unicode emoji as text, and nothing for none", () => {
+  assert.match(M.buttonEmojiHtml({ name: "🙂" }), /🙂/);
+  assert.equal(M.buttonEmojiHtml(null), "");
+  assert.equal(M.buttonEmojiHtml(undefined), "");
+});
+
+test("the emoji map still accepts the plain {name: url} shape", () => {
+  // Rendering-only callers pass the simpler map; both shapes must keep working.
+  assert.equal(M.emojiEntry({ x: "https://e.invalid/x.png" }, "x").url,
+    "https://e.invalid/x.png");
+  assert.match(M.renderMd(":x:", { x: "https://e.invalid/x.png" }), /<img class="emoji"/);
+  assert.match(M.renderMd(":kyber:", EMOJI_MAP), /emojis\/123\.png/);
+});

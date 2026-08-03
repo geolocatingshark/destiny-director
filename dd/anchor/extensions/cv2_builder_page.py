@@ -68,7 +68,7 @@ _bot: CachedFetchBot | None = None
 
 # Emoji dicts are a REST round-trip per guild; the builder asks for one on every page
 # load, so keep the last result briefly rather than re-fetching per draft.
-_emoji_cache: dict[str, str] | None = None
+_emoji_cache: dict[str, dict[str, t.Any]] | None = None
 
 
 def _require_bot() -> CachedFetchBot:
@@ -79,12 +79,17 @@ def _require_bot() -> CachedFetchBot:
     return _bot
 
 
-async def _emoji_map() -> dict[str, str]:
-    """``{name: url}`` for client-side ``:shortcode:`` preview substitution.
+async def _emoji_map() -> dict[str, dict[str, t.Any]]:
+    """``{name: {url, id, animated}}`` for the client's emoji handling.
 
-    The client mirror of ``hybrid_post_core._html_emoji_substituter``. A failure here
-    only costs shortcode rendering in the canvas (the server render still resolves
-    them), so it degrades to an empty map rather than failing the page.
+    The URL drives ``:shortcode:`` preview substitution (the client mirror of
+    ``hybrid_post_core._html_emoji_substituter``). The **id** is what a button needs:
+    Discord renders a custom emoji on a button only from ``{"id": …, "name": …}`` — a
+    name alone is valid for a unicode emoji and silently nothing for a custom one.
+
+    A failure here only costs shortcode rendering in the canvas and the button emoji
+    picker (the server render still resolves them), so it degrades to an empty map
+    rather than failing the page.
     """
     global _emoji_cache
     if _emoji_cache is not None:
@@ -92,7 +97,12 @@ async def _emoji_map() -> dict[str, str]:
     try:
         emoji_dict = await fetch_emoji_dict(t.cast(h.GatewayBot, _require_bot()))
         _emoji_cache = {
-            name: str(getattr(emoji, "url", "")) for name, emoji in emoji_dict.items()
+            name: {
+                "url": str(getattr(emoji, "url", "")),
+                "id": str(getattr(emoji, "id", "") or ""),
+                "animated": bool(getattr(emoji, "is_animated", False)),
+            }
+            for name, emoji in emoji_dict.items()
         }
     except Exception as e:
         logging.warning("CV2 builder: could not resolve the emoji dict: %r", e)
