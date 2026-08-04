@@ -311,7 +311,7 @@ body.cv2b-dragging-now * {
   height: 2px;
   border-radius: 2px;
   background: transparent;
-  transition: background 0.08s;
+  transition: background var(--dur-fast);
 }
 .cv2b-rail:hover::before,
 .cv2b-rail.cv2b-armed::before {
@@ -733,7 +733,7 @@ body.cv2b-dragging-now * {
   color: var(--text-2);
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.12s;
+  transition: opacity var(--dur);
 }
 .cv2b-toast.cv2b-show {
   opacity: 1;
@@ -873,7 +873,7 @@ body.cv2b-dragging-now * {
     box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
     padding: 0.6rem 0.8rem 1.2rem;
     transform: translateY(100%);
-    transition: transform 0.16s ease-out;
+    transition: transform var(--dur) var(--ease-out);
   }
   .cv2b-inspector.cv2b-sheet-open {
     transform: translateY(0);

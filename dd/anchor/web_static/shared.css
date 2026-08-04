@@ -55,6 +55,35 @@
 
   --radius: 8px;      /* cards, fieldsets, preview */
   --radius-sm: 6px;   /* inputs, buttons */
+
+  /* Motion. Durations are tokens so every animated surface shares one vocabulary and the
+     reduced-motion block below can switch the whole UI off in one place. Assign by ROLE,
+     not by what felt right at the call site — that is how the old hand-picked values
+     (0.08s, 0.1s, 0.12s, 0.15s, 0.16s) drifted apart in the first place:
+       --dur-fast  hover/press feedback, small state flips
+       --dur       an element appearing, changing, or being replaced
+       --dur-slow  large surfaces: sheets, dialogs, page-level transitions
+     web_static/tests/motion_tokens.test.js fails the build on a raw duration literal. */
+  --dur-fast: 80ms;
+  --dur: 140ms;
+  --dur-slow: 240ms;
+  --ease-out: cubic-bezier(.2, 0, 0, 1);
+}
+
+/* Reduced motion zeroes the DURATIONS rather than setting `animation: none`. The
+   animations still run and still fire transitionend/animationend, so JS that awaits one
+   (the drag ghost's landing, a delete collapse) keeps working instead of hanging on a
+   promise that never settles.
+
+   This does NOT reach the View Transitions pseudo-elements — their default animations
+   come from UA styles on ::view-transition-old/new, not from these tokens — so any
+   startViewTransition() call has to gate on matchMedia in JS as well. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0.01ms;
+    --dur: 0.01ms;
+    --dur-slow: 0.01ms;
+  }
 }
 * { box-sizing: border-box; }
 body {

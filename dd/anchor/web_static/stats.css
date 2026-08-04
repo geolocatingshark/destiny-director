@@ -69,7 +69,7 @@ table.data tbody tr:hover { background: var(--surface-3); }
 .chart-tick { fill: var(--text-faint); font-size: 11px; }
 .chart-line { stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
 .chart-dot { stroke: var(--surface-2); stroke-width: 2; }
-.chart-bar { transition: opacity .1s ease; }
+.chart-bar { transition: opacity var(--dur-fast) ease; }
 .chart-bar:hover { opacity: .85; }
 .chart-crosshair { stroke: var(--border-hover); stroke-width: 1; pointer-events: none; }
 .chart-overlay { cursor: crosshair; }
@@ -120,7 +120,7 @@ table.selectable tbody tr.active:hover { background: var(--accent-tint); }
 .fold > summary::-webkit-details-marker { display: none; }
 .fold > summary::before {
   content: "▸"; color: var(--text-faint); font-size: .85rem;
-  transition: transform .12s ease; align-self: center;
+  transition: transform var(--dur) ease; align-self: center;
 }
 .fold[open] > summary::before { transform: rotate(90deg); }
 .fold > summary h2 { margin: 0; }

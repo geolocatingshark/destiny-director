@@ -552,7 +552,7 @@ tr.detail-row > td {
   flex: none;
 }
 .chart-bar {
-  transition: opacity 0.1s ease;
+  transition: opacity var(--dur-fast) ease;
 }
 .chart-bar:hover {
   opacity: 0.85;
