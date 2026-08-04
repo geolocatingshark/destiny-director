@@ -9,8 +9,10 @@
 ## Current state (what reads from where)
 
 - Rotation data lives in the DB: `rotation_data` table (`RotationData` in
-  `dd/common/schemas.py`), edited via `/rotation edit` (Discord-OAuth web form on anchor,
-  `dd/anchor/extensions/rotation_editor.py` + `dd/anchor/web.py`).
+  `dd/common/schemas.py`), edited in the **rotation editor** — the Discord-OAuth web form
+  on anchor (`dd/anchor/extensions/rotation_editor.py` + `dd/anchor/web.py`). Reach it at
+  `{PUBLIC_BASE_URL}/rotation`, or via `/control_panel` → **Rotation Editor**. (The former
+  `/rotation edit` command was removed 2026-08-04; the control panel is the entry point.)
 - **`lost_sector`** — `dd/common/lost_sector.py:load_rotation`: DB row → last-known-good
   in-memory cache → **raises** if neither is available (an absent schedule can't render).
   So the row **must exist and be valid** in every deployed environment.
@@ -25,8 +27,8 @@
 
 No code change or redeploy is needed — fix the data:
 
-1. **Bad content:** `/rotation edit <type>` → correct the document → save (the server
-   re-validates against the JSON schema).
+1. **Bad content:** open the rotation editor → pick `<type>` → correct the document →
+   save (the server re-validates against the JSON schema).
 2. **Corrupt / to reset a seeded type** (`xur_location`, `world_activity_*`): delete the
    row so the next read auto-seeds from the committed seed doc —
    `railway connect MySQL` (correct environment), then
@@ -41,7 +43,7 @@ No code change or redeploy is needed — fix the data:
 - **The `rotation_data` table + its Atlas migration** — additive; migrations auto-apply
   at boot.
 - **The web editor / OAuth server** (`rotation_editor.py`, `web.py`, `web_auth.py`) —
-  reverting them breaks `/rotation edit` and `/bungie login`. Needs `PUBLIC_BASE_URL` /
+  reverting them breaks the rotation editor and `/bungie login`. Needs `PUBLIC_BASE_URL` /
   `RAILWAY_PUBLIC_DOMAIN` set on the environment.
 
 ## Verify
