@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Feed hub — proposal</title>
+    <link rel="stylesheet" href="../../dd/anchor/web_static/shared.css" />
+    <style>
+      body { max-width: 1080px; }
+      .mock-note {
+        border-left: 3px solid var(--accent); background: var(--surface-2);
+        padding: .5rem .8rem; margin: 0 0 1.2rem; font-size: .82rem;
+        color: var(--text-2); border-radius: 0 var(--radius) var(--radius) 0;
+      }
+      /* --- feed list ------------------------------------------------------ */
+      .feeds { display: flex; flex-direction: column; gap: .5rem; margin: 1rem 0; }
+      .feed {
+        display: grid; grid-template-columns: 1.6fr auto auto auto;
+        align-items: center; gap: .9rem;
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-2); padding: .7rem .9rem;
+        text-decoration: none; color: inherit;
+      }
+      .feed:hover { border-color: var(--border-hover); }
+      .feed .name { color: var(--link); font-weight: 600; font-size: .98rem; }
+      .feed .sub { color: var(--text-faint); font-size: .78rem; margin-top: .12rem; }
+      .metric { text-align: right; font-variant-numeric: tabular-nums; }
+      .metric .v { font-size: .95rem; color: var(--text-1); }
+      .metric .k { font-size: .68rem; color: var(--text-muted);
+                   text-transform: uppercase; letter-spacing: .04em; }
+      .chip {
+        display: inline-block; padding: .08rem .5rem; border-radius: 999px;
+        font-size: .7rem; font-weight: 600; border: 1px solid transparent;
+        white-space: nowrap;
+      }
+      .chip.on   { color: var(--ok);  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+                   background: color-mix(in srgb, var(--ok) 12%, transparent); }
+      .chip.off  { color: var(--text-muted); border-color: var(--border); background: var(--surface-3); }
+      .chip.warn { color: #f0b429; border-color: color-mix(in srgb, #f0b429 45%, transparent);
+                   background: color-mix(in srgb, #f0b429 12%, transparent); }
+      .spark { width: 90px; height: 22px; display: block; }
+      .colhead {
+        display: grid; grid-template-columns: 1.6fr auto auto auto; gap: .9rem;
+        padding: 0 .9rem .3rem; font-size: .7rem; color: var(--text-muted);
+        text-transform: uppercase; letter-spacing: .04em;
+      }
+      .colhead span:not(:first-child) { text-align: right; }
+      h2.sec { font-size: .95rem; margin: 1.6rem 0 .5rem; color: var(--text-2); }
+      .global { display: flex; gap: .5rem; flex-wrap: wrap; }
+      .global a {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-3); padding: .5rem .8rem; text-decoration: none;
+        font-size: .85rem; color: var(--link);
+      }
+      .global a:hover { border-color: var(--border-hover); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Destiny Director</h1>
+      <p class="muted">
+        Every feed, with the state you actually check: is it on, did the last one land,
+        and how far did it reach.
+      </p>
+    </header>
+
+    <p class="mock-note">
+      <b>Proposal A — feed-centric hub.</b> Replaces the card grid. Same data as today:
+      the toggle is <code>autopost_settings</code>, "last run" is the newest
+      <code>mirror_delivery</code> row for that feed's source channel, and reach is the
+      per-feed row <code>stats_page</code> already computes. All three already key on the
+      followable name.
+    </p>
+
+    <div class="colhead">
+      <span>Feed</span><span>Autopost</span><span>Last run</span><span>Reach (30d)</span>
+    </div>
+    <div class="feeds">
+      <a class="feed" href="#"><div><div class="name">Lost Sector</div><div class="sub">Daily rotation · 17:00 UTC</div></div><div class="metric"><span class="chip on">on</span></div><div class="metric"><div class="v"><span class="chip on">clean</span></div><div class="k">Today</div></div><div class="metric"><svg class="spark" viewBox="0 0 90 22"><path d="M0.0,19.8 L6.9,18.0 L13.8,17.9 L20.8,18.6 L27.7,18.0 L34.6,18.0 L41.5,16.1 L48.5,16.6 L55.4,16.2 L62.3,15.3 L69.2,12.7 L76.2,12.2 L83.1,12.8 L90.0,11.0" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/></svg><div class="k">431 ch</div></div></a><a class="feed" href="#"><div><div class="name">Xûr</div><div class="sub">Weekend vendor · Fri 17:00</div></div><div class="metric"><span class="chip on">on</span></div><div class="metric"><div class="v"><span class="chip on">clean</span></div><div class="k">Fri</div></div><div class="metric"><svg class="spark" viewBox="0 0 90 22"><path d="M0.0,20.0 L6.9,20.0 L13.8,19.3 L20.8,20.0 L27.7,19.5 L34.6,19.3 L41.5,18.0 L48.5,16.1 L55.4,17.6 L62.3,19.5 L69.2,17.3 L76.2,17.1 L83.1,15.3 L90.0,17.3" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/></svg><div class="k">412 ch</div></div></a><a class="feed" href="#"><div><div class="name">Weekly Reset</div><div class="sub">Tuesday summary · hand-composed</div></div><div class="metric"><span class="chip on">on</span></div><div class="metric"><div class="v"><span class="chip on">clean</span></div><div class="k">Tue</div></div><div class="metric"><svg class="spark" viewBox="0 0 90 22"><path d="M0.0,19.2 L6.9,16.5 L13.8,18.2 L20.8,19.8 L27.7,17.6 L34.6,15.9 L41.5,14.6 L48.5,15.0 L55.4,14.0 L62.3,13.0 L69.2,12.1 L76.2,13.3 L83.1,13.1 L90.0,13.1" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/></svg><div class="k">428 ch</div></div></a><a class="feed" href="#"><div><div class="name">Trials of Osiris</div><div class="sub">Weekend · hand-composed</div></div><div class="metric"><span class="chip on">on</span></div><div class="metric"><div class="v"><span class="chip warn">partial</span></div><div class="k">Fri</div></div><div class="metric"><svg class="spark" viewBox="0 0 90 22"><path d="M0.0,20.0 L6.9,20.0 L13.8,20.0 L20.8,20.0 L27.7,20.0 L34.6,20.0 L41.5,20.0 L48.5,20.0 L55.4,20.0 L62.3,20.0 L69.2,20.0 L76.2,19.7 L83.1,17.5 L90.0,17.1" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/></svg><div class="k">389 ch</div></div></a><a class="feed" href="#"><div><div class="name">Iron Banner</div><div class="sub">When live</div></div><div class="metric"><span class="chip off">off</span></div><div class="metric"><div class="v"><span class="chip off">—</span></div><div class="k">3 weeks</div></div><div class="metric"><svg class="spark" viewBox="0 0 90 22"><path d="M0.0,20.0 L6.9,20.0 L13.8,20.0 L20.8,20.0 L27.7,20.0 L34.6,20.0 L41.5,20.0 L48.5,20.0 L55.4,20.0 L62.3,20.0 L69.2,20.0 L76.2,20.0 L83.1,20.0 L90.0,20.0" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/></svg><div class="k">— ch</div></div></a><a class="feed" href="#"><div><div class="name">Ada-1</div><div class="sub">Weekly shaders</div></div><div class="metric"><span class="chip on">on</span></div><div class="metric"><div class="v"><span class="chip on">clean</span></div><div class="k">Tue</div></div><div class="metric"><svg class="spark" viewBox="0 0 90 22"><path d="M0.0,20.0 L6.9,19.2 L13.8,17.2 L20.8,14.5 L27.7,12.8 L34.6,10.2 L41.5,12.0 L48.5,11.7 L55.4,9.0 L62.3,7.7 L69.2,5.2 L76.2,6.7 L83.1,6.3 L90.0,7.1" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/></svg><div class="k">402 ch</div></div></a><a class="feed" href="#"><div><div class="name">Eververse</div><div class="sub">Weekly stock</div></div><div class="metric"><span class="chip on">on</span></div><div class="metric"><div class="v"><span class="chip on">clean</span></div><div class="k">Tue</div></div><div class="metric"><svg class="spark" viewBox="0 0 90 22"><path d="M0.0,20.0 L6.9,17.9 L13.8,17.5 L20.8,18.2 L27.7,20.0 L34.6,18.9 L41.5,18.5 L48.5,16.7 L55.4,16.9 L62.3,15.0 L69.2,15.6 L76.2,13.6 L83.1,12.0 L90.0,11.9" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/></svg><div class="k">396 ch</div></div></a><a class="feed" href="#"><div><div class="name">Nightfall</div><div class="sub">Weekly</div></div><div class="metric"><span class="chip on">on</span></div><div class="metric"><div class="v"><span class="chip on">clean</span></div><div class="k">Tue</div></div><div class="metric"><svg class="spark" viewBox="0 0 90 22"><path d="M0.0,20.0 L6.9,20.0 L13.8,20.0 L20.8,20.0 L27.7,20.0 L34.6,20.0 L41.5,20.0 L48.5,20.0 L55.4,20.0 L62.3,20.0 L69.2,20.0 L76.2,20.0 L83.1,20.0 L90.0,20.0" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"/></svg><div class="k">418 ch</div></div></a>
+    </div>
+
+    <h2 class="sec">Not about one feed</h2>
+    <div class="global">
+      <a href="#">Command usage</a>
+      <a href="#">Server populations</a>
+      <a href="#">All mirror runs</a>
+      <a href="#">Rotation data</a>
+    </div>
+  </body>
+</html>
