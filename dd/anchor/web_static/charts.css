@@ -1,0 +1,137 @@
+/*
+  Chart chrome — the appearance of everything charts.js draws.
+
+  charts.js is shared by the stats page and the mirror log, and its styling used to be
+  copy-pasted into both sheets. They had already drifted into two formattings of the same
+  rules, and mirror_log.css's own comment said "mirrors stats.css" — the copy was known
+  about, just never resolved. Editing one and forgetting the other silently restyles one
+  page and not the other.
+
+  The split: this file owns every class charts.js EMITS. A page keeps only how it places
+  a chart in its own layout (stats' table columns and chart margins, for instance).
+
+  Colour comes from tokens, never from a hardcoded hex — series colours are passed in by
+  charts.js as inline fills, and text always wears a text token so it stays legible
+  whatever the series colour is. Loaded after shared.css and before the page's own sheet.
+*/
+
+.chart {
+  position: relative;
+  min-height: 40px;
+}
+.chart-svg {
+  display: block;
+}
+.chart-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.chart-tick {
+  fill: var(--text-faint);
+  font-size: 11px;
+}
+
+/* Line series + the dots marking their last/hovered point. */
+.chart-line {
+  stroke-width: 2;
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.chart-dot {
+  stroke: var(--surface-2);
+  stroke-width: 2;
+}
+
+/* Bar series. The hover fade is the only motion charts carry. */
+.chart-bar {
+  transition: opacity var(--dur-fast) ease;
+}
+.chart-bar:hover {
+  opacity: 0.85;
+}
+
+/* The full-width hit area that drives the crosshair and tooltip. */
+.chart-crosshair {
+  stroke: var(--border-hover);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.chart-overlay {
+  cursor: crosshair;
+}
+.chart-empty {
+  padding: 0.8rem 0;
+}
+
+/* Legend: one key + label per series. */
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--text-2);
+}
+.legend-key {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: none;
+}
+
+/* Hover tooltip. charts.js builds it as `chart-tooltip hidden`, so the page it is on has
+   to define a `.hidden` utility — both currently do, separately. */
+.chart-tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
+  min-width: 90px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.55rem;
+  font-size: 0.8rem;
+  color: var(--text-1);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+.chart-tooltip .tt-date {
+  color: var(--text-faint);
+  margin-bottom: 0.25rem;
+  font-size: 0.75rem;
+}
+.chart-tooltip .tt-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.chart-tooltip .tt-key {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+.chart-tooltip .tt-name {
+  color: var(--text-2);
+}
+.chart-tooltip .tt-val {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Sparklines (charts.js renderSparkline). Only the stats page draws them today, but they
+   are charts.js output, so they live here rather than with one page's table styling. */
+.sparkline {
+  display: block;
+}
+.spark-line {
+  stroke-width: 1.5;
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
