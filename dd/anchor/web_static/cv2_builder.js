@@ -73,6 +73,27 @@
   const AUTOSAVE_MS = 1200;
 
   const clone = (v) => JSON.parse(JSON.stringify(v));
+
+  // --- motion ------------------------------------------------------------------------
+  // Durations live in CSS (shared.css :root) so ONE prefers-reduced-motion rule reaches
+  // the whole UI. WAAPI wants a number, so read the token back rather than duplicating
+  // its value here — duplicate it and the two drift, and reduced motion silently stops
+  // covering the JS-driven animations. These are local rather than in shared.js because
+  // the builder is a standalone widget: cv2_builder.html does not load shared.js.
+  const reduceMotion = () =>
+    !!window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /** A CSS duration token as milliseconds (`--dur` -> 140). 0 if it is missing. */
+  function motionMs(token) {
+    const raw = getComputedStyle(document.documentElement)
+      .getPropertyValue(token)
+      .trim();
+    const value = parseFloat(raw);
+    if (!Number.isFinite(value)) return 0;
+    return /ms$/.test(raw) ? value : value * 1000;
+  }
+  const EASE_OUT = "cubic-bezier(.2, 0, 0, 1)";
   const pk = (p) => JSON.stringify(p);
   const esc = (s) => M.esc(s);
 
@@ -99,6 +120,10 @@
       redo: [],
       problems: [],
       dirty: false,
+      // The path of the block a mutation just produced, set for exactly one paint by
+      // commit(). See renderBlock — this is what makes a per-block animation possible
+      // without any node identity scheme.
+      landed: null,
     };
     const emoji = options.emoji || null;
     const defaultAccent = options.defaultAccent;
@@ -132,8 +157,45 @@
       liveKey = null;
       fn();
       markDirty();
+      // Every mutation returns the path it wants selected — an explicit contract in
+      // cv2_model.js — so the block that just changed is already known, with no node
+      // identity scheme and nothing for the full innerHTML rebuild to lose. Mark it for
+      // exactly this paint, then drop the mark so the NEXT one (a keystroke, a plain
+      // selection) does not replay the animation. Undo cannot desync it: it is recomputed
+      // from state.sel on every commit rather than remembered.
+      state.landed = state.sel;
       render();
+      state.landed = null;
       setStatus(label);
+    }
+
+    /** Play a block's exit, then commit its removal.
+     *
+     *  The mirror of the landing mark, and it has to work the other way round: an
+     *  addition can be marked when it arrives, but a deletion must animate BEFORE the
+     *  mutation — afterwards there is no block left to animate. Awaiting the collapse
+     *  means the rebuild lands on a canvas the block has already vacated, so the gap is
+     *  closed rather than snapping shut behind it.
+     *
+     *  .cv2b-blk carries no margin or padding of its own (spacing lives in the rails), so
+     *  animating height alone closes the space cleanly. */
+    function commitAfterCollapse(path, label, fn) {
+      const node = blockEl(path);
+      if (!node || !node.animate || reduceMotion()) return commit(label, fn);
+      const height = node.getBoundingClientRect().height;
+      node.style.overflow = "hidden";
+      // Commit on cancel too — an animation interrupted by another render must not
+      // swallow the deletion and leave the block on screen.
+      const done = () => commit(label, fn);
+      node
+        .animate(
+          [
+            { height: height + "px", opacity: 1 },
+            { height: "0px", opacity: 0 },
+          ],
+          { duration: motionMs("--dur-fast"), easing: EASE_OUT },
+        )
+        .finished.then(done, done);
     }
     function undo() {
       if (!state.undo.length) return;
@@ -275,6 +337,8 @@
       const cls = ["cv2b-blk"];
       if (M.samePath(path, state.sel)) cls.push("cv2b-sel");
       if (bad.has(pk(path))) cls.push("cv2b-invalid");
+      // Set by commit() for one paint only: the block this change produced.
+      if (state.landed && M.samePath(path, state.landed)) cls.push("cv2b-landed");
       return (
         '<div class="' +
         cls.join(" ") +
@@ -1483,26 +1547,34 @@
       // small roll of the finger on lift-off from changing where the block lands.
       armTarget(x, y);
       const target = d.target;
-      if (d.ghost) d.ghost.remove();
+      const ghost = d.ghost;
+      // Measure the landing site BEFORE clearing the drag marks — an armed rail may be
+      // holding a gap open, and clearing it closes that gap.
+      const landing =
+        target && target.el && target.kind !== "blocked"
+          ? target.el.getBoundingClientRect()
+          : null;
       drag = null;
       clearDragMarks();
       hideToast();
       if (!target || target.kind === "blocked") {
+        if (ghost) ghost.remove();
         render();
         return;
       }
       if (target.kind === "rail") {
-        commit(d.from ? "Moved" : M.KIND_LABEL[d.kind] + " added", () => {
-          state.sel = d.from
-            ? M.moveNode(state.nodes, d.from, target.scope, target.index)
-            : M.insertAt(
-                state.nodes,
-                target.scope,
-                target.index,
-                M.makeNode(d.kind, defaultAccent),
-              );
-        });
-        return;
+        return flyGhostTo(ghost, landing, () =>
+          commit(d.from ? "Moved" : M.KIND_LABEL[d.kind] + " added", () => {
+            state.sel = d.from
+              ? M.moveNode(state.nodes, d.from, target.scope, target.index)
+              : M.insertAt(
+                  state.nodes,
+                  target.scope,
+                  target.index,
+                  M.makeNode(d.kind, defaultAccent),
+                );
+          }),
+        );
       }
       const node = d.from
         ? clone(M.resolve(state.nodes, d.from))
@@ -1511,18 +1583,20 @@
       // the first and drops the rest. Say so — otherwise the buttons vanish between two
       // frames and the author is left wondering whether they were ever there.
       const dropped = M.buttonsOf(node).length - 1;
-      commit("Accessory set", () => {
-        // Hold the section by reference: removing the source can rebase its path, but
-        // the object itself never moves.
-        const section = M.resolve(state.nodes, target.sectionPath);
-        let at = target.sectionPath;
-        if (d.from) {
-          M.removeAt(state.nodes, d.from);
-          at = M.adjustAfterRemoval(target.sectionPath, d.from);
-        }
-        section.accessory = node.type === M.ACTION_ROW ? node.components[0] : node;
-        state.sel = at.concat(["acc"]);
-      });
+      flyGhostTo(ghost, landing, () =>
+        commit("Accessory set", () => {
+          // Hold the section by reference: removing the source can rebase its path, but
+          // the object itself never moves.
+          const section = M.resolve(state.nodes, target.sectionPath);
+          let at = target.sectionPath;
+          if (d.from) {
+            M.removeAt(state.nodes, d.from);
+            at = M.adjustAfterRemoval(target.sectionPath, d.from);
+          }
+          section.accessory = node.type === M.ACTION_ROW ? node.components[0] : node;
+          state.sel = at.concat(["acc"]);
+        }),
+      );
       if (dropped > 0) {
         toast(
           "An accessory holds one button — the other " +
@@ -1531,6 +1605,58 @@
           true,
         );
       }
+    }
+
+    /** Fly the ghost to where the block will land, then apply the mutation.
+     *
+     *  Without it the ghost vanishes at the pointer while the block reappears somewhere
+     *  else in the same frame, so the one thing the author most needs to read — where did
+     *  it go? — is the one thing never shown. Step 3 is what makes this safe to draw: the
+     *  landing site is the ARMED target, so the ghost cannot promise a destination the
+     *  block will not actually take.
+     *
+     *  `settle` is deferred by the flight's duration. Nothing else mutates state.nodes in
+     *  that window (~140ms, and the author has just lifted their finger), and the paths it
+     *  closes over stay valid against an unmodified tree.
+     *
+     *  Reduced motion, no WAAPI, or no landing site: commit immediately. */
+    function flyGhostTo(ghost, landing, settle) {
+      if (!ghost || !landing || !ghost.animate || reduceMotion()) {
+        if (ghost) ghost.remove();
+        return settle();
+      }
+      const flight = ghost.animate(
+        [
+          {
+            left: ghost.style.left,
+            top: ghost.style.top,
+            // The ghost normally rides above the pointer (see .cv2b-ghost); dropping that
+            // offset as it arrives is what makes it settle ONTO the rail rather than hover
+            // over it.
+            transform: "translate(-50%, -160%)",
+          },
+          {
+            left: landing.left + landing.width / 2 + "px",
+            top: landing.top + landing.height / 2 + "px",
+            transform: "translate(-50%, -50%)",
+          },
+        ],
+        { duration: motionMs("--dur"), easing: EASE_OUT, fill: "forwards" },
+      );
+      const land = () => {
+        settle();
+        // Cross-dissolve into the landing flash rather than cutting: the ghost is
+        // position:fixed, so it fades out on top of the real block fading in. Cutting
+        // leaves a frame where neither is drawn.
+        const fade = ghost.animate([{ opacity: 1 }, { opacity: 0 }], {
+          duration: motionMs("--dur"),
+          easing: EASE_OUT,
+        });
+        const drop = () => ghost.remove();
+        fade.finished.then(drop, drop);
+      };
+      // Commit on cancel too, so an interrupted flight can never swallow the drop.
+      flight.finished.then(land, land);
     }
 
     function cancelDrag() {
@@ -1785,7 +1911,7 @@
           });
         }
         if (act === "del") {
-          return commit("Deleted", () => {
+          return commitAfterCollapse(path, "Deleted", () => {
             state.sel = M.removeAt(state.nodes, path);
           });
         }
@@ -1837,7 +1963,7 @@
       }
       if ((e.key === "Delete" || e.key === "Backspace") && state.sel) {
         e.preventDefault();
-        commit("Deleted", () => {
+        commitAfterCollapse(state.sel, "Deleted", () => {
           state.sel = M.removeAt(state.nodes, state.sel);
         });
         return;

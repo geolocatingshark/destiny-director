@@ -206,6 +206,25 @@
   position: relative;
   border-radius: var(--radius-sm);
 }
+
+/* The block a change just produced — added, dropped, duplicated, wrapped or moved.
+   commit() marks exactly one path per mutation (the one cv2_model says to select), so
+   this plays on that block and nothing else.
+
+   Why this rather than a keyed diff: paintCanvas rebuilds the whole canvas as innerHTML,
+   so no element survives a change and there is nothing for a transition to interpolate
+   between. Animating "everything that is new" would replay on every block on every
+   keystroke. Animating "the one block the model just named" needs no identity at all,
+   and undo cannot desync it — see commit() in cv2_builder.js. */
+@keyframes cv2b-land {
+  from {
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+}
+.cv2b-blk.cv2b-landed {
+  animation: cv2b-land var(--dur) var(--ease-out) both;
+}
 .cv2b-blk > .cv2b-body {
   border-radius: var(--radius-sm);
   outline: 1px solid transparent;
