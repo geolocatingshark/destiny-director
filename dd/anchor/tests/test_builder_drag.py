@@ -335,7 +335,8 @@ def test_every_insertion_rail_is_reachable_by_the_pointer(page):
                for (let f = 0.02; f < 1; f += 0.03) {
                  const el = document.elementFromPoint(b.left + b.width * f, y);
                  if (!el || el.closest('.cv2b-rail') !== rail) {
-                   blockers.add(el ? (el.className || el.tagName).toString() : 'nothing');
+                   const who = el ? el.className || el.tagName : 'nothing';
+                   blockers.add(who.toString());
                  }
                }
                if (blockers.size) bad.push({rail: i, blockedBy: [...blockers]});
@@ -343,4 +344,6 @@ def test_every_insertion_rail_is_reachable_by_the_pointer(page):
              return bad;
            }"""
     )
-    assert unreachable == [], f"parts of these rails cannot be pointed at: {unreachable}"
+    assert unreachable == [], (
+        f"parts of these rails cannot be pointed at: {unreachable}"
+    )
