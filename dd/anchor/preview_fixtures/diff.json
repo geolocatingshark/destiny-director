@@ -1,0 +1,564 @@
+{
+  "comment": "The mirror-log diff. These pin the five behaviours a naive annotation schema loses: equal lines keep their markdown, inserted lines render markdown inside <ins>, deleted lines are RAW escaped text inside <del>, a replace-run word-diffs the raw block, and the section accessory has a three-state.",
+  "cases": [
+    {
+      "name": "diff_no_change",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "unchanged"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "unchanged"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-note\">No changes from the previous version.</div><div class=\"cv2-root\"><div class=\"cv2-text\">unchanged</div></div>"
+    },
+    {
+      "name": "diff_node_added",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "first"
+          },
+          {
+            "type": 10,
+            "content": "second"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "first"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">first</div><div class=\"cv2-added\"><div class=\"cv2-text\">second</div></div></div>"
+    },
+    {
+      "name": "diff_node_removed",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "first"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "first"
+          },
+          {
+            "type": 10,
+            "content": "second"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">first</div><div class=\"cv2-removed\"><div class=\"cv2-text\">second</div></div></div>"
+    },
+    {
+      "name": "diff_text_word_level_edit",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "Nightfall is The Corrupted"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "Nightfall is The Arms Dealer"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">Nightfall is The <del>Arms Dealer</del><ins>Corrupted</ins></div></div>"
+    },
+    {
+      "name": "diff_text_equal_lines_keep_markdown",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "## Weekly reset\n- **Nightfall**: Warden\n- Crucible: Control"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "## Weekly reset\n- **Nightfall**: Warden\n- Crucible: Clash"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h2\">Weekly reset</span>\n<span class=\"md-bullet\"><strong>Nightfall</strong>: Warden</span>\n- Crucible: <del>Clash</del><ins>Control</ins></div></div>"
+    },
+    {
+      "name": "diff_text_line_inserted",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "## Header\nfirst line\n- **new** bullet"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "## Header\nfirst line"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h2\">Header</span>\nfirst line\n<ins><span class=\"md-bullet\"><strong>new</strong> bullet</span></ins></div></div>"
+    },
+    {
+      "name": "diff_text_line_deleted",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "## Header\nfirst line"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "## Header\nfirst line\n- **gone** bullet"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h2\">Header</span>\nfirst line\n<del>- **gone** bullet</del></div></div>"
+    },
+    {
+      "name": "diff_text_replace_multiline_block",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "keep\nalpha changed\nbravo changed\nkeep tail"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "keep\nalpha original\nbravo original\nkeep tail"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">keep\nalpha <del>original</del><ins>changed</ins>\nbravo <del>original</del><ins>changed</ins>\nkeep tail</div></div>"
+    },
+    {
+      "name": "diff_container_recurses",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 17,
+            "accent_color": 15483557,
+            "components": [
+              {
+                "type": 10,
+                "content": "steady"
+              },
+              {
+                "type": 10,
+                "content": "edited now"
+              }
+            ]
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 17,
+            "accent_color": 15483557,
+            "components": [
+              {
+                "type": 10,
+                "content": "steady"
+              },
+              {
+                "type": 10,
+                "content": "edited before"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\" style=\"border-left-color:#ec42a5\"><div class=\"cv2-text\">steady</div><div class=\"cv2-text\">edited <del>before</del><ins>now</ins></div></div></div>"
+    },
+    {
+      "name": "diff_accessory_added",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "body"
+              }
+            ],
+            "accessory": {
+              "type": 11,
+              "media": {
+                "url": "https://example.com/new.png"
+              }
+            }
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "body"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">body</div></div><div class=\"cv2-added\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/new.png\" alt=\"thumbnail\"></div></div></div></div>"
+    },
+    {
+      "name": "diff_accessory_removed",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "body"
+              }
+            ]
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "body"
+              }
+            ],
+            "accessory": {
+              "type": 11,
+              "media": {
+                "url": "https://example.com/old.png"
+              }
+            }
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">body</div></div><div class=\"cv2-removed\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/old.png\" alt=\"thumbnail\"></div></div></div></div>"
+    },
+    {
+      "name": "diff_accessory_changed",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "body"
+              }
+            ],
+            "accessory": {
+              "type": 11,
+              "media": {
+                "url": "https://example.com/new.png"
+              }
+            }
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "body"
+              }
+            ],
+            "accessory": {
+              "type": 11,
+              "media": {
+                "url": "https://example.com/old.png"
+              }
+            }
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">body</div></div><div class=\"cv2-removed\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/old.png\" alt=\"thumbnail\"></div></div><div class=\"cv2-added\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/new.png\" alt=\"thumbnail\"></div></div></div></div>"
+    },
+    {
+      "name": "diff_kind_replaced_at_position",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "https://example.com/now.png"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "used to be text"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-removed\"><div class=\"cv2-text\">used to be text</div></div><div class=\"cv2-added\"><div class=\"cv2-media n1\"><a class=\"cv2-media-item\" href=\"https://example.com/now.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/now.png\" alt=\"\" loading=\"lazy\"></a></div></div></div>"
+    },
+    {
+      "name": "diff_replace_run_with_tail_extras",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "one changed"
+          },
+          {
+            "type": 10,
+            "content": "two changed"
+          },
+          {
+            "type": 10,
+            "content": "three added"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "one original"
+          },
+          {
+            "type": 10,
+            "content": "two original"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">one <del>original</del><ins>changed</ins></div><div class=\"cv2-text\">two <del>original</del><ins>changed</ins></div><div class=\"cv2-added\"><div class=\"cv2-text\">three added</div></div></div>"
+    },
+    {
+      "name": "diff_action_row_button_edited",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Renamed",
+                "url": "https://example.com/go"
+              }
+            ]
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Original",
+                "url": "https://example.com/go"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-buttons\"><div class=\"cv2-removed\"><a class=\"cv2-button\" href=\"https://example.com/go\" target=\"_blank\" rel=\"noopener noreferrer\">Original</a></div><div class=\"cv2-added\"><a class=\"cv2-button\" href=\"https://example.com/go\" target=\"_blank\" rel=\"noopener noreferrer\">Renamed</a></div></div></div>"
+    },
+    {
+      "name": "diff_format_changed",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "classic",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "now components"
+          }
+        ]
+      },
+      "old_payload": {
+        "content": "was a classic message"
+      },
+      "expected_html": "<div class=\"cv2-note\">Message format changed since the previous version — showing the current version.</div><div class=\"cv2-root\"><div class=\"cv2-text\">now components</div></div>"
+    },
+    {
+      "name": "diff_truncated_side",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "fine"
+          }
+        ]
+      },
+      "old_payload": {
+        "truncated": true
+      },
+      "expected_html": "<div class=\"cv2-placeholder\">⚠️ Cannot diff — a version&#x27;s snapshot was stored truncated.</div>"
+    },
+    {
+      "name": "diff_classic_content_edit",
+      "render": "diff",
+      "kind": "classic",
+      "old_kind": "classic",
+      "payload": {
+        "content": "## Notice\nThe **new** wording."
+      },
+      "old_payload": {
+        "content": "## Notice\nThe **old** wording."
+      },
+      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-text\"><span class=\"md-h2\">Notice</span>\nThe <del>**old**</del><ins>**new**</ins> wording.</div></div>"
+    },
+    {
+      "name": "diff_classic_embed_changed",
+      "render": "diff",
+      "kind": "classic",
+      "old_kind": "classic",
+      "payload": {
+        "content": "",
+        "embeds": [
+          {
+            "title": "Xur",
+            "description": "At the Tower"
+          }
+        ]
+      },
+      "old_payload": {
+        "content": "",
+        "embeds": [
+          {
+            "title": "Xur",
+            "description": "At the Hangar"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-removed\"><div class=\"cv2-embed\"><div class=\"embed-title\">Xur</div><div class=\"embed-desc\"><div class=\"cv2-text\">At the Hangar</div></div></div></div><div class=\"cv2-added\"><div class=\"cv2-embed\"><div class=\"embed-title\">Xur</div><div class=\"embed-desc\"><div class=\"cv2-text\">At the Tower</div></div></div></div></div>"
+    },
+    {
+      "name": "diff_classic_embed_added",
+      "render": "diff",
+      "kind": "classic",
+      "old_kind": "classic",
+      "payload": {
+        "content": "same",
+        "embeds": [
+          {
+            "title": "First"
+          },
+          {
+            "title": "Second"
+          }
+        ]
+      },
+      "old_payload": {
+        "content": "same",
+        "embeds": [
+          {
+            "title": "First"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-text\">same</div><div class=\"cv2-embed\"><div class=\"embed-title\">First</div></div><div class=\"cv2-added\"><div class=\"cv2-embed\"><div class=\"embed-title\">Second</div></div></div></div>"
+    }
+  ]
+}
