@@ -15,10 +15,7 @@
 
 # Pure tests for the shared bot-administration controller factory — no Discord I/O.
 
-import pytest
-
-from dd.common import cfg
-from dd.common.controller import make_controller_group, restarts_enabled
+from dd.common.controller import make_controller_group
 
 
 def test_group_named_after_bot() -> None:
@@ -27,9 +24,11 @@ def test_group_named_after_bot() -> None:
     assert group.description == "Bot administration"
 
 
-def test_group_has_restart_stop_info_subcommands() -> None:
+def test_group_has_stop_info_subcommands() -> None:
+    # `restart` was removed 2026-08-04 — it only worked by exiting non-zero, which is a
+    # crash to Railway. Assert the exact set so it can't creep back in unnoticed.
     group = make_controller_group("anchor")
-    assert set(group.subcommands.keys()) == {"restart", "stop", "info"}
+    assert set(group.subcommands.keys()) == {"stop", "info"}
 
 
 def test_each_call_builds_fresh_instances() -> None:
@@ -38,17 +37,4 @@ def test_each_call_builds_fresh_instances() -> None:
     first = make_controller_group("anchor")
     second = make_controller_group("anchor")
     assert first is not second
-    assert first.subcommands["restart"] is not second.subcommands["restart"]
-
-
-def test_restarts_disabled_in_prod(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Prod is the only config that leaves TEST_ENV empty (cfg.test_env == ()); there a
-    # `/restart` non-zero exit risks Railway crash-loop backoff, so it must be refused.
-    monkeypatch.setattr(cfg, "test_env", ())
-    assert restarts_enabled() is False
-
-
-def test_restarts_enabled_in_test_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A test/dev environment (TEST_ENV set → truthy tuple of guild ids) keeps restart.
-    monkeypatch.setattr(cfg, "test_env", (1000000000000000000,))
-    assert restarts_enabled() is True
+    assert first.subcommands["stop"] is not second.subcommands["stop"]

@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Anchor's bot-administration commands: ``/anchor restart | stop | info``.
+"""Anchor's bot-administration commands: ``/anchor stop | info``.
 
 Thin wrapper over the shared :func:`dd.common.controller.make_controller_group`. The
 factory self-applies ``owner_only`` per subcommand; this wrapper scopes registration to
