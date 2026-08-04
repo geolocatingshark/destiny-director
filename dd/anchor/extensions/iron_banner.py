@@ -127,10 +127,6 @@ async def _save_last_posted_reset(period: int) -> None:
     await schemas.RotationData.set_data(META_SLUG, {"last_posted_reset": int(period)})
 
 
-async def _get_iron_banner_enabled() -> bool:
-    return bool(await schemas.AutoPostSettings.get_iron_banner_enabled())
-
-
 # ---------------------------------------------------------------------------
 # Schedule + startup
 # ---------------------------------------------------------------------------
@@ -180,13 +176,12 @@ async def _schedule_iron_banner(
         await _save_last_posted_reset(period)
 
 
-# The owner control group (/iron_banner auto|send|show) — the enable/disable toggle plus
-# manual send/preview. Gated on the followable being configured, like the cron above.
+# The owner control group (/iron_banner send|show) — manual send/preview. The
+# enable/disable toggle lives on the web control panel (/autopost_settings). Gated on
+# the followable being configured, like the cron above.
 if _CHANNEL_ID:
     _iron_banner_autopost_group = make_autopost_control_commands(
         "iron_banner",
-        _get_iron_banner_enabled,
-        schemas.AutoPostSettings.set_iron_banner,
         _CHANNEL_ID,
         format_post,
         message_announcer_coro=discord_announcer,

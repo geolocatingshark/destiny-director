@@ -15,12 +15,14 @@
 
 """Web editor for the rotation JSON store (anchor).
 
-``/rotation edit`` links the owner to ``{public_base_url}/rotation``, a homepage listing
-every rotation type (``ROTATION_SCHEMAS``); each links to ``/rotation/edit?type=…`` so
-the owner edits the document with a friendly form, previews the rendered post, and saves
-— the server re-validates against the JSON schema on save. Authentication for every
-page, preview and save is handled centrally by the Discord-OAuth middleware in
-``web_auth.py`` (this module carries no auth code of its own).
+``{public_base_url}/rotation`` is a homepage listing every rotation type
+(``ROTATION_SCHEMAS``); each links to ``/rotation/edit?type=…`` so the owner edits the
+document with a friendly form, previews the rendered post, and saves — the server
+re-validates against the JSON schema on save. Reached from the control-panel card grid
+(``/control_panel``), which replaced the former ``/rotation edit`` command.
+Authentication for every page, preview and save is handled centrally by the
+Discord-OAuth middleware in ``web_auth.py`` (this module carries no auth code of its
+own).
 """
 
 import asyncio
@@ -37,12 +39,7 @@ import lightbulb as lb
 
 from ...common import cfg, iron_banner, lost_sector, rotation_schema, schemas
 from ...common.bot import CachedFetchBot
-from ...common.components import (
-    cv2_error,
-    cv2_notice,
-    footer_button_specs,
-    respond_cv2,
-)
+from ...common.components import footer_button_specs
 from ...common.legacy_activities import iter_wall_posts, load_seed_doc, weapon_values
 from ...sector_accounting import (
     legacy_activities,
@@ -531,41 +528,6 @@ web.register_card(
 )
 
 
-# --- slash commands ---------------------------------------------------------------
-
-
-rotation = lb.Group("rotation", "Edit rotation post data (owner only)")
-
-
-@rotation.register
-class Edit(
-    lb.SlashCommand,
-    name="edit",
-    description="Open the web editor for all rotation post data",
-):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context) -> None:
-        if not cfg.public_base_url:
-            await respond_cv2(
-                ctx,
-                cv2_error(
-                    "No editor link available",
-                    "No public base URL is configured (set PUBLIC_BASE_URL or run "
-                    "on Railway), so I can't mint a reachable edit link.",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        url = f"{cfg.public_base_url}/rotation"
-        await respond_cv2(
-            ctx,
-            cv2_notice(
-                f"[Open the rotation editor here]({url}) — it lists every rotation. "
-                "You'll sign in with Discord the first time."
-            ),
-            ephemeral=True,
-        )
-
-
-loader.command(rotation)
+# There is deliberately no slash command here. The editor is reached from the web
+# control panel's card grid (registered above); ``/control_panel`` is the single Discord
+# entry point into every web tool.

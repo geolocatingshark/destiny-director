@@ -31,45 +31,6 @@ logger = logging.getLogger(__name__)
 loader = lb.Loader()
 
 
-class ControlLostSectorDetails(
-    lb.SlashCommand,
-    name="details",
-    description="Control whether lost sector additional details and counts are enabled",
-):
-    option = lb.string(
-        "option",
-        "Enable or disable",
-        choices=[lb.Choice("Enable", "Enable"), lb.Choice("Disable", "Disable")],
-    )
-
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context):
-        """Enable or disable lost sector legendary weapon announcements"""
-        desired_setting: bool = self.option.lower() == "enable"
-        current_setting = (
-            await schemas.AutoPostSettings.get_lost_sector_details_enabled()
-        )
-
-        if desired_setting == current_setting:
-            await respond_cv2(
-                ctx,
-                cv2_notice(
-                    f"Lost sector details are already "
-                    f"{'enabled' if desired_setting else 'disabled'}."
-                ),
-            )
-            return
-
-        await schemas.AutoPostSettings.set_lost_sector_details(enabled=desired_setting)
-        await respond_cv2(
-            ctx,
-            cv2_success(
-                f"Lost sector details are now "
-                f"{'enabled' if desired_setting else 'disabled'}."
-            ),
-        )
-
-
 class LsUpdate(
     lb.MessageCommand,
     name="ls_update",
@@ -117,21 +78,13 @@ async def on_start_schedule_autoposts(
         )
 
 
-async def _get_lost_sector_enabled() -> bool:
-    return bool(await schemas.AutoPostSettings.get_lost_sector_enabled())
-
-
 _ls_autopost_group = make_autopost_control_commands(
     "ls",
-    _get_lost_sector_enabled,
-    schemas.AutoPostSettings.set_lost_sector,
     cfg.followables["lost_sector"],
     format_post,
     message_announcer_coro=discord_announcer,
     cv2=True,
 )
-
-_ls_autopost_group.register(ControlLostSectorDetails)
 
 # Slash autopost group inherits the client default (control + test_env). The
 # ls_update context-menu command additionally appears in the Kyber server.

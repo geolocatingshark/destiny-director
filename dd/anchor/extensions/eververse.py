@@ -406,14 +406,8 @@ async def on_start_schedule_autoposts(
         )
 
 
-async def _get_eververse_enabled() -> bool:
-    return bool(await schemas.AutoPostSettings.get_eververse_enabled())
-
-
 _eververse_autopost_group = make_autopost_control_commands(
     autopost_name="eververse",
-    enabled_getter=_get_eververse_enabled,
-    enabled_setter=schemas.AutoPostSettings.set_eververse,
     channel_id=cfg.followables["eververse"],
     message_constructor_coro=eververse_message_constructor,
     message_announcer_coro=xur.api_to_discord_announcer,

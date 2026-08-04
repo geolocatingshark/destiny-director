@@ -481,10 +481,6 @@ def _next_daily_reset_unix() -> int:
 _PORTAL_OPS_CHANNEL = cfg.followables.get("portal_ops")
 
 
-async def _get_portal_ops_enabled() -> bool:
-    return bool(await schemas.AutoPostSettings.get_portal_ops_enabled())
-
-
 if not _PORTAL_OPS_CHANNEL:
     # The followable channel id is not configured in this environment's FOLLOWABLES
     # (absent, or the 0 placeholder). Load cleanly and stay dormant rather than
@@ -519,8 +515,6 @@ else:
 
     _portal_ops_autopost_group = make_autopost_control_commands(
         autopost_name="portal_ops",
-        enabled_getter=_get_portal_ops_enabled,
-        enabled_setter=schemas.AutoPostSettings.set_portal_ops,
         channel_id=_portal_ops_channel,
         message_constructor_coro=portal_ops_message_constructor,
         message_announcer_coro=xur.api_to_discord_announcer,

@@ -81,46 +81,12 @@ async def discord_announcer(
 
 def make_autopost_control_commands(
     autopost_name: str,
-    enabled_getter: t.Callable[[], t.Awaitable[bool]],
-    enabled_setter: t.Callable[..., t.Awaitable[t.Any]],
     channel_id: int,
     message_constructor_coro: t.Callable[..., t.Awaitable[HMessage]],
     message_announcer_coro: t.Callable[..., t.Awaitable[t.Any]] | None = None,
     cv2: bool = False,
 ) -> lb.Group:
     parent_group = lb.Group(autopost_name, "Commands for Kyber")
-
-    @parent_group.register
-    class AutopostControl(
-        lb.SlashCommand,
-        name="auto",
-        description="Enable or disable automated announcements",
-    ):
-        option = lb.string(
-            "option",
-            "Enable or disable",
-            choices=[lb.Choice("Enable", "Enable"), lb.Choice("Disable", "Disable")],
-        )
-
-        @lb.invoke
-        async def invoke(self, ctx: lb.Context):
-            enable = self.option.lower() == "enable"
-            enabled = await enabled_getter()
-            state = "enabled" if enable else "disabled"
-            name = autopost_name.capitalize()
-            if enable == enabled:
-                await ctx.respond(
-                    components=[
-                        cv2_notice(f"{name} announcements are already {state}.")
-                    ],
-                    flags=h.MessageFlag.IS_COMPONENTS_V2,
-                )
-            else:
-                await enabled_setter(enabled=enable)
-                await ctx.respond(
-                    components=[cv2_success(f"{name} announcements now {state}.")],
-                    flags=h.MessageFlag.IS_COMPONENTS_V2,
-                )
 
     @parent_group.register
     class ManualAnnounce(

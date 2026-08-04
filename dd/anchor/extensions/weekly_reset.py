@@ -60,11 +60,8 @@ from dd.hmessage import HMessage
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
 from ...common.components import (
-    cv2_error,
-    cv2_notice,
     finalize_cv2_post,
     footer_button_specs,
-    respond_cv2,
 )
 from ...common.utils import fetch_emoji_dict
 
@@ -1466,50 +1463,6 @@ web.register_card(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slash command — the sole remaining weekly_reset Discord surface
-# ---------------------------------------------------------------------------
-
-
-weekly_reset_group = lb.Group("weekly_reset", "Weekly Reset Overview (owner only)")
-
-
-@weekly_reset_group.register
-class Create(
-    lb.SlashCommand,
-    name="create",
-    description="Open the owner-only weekly-reset web form",
-):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context) -> None:
-        if not cfg.public_base_url:
-            await respond_cv2(
-                ctx,
-                cv2_error(
-                    "No editor link available",
-                    "No public base URL is configured (set PUBLIC_BASE_URL or run on "
-                    "Railway), so I can't mint a reachable edit link.",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        url = f"{cfg.public_base_url}/weekly_reset"
-        # Ephemeral (owner-private) response with a link button. The form itself is
-        # gated by Discord OAuth (web_auth.py) — you sign in with Discord on first open.
-        container = cv2_notice(
-            "Open the weekly-reset form with the button below — you'll sign in with "
-            "Discord the first time. Edit, preview, save and publish all from that "
-            "page."
-        )
-        row = h.impl.MessageActionRowBuilder()
-        row.add_component(
-            h.impl.LinkButtonBuilder(url=url, label="Open weekly-reset form")
-        )
-        container.add_component(row)
-        await respond_cv2(ctx, container, ephemeral=True)
-
-
 @loader.listener(h.StartedEvent)
 async def _on_started(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
@@ -1525,9 +1478,7 @@ async def _on_started(
     asyncio.create_task(get_indexes())
 
 
-# The web form's routes are always registered (above); the slash command that mints the
-# link is gated on the publish target (the weekly_reset followable) — the same gate that
-# guards the StartedEvent listener. There is no reset-day cron: the post is created and
-# published entirely from the web form's Create/Publish buttons.
-if cfg.followables.get("weekly_reset"):
-    loader.command(weekly_reset_group)
+# The web form's routes are always registered (above) and the form is reached from the
+# control-panel card grid, which replaced the former `/weekly_reset create` command.
+# There is no reset-day cron: the post is created and published entirely from the web
+# form's Create/Publish buttons.

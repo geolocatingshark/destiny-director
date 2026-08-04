@@ -18,9 +18,9 @@
 A single owner-only page (linked from the control-panel homepage via
 :func:`web.register_card`) that shows every **global** autopost produce toggle and lets
 the owner flip them in one place. Each toggle maps to one ``name`` row in
-:class:`~dd.common.schemas.AutoPostSettings` — the same rows the scattered ``/<feed>
-auto`` anchor slash commands write. This page does not replace those; it is an
-additional, consolidated surface over the same rows.
+:class:`~dd.common.schemas.AutoPostSettings`. This page is the **sole** surface for
+those rows: the scattered ``/<feed> auto`` slash commands (plus ``/ls details`` and
+``/xur default_image``) duplicated it and were removed 2026-08-04.
 
 Scope is settings only — no "send now" / preview and no per-guild follow management
 (that is end-user ``/autopost <feed>`` territory, stored as ``MirroredChannel`` rows). A

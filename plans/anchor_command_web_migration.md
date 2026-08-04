@@ -64,16 +64,19 @@ The `auto` subcommand is generated inside `make_autopost_control_commands`
 Ordered by dependency. Phases 1–4 are independent of each other and can ship in any
 order after Phase 0.
 
-### Phase 0 — delete the duplicates · `refactor(anchor): drop web-duplicated commands`
+### Phase 0 — delete the duplicates ✅ DONE 2026-08-04
 
-Set A. No new web code. Touches `autopost.py` (drop the `auto` class),
-`lost_sector.py`, `xur.py`, `rotation_editor.py`, `weekly_reset.py`, `trials.py`, and
-`help_details.py`. Ships alone, immediately.
+Set A, all 11 removed. `make lint`, `make typecheck` and the full non-Discord suite
+(1195 passed) are green.
 
-Watch for: `weekly_reset.py:1533` and `trials.py:773` gate `loader.command(...)` on the
-followable being configured — with the group gone, check nothing else depended on that
-gate. `rotation_editor.py`'s `rotation` group has only the one subcommand, so the whole
-group goes.
+One thing the plan did not anticipate: dropping the `auto` subcommand orphaned the
+factory's `enabled_getter` / `enabled_setter` parameters, and with them the six
+`_get_<feed>_enabled` wrappers that existed solely to be passed in — every cron already
+calls `schemas.AutoPostSettings.get_<feed>_enabled` directly. Both parameters and all six
+wrappers are gone; `make_autopost_control_commands` now takes only what `send` and `show`
+actually use.
+
+`help_details.py` needed no change — none of its entries covered a Set A command.
 
 ### Phase 1 — per-feed send + preview on web · the main build
 
