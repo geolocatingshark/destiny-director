@@ -1291,7 +1291,9 @@
       const label = from
         ? M.KIND_LABEL[kind] || kind
         : "New " + (M.KIND_LABEL[kind] || kind).toLowerCase();
-      drag = { kind, from, ghost: makeGhost(label, x, y) };
+      // `target` is the armed drop site, the single answer both the highlight and the
+      // release read (see armTarget). `rails`/`railsAt` memoize validRailRects.
+      drag = { kind, from, ghost: makeGhost(label, x, y), target: null };
       document.body.classList.add("cv2b-dragging-now");
       if (from) {
         const el0 = blockEl(from);
@@ -1334,35 +1336,99 @@
       document.body.classList.remove("cv2b-dragging-now");
     }
 
-    /** The drop target under the pointer, or null. The ghost is pointer-events:none so
-     *  it never hit-tests as itself. */
-    function targetAt(x, y) {
-      const under = document.elementFromPoint(x, y);
-      if (!under) return null;
-      const rail = under.closest(".cv2b-rail");
-      if (rail) {
-        const scope = JSON.parse(rail.dataset.scope);
-        return M.canDrop(state.nodes, scope, drag.kind, drag.from)
-          ? { el: rail, kind: "rail", scope, index: Number(rail.dataset.index) }
-          : { el: rail, kind: "blocked", scope };
-      }
-      const slot = under.closest(".cv2b-acc-slot");
-      if (slot && M.isAccessoryKind(drag.kind)) {
-        return {
-          el: slot,
-          kind: "acc",
-          sectionPath: JSON.parse(slot.dataset.accslot),
-        };
-      }
-      return null;
+    /** Rails that are LEGAL for this drag, measured.
+     *
+     *  Blocked-ness is fixed for the life of a drag — markValidTargets computes it at
+     *  pickup from nodes/kind/from, none of which change while a block is in the air — so
+     *  only the geometry needs refreshing, and only when the canvas scrolls under the
+     *  pointer. NOTE for the gap-opening step: an animating rail height moves these rects
+     *  WITHOUT changing scrollTop, so that change has to invalidate this cache too. */
+    function validRailRects() {
+      const scrollTop = el.canvas.parentElement.scrollTop;
+      if (drag.rails && drag.railsAt === scrollTop) return drag.rails;
+      const rects = [];
+      el.canvas.querySelectorAll(".cv2b-rail:not(.cv2b-blocked)").forEach((r) => {
+        const box = r.getBoundingClientRect();
+        rects.push({
+          el: r,
+          top: box.top,
+          bottom: box.bottom,
+          left: box.left,
+          right: box.right,
+        });
+      });
+      drag.rails = rects;
+      drag.railsAt = scrollTop;
+      return rects;
     }
 
-    /** Highlight (or refuse) the drop target under a point. */
+    /** Where an otherwise-missed release should land, or null when it is far enough away
+     *  to read as a deliberate cancel. */
+    function nearestRailTarget(x, y) {
+      const rects = validRailRects();
+      // The previously armed rail gets the hysteresis margin, so the target does not
+      // flicker between neighbours while the pointer sits still.
+      const armed =
+        drag.target && drag.target.kind === "rail"
+          ? rects.findIndex((r) => r.el === drag.target.el)
+          : -1;
+      const i = M.nearestRail(rects, x, y, armed);
+      if (i === -1) return null;
+      const rail = rects[i].el;
+      return {
+        el: rail,
+        kind: "rail",
+        scope: JSON.parse(rail.dataset.scope),
+        index: Number(rail.dataset.index),
+      };
+    }
+
+    /** The drop target for a point, or null. The ghost is pointer-events:none so it never
+     *  hit-tests as itself.
+     *
+     *  An exact hit always wins — including on a BLOCKED rail, because hovering an illegal
+     *  target has to keep explaining itself through the refusal toast; that is how the
+     *  nesting rules are taught. Only when the pointer is over nothing at all does the
+     *  nearest legal rail take over. A rail is 0.62rem tall, so on touch "over nothing"
+     *  is the common case, and it used to mean the block sprang back unexplained. */
+    function targetAt(x, y) {
+      const under = document.elementFromPoint(x, y);
+      if (under) {
+        const rail = under.closest(".cv2b-rail");
+        if (rail) {
+          const scope = JSON.parse(rail.dataset.scope);
+          return M.canDrop(state.nodes, scope, drag.kind, drag.from)
+            ? { el: rail, kind: "rail", scope, index: Number(rail.dataset.index) }
+            : { el: rail, kind: "blocked", scope };
+        }
+        const slot = under.closest(".cv2b-acc-slot");
+        if (slot && M.isAccessoryKind(drag.kind)) {
+          return {
+            el: slot,
+            kind: "acc",
+            sectionPath: JSON.parse(slot.dataset.accslot),
+          };
+        }
+      }
+      return nearestRailTarget(x, y);
+    }
+
+    /** Highlight (or refuse) the drop target for a point, and record it as the one the
+     *  release will act on.
+     *
+     *  Storing it is what keeps the drop honest: endDrag used to hit-test again on
+     *  pointerup, so the highlight and the landing site were two independent answers to
+     *  the same question. They agreed only by coincidence — autoscroll re-arms against
+     *  freshly scrolled content, and the nearest search deliberately holds a target
+     *  through small movements. Whenever they disagree, the block lands somewhere other
+     *  than the rail the author is looking at, which is the worst way for a drag tool to
+     *  be wrong. One answer, computed here, consumed there. */
     function armTarget(x, y) {
       el.canvas
         .querySelectorAll(".cv2b-armed")
         .forEach((n) => n.classList.remove("cv2b-armed"));
       const target = targetAt(x, y);
+      drag.target = target;
       if (!target) return hideToast();
       if (target.kind === "blocked") {
         toast(M.refusalReason(state.nodes, target.scope, drag.kind), true);
@@ -1411,7 +1477,12 @@
     function endDrag(x, y) {
       const d = drag;
       setAutoScroll(0);
-      const target = targetAt(x, y);
+      // Arm once more at the release point, then act on what is ARMED — never on an
+      // independent hit test (see armTarget). Re-arming means a release that drifted a
+      // few pixels off the last move is still accounted for, while hysteresis stops a
+      // small roll of the finger on lift-off from changing where the block lands.
+      armTarget(x, y);
+      const target = d.target;
       if (d.ghost) d.ghost.remove();
       drag = null;
       clearDragMarks();

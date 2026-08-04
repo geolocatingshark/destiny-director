@@ -829,6 +829,82 @@
     return { start: colon, query };
   }
 
+  // --- drop targeting geometry ------------------------------------------------------
+  // Geometry rather than model, but it lives here because it is PURE — it takes plain
+  // rectangles, touches no DOM, and is therefore the one part of the drag layer a node
+  // test can cover. cv2_builder.js measures the rails and hands them over.
+  //
+  // Why a nearest search exists at all: a rail is 0.62rem tall (~10px). Hitting one
+  // exactly with a fingertip is a coin flip, so dropping on touch used to fail silently
+  // and the block sprang back with no explanation. An exact hit still wins when there is
+  // one — this only decides where an otherwise-missed release should land.
+
+  /** Beyond this, a release is a CANCEL rather than a drop. Load-bearing: releasing over
+   *  the palette or the inspector has to stay an escape hatch, not a far-away commit. */
+  const NEAREST_RAIL_MAX_PX = 120;
+  /** A rival rail must beat the armed one by this much to steal it. Without hysteresis
+   *  the armed rail flickers whenever content shifts under a stationary pointer. */
+  const NEAREST_RAIL_HYSTERESIS_PX = 12;
+
+  /** Vertical distance from a point to a rail's midline. Rails are wide and thin, so
+   *  only the y axis meaningfully separates them; x is handled by the column test. */
+  function railDistance(rect, y) {
+    return Math.abs(y - (rect.top + rect.bottom) / 2);
+  }
+
+  /**
+   * Which rail a release at (x, y) should land on: an index into `rects`, or -1 for none.
+   *
+   * `rects` must already be filtered to LEGAL targets — an illegal rail still explains
+   * itself through the exact-hit path, but must never be snapped to.
+   *
+   * Rails whose horizontal span contains x win outright over rails that do not. Inner
+   * rails are indented inside their container, so a pointer in the container's column
+   * must not snap out to the container's own outer rail merely because it is a few
+   * pixels closer vertically.
+   *
+   * `current` is the index of the currently armed rail, or -1. It gets the hysteresis
+   * margin so the armed target stays put through small shifts.
+   */
+  function nearestRail(rects, x, y, current) {
+    if (!rects || !rects.length) return -1;
+
+    const inColumn = [];
+    for (let i = 0; i < rects.length; i++) {
+      if (x >= rects[i].left && x <= rects[i].right) inColumn.push(i);
+    }
+    const pool = inColumn.length ? inColumn : rects.map((_, i) => i);
+
+    let best = -1;
+    let bestDistance = Infinity;
+    for (const i of pool) {
+      const d = railDistance(rects[i], y);
+      if (d < bestDistance) {
+        bestDistance = d;
+        best = i;
+      }
+    }
+    if (best === -1 || bestDistance > NEAREST_RAIL_MAX_PX) return -1;
+
+    // Keep the armed rail unless a rival clearly beats it — but only while it is still
+    // a plausible target itself (in the pointer's column, and inside the cap).
+    if (
+      typeof current === "number" &&
+      current >= 0 &&
+      current < rects.length &&
+      pool.indexOf(current) !== -1
+    ) {
+      const currentDistance = railDistance(rects[current], y);
+      if (
+        currentDistance <= NEAREST_RAIL_MAX_PX &&
+        currentDistance - bestDistance < NEAREST_RAIL_HYSTERESIS_PX
+      ) {
+        return current;
+      }
+    }
+    return best;
+  }
+
   // --- exports ----------------------------------------------------------------------
 
   const CV2Model = {
@@ -891,6 +967,10 @@
     inlineMd,
     lineMd,
     renderMd,
+    // drop targeting geometry
+    nearestRail,
+    NEAREST_RAIL_MAX_PX,
+    NEAREST_RAIL_HYSTERESIS_PX,
     // editor segmentation + emoji autocomplete
     emojiEntry,
     emojiSegments,

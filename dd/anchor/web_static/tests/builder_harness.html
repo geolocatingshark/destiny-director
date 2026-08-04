@@ -1,0 +1,90 @@
+<!doctype html>
+<!--
+  A no-server fixture that mounts the CV2 builder widget with a fixed tree.
+
+  The real host page (cv2_builder_page.js) fetches a draft from /cv2-builder/<id>/data
+  before mounting. That is a property of the HOST, not the widget: initCv2Builder takes
+  its seed nodes and all three server round-trips (onSave / onPreview / onPublish) as
+  injected options, so the editor itself runs with no backend, no auth and no database.
+
+  This file exists so the DOM layer — drag, drop targeting, the context menu, the
+  properties sheet — can be driven by a browser test. plans/web_cv2_builder_followups.md
+  §6 records that layer as the one with no automated coverage, and that the blocker was
+  never the fixture but choosing assertions that would not rot. The tests that use this
+  live in tests/builder_drag.spec.* ; keep the tree below STABLE, because they index into
+  it by position.
+
+  Open it directly (file://) or over /static/tests/builder_harness.html — it needs
+  nothing else running.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CV2 builder harness (test fixture)</title>
+    <link rel="stylesheet" href="../shared.css" />
+    <link rel="stylesheet" href="../cv2_preview.css" />
+    <link rel="stylesheet" href="../cv2_builder.css" />
+    <link rel="stylesheet" href="../cv2_builder_page.css" />
+  </head>
+  <body>
+    <main id="mount"></main>
+
+    <script src="../cv2_model.js"></script>
+    <script src="../cv2_builder.js"></script>
+    <script>
+      // A tree deliberately shaped for the drag tests: a container with children (so
+      // nested rails sit indented under a top-level one — the ambiguous case for a
+      // nearest-target search), a section that already HAS an accessory, a section that
+      // does NOT (an empty .cv2b-acc-slot only renders in that case, and it is its own
+      // drop target), and loose top-level blocks either side.
+      //
+      // No network. The thumbnail is a 1x1 data: URI rather than a real URL so the
+      // fixture renders identically with no egress — a test that quietly depends on
+      // reaching example.com fails for reasons that have nothing to do with the code.
+      const PIXEL =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ" +
+        "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+      window.__HARNESS_NODES__ = [
+        {
+          type: 17, // container
+          accent_color: 0xec42a5,
+          components: [
+            { type: 10, content: "# Weekly Reset" },
+            { type: 14, divider: true, spacing: 1 },
+            {
+              type: 9, // section, accessory filled
+              components: [{ type: 10, content: "Nightfall: **The Corrupted**" }],
+              accessory: { type: 11, media: { url: PIXEL } },
+            },
+            {
+              type: 9, // section, accessory EMPTY -> renders a .cv2b-acc-slot
+              components: [{ type: 10, content: "Crucible: **Iron Banner**" }],
+            },
+          ],
+        },
+        { type: 10, content: "Loose text below the container." },
+        {
+          type: 1, // action row
+          components: [
+            { type: 2, style: 5, label: "Open in Discord", url: "https://example.com" },
+          ],
+        },
+      ];
+
+      // Stubs stand in for the three server round-trips. They resolve rather than reject
+      // so a test that triggers autosave or the confirm dialog does not see an error
+      // path it did not ask for.
+      window.__HARNESS__ = window.initCv2Builder(document.getElementById("mount"), {
+        nodes: window.__HARNESS_NODES__,
+        emoji: {},
+        defaultAccent: 0xec42a5,
+        actionLabel: "Post",
+        onSave: async () => ({ ok: true }),
+        onPreview: async () => "<p class='cv2b-help'>(harness preview)</p>",
+        onPublish: async () => ({ ok: true, message_link: "https://example.com/msg" }),
+      });
+    </script>
+  </body>
+</html>
