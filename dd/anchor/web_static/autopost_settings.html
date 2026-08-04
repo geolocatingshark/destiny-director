@@ -70,6 +70,9 @@
       .switch input:checked + .slider { background: var(--accent); }
       /* Pure white knob on the pink fill (>=3:1 non-text contrast; #e6e6e6 would be 2.9). */
       .switch input:checked + .slider::before { transform: translateX(18px); background: #fff; }
+      /* The checkbox is visually hidden and stretched over the switch, so shared.css's
+         ring would draw around empty space. The slider wears it instead. */
+      .switch input:focus-visible { outline: none; }
       .switch input:focus-visible + .slider {
         outline: 2px solid var(--accent); outline-offset: 2px;
       }

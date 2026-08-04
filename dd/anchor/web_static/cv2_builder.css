@@ -134,6 +134,9 @@
 }
 .cv2b .cv2b-pal:active {
   cursor: grabbing;
+  /* Opt out of shared.css's press nudge: these are drag handles, and a control that dips
+     on pointerdown reads as a mis-click at the very start of a gesture. */
+  transform: none;
 }
 .cv2b-glyph {
   width: 1.35rem;

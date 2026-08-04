@@ -23,7 +23,6 @@ button {
   background: var(--accent-strong); color: #fff; border: 0; border-radius: var(--radius-sm);
   padding: .45rem .8rem; font: inherit; cursor: pointer;
 }
-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button.secondary { background: var(--surface-3); }
 button.tiny { padding: .15rem .5rem; font-size: .8rem; }
 button.danger { background: var(--danger-surface); }

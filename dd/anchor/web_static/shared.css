@@ -95,6 +95,39 @@ body {
    radio is visually hidden, so this only colours the real, visible checkboxes
    (weekly/Trials forms, editor sector picker). */
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+/* ---------------------------------------------------------------------------
+   Interaction feedback
+   ---------------------------------------------------------------------------
+   Hover, focus and press for every interactive element, in one place. Before this,
+   hover states snapped, three files re-declared an identical focus ring while six had
+   none, and nothing anywhere acknowledged a press.
+
+   Only the properties hover/press actually change are transitioned. `outline` is
+   deliberately NOT among them: a focus ring that fades in reads as lag to someone
+   navigating by keyboard, and it is the one indicator that has to be instant. */
+a, button, summary, input, select, textarea {
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    transform var(--dur-fast) ease;
+}
+
+/* The ring the whole UI shares. Pages override it only where the offset is genuinely
+   different — stats' inset segmented control, its 1px search field, autopost's url
+   field — or where a wrapper already owns the affordance and would double up (the
+   visually-hidden switch checkbox, Tom Select's inner input). */
+a:focus-visible, button:focus-visible, summary:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A press should feel like one. Controls that begin a DRAG rather than a click opt out
+   (cv2_builder.css turns this back off for its palette, which is cursor: grab) — a
+   grab handle that dips on pointerdown reads as a mis-click at the start of a gesture. */
+button:not(:disabled):active { transform: translateY(1px); }
 header { padding-top: 1.2rem; }
 h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
 .muted { color: var(--text-faint); font-size: .85rem; }
@@ -218,7 +251,21 @@ p.nav { margin: 0 0 .4rem; }
   border: 1px solid var(--danger-border); border-radius: var(--radius);
   background: var(--danger-bg);
 }
-.form-page #problems.hidden { display: none; }
+/* The problem list is the only thing that says why a publish was refused, so it eases in
+   rather than appearing between two frames. `display` is transitioned discretely so the
+   element still leaves the layout when hidden, and @starting-style supplies the pre-open
+   state a display:none element would otherwise have no way to animate from. Both forms
+   ship it with class="hidden", so this never fires on page load. */
+.form-page #problems {
+  transition: opacity var(--dur) ease, transform var(--dur) ease, display var(--dur);
+  transition-behavior: allow-discrete;
+}
+@starting-style {
+  .form-page #problems { opacity: 0; transform: translateY(-.25rem); }
+}
+.form-page #problems.hidden {
+  display: none; opacity: 0; transform: translateY(-.25rem);
+}
 
 /* --- action toolbar (a sibling below main.layout) --- */
 .form-page .toolbar {
