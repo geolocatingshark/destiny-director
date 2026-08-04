@@ -312,18 +312,18 @@ def test_the_armed_target_holds_while_the_gap_animates(page):
 def test_every_insertion_rail_is_reachable_by_the_pointer(page):
     """A rail the pointer cannot hit is a drop that silently misses.
 
-    targetAt resolves a drop with elementFromPoint, so anything painted over a rail takes
-    that strip away from it — no error, no log, the block just springs back. The selected
-    block's type tag is offset by exactly one rail's height and used to swallow 36% of the
-    rail above it, which is the rail you are most likely to aim at next. Selecting a block
-    is what reveals that tag, so the check runs with one selected.
+    targetAt resolves a drop with elementFromPoint, so anything painted over a rail
+    takes that strip away from it — no error, no log, the block just springs back. The
+    selected block's type tag is offset by exactly one rail's height and used to swallow
+    36% of the rail above it, which is the rail you are most likely to aim at next.
+    Selecting a block is what reveals that tag, so the check runs with one selected.
 
-    Geometry only: no drag, no timing. Restyling may move the rails; it must not make any
-    part of one unreachable.
+    Geometry only: no drag, no timing. Restyling may move the rails; it must not make
+    any part of one unreachable.
     """
     page.locator(".cv2b-blk").nth(BLOCK_SEPARATOR).click()
     page.wait_for_timeout(120)
-    assert page.locator(".cv2b-tag:visible").count(), "expected the selection to show a tag"
+    assert page.locator(".cv2b-tag:visible").count(), "the selection should show a tag"
 
     unreachable = page.evaluate(
         """() => {
