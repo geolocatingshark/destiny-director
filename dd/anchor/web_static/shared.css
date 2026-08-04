@@ -117,19 +117,26 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 /* The ring every page shares. Pages override the offset where theirs is genuinely
    different — stats' inset segmented control, its 1px search field, autopost's url field.
 
-   `.no-focus-ring` is the opt-out for a control whose WRAPPER already draws the ring:
-   the autopost switch and the Trials set-card both hide the real input and decorate an
-   ancestor, so ringing the input too would draw a second indicator inside the first (on
-   the set-card, around a 1px-square proxy). One marker beats an `outline: none` per page
-   — there were already two of those and a third control had been missed.
+   The opt-out below is a SEPARATE rule rather than a :not() on this one, and that
+   matters: putting a class in this selector lifts it to specificity (0,2,1), above the
+   page overrides at (0,2,0) that exist to change it. Doing that silently reverted stats'
+   1px search ring and turned its inset segmented-control ring outset. This selector stays
+   at (0,1,1) — exactly what the `a:focus-visible` list it replaced measured.
 
    Not universal: .cv2b input:focus (cv2_builder.css) and .filter-bar select:focus
    (mirror_log.css) predate this and still colour a border instead. Left alone rather
    than swept in with a motion change. */
-:is(a, button, summary, input, select, textarea):not(.no-focus-ring):focus-visible {
+:is(a, button, summary, input, select, textarea):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* Controls whose WRAPPER already draws the ring: the autopost switch and the Trials
+   set-card both hide the real input and decorate an ancestor, so ringing the input too
+   would draw a second indicator inside the first (on the set-card, around a 1px-square
+   proxy). One marker beats an `outline: none` per page — there were already two of those
+   and a third control had been missed. */
+.no-focus-ring:focus-visible { outline: none; }
 
 /* A press should feel like one. Controls that begin a DRAG rather than a click opt out
    (cv2_builder.css turns this back off for its palette, which is cursor: grab) — a

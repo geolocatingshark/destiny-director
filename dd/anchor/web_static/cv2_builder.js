@@ -1464,6 +1464,9 @@
           n.classList.remove("cv2b-dragging", "cv2b-armed", "cv2b-blocked"),
         );
       document.body.classList.remove("cv2b-dragging-now");
+      // Measured per drag in beginDrag; drop it so a stale gap size cannot outlive the
+      // block it was measured from.
+      el.canvas.style.removeProperty("--cv2b-gap");
     }
 
     /** Rails that are LEGAL for this drag, measured fresh.
@@ -1565,6 +1568,23 @@
       const target = targetAt(x, y);
       drag.target = target;
 
+      // Refuse loudly for as long as the pointer rests on an illegal target. toast()
+      // auto-hides after 2.4s and each call resets that timer, so this has to run even
+      // when the target has not changed — which is precisely the case the class guard
+      // below skips. Teaching the nesting rules by hovering is why the toast exists (see
+      // this file's header); letting it time out mid-hover takes the explanation away
+      // while the block is still in the air.
+      //
+      // NOT covered by a browser test, deliberately. Aiming at a blocked rail from a test
+      // means hitting a ~10px strip that the block above partly paints over, while
+      // staying outside the 60px autoscroll band that slides the canvas out from under
+      // the pointer — every version of that assertion was geometry-dependent and flaky.
+      // Verified by driving Chromium directly: the toast survives 2700ms of hovering,
+      // where it previously vanished at 2400ms.
+      if (target && target.kind === "blocked") {
+        toast(M.refusalReason(state.nodes, target.scope, drag.kind), true);
+      }
+
       // Only touch classes when the target actually CHANGES. Stripping .cv2b-armed and
       // adding it straight back — which is what happens on every pointermove that stays
       // on the same rail — is the textbook way to restart a CSS transition. That was
@@ -1579,10 +1599,7 @@
       if (same) return;
       if (previous && previous.el) previous.el.classList.remove("cv2b-armed");
       if (!target) return hideToast();
-      if (target.kind === "blocked") {
-        toast(M.refusalReason(state.nodes, target.scope, drag.kind), true);
-        return;
-      }
+      if (target.kind === "blocked") return; // already toasted above
       target.el.classList.add("cv2b-armed");
       hideToast();
     }

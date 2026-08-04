@@ -3,7 +3,7 @@
 // This file is part of "dd" henceforth referred to as "destiny-director".
 // Licensed under the GNU AGPL v3 or later; see the project LICENSE.
 
-// Page/asset pairing guards.
+// Cross-file CSS guards: which sheet owns what, and which sheet wins.
 //
 // There is no bundler, so nothing links a page's <script> to the stylesheet that script's
 // output needs. That pairing is a convention, and conventions rot silently: a page that
@@ -86,4 +86,24 @@ test("chart chrome lives only in charts.css", () => {
     }
   }
   assert.deepEqual(offenders, [], "move these into charts.css rather than restating them");
+});
+
+
+// --- shared.css must not out-specify the pages it serves -----------------------------
+
+test("the shared focus ring stays at element specificity", () => {
+  // A class in this selector lifts it to (0,2,1), above the page overrides at (0,2,0)
+  // that exist precisely to change it — stats' 1px search ring and its INSET -2px
+  // segmented control. Adding `:not(.no-focus-ring)` here did exactly that, and the only
+  // symptom was two rings quietly changing offset. The opt-out is its own rule instead.
+  const css = fs
+    .readFileSync(path.join(STATIC_DIR, "shared.css"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, ""); // comments discuss selectors; only rules count
+  const rule = css.match(/([^\n{}]*:focus-visible[^{]*)\{[^}]*outline:\s*2px/);
+  assert.ok(rule, "shared.css should define one element-level focus ring");
+  assert.doesNotMatch(
+    rule[1],
+    /\.[a-zA-Z]/,
+    `the shared focus ring must not carry a class selector — found: ${rule[1].trim()}`,
+  );
 });
