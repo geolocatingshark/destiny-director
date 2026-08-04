@@ -159,7 +159,8 @@ def _render_row(setting: _Setting, state: bool | str | None) -> str:
         f'<div class="{base_class}">'
         f"{label_block}"
         '<label class="switch">'
-        f'<input type="checkbox" data-slug="{html.escape(setting.slug)}"{checked} />'
+        f'<input type="checkbox" class="no-focus-ring" '
+        f'data-slug="{html.escape(setting.slug)}"{checked} />'
         '<span class="slider"></span>'
         "</label>"
         "</div>"

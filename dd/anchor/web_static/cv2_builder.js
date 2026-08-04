@@ -73,6 +73,43 @@
   const AUTOSAVE_MS = 1200;
 
   const clone = (v) => JSON.parse(JSON.stringify(v));
+
+  // --- motion ------------------------------------------------------------------------
+  // Durations live in CSS (shared.css :root) so ONE prefers-reduced-motion rule reaches
+  // the whole UI. WAAPI wants a number, so read the token back rather than duplicating
+  // its value here — duplicate it and the two drift, and reduced motion silently stops
+  // covering the JS-driven animations. These are local rather than in shared.js because
+  // the builder is a standalone widget: cv2_builder.html does not load shared.js.
+  const reduceMotion = () =>
+    !!window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /** A custom property's value off :root. */
+  const cssToken = (name) =>
+    getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  /** A CSS duration token as milliseconds (`--dur` -> 140). 0 if it is missing. */
+  function motionMs(token) {
+    const raw = cssToken(token);
+    const value = parseFloat(raw);
+    if (!Number.isFinite(value)) return 0;
+    return /ms$/.test(raw) ? value : value * 1000;
+  }
+  /** The shared easing curve. Read, not copied — motion_tokens.test.js guards duration
+   *  literals but not easing ones, so a hardcoded curve here is the drift nothing
+   *  catches: retune --ease-out and the CSS moves while the WAAPI animations do not. */
+  const easeOut = () => cssToken("--ease-out") || "ease";
+
+  /** Whether an element can be animated at all. Feature check plus the reduced-motion
+   *  decision in ONE place: the CSS tokens already collapse to ~0ms, so this is
+   *  belt-and-braces rather than the load-bearing gate (that is documented in
+   *  shared.css), and every animating helper reads it instead of re-deciding. */
+  const canAnimate = (node) => !!(node && node.animate) && !reduceMotion();
+
+  /** Run `fn` when an animation finishes OR is cancelled, exactly once. Cancellation
+   *  matters everywhere it is used: an animation interrupted by a later render must not
+   *  swallow the mutation it was introducing. */
+  const whenSettled = (animation, fn) => animation.finished.then(fn, fn);
   const pk = (p) => JSON.stringify(p);
   const esc = (s) => M.esc(s);
 
@@ -121,6 +158,10 @@
 
     // ---- undo/redo -------------------------------------------------------------
     let liveKey = null; // coalesces a run of keystrokes in one inspector field
+    // True for exactly one render(): the paint that shows a mutation's result. Not
+    // on `state` — that object is the document, and this is one paint's worth of
+    // rendering flag. See commit() and renderBlock().
+    let landing = false;
 
     function snapshot() {
       state.undo.push({ nodes: clone(state.nodes), sel: state.sel && state.sel.slice() });
@@ -132,8 +173,80 @@
       liveKey = null;
       fn();
       markDirty();
+      // Every mutation returns the path it wants selected — an explicit contract in
+      // cv2_model.js — so the block that just changed is already known, with no node
+      // identity scheme and nothing for the full innerHTML rebuild to lose. Mark it for
+      // exactly this paint, then drop the mark so the NEXT one (a keystroke, a plain
+      // selection) does not replay the animation. Undo cannot desync it: it is recomputed
+      // from state.sel on every commit rather than remembered.
+      landing = true;
       render();
+      landing = false;
       setStatus(label);
+    }
+
+    /** Replace the confirmation dialog's body, easing the new content in.
+     *
+     *  The server render arrives a round-trip after "Rendering…" is put up, and cutting
+     *  between them jars precisely when the author is being asked to check something
+     *  before an irreversible send. */
+    function swapConfirmBody(html) {
+      el.confirmBody.innerHTML = html;
+      if (!canAnimate(el.confirmBody)) return;
+      el.confirmBody.animate(
+        [{ opacity: 0, transform: "translateY(0.25rem)" }, { opacity: 1 }],
+        { duration: motionMs("--dur"), easing: easeOut() },
+      );
+    }
+
+    /** Repaint inside a View Transition, so an arbitrary change crossfades.
+     *
+     *  For undo/redo only. Every other change is LOCAL and already has a better answer:
+     *  commit() marks the one block that moved and delete collapses the one that left.
+     *  Undo is the exception — it can reshape the whole tree at once, and there is no
+     *  single block to point at — so the honest thing to show is the canvas itself
+     *  defocusing and coming back changed.
+     *
+     *  Named on .cv2b-canvas-wrap (the clipped scroll box), never on .cv2b-canvas, which
+     *  is as tall as the message and would make the browser snapshot the lot.
+     *
+     *  Three gates. The API may be absent; state.editing must be clear, because a
+     *  transition mid-keystroke visibly freezes the caret; and reduced motion has to be
+     *  checked HERE in JS — View Transitions animate through UA styles on
+     *  ::view-transition-old/new, which the CSS duration tokens do not reach. */
+    function repaint() {
+      if (!document.startViewTransition || state.editing !== null || reduceMotion()) {
+        render();
+        return;
+      }
+      document.startViewTransition(() => render());
+    }
+
+    /** Play a block's exit, then commit its removal.
+     *
+     *  The mirror of the landing mark, and it has to work the other way round: an
+     *  addition can be marked when it arrives, but a deletion must animate BEFORE the
+     *  mutation — afterwards there is no block left to animate. Awaiting the collapse
+     *  means the rebuild lands on a canvas the block has already vacated, so the gap is
+     *  closed rather than snapping shut behind it.
+     *
+     *  .cv2b-blk carries no margin or padding of its own (spacing lives in the rails), so
+     *  animating height alone closes the space cleanly. */
+    function commitAfterCollapse(path, label, fn) {
+      const node = blockEl(path);
+      if (!canAnimate(node)) return commit(label, fn);
+      const height = node.getBoundingClientRect().height;
+      node.style.overflow = "hidden";
+      whenSettled(
+        node.animate(
+          [
+            { height: height + "px", opacity: 1 },
+            { height: "0px", opacity: 0 },
+          ],
+          { duration: motionMs("--dur-fast"), easing: easeOut() },
+        ),
+        () => commit(label, fn),
+      );
     }
     function undo() {
       if (!state.undo.length) return;
@@ -144,7 +257,7 @@
       state.editing = null;
       liveKey = null;
       markDirty();
-      render();
+      repaint();
       setStatus("Undone");
     }
     function redo() {
@@ -156,7 +269,7 @@
       state.editing = null;
       liveKey = null;
       markDirty();
-      render();
+      repaint();
       setStatus("Redone");
     }
 
@@ -273,8 +386,13 @@
     function renderBlock(path, node, bad) {
       const k = M.kind(node);
       const cls = ["cv2b-blk"];
-      if (M.samePath(path, state.sel)) cls.push("cv2b-sel");
+      // The mutation that just ran named the path it wants selected, so on a landing
+      // paint the selected block IS the one the change produced — no second comparison,
+      // and no node identity for the innerHTML rebuild to lose.
+      const selected = M.samePath(path, state.sel);
+      if (selected) cls.push("cv2b-sel");
       if (bad.has(pk(path))) cls.push("cv2b-invalid");
+      if (selected && landing) cls.push("cv2b-landed");
       return (
         '<div class="' +
         cls.join(" ") +
@@ -1267,6 +1385,11 @@
     const shouldSwallow = () => Date.now() < swallowUntil;
     const DRAG_THRESHOLD = 6; // px before a press becomes a drag (vs. a tap)
     const LONG_PRESS_MS = 450;
+    // The armed rail's gap, clamped. The floor keeps a palette drag (nothing to measure)
+    // from opening a gap too small to read; the ceiling stops a tall container lurching
+    // the tree and moving the content the autoscroll edge band is measuring against.
+    const MIN_GAP_PX = 28;
+    const MAX_GAP_PX = 64;
     const EDGE = 60; // autoscroll band at the top/bottom of the canvas
     const AUTOSCROLL_PX = 10; // per frame, while the pointer rests in that band
     const lastPoint = { x: 0, y: 0 };
@@ -1291,12 +1414,21 @@
       const label = from
         ? M.KIND_LABEL[kind] || kind
         : "New " + (M.KIND_LABEL[kind] || kind).toLowerCase();
-      drag = { kind, from, ghost: makeGhost(label, x, y) };
+      // `target` is the armed drop site, the single answer both the highlight and the
+      // release read (see armTarget).
+      drag = { kind, from, ghost: makeGhost(label, x, y), target: null };
       document.body.classList.add("cv2b-dragging-now");
-      if (from) {
-        const el0 = blockEl(from);
-        if (el0) el0.classList.add("cv2b-dragging");
-      }
+      const source = from ? blockEl(from) : null;
+      if (source) source.classList.add("cv2b-dragging");
+      // How far the armed rail opens. Measured from the block actually being moved, so
+      // the gap is a truthful hint at its size, but clamped at both ends: a palette drag
+      // has no source to measure, and a container can be hundreds of pixels tall — see
+      // the CSS for why opening that much is wrong.
+      const height = source ? source.getBoundingClientRect().height : 0;
+      el.canvas.style.setProperty(
+        "--cv2b-gap",
+        Math.min(Math.max(height, MIN_GAP_PX), MAX_GAP_PX) + "px",
+      );
       markValidTargets();
     }
 
@@ -1332,42 +1464,142 @@
           n.classList.remove("cv2b-dragging", "cv2b-armed", "cv2b-blocked"),
         );
       document.body.classList.remove("cv2b-dragging-now");
+      // Measured per drag in beginDrag; drop it so a stale gap size cannot outlive the
+      // block it was measured from.
+      el.canvas.style.removeProperty("--cv2b-gap");
     }
 
-    /** The drop target under the pointer, or null. The ghost is pointer-events:none so
-     *  it never hit-tests as itself. */
+    /** Rails that are LEGAL for this drag, measured fresh.
+     *
+     *  Blocked-ness is fixed for the life of a drag — markValidTargets computes it at
+     *  pickup from nodes/kind/from, none of which change while a block is in the air — so
+     *  only the geometry moves.
+     *
+     *  Measured every call rather than cached. The obvious cache key is scrollTop, and it
+     *  is wrong: the armed rail animates its height to open the drop gap, which moves
+     *  every rail below it WITHOUT scrolling anything. A cache would then hand out
+     *  positions the rails no longer occupy. The tree is small (<=10 top-level blocks,
+     *  depth <=3), so this is a dozen reads on a pointermove — cheaper than the class of
+     *  bug the cache invites. The wobble while a gap animates is absorbed by
+     *  nearestRail's hysteresis, which is why nearest-target had to land first. */
+    function validRailRects() {
+      return Array.from(
+        el.canvas.querySelectorAll(".cv2b-rail:not(.cv2b-blocked)"),
+        (r) => {
+          const box = r.getBoundingClientRect();
+          return {
+            el: r,
+            top: box.top,
+            bottom: box.bottom,
+            left: box.left,
+            right: box.right,
+          };
+        },
+      );
+    }
+
+    /** A rail element decoded into a drop target. One decoding of the data-scope /
+     *  data-index contract, shared by the exact-hit and nearest-search paths — they used
+     *  to build the same literal independently, so a change to either attribute had to be
+     *  made twice and only one of them is what the drop acts on. */
+    const railTarget = (rail) => ({
+      el: rail,
+      kind: "rail",
+      scope: JSON.parse(rail.dataset.scope),
+      index: Number(rail.dataset.index),
+    });
+
+    /** Where an otherwise-missed release should land, or null when it is far enough away
+     *  to read as a deliberate cancel. */
+    function nearestRailTarget(x, y) {
+      const rects = validRailRects();
+      // The previously armed rail gets the hysteresis margin, so the target does not
+      // flicker between neighbours while the pointer sits still.
+      const armed =
+        drag.target && drag.target.kind === "rail"
+          ? rects.findIndex((r) => r.el === drag.target.el)
+          : -1;
+      const i = M.nearestRail(rects, x, y, armed);
+      return i === -1 ? null : railTarget(rects[i].el);
+    }
+
+    /** The drop target for a point, or null. The ghost is pointer-events:none so it never
+     *  hit-tests as itself.
+     *
+     *  An exact hit always wins — including on a BLOCKED rail, because hovering an illegal
+     *  target has to keep explaining itself through the refusal toast; that is how the
+     *  nesting rules are taught. Only when the pointer is over nothing at all does the
+     *  nearest legal rail take over. A rail is 0.62rem tall, so on touch "over nothing"
+     *  is the common case, and it used to mean the block sprang back unexplained. */
     function targetAt(x, y) {
       const under = document.elementFromPoint(x, y);
-      if (!under) return null;
-      const rail = under.closest(".cv2b-rail");
-      if (rail) {
-        const scope = JSON.parse(rail.dataset.scope);
-        return M.canDrop(state.nodes, scope, drag.kind, drag.from)
-          ? { el: rail, kind: "rail", scope, index: Number(rail.dataset.index) }
-          : { el: rail, kind: "blocked", scope };
+      if (under) {
+        const rail = under.closest(".cv2b-rail");
+        if (rail) {
+          const scope = JSON.parse(rail.dataset.scope);
+          return M.canDrop(state.nodes, scope, drag.kind, drag.from)
+            ? railTarget(rail)
+            : { el: rail, kind: "blocked", scope };
+        }
+        const slot = under.closest(".cv2b-acc-slot");
+        if (slot && M.isAccessoryKind(drag.kind)) {
+          return {
+            el: slot,
+            kind: "acc",
+            sectionPath: JSON.parse(slot.dataset.accslot),
+          };
+        }
       }
-      const slot = under.closest(".cv2b-acc-slot");
-      if (slot && M.isAccessoryKind(drag.kind)) {
-        return {
-          el: slot,
-          kind: "acc",
-          sectionPath: JSON.parse(slot.dataset.accslot),
-        };
-      }
-      return null;
+      return nearestRailTarget(x, y);
     }
 
-    /** Highlight (or refuse) the drop target under a point. */
+    /** Highlight (or refuse) the drop target for a point, and record it as the one the
+     *  release will act on.
+     *
+     *  Storing it is what keeps the drop honest: endDrag used to hit-test again on
+     *  pointerup, so the highlight and the landing site were two independent answers to
+     *  the same question. They agreed only by coincidence — autoscroll re-arms against
+     *  freshly scrolled content, and the nearest search deliberately holds a target
+     *  through small movements. Whenever they disagree, the block lands somewhere other
+     *  than the rail the author is looking at, which is the worst way for a drag tool to
+     *  be wrong. One answer, computed here, consumed there. */
     function armTarget(x, y) {
-      el.canvas
-        .querySelectorAll(".cv2b-armed")
-        .forEach((n) => n.classList.remove("cv2b-armed"));
+      const previous = drag.target;
       const target = targetAt(x, y);
-      if (!target) return hideToast();
-      if (target.kind === "blocked") {
+      drag.target = target;
+
+      // Refuse loudly for as long as the pointer rests on an illegal target. toast()
+      // auto-hides after 2.4s and each call resets that timer, so this has to run even
+      // when the target has not changed — which is precisely the case the class guard
+      // below skips. Teaching the nesting rules by hovering is why the toast exists (see
+      // this file's header); letting it time out mid-hover takes the explanation away
+      // while the block is still in the air.
+      //
+      // NOT covered by a browser test, deliberately. Aiming at a blocked rail from a test
+      // means hitting a ~10px strip that the block above partly paints over, while
+      // staying outside the 60px autoscroll band that slides the canvas out from under
+      // the pointer — every version of that assertion was geometry-dependent and flaky.
+      // Verified by driving Chromium directly: the toast survives 2700ms of hovering,
+      // where it previously vanished at 2400ms.
+      if (target && target.kind === "blocked") {
         toast(M.refusalReason(state.nodes, target.scope, drag.kind), true);
-        return;
       }
+
+      // Only touch classes when the target actually CHANGES. Stripping .cv2b-armed and
+      // adding it straight back — which is what happens on every pointermove that stays
+      // on the same rail — is the textbook way to restart a CSS transition. That was
+      // harmless while .cv2b-armed only faded a background, but it now sets height, so
+      // each move would restart the gap from its current interpolated value with a fresh
+      // clock: the gap converges geometrically instead of finishing, and relayouts the
+      // canvas on every frame. Worst during autoscroll, which re-arms every frame by
+      // design while the finger holds still.
+      const same =
+        (previous ? previous.el : null) === (target ? target.el : null) &&
+        (previous ? previous.kind : null) === (target ? target.kind : null);
+      if (same) return;
+      if (previous && previous.el) previous.el.classList.remove("cv2b-armed");
+      if (!target) return hideToast();
+      if (target.kind === "blocked") return; // already toasted above
       target.el.classList.add("cv2b-armed");
       hideToast();
     }
@@ -1411,27 +1643,40 @@
     function endDrag(x, y) {
       const d = drag;
       setAutoScroll(0);
-      const target = targetAt(x, y);
-      if (d.ghost) d.ghost.remove();
+      // Arm once more at the release point, then act on what is ARMED — never on an
+      // independent hit test (see armTarget). Re-arming means a release that drifted a
+      // few pixels off the last move is still accounted for, while hysteresis stops a
+      // small roll of the finger on lift-off from changing where the block lands.
+      armTarget(x, y);
+      const target = d.target;
+      const ghost = d.ghost;
+      // Measure the landing site BEFORE clearing the drag marks — an armed rail may be
+      // holding a gap open, and clearing it closes that gap.
+      const landingBox =
+        target && target.el && target.kind !== "blocked"
+          ? target.el.getBoundingClientRect()
+          : null;
       drag = null;
       clearDragMarks();
       hideToast();
       if (!target || target.kind === "blocked") {
+        if (ghost) ghost.remove();
         render();
         return;
       }
       if (target.kind === "rail") {
-        commit(d.from ? "Moved" : M.KIND_LABEL[d.kind] + " added", () => {
-          state.sel = d.from
-            ? M.moveNode(state.nodes, d.from, target.scope, target.index)
-            : M.insertAt(
-                state.nodes,
-                target.scope,
-                target.index,
-                M.makeNode(d.kind, defaultAccent),
-              );
-        });
-        return;
+        return flyGhostTo(ghost, landingBox, () =>
+          commit(d.from ? "Moved" : M.KIND_LABEL[d.kind] + " added", () => {
+            state.sel = d.from
+              ? M.moveNode(state.nodes, d.from, target.scope, target.index)
+              : M.insertAt(
+                  state.nodes,
+                  target.scope,
+                  target.index,
+                  M.makeNode(d.kind, defaultAccent),
+                );
+          }),
+        );
       }
       const node = d.from
         ? clone(M.resolve(state.nodes, d.from))
@@ -1440,18 +1685,20 @@
       // the first and drops the rest. Say so — otherwise the buttons vanish between two
       // frames and the author is left wondering whether they were ever there.
       const dropped = M.buttonsOf(node).length - 1;
-      commit("Accessory set", () => {
-        // Hold the section by reference: removing the source can rebase its path, but
-        // the object itself never moves.
-        const section = M.resolve(state.nodes, target.sectionPath);
-        let at = target.sectionPath;
-        if (d.from) {
-          M.removeAt(state.nodes, d.from);
-          at = M.adjustAfterRemoval(target.sectionPath, d.from);
-        }
-        section.accessory = node.type === M.ACTION_ROW ? node.components[0] : node;
-        state.sel = at.concat(["acc"]);
-      });
+      flyGhostTo(ghost, landingBox, () =>
+        commit("Accessory set", () => {
+          // Hold the section by reference: removing the source can rebase its path, but
+          // the object itself never moves.
+          const section = M.resolve(state.nodes, target.sectionPath);
+          let at = target.sectionPath;
+          if (d.from) {
+            M.removeAt(state.nodes, d.from);
+            at = M.adjustAfterRemoval(target.sectionPath, d.from);
+          }
+          section.accessory = node.type === M.ACTION_ROW ? node.components[0] : node;
+          state.sel = at.concat(["acc"]);
+        }),
+      );
       if (dropped > 0) {
         toast(
           "An accessory holds one button — the other " +
@@ -1460,6 +1707,60 @@
           true,
         );
       }
+    }
+
+    /** Fly the ghost to where the block will land, then apply the mutation.
+     *
+     *  Without it the ghost vanishes at the pointer while the block reappears somewhere
+     *  else in the same frame, so the one thing the author most needs to read — where did
+     *  it go? — is the one thing never shown. Step 3 is what makes this safe to draw: the
+     *  landing site is the ARMED target, so the ghost cannot promise a destination the
+     *  block will not actually take.
+     *
+     *  `settle` is deferred by the flight's duration. Nothing else mutates state.nodes in
+     *  that window (~140ms, and the author has just lifted their finger), and the paths it
+     *  closes over stay valid against an unmodified tree.
+     *
+     *  Reduced motion, no WAAPI, or no landing site: commit immediately. */
+    function flyGhostTo(ghost, landing, settle) {
+      if (!landing || !canAnimate(ghost)) {
+        if (ghost) ghost.remove();
+        return settle();
+      }
+      // Animate TRANSFORM only, leaving left/top at their pickup values. Animating
+      // left/top would relayout the ghost every frame, and this animation ends exactly
+      // when settle() rebuilds the whole canvas — the worst moment to be competing for
+      // the main thread. As a pure transform it runs on the compositor instead.
+      const dx = landing.left + landing.width / 2 - parseFloat(ghost.style.left);
+      const dy = landing.top + landing.height / 2 - parseFloat(ghost.style.top);
+      // The resting offset that rides the ghost above the pointer belongs to .cv2b-ghost.
+      // Read it rather than restating it here — retune the CSS and a copy would make the
+      // flight start with a visible jump.
+      const resting = getComputedStyle(ghost).transform;
+      whenSettled(
+        ghost.animate(
+          [
+            { transform: resting },
+            // Dropping the lift on arrival is what makes the ghost settle ONTO the rail
+            // rather than hover above it.
+            { transform: `translate(${dx}px, ${dy}px) translate(-50%, -50%)` },
+          ],
+          { duration: motionMs("--dur"), easing: easeOut(), fill: "forwards" },
+        ),
+        () => {
+          settle();
+          // Cross-dissolve into the landing flash rather than cutting: the ghost is
+          // position:fixed, so it fades out on top of the real block fading in. Cutting
+          // leaves a frame where neither is drawn.
+          whenSettled(
+            ghost.animate([{ opacity: 1 }, { opacity: 0 }], {
+              duration: motionMs("--dur"),
+              easing: easeOut(),
+            }),
+            () => ghost.remove(),
+          );
+        },
+      );
     }
 
     function cancelDrag() {
@@ -1714,7 +2015,7 @@
           });
         }
         if (act === "del") {
-          return commit("Deleted", () => {
+          return commitAfterCollapse(path, "Deleted", () => {
             state.sel = M.removeAt(state.nodes, path);
           });
         }
@@ -1766,7 +2067,7 @@
       }
       if ((e.key === "Delete" || e.key === "Backspace") && state.sel) {
         e.preventDefault();
-        commit("Deleted", () => {
+        commitAfterCollapse(state.sel, "Deleted", () => {
           state.sel = M.removeAt(state.nodes, state.sel);
         });
         return;
@@ -1896,10 +2197,11 @@
         el.confirmBody.innerHTML = '<p class="cv2b-help">Rendering…</p>';
         el.dialog.showModal();
         try {
-          el.confirmBody.innerHTML = await options.onPreview(clone(state.nodes));
+          swapConfirmBody(await options.onPreview(clone(state.nodes)));
         } catch (err) {
-          el.confirmBody.innerHTML =
-            '<p class="cv2b-err">Could not render a preview. You can still post.</p>';
+          swapConfirmBody(
+            '<p class="cv2b-err">Could not render a preview. You can still post.</p>',
+          );
         }
       } else {
         el.dialog.showModal();

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Xûr — proposal</title>
+    <link rel="stylesheet" href="../../dd/anchor/web_static/shared.css" />
+    <style>
+      body { max-width: 1080px; }
+      .mock-note {
+        border-left: 3px solid var(--accent); background: var(--surface-2);
+        padding: .5rem .8rem; margin: 0 0 1.2rem; font-size: .82rem;
+        color: var(--text-2); border-radius: 0 var(--radius) var(--radius) 0;
+      }
+      .grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 1rem; }
+      @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+      .card {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-2); padding: .85rem 1rem;
+      }
+      .card h2 {
+        font-size: .82rem; margin: 0 0 .6rem; color: var(--text-muted);
+        text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
+      }
+      .card.span { grid-column: 1 / -1; }
+      .row {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: .6rem; padding: .38rem 0; border-bottom: 1px solid var(--border);
+        font-size: .86rem;
+      }
+      .row:last-child { border-bottom: 0; }
+      .row .k { color: var(--text-2); }
+      .row .v { color: var(--text-1); font-variant-numeric: tabular-nums; }
+      .chip {
+        display: inline-block; padding: .08rem .5rem; border-radius: 999px;
+        font-size: .7rem; font-weight: 600; border: 1px solid transparent;
+      }
+      .chip.on   { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+                   background: color-mix(in srgb, var(--ok) 12%, transparent); }
+      .chip.clean{ color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+                   background: color-mix(in srgb, var(--ok) 12%, transparent); }
+      .switch { position: relative; width: 42px; height: 24px; flex: none; }
+      .switch .slider {
+        position: absolute; inset: 0; border-radius: 24px; background: var(--accent);
+      }
+      .switch .slider::before {
+        content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px;
+        border-radius: 50%; background: #fff; transform: translateX(18px);
+      }
+      .actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .7rem; }
+      .btn {
+        padding: .45rem .8rem; border-radius: var(--radius-sm); font-size: .85rem;
+        text-decoration: none; border: 1px solid var(--border);
+        background: var(--surface-3); color: var(--text-1);
+      }
+      .btn.primary { background: var(--accent-strong); color: #fff; border-color: transparent; }
+      .btn:hover { border-color: var(--border-hover); }
+      table.mini { width: 100%; border-collapse: collapse; font-size: .82rem; }
+      table.mini th {
+        text-align: left; font-weight: 600; color: var(--text-2); font-size: .72rem;
+        text-transform: uppercase; letter-spacing: .04em; padding: 0 .4rem .3rem 0;
+      }
+      table.mini td { padding: .3rem .4rem .3rem 0; border-top: 1px solid var(--border); }
+      table.mini td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      .more { font-size: .78rem; margin-top: .5rem; display: inline-block; color: var(--link); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <p class="nav"><a class="backlink" href="#">← All feeds</a></p>
+      <h1>Xûr</h1>
+      <p class="muted">Xûr's weekend location and inventory · posts Friday 17:00 UTC</p>
+    </header>
+
+    <p class="mock-note">
+      <b>Proposal A, feed page.</b> Nothing here is new data — it is the autopost toggle,
+      the newest mirror runs for this feed, this feed's row from the reach table, and the
+      rotation tab that feeds it. Each panel links out to the full tool it summarises.
+    </p>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Autopost</h2>
+        <div class="row">
+          <span class="k">Post Xûr automatically</span>
+          <span class="switch"><span class="slider"></span></span>
+        </div>
+        <div class="row">
+          <span class="k">Default image</span><span class="v"><span class="chip on">set</span></span>
+        </div>
+        <div class="row">
+          <span class="k">Next scheduled</span><span class="v">Fri 17:00 UTC · in 2d 4h</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Source data</h2>
+        <div class="row"><span class="k">Locations defined</span><span class="v">12</span></div>
+        <div class="row"><span class="k">Current entry</span><span class="v">Tower, Hangar</span></div>
+        <div class="row"><span class="k">Last edited</span><span class="v">6 days ago</span></div>
+        <div class="actions"><a class="btn primary" href="#">Edit locations</a></div>
+      </section>
+
+      <section class="card span">
+        <h2>Recent deliveries</h2>
+        <table class="mini">
+          <thead>
+            <tr><th>When</th><th>Status</th><th class="num">Delivered</th>
+                <th class="num">Failed</th><th>Source</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Fri 17:00</td><td><span class="chip clean">clean</span></td>
+                <td class="num">412</td><td class="num">0</td><td>#xur</td></tr>
+            <tr><td>Last Fri</td><td><span class="chip clean">clean</span></td>
+                <td class="num">408</td><td class="num">0</td><td>#xur</td></tr>
+            <tr><td>2 weeks ago</td><td><span class="chip clean">clean</span></td>
+                <td class="num">401</td><td class="num">2</td><td>#xur</td></tr>
+          </tbody>
+        </table>
+        <a class="more" href="#">All runs for Xûr →</a>
+      </section>
+
+      <section class="card span">
+        <h2>Reach</h2>
+        <div class="row"><span class="k">Following channels</span><span class="v">412</span></div>
+        <div class="row"><span class="k">Mirroring channels</span><span class="v">37</span></div>
+        <div class="chart" id="reachChart" style="min-height:90px"></div>
+        <a class="more" href="#">Full statistics →</a>
+      </section>
+    </div>
+  </body>
+</html>

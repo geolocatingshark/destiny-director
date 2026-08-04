@@ -31,10 +31,13 @@ jobs:
       # present. Dummy IDs — the bot is never started, so no channel is ever fetched.
       FOLLOWABLES: '{"ada":1,"emblems_and_cosmetics":2,"eververse":3,"free_games":4,"iron_banner":6,"lost_sector":7,"trials":8,"twab":9,"weekly_nightfall":10,"weekly_reset":11,"xur":12}'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # Pinned to an exact version, unlike the actions/* pins above: setup-uv stopped
+      # publishing floating major tags at v8 on purpose, so @v9 does not resolve.
+      # Bumping it means editing this literal.
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 
@@ -50,6 +53,22 @@ jobs:
       - name: Type check (ty)
         run: uv run ty check dd
 
+      # Playwright ships as a dev dep but the browser binary is a separate ~150MB
+      # download. Without it the CV2 builder's drag tests SKIP rather than fail, so these
+      # steps are what make them real — that layer has no other automated coverage
+      # (plans/web_cv2_builder_followups.md §6). Cached on the resolved playwright
+      # version so the download is paid once per upgrade rather than on every push,
+      # including the many that touch no web code.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
+      - name: Install Chromium (Playwright)
+        run: uv run playwright install --with-deps chromium
+
       - name: Test (pytest, SQLite)
         # Mirror `make coverage`: skip the live-Discord tests (they need a real
         # bot token + guild and are opt-in via `make test-integration`).
@@ -62,9 +81,9 @@ jobs:
     # no browser, no dependencies — hence its own tiny lane rather than a step in `check`.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -108,10 +127,13 @@ jobs:
       XUR_IMAGE_URL: "https://example.com/xur.png"
       FOLLOWABLES: '{"ada":1,"emblems_and_cosmetics":2,"eververse":3,"free_games":4,"iron_banner":6,"lost_sector":7,"trials":8,"twab":9,"weekly_nightfall":10,"weekly_reset":11,"xur":12}'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # Pinned to an exact version, unlike the actions/* pins above: setup-uv stopped
+      # publishing floating major tags at v8 on purpose, so @v9 does not resolve.
+      # Bumping it means editing this literal.
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 

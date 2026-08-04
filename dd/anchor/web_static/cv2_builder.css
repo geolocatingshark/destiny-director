@@ -134,6 +134,9 @@
 }
 .cv2b .cv2b-pal:active {
   cursor: grabbing;
+  /* Opt out of shared.css's press nudge: these are drag handles, and a control that dips
+     on pointerdown reads as a mis-click at the very start of a gesture. */
+  transform: none;
 }
 .cv2b-glyph {
   width: 1.35rem;
@@ -162,7 +165,46 @@
 }
 
 /* --- canvas -------------------------------------------------------------- */
+/* Undo and redo can reshape the whole tree at once, so there is no single block to
+   animate — the canvas defocuses and comes back changed instead. See repaint() in
+   cv2_builder.js; every other change is local and marks the one block it touched.
+
+   The name goes on the WRAP, not on .cv2b-canvas: the wrap is the clipped scroll box,
+   while the canvas is as tall as the message and would make the browser snapshot all of
+   it. Reduced motion is gated in JS, not here — these pseudo-elements animate through UA
+   styles that the duration tokens cannot reach. */
+::view-transition-old(cv2-canvas) {
+  animation: cv2b-defocus var(--dur) var(--ease-out) both;
+}
+::view-transition-new(cv2-canvas) {
+  animation: cv2b-refocus var(--dur) var(--ease-out) both;
+}
+/* Only the OUTGOING snapshot blurs. Each snapshot is the full clipped scroll box — on a
+   phone at DPR 3 that is megapixels — so blurring both means two separable blur passes
+   plus a blend every frame. Blurring just the old one at 3px reads the same and costs
+   about a quarter as much; the incoming half is opacity + scale, which are pure
+   compositor properties. */
+@keyframes cv2b-defocus {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    filter: blur(3px);
+    transform: scale(0.985);
+  }
+}
+@keyframes cv2b-refocus {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
 .cv2b-canvas-wrap {
+  view-transition-name: cv2-canvas;
   overflow: auto;
   padding: 1.1rem 1.3rem 4rem;
   min-width: 0;
@@ -202,6 +244,25 @@
 .cv2b-blk {
   position: relative;
   border-radius: var(--radius-sm);
+}
+
+/* The block a change just produced — added, dropped, duplicated, wrapped or moved.
+   commit() marks exactly one path per mutation (the one cv2_model says to select), so
+   this plays on that block and nothing else.
+
+   Why this rather than a keyed diff: paintCanvas rebuilds the whole canvas as innerHTML,
+   so no element survives a change and there is nothing for a transition to interpolate
+   between. Animating "everything that is new" would replay on every block on every
+   keystroke. Animating "the one block the model just named" needs no identity at all,
+   and undo cannot desync it — see commit() in cv2_builder.js. */
+@keyframes cv2b-land {
+  from {
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+}
+.cv2b-blk.cv2b-landed {
+  animation: cv2b-land var(--dur) var(--ease-out) both;
 }
 .cv2b-blk > .cv2b-body {
   border-radius: var(--radius-sm);
@@ -281,6 +342,13 @@ body.cv2b-dragging-now * {
   right: 0.25rem;
   top: -0.62rem;
   z-index: 3;
+  /* The tag is a label — nothing clicks it — and it is offset by exactly one rail's
+     height, so it sits on top of the insertion rail above its block. Without this it
+     swallowed 36% of that rail: targetAt hit-tests with elementFromPoint, so a press
+     there resolved to the tag, found no rail, and the drop silently missed. The rail
+     above the block you just selected is a likely place to drop the next one, so this
+     was worst exactly where it mattered most. */
+  pointer-events: none;
   display: none;
   padding: 0 0.35rem;
   border-radius: 3px;
@@ -304,6 +372,23 @@ body.cv2b-dragging-now * {
   display: flex;
   align-items: center;
   cursor: copy;
+  transition: height var(--dur-fast) var(--ease-out);
+}
+/* The armed rail opens a gap the size of the block being dragged, so the list parts to
+   show where it will land instead of only drawing a line.
+
+   One element transitions and the siblings move by ordinary flow layout — no per-block
+   animation, and nothing that needs the identity the innerHTML rebuild destroys.
+
+   --cv2b-gap is measured at pickup (beginDrag) and CAPPED: a container can be hundreds of
+   pixels tall, and opening that much would lurch the tree and fight the autoscroll edge
+   band. The gap says "it lands here", it is not a preview of the final layout. */
+.cv2b-rail.cv2b-armed {
+  /* The bounds live here, not in the JS that measures: the floor keeps a palette drag
+     (nothing to measure, so --cv2b-gap is 0) readable, and the ceiling stops a tall
+     container lurching the tree and moving the content the autoscroll edge band measures
+     against. Retuning a visual bound should not mean editing cv2_builder.js. */
+  height: clamp(28px, var(--cv2b-gap, 0px), 64px);
 }
 .cv2b-rail::before {
   content: "";
@@ -311,7 +396,7 @@ body.cv2b-dragging-now * {
   height: 2px;
   border-radius: 2px;
   background: transparent;
-  transition: background 0.08s;
+  transition: background var(--dur-fast);
 }
 .cv2b-rail:hover::before,
 .cv2b-rail.cv2b-armed::before {
@@ -733,7 +818,7 @@ body.cv2b-dragging-now * {
   color: var(--text-2);
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.12s;
+  transition: opacity var(--dur);
 }
 .cv2b-toast.cv2b-show {
   opacity: 1;
@@ -744,6 +829,15 @@ body.cv2b-dragging-now * {
   background: var(--danger-bg);
 }
 
+/* The publish confirmation — the one irreversible action in the tool, and the only
+   moment an author sees once per post rather than dozens of times. That is what earns it
+   a slower, more deliberate entrance (--dur-slow) than anything on the canvas: an effect
+   this length would be an obstacle by the tenth repetition, and there is no tenth.
+
+   @starting-style supplies the pre-open state, and transition-behavior: allow-discrete
+   lets `display` and `overlay` flip discretely at the ends of the transition so the
+   dialog animates OUT as well as in — without `overlay` it would drop out of the top
+   layer the instant it closed and the exit would never be seen. */
 .cv2b-confirm {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -752,9 +846,38 @@ body.cv2b-dragging-now * {
   max-width: 44rem;
   width: 90vw;
   padding: 0;
+  opacity: 0;
+  transform: translateY(0.75rem) scale(0.97);
+  transition:
+    opacity var(--dur-slow) var(--ease-out),
+    transform var(--dur-slow) var(--ease-out),
+    display var(--dur-slow),
+    overlay var(--dur-slow);
+  transition-behavior: allow-discrete;
+}
+.cv2b-confirm[open] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
 }
 .cv2b-confirm::backdrop {
+  background: rgba(0, 0, 0, 0);
+  transition:
+    background var(--dur-slow) var(--ease-out),
+    display var(--dur-slow),
+    overlay var(--dur-slow);
+  transition-behavior: allow-discrete;
+}
+.cv2b-confirm[open]::backdrop {
   background: rgba(0, 0, 0, 0.55);
+}
+@starting-style {
+  .cv2b-confirm[open] {
+    opacity: 0;
+    transform: translateY(0.75rem) scale(0.97);
+  }
+  .cv2b-confirm[open]::backdrop {
+    background: rgba(0, 0, 0, 0);
+  }
 }
 .cv2b-dlg-head {
   display: flex;
@@ -873,7 +996,7 @@ body.cv2b-dragging-now * {
     box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
     padding: 0.6rem 0.8rem 1.2rem;
     transform: translateY(100%);
-    transition: transform 0.16s ease-out;
+    transition: transform var(--dur) var(--ease-out);
   }
   .cv2b-inspector.cv2b-sheet-open {
     transform: translateY(0);

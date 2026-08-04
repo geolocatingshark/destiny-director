@@ -591,3 +591,69 @@ test("the emoji map still accepts the plain {name: url} shape", () => {
   assert.match(M.renderMd(":x:", { x: "https://e.invalid/x.png" }), /<img class="emoji"/);
   assert.match(M.renderMd(":kyber:", EMOJI_MAP), /emojis\/123\.png/);
 });
+
+// --- drop targeting geometry ---------------------------------------------------------
+// nearestRail decides where an otherwise-missed release lands. These cases are the ones
+// that would silently ruin a drop: snapping out of a container's column, stealing the
+// armed rail on a sub-pixel shift, and eating the release-to-cancel gesture.
+
+/** A rail rect. Top-level rails span the full canvas; nested ones are indented. */
+const rail = (top, left, right) => ({ top: top, bottom: top + 10, left: left, right: right });
+const OUTER = [0, 400];
+const INNER = [32, 380];
+
+test("nearestRail picks the vertically closest rail", () => {
+  const rects = [rail(0, ...OUTER), rail(100, ...OUTER), rail(200, ...OUTER)];
+  assert.equal(M.nearestRail(rects, 200, 4, -1), 0);
+  assert.equal(M.nearestRail(rects, 200, 98, -1), 1);
+  assert.equal(M.nearestRail(rects, 200, 260, -1), 2);
+});
+
+test("a pointer in the gutter does not snap into a nested container", () => {
+  // The inner rail is vertically NEARER, but the pointer sits left of the container's
+  // indent. Snapping in would re-parent the block into a scope the author is not
+  // pointing at — the outer rail is the one whose column they are actually in.
+  // (A top-level rail spans the full width, so the column test only ever excludes
+  // *nested* rails; it cannot pull you into one.)
+  const rects = [rail(100, ...OUTER), rail(112, ...INNER)];
+  assert.equal(M.nearestRail(rects, 10, 114, -1), 0);
+});
+
+test("with no rail spanning the pointer's column, every rail is still a candidate", () => {
+  const rects = [rail(100, ...INNER), rail(300, ...INNER)];
+  assert.equal(M.nearestRail(rects, 10, 108, -1), 0);
+});
+
+test("beyond the distance cap there is no target, so a release still cancels", () => {
+  // Releasing over the palette or the inspector must stay an escape hatch.
+  const rects = [rail(0, ...OUTER)];
+  assert.equal(M.nearestRail(rects, 200, M.NEAREST_RAIL_MAX_PX + 40, -1), -1);
+  assert.equal(M.nearestRail([], 200, 0, -1), -1);
+});
+
+test("the armed rail survives a shift smaller than the hysteresis margin", () => {
+  // Two rails equidistant-ish: without hysteresis the armed one would flicker as content
+  // moves under a stationary pointer.
+  const rects = [rail(100, ...OUTER), rail(120, ...OUTER)];
+  const nudged = 116; // 11px from rail 0's midline, 9px from rail 1's
+  assert.equal(M.nearestRail(rects, 200, nudged, -1), 1, "unarmed, the nearer rail wins");
+  assert.equal(M.nearestRail(rects, 200, nudged, 0), 0, "armed rail 0 holds through 2px");
+});
+
+test("a rival that clearly beats the armed rail does steal it", () => {
+  const rects = [rail(100, ...OUTER), rail(300, ...OUTER)];
+  assert.equal(M.nearestRail(rects, 200, 298, 0), 1);
+});
+
+test("hysteresis does not apply once the pointer leaves the armed rail's column", () => {
+  // Armed on an inner rail, pointer moves out of the container: the inner rail is no
+  // longer plausible, so it must not be held on to.
+  const rects = [rail(100, ...OUTER), rail(104, ...INNER)];
+  assert.equal(M.nearestRail(rects, 10, 103, 1), 0);
+});
+
+test("an out-of-range armed index is ignored rather than trusted", () => {
+  const rects = [rail(100, ...OUTER)];
+  assert.equal(M.nearestRail(rects, 200, 104, 7), 0);
+  assert.equal(M.nearestRail(rects, 200, 104, -1), 0);
+});

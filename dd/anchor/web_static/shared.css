@@ -55,6 +55,35 @@
 
   --radius: 8px;      /* cards, fieldsets, preview */
   --radius-sm: 6px;   /* inputs, buttons */
+
+  /* Motion. Durations are tokens so every animated surface shares one vocabulary and the
+     reduced-motion block below can switch the whole UI off in one place. Assign by ROLE,
+     not by what felt right at the call site — that is how the old hand-picked values
+     (0.08s, 0.1s, 0.12s, 0.15s, 0.16s) drifted apart in the first place:
+       --dur-fast  hover/press feedback, small state flips
+       --dur       an element appearing, changing, or being replaced
+       --dur-slow  large surfaces: sheets, dialogs, page-level transitions
+     web_static/tests/motion_tokens.test.js fails the build on a raw duration literal. */
+  --dur-fast: 80ms;
+  --dur: 140ms;
+  --dur-slow: 240ms;
+  --ease-out: cubic-bezier(.2, 0, 0, 1);
+}
+
+/* Reduced motion zeroes the DURATIONS rather than setting `animation: none`. The
+   animations still run and still fire transitionend/animationend, so JS that awaits one
+   (the drag ghost's landing, a delete collapse) keeps working instead of hanging on a
+   promise that never settles.
+
+   This does NOT reach the View Transitions pseudo-elements — their default animations
+   come from UA styles on ::view-transition-old/new, not from these tokens — so any
+   startViewTransition() call has to gate on matchMedia in JS as well. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0.01ms;
+    --dur: 0.01ms;
+    --dur-slow: 0.01ms;
+  }
 }
 * { box-sizing: border-box; }
 body {
@@ -66,6 +95,53 @@ body {
    radio is visually hidden, so this only colours the real, visible checkboxes
    (weekly/Trials forms, editor sector picker). */
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+/* ---------------------------------------------------------------------------
+   Interaction feedback
+   ---------------------------------------------------------------------------
+   Hover, focus and press for every interactive element, in one place. Before this,
+   hover states snapped, three files re-declared an identical focus ring while six had
+   none, and nothing anywhere acknowledged a press.
+
+   Only the properties hover/press actually change are transitioned. `outline` is
+   deliberately NOT among them: a focus ring that fades in reads as lag to someone
+   navigating by keyboard, and it is the one indicator that has to be instant. */
+:is(a, button, summary, input, select, textarea) {
+  transition:
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    transform var(--dur-fast) ease;
+}
+
+/* The ring every page shares. Pages override the offset where theirs is genuinely
+   different — stats' inset segmented control, its 1px search field, autopost's url field.
+
+   The opt-out below is a SEPARATE rule rather than a :not() on this one, and that
+   matters: putting a class in this selector lifts it to specificity (0,2,1), above the
+   page overrides at (0,2,0) that exist to change it. Doing that silently reverted stats'
+   1px search ring and turned its inset segmented-control ring outset. This selector stays
+   at (0,1,1) — exactly what the `a:focus-visible` list it replaced measured.
+
+   Not universal: .cv2b input:focus (cv2_builder.css) and .filter-bar select:focus
+   (mirror_log.css) predate this and still colour a border instead. Left alone rather
+   than swept in with a motion change. */
+:is(a, button, summary, input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Controls whose WRAPPER already draws the ring: the autopost switch and the Trials
+   set-card both hide the real input and decorate an ancestor, so ringing the input too
+   would draw a second indicator inside the first (on the set-card, around a 1px-square
+   proxy). One marker beats an `outline: none` per page — there were already two of those
+   and a third control had been missed. */
+.no-focus-ring:focus-visible { outline: none; }
+
+/* A press should feel like one. Controls that begin a DRAG rather than a click opt out
+   (cv2_builder.css turns this back off for its palette, which is cursor: grab) — a
+   grab handle that dips on pointerdown reads as a mis-click at the start of a gesture. */
+button:not(:disabled):active { transform: translateY(1px); }
 header { padding-top: 1.2rem; }
 h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
 .muted { color: var(--text-faint); font-size: .85rem; }
@@ -184,12 +260,24 @@ p.nav { margin: 0 0 .4rem; }
 .form-page .preview-head { display: flex; align-items: center; gap: .6rem; }
 .form-page .preview-head h2 { font-size: 1.05rem; margin: 0; flex: 1 1 auto; }
 
+/* The problem list is the only thing that says why a publish was refused, so it eases in
+   rather than appearing between two frames. `display` is transitioned discretely so the
+   element still leaves the layout when hidden, and @starting-style supplies the pre-open
+   state a display:none element would otherwise have no way to animate from. Both forms
+   ship it with class="hidden", so this never fires on page load. */
 .form-page #problems {
   color: var(--err); margin: 0; padding: .5rem .5rem .5rem 1.6rem;
   border: 1px solid var(--danger-border); border-radius: var(--radius);
   background: var(--danger-bg);
+  transition: opacity var(--dur) ease, transform var(--dur) ease, display var(--dur);
+  transition-behavior: allow-discrete;
 }
-.form-page #problems.hidden { display: none; }
+@starting-style {
+  .form-page #problems { opacity: 0; transform: translateY(-.25rem); }
+}
+.form-page #problems.hidden {
+  display: none; opacity: 0; transform: translateY(-.25rem);
+}
 
 /* --- action toolbar (a sibling below main.layout) --- */
 .form-page .toolbar {

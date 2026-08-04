@@ -183,6 +183,14 @@ test-js:
 test-unit: .env
 	uv run --env-file .env python -m pytest -m "not integration"
 
+# The CV2 builder's drag layer, driven in a real Chromium against
+# dd/anchor/web_static/tests/builder_harness.html (a no-server fixture). Included in
+# `test` too, but skips there unless the browser is installed — Playwright ships as a
+# dev dep, the ~150MB browser does not:
+#     uv run playwright install chromium
+test-browser: .env
+	uv run --env-file .env python -m pytest -m browser -v
+
 coverage: .env
 	uv run --env-file .env python -m pytest -m "not discord" --cov=dd --cov-report=term-missing
 

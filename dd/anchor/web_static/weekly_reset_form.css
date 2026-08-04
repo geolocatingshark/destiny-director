@@ -37,6 +37,10 @@
 }
 .ts-control input::placeholder, .ts-control > .ts-placeholder { color: var(--text-muted); }
 .ts-wrapper.focus .ts-control, .ts-control.focus { border-color: var(--accent); box-shadow: none; }
+/* The control already turns accent-coloured on focus (rule above), so shared.css's ring
+   on the inner typing input would draw a second indicator inside the first. Tom Select
+   builds that input itself, so it cannot carry .no-focus-ring — hence the rule. */
+.ts-control input:focus-visible { outline: none; }
 .ts-wrapper.disabled .ts-control { opacity: .55; }
 
 .ts-dropdown {

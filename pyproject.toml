@@ -38,6 +38,7 @@ dev = [
     "ty>=0.0.56",
     "pre-commit>=4.6.0",
     "pytest-cov>=7.1.0",
+    "playwright>=1.62.0",
 ]
 
 speedups = [
@@ -75,6 +76,7 @@ testpaths = ["dd"]
 markers = [
     "integration: exercises the database layer (SQLite by default; set TEST_USE_MYSQL=1 for MySQL)",
     "discord: hits live Discord and needs a real bot token (DISCORD_TOKEN_BEACON); excluded from the default suite",
+    "browser: drives a real Chromium via Playwright; skips unless a browser is installed (`uv run playwright install chromium`)",
 ]
 
 [tool.coverage.run]
