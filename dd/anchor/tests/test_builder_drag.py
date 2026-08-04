@@ -307,3 +307,40 @@ def test_the_armed_target_holds_while_the_gap_animates(page):
 
     assert seen[0] is not None, "expected a target to be armed"
     assert all(a == seen[0] for a in seen), f"the armed rail flickered across: {seen}"
+
+
+def test_every_insertion_rail_is_reachable_by_the_pointer(page):
+    """A rail the pointer cannot hit is a drop that silently misses.
+
+    targetAt resolves a drop with elementFromPoint, so anything painted over a rail takes
+    that strip away from it — no error, no log, the block just springs back. The selected
+    block's type tag is offset by exactly one rail's height and used to swallow 36% of the
+    rail above it, which is the rail you are most likely to aim at next. Selecting a block
+    is what reveals that tag, so the check runs with one selected.
+
+    Geometry only: no drag, no timing. Restyling may move the rails; it must not make any
+    part of one unreachable.
+    """
+    page.locator(".cv2b-blk").nth(BLOCK_SEPARATOR).click()
+    page.wait_for_timeout(120)
+    assert page.locator(".cv2b-tag:visible").count(), "expected the selection to show a tag"
+
+    unreachable = page.evaluate(
+        """() => {
+             const bad = [];
+             document.querySelectorAll('.cv2b-rail').forEach((rail, i) => {
+               const b = rail.getBoundingClientRect();
+               const y = b.top + b.height / 2;
+               const blockers = new Set();
+               for (let f = 0.02; f < 1; f += 0.03) {
+                 const el = document.elementFromPoint(b.left + b.width * f, y);
+                 if (!el || el.closest('.cv2b-rail') !== rail) {
+                   blockers.add(el ? (el.className || el.tagName).toString() : 'nothing');
+                 }
+               }
+               if (blockers.size) bad.push({rail: i, blockedBy: [...blockers]});
+             });
+             return bad;
+           }"""
+    )
+    assert unreachable == [], f"parts of these rails cannot be pointed at: {unreachable}"

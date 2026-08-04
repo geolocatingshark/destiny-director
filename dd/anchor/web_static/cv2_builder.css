@@ -342,6 +342,13 @@ body.cv2b-dragging-now * {
   right: 0.25rem;
   top: -0.62rem;
   z-index: 3;
+  /* The tag is a label — nothing clicks it — and it is offset by exactly one rail's
+     height, so it sits on top of the insertion rail above its block. Without this it
+     swallowed 36% of that rail: targetAt hit-tests with elementFromPoint, so a press
+     there resolved to the tag, found no rail, and the drop silently missed. The rail
+     above the block you just selected is a likely place to drop the next one, so this
+     was worst exactly where it mattered most. */
+  pointer-events: none;
   display: none;
   padding: 0 0.35rem;
   border-radius: 3px;
