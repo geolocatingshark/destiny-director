@@ -236,3 +236,60 @@ def test_a_deleted_block_is_really_gone_after_its_collapse(page):
         timeout=3000,
     )
     assert len(_paths(page)) < len(before)
+
+
+def test_undo_still_applies_through_its_view_transition(page):
+    """Undo repaints inside a View Transition, which must not swallow the change.
+
+    startViewTransition takes a callback and runs it asynchronously; if the repaint were
+    ever skipped or the promise dropped, undo would appear to do nothing while the model
+    had already moved. Asserts the tree, not the animation.
+    """
+    before = _paths(page)
+    page.locator(".cv2b-blk").nth(BLOCK_SEPARATOR).click()
+    page.keyboard.press("Delete")
+    page.wait_for_function(
+        "n => document.querySelectorAll('.cv2b-blk').length < n",
+        arg=len(before),
+        timeout=3000,
+    )
+
+    page.keyboard.press("Control+z")
+    page.wait_for_function(
+        "n => document.querySelectorAll('.cv2b-blk').length === n",
+        arg=len(before),
+        timeout=3000,
+    )
+    assert _paths(page) == before, "undo restored a different tree than it started from"
+
+
+def test_the_armed_target_holds_while_the_gap_animates(page):
+    """Opening the drop gap must not make the armed rail flicker.
+
+    The armed rail animates its height, which moves every rail below it under a
+    stationary pointer. Re-running the search against that moving geometry can hand
+    back a different rail, which then closes its gap and moves everything back — a loop
+    that reads as the drop point twitching between two slots. nearestRail's hysteresis
+    is what breaks it; this samples across the animation to prove it holds.
+    """
+    rails = page.eval_on_selector_all(
+        ".cv2b-rail:not(.cv2b-blocked)",
+        "els => els.map(e => { const b = e.getBoundingClientRect();"
+        " return {top: b.top, bottom: b.bottom, left: b.left}; })",
+    )
+    assert len(rails) >= 3
+
+    _grab(page, BLOCK_SEPARATOR)
+    # Sit between two rails and stay there: any change now is the layout moving, not the
+    # pointer.
+    page.mouse.move(rails[1]["left"] + 40, (rails[1]["bottom"] + rails[2]["top"]) / 2)
+    page.wait_for_timeout(30)
+
+    seen = []
+    for _ in range(8):
+        seen.append(_armed(page))
+        page.wait_for_timeout(25)
+    page.mouse.up()
+
+    assert seen[0] is not None, "expected a target to be armed"
+    assert all(a == seen[0] for a in seen), f"the armed rail flickered across: {seen}"

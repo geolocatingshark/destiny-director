@@ -165,7 +165,35 @@
 }
 
 /* --- canvas -------------------------------------------------------------- */
+/* Undo and redo can reshape the whole tree at once, so there is no single block to
+   animate — the canvas defocuses and comes back changed instead. See repaint() in
+   cv2_builder.js; every other change is local and marks the one block it touched.
+
+   The name goes on the WRAP, not on .cv2b-canvas: the wrap is the clipped scroll box,
+   while the canvas is as tall as the message and would make the browser snapshot all of
+   it. Reduced motion is gated in JS, not here — these pseudo-elements animate through UA
+   styles that the duration tokens cannot reach. */
+::view-transition-old(cv2-canvas) {
+  animation: cv2b-defocus var(--dur) var(--ease-out) both;
+}
+::view-transition-new(cv2-canvas) {
+  animation: cv2b-defocus var(--dur) var(--ease-out) both reverse;
+}
+@keyframes cv2b-defocus {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    filter: blur(6px);
+    transform: scale(0.985);
+  }
+}
+
 .cv2b-canvas-wrap {
+  view-transition-name: cv2-canvas;
   overflow: auto;
   padding: 1.1rem 1.3rem 4rem;
   min-width: 0;
@@ -326,6 +354,19 @@ body.cv2b-dragging-now * {
   display: flex;
   align-items: center;
   cursor: copy;
+  transition: height var(--dur-fast) var(--ease-out);
+}
+/* The armed rail opens a gap the size of the block being dragged, so the list parts to
+   show where it will land instead of only drawing a line.
+
+   One element transitions and the siblings move by ordinary flow layout — no per-block
+   animation, and nothing that needs the identity the innerHTML rebuild destroys.
+
+   --cv2b-gap is measured at pickup (beginDrag) and CAPPED: a container can be hundreds of
+   pixels tall, and opening that much would lurch the tree and fight the autoscroll edge
+   band. The gap says "it lands here", it is not a preview of the final layout. */
+.cv2b-rail.cv2b-armed {
+  height: var(--cv2b-gap, 0.62rem);
 }
 .cv2b-rail::before {
   content: "";
@@ -766,6 +807,15 @@ body.cv2b-dragging-now * {
   background: var(--danger-bg);
 }
 
+/* The publish confirmation — the one irreversible action in the tool, and the only
+   moment an author sees once per post rather than dozens of times. That is what earns it
+   a slower, more deliberate entrance (--dur-slow) than anything on the canvas: an effect
+   this length would be an obstacle by the tenth repetition, and there is no tenth.
+
+   @starting-style supplies the pre-open state, and transition-behavior: allow-discrete
+   lets `display` and `overlay` flip discretely at the ends of the transition so the
+   dialog animates OUT as well as in — without `overlay` it would drop out of the top
+   layer the instant it closed and the exit would never be seen. */
 .cv2b-confirm {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -774,9 +824,38 @@ body.cv2b-dragging-now * {
   max-width: 44rem;
   width: 90vw;
   padding: 0;
+  opacity: 0;
+  transform: translateY(0.75rem) scale(0.97);
+  transition:
+    opacity var(--dur-slow) var(--ease-out),
+    transform var(--dur-slow) var(--ease-out),
+    display var(--dur-slow) allow-discrete,
+    overlay var(--dur-slow) allow-discrete;
+}
+.cv2b-confirm[open] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+@starting-style {
+  .cv2b-confirm[open] {
+    opacity: 0;
+    transform: translateY(0.75rem) scale(0.97);
+  }
 }
 .cv2b-confirm::backdrop {
+  background: rgba(0, 0, 0, 0);
+  transition:
+    background var(--dur-slow) var(--ease-out),
+    display var(--dur-slow) allow-discrete,
+    overlay var(--dur-slow) allow-discrete;
+}
+.cv2b-confirm[open]::backdrop {
   background: rgba(0, 0, 0, 0.55);
+}
+@starting-style {
+  .cv2b-confirm[open]::backdrop {
+    background: rgba(0, 0, 0, 0);
+  }
 }
 .cv2b-dlg-head {
   display: flex;

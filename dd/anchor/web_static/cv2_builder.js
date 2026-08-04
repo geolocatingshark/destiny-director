@@ -169,6 +169,43 @@
       setStatus(label);
     }
 
+    /** Replace the confirmation dialog's body, easing the new content in.
+     *
+     *  The server render arrives a round-trip after "Rendering…" is put up, and cutting
+     *  between them jars precisely when the author is being asked to check something
+     *  before an irreversible send. */
+    function swapConfirmBody(html) {
+      el.confirmBody.innerHTML = html;
+      if (!el.confirmBody.animate || reduceMotion()) return;
+      el.confirmBody.animate(
+        [{ opacity: 0, transform: "translateY(0.25rem)" }, { opacity: 1 }],
+        { duration: motionMs("--dur"), easing: EASE_OUT },
+      );
+    }
+
+    /** Repaint inside a View Transition, so an arbitrary change crossfades.
+     *
+     *  For undo/redo only. Every other change is LOCAL and already has a better answer:
+     *  commit() marks the one block that moved and delete collapses the one that left.
+     *  Undo is the exception — it can reshape the whole tree at once, and there is no
+     *  single block to point at — so the honest thing to show is the canvas itself
+     *  defocusing and coming back changed.
+     *
+     *  Named on .cv2b-canvas-wrap (the clipped scroll box), never on .cv2b-canvas, which
+     *  is as tall as the message and would make the browser snapshot the lot.
+     *
+     *  Three gates. The API may be absent; state.editing must be clear, because a
+     *  transition mid-keystroke visibly freezes the caret; and reduced motion has to be
+     *  checked HERE in JS — View Transitions animate through UA styles on
+     *  ::view-transition-old/new, which the CSS duration tokens do not reach. */
+    function repaint() {
+      if (!document.startViewTransition || state.editing !== null || reduceMotion()) {
+        render();
+        return;
+      }
+      document.startViewTransition(() => render());
+    }
+
     /** Play a block's exit, then commit its removal.
      *
      *  The mirror of the landing mark, and it has to work the other way round: an
@@ -206,7 +243,7 @@
       state.editing = null;
       liveKey = null;
       markDirty();
-      render();
+      repaint();
       setStatus("Undone");
     }
     function redo() {
@@ -218,7 +255,7 @@
       state.editing = null;
       liveKey = null;
       markDirty();
-      render();
+      repaint();
       setStatus("Redone");
     }
 
@@ -1331,6 +1368,11 @@
     const shouldSwallow = () => Date.now() < swallowUntil;
     const DRAG_THRESHOLD = 6; // px before a press becomes a drag (vs. a tap)
     const LONG_PRESS_MS = 450;
+    // The armed rail's gap, clamped. The floor keeps a palette drag (nothing to measure)
+    // from opening a gap too small to read; the ceiling stops a tall container lurching
+    // the tree and moving the content the autoscroll edge band is measuring against.
+    const MIN_GAP_PX = 28;
+    const MAX_GAP_PX = 64;
     const EDGE = 60; // autoscroll band at the top/bottom of the canvas
     const AUTOSCROLL_PX = 10; // per frame, while the pointer rests in that band
     const lastPoint = { x: 0, y: 0 };
@@ -1356,13 +1398,20 @@
         ? M.KIND_LABEL[kind] || kind
         : "New " + (M.KIND_LABEL[kind] || kind).toLowerCase();
       // `target` is the armed drop site, the single answer both the highlight and the
-      // release read (see armTarget). `rails`/`railsAt` memoize validRailRects.
+      // release read (see armTarget).
       drag = { kind, from, ghost: makeGhost(label, x, y), target: null };
       document.body.classList.add("cv2b-dragging-now");
-      if (from) {
-        const el0 = blockEl(from);
-        if (el0) el0.classList.add("cv2b-dragging");
-      }
+      const source = from ? blockEl(from) : null;
+      if (source) source.classList.add("cv2b-dragging");
+      // How far the armed rail opens. Measured from the block actually being moved, so
+      // the gap is a truthful hint at its size, but clamped at both ends: a palette drag
+      // has no source to measure, and a container can be hundreds of pixels tall — see
+      // the CSS for why opening that much is wrong.
+      const height = source ? source.getBoundingClientRect().height : 0;
+      el.canvas.style.setProperty(
+        "--cv2b-gap",
+        Math.min(Math.max(height, MIN_GAP_PX), MAX_GAP_PX) + "px",
+      );
       markValidTargets();
     }
 
@@ -1400,16 +1449,20 @@
       document.body.classList.remove("cv2b-dragging-now");
     }
 
-    /** Rails that are LEGAL for this drag, measured.
+    /** Rails that are LEGAL for this drag, measured fresh.
      *
      *  Blocked-ness is fixed for the life of a drag — markValidTargets computes it at
      *  pickup from nodes/kind/from, none of which change while a block is in the air — so
-     *  only the geometry needs refreshing, and only when the canvas scrolls under the
-     *  pointer. NOTE for the gap-opening step: an animating rail height moves these rects
-     *  WITHOUT changing scrollTop, so that change has to invalidate this cache too. */
+     *  only the geometry moves.
+     *
+     *  Measured every call rather than cached. The obvious cache key is scrollTop, and it
+     *  is wrong: the armed rail animates its height to open the drop gap, which moves
+     *  every rail below it WITHOUT scrolling anything. A cache would then hand out
+     *  positions the rails no longer occupy. The tree is small (<=10 top-level blocks,
+     *  depth <=3), so this is a dozen reads on a pointermove — cheaper than the class of
+     *  bug the cache invites. The wobble while a gap animates is absorbed by
+     *  nearestRail's hysteresis, which is why nearest-target had to land first. */
     function validRailRects() {
-      const scrollTop = el.canvas.parentElement.scrollTop;
-      if (drag.rails && drag.railsAt === scrollTop) return drag.rails;
       const rects = [];
       el.canvas.querySelectorAll(".cv2b-rail:not(.cv2b-blocked)").forEach((r) => {
         const box = r.getBoundingClientRect();
@@ -1421,8 +1474,6 @@
           right: box.right,
         });
       });
-      drag.rails = rects;
-      drag.railsAt = scrollTop;
       return rects;
     }
 
@@ -2093,10 +2144,11 @@
         el.confirmBody.innerHTML = '<p class="cv2b-help">Rendering…</p>';
         el.dialog.showModal();
         try {
-          el.confirmBody.innerHTML = await options.onPreview(clone(state.nodes));
+          swapConfirmBody(await options.onPreview(clone(state.nodes)));
         } catch (err) {
-          el.confirmBody.innerHTML =
-            '<p class="cv2b-err">Could not render a preview. You can still post.</p>';
+          swapConfirmBody(
+            '<p class="cv2b-err">Could not render a preview. You can still post.</p>',
+          );
         }
       } else {
         el.dialog.showModal();
