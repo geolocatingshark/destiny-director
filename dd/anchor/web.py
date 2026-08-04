@@ -90,6 +90,22 @@ def registered_cards() -> list[Card]:
     return list(_cards)
 
 
+#: Everything under web_static/tests/. Matched ahead of the static mount in `start`.
+_TEST_FIXTURE_ROUTE = "/static/tests/{tail:.*}"
+
+
+async def _hide_test_fixtures(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """404 the browser-test fixtures, which are not app assets.
+
+    aiohttp's static handler serves a directory wholesale, and the auth middleware
+    (``web_auth``) allowlists ``/static/`` so a page's css/js can load before sign-in.
+    Together those would publish ``tests/builder_harness.html`` — a fully working CV2
+    builder with no auth and no database behind it. The tests load it over ``file://``,
+    so nothing needs it served.
+    """
+    raise aiohttp.web.HTTPNotFound()
+
+
 async def start(port: int | None = None) -> None:
     """Build the app from all registered route contributors and start listening."""
     global _runner
@@ -111,6 +127,10 @@ async def start(port: int | None = None) -> None:
             "Anchor web app has no middleware registered — refusing to start an "
             "unauthenticated web surface (is the web_auth extension loading?)."
         )
+
+    # Registered BEFORE the static route below, because the router matches in
+    # registration order — see _hide_test_fixtures for why.
+    app.router.add_route("*", _TEST_FIXTURE_ROUTE, _hide_test_fixtures)
 
     # Serve the split editor assets (css/js) so pages can <link>/<script> them instead
     # of inlining. The /static/ prefix is distinct from every feature route (/rotation…,

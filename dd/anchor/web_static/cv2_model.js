@@ -869,30 +869,31 @@
   function nearestRail(rects, x, y, current) {
     if (!rects || !rects.length) return -1;
 
-    const inColumn = [];
-    for (let i = 0; i < rects.length; i++) {
-      if (x >= rects[i].left && x <= rects[i].right) inColumn.push(i);
-    }
-    const pool = inColumn.length ? inColumn : rects.map((_, i) => i);
+    // In-column rails win outright over rails that do not span x; if none does, every
+    // rail is a candidate. Expressed as a predicate rather than an index list so the
+    // hysteresis check below can ask the same question of the armed rail directly.
+    const spans = (r) => x >= r.left && x <= r.right;
+    const eligible = rects.some(spans) ? spans : () => true;
 
     let best = -1;
     let bestDistance = Infinity;
-    for (const i of pool) {
-      const d = railDistance(rects[i], y);
+    rects.forEach((rect, i) => {
+      if (!eligible(rect)) return;
+      const d = railDistance(rect, y);
       if (d < bestDistance) {
         bestDistance = d;
         best = i;
       }
-    }
+    });
     if (best === -1 || bestDistance > NEAREST_RAIL_MAX_PX) return -1;
 
     // Keep the armed rail unless a rival clearly beats it — but only while it is still
     // a plausible target itself (in the pointer's column, and inside the cap).
     if (
-      typeof current === "number" &&
+      Number.isInteger(current) &&
       current >= 0 &&
       current < rects.length &&
-      pool.indexOf(current) !== -1
+      eligible(rects[current])
     ) {
       const currentDistance = railDistance(rects[current], y);
       if (

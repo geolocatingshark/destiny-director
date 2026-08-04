@@ -50,10 +50,19 @@ jobs:
       - name: Type check (ty)
         run: uv run ty check dd
 
-      # Playwright ships as a dev dep but the browser binary is a separate download.
-      # Without this the CV2 builder's drag tests SKIP rather than fail, so the step is
-      # what makes them real — that layer has no other automated coverage
-      # (plans/web_cv2_builder_followups.md §6).
+      # Playwright ships as a dev dep but the browser binary is a separate ~150MB
+      # download. Without it the CV2 builder's drag tests SKIP rather than fail, so these
+      # steps are what make them real — that layer has no other automated coverage
+      # (plans/web_cv2_builder_followups.md §6). Cached on the resolved playwright
+      # version so the download is paid once per upgrade rather than on every push,
+      # including the many that touch no web code.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
       - name: Install Chromium (Playwright)
         run: uv run playwright install --with-deps chromium
 

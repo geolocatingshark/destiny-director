@@ -72,7 +72,15 @@ BLOCK_SEPARATOR = 2
 
 @pytest.fixture
 def page() -> t.Iterator[t.Any]:
-    """A mounted harness, with any page error escalated to a test failure."""
+    """A mounted harness per test, with any page error escalated to a test failure.
+
+    DO NOT hoist ``sync_playwright()`` to a session-scoped fixture to save the ~1s
+    browser launch. Its sync API drives an event loop of its own, and holding that open
+    across the session breaks pytest-asyncio for every async test that runs afterwards —
+    measured, not theorised: 621 passed / 207 failed / 376 errors with a session-scoped
+    browser, against 1204 passed with this one. Everything still passes in isolation, so
+    only a full-suite run catches it.
+    """
     with playwright_api.sync_playwright() as p:
         try:
             # Falls back to Playwright's own download when unset (the normal case).
@@ -109,6 +117,32 @@ def _armed(pg) -> dict | None:
              return a ? {scope: a.dataset.scope, index: a.dataset.index} : null;
            }"""
     )
+
+
+def _rails(pg) -> list[dict]:
+    """Every legal rail's rectangle, in DOM order."""
+    return pg.eval_on_selector_all(
+        ".cv2b-rail:not(.cv2b-blocked)",
+        "els => els.map(e => { const b = e.getBoundingClientRect();"
+        " return {top: b.top, bottom: b.bottom, left: b.left}; })",
+    )
+
+
+def _delete_separator(pg) -> list[str]:
+    """Delete the fixture's separator, returning the paths from before the change.
+
+    Waits for the block count to drop rather than for a duration: the exit animation
+    runs before the mutation applies, and how long it takes is not a test's business.
+    """
+    before = _paths(pg)
+    pg.locator(".cv2b-blk").nth(BLOCK_SEPARATOR).click()
+    pg.keyboard.press("Delete")
+    pg.wait_for_function(
+        "n => document.querySelectorAll('.cv2b-blk').length < n",
+        arg=len(before),
+        timeout=3000,
+    )
+    return before
 
 
 def _grab(pg, block_index: int):
@@ -180,11 +214,7 @@ def test_a_release_far_from_every_rail_cancels(page):
 def test_a_drop_between_two_rails_still_finds_one(page):
     """A rail is 0.62rem tall. Landing exactly on one with a fingertip is a coin flip,
     so a release that falls between two used to spring back with no explanation."""
-    rails = page.eval_on_selector_all(
-        ".cv2b-rail:not(.cv2b-blocked)",
-        "els => els.map(e => { const b = e.getBoundingClientRect();"
-        " return {top: b.top, bottom: b.bottom, left: b.left, right: b.right}; })",
-    )
+    rails = _rails(page)
     assert len(rails) >= 3, "the fixture should offer several legal rails"
     gap_y = (rails[1]["bottom"] + rails[2]["top"]) / 2
     assert rails[2]["top"] > rails[1]["bottom"], "expected a gap between these rails"
@@ -227,15 +257,10 @@ def test_a_deleted_block_is_really_gone_after_its_collapse(page):
     commitAfterCollapse commits on the animation's cancel path too, precisely so an
     interrupted collapse cannot leave the block on screen and the change unapplied.
     """
-    before = _paths(page)
-    page.locator(".cv2b-blk").nth(BLOCK_SEPARATOR).click()
-    page.keyboard.press("Delete")
-    page.wait_for_function(
-        "n => document.querySelectorAll('.cv2b-blk').length < n",
-        arg=len(before),
-        timeout=3000,
-    )
-    assert len(_paths(page)) < len(before)
+    before = _delete_separator(page)
+    # The helper's wait proves the count dropped. Pin that EXACTLY one block went: a
+    # separator has no children, so anything more means the collapse took a subtree.
+    assert len(_paths(page)) == len(before) - 1
 
 
 def test_undo_still_applies_through_its_view_transition(page):
@@ -245,14 +270,7 @@ def test_undo_still_applies_through_its_view_transition(page):
     ever skipped or the promise dropped, undo would appear to do nothing while the model
     had already moved. Asserts the tree, not the animation.
     """
-    before = _paths(page)
-    page.locator(".cv2b-blk").nth(BLOCK_SEPARATOR).click()
-    page.keyboard.press("Delete")
-    page.wait_for_function(
-        "n => document.querySelectorAll('.cv2b-blk').length < n",
-        arg=len(before),
-        timeout=3000,
-    )
+    before = _delete_separator(page)
 
     page.keyboard.press("Control+z")
     page.wait_for_function(
@@ -272,11 +290,7 @@ def test_the_armed_target_holds_while_the_gap_animates(page):
     that reads as the drop point twitching between two slots. nearestRail's hysteresis
     is what breaks it; this samples across the animation to prove it holds.
     """
-    rails = page.eval_on_selector_all(
-        ".cv2b-rail:not(.cv2b-blocked)",
-        "els => els.map(e => { const b = e.getBoundingClientRect();"
-        " return {top: b.top, bottom: b.bottom, left: b.left}; })",
-    )
+    rails = _rails(page)
     assert len(rails) >= 3
 
     _grab(page, BLOCK_SEPARATOR)

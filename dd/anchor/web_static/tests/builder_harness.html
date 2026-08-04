@@ -10,12 +10,16 @@
   This file exists so the DOM layer — drag, drop targeting, the context menu, the
   properties sheet — can be driven by a browser test. plans/web_cv2_builder_followups.md
   §6 records that layer as the one with no automated coverage, and that the blocker was
-  never the fixture but choosing assertions that would not rot. The tests that use this
-  live in tests/builder_drag.spec.* ; keep the tree below STABLE, because they index into
-  it by position.
+  never the fixture but choosing assertions that would not rot. The tests that use it live
+  in dd/anchor/tests/test_builder_drag.py; keep the tree below STABLE, because they index
+  into it by position.
 
-  Open it directly (file://) or over /static/tests/builder_harness.html — it needs
-  nothing else running.
+  Open it directly over file:// — which is how the tests load it. It is deliberately NOT
+  reachable over /static/: web.py 404s /static/tests/* because the auth middleware
+  allowlists /static/, and serving this would publish a working, unauthenticated builder.
+
+  It links the same stylesheets as cv2_builder.html; a new sheet added there needs adding
+  here too, or the harness renders without it.
 -->
 <html lang="en">
   <head>

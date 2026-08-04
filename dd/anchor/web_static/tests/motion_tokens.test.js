@@ -37,11 +37,11 @@ const TOKENS = ["--dur-fast", "--dur", "--dur-slow"];
  *  minified CSS is full of literal durations we neither own nor edit. */
 function authoredSheets() {
   return fs
-    .readdirSync(STATIC_DIR, { withFileTypes: true })
-    .filter((e) => e.isFile() && /\.(css|html)$/.test(e.name))
-    .map((e) => ({
-      name: e.name,
-      text: fs.readFileSync(path.join(STATIC_DIR, e.name), "utf8"),
+    .readdirSync(STATIC_DIR)
+    .filter((name) => /\.(css|html)$/.test(name))
+    .map((name) => ({
+      name,
+      text: fs.readFileSync(path.join(STATIC_DIR, name), "utf8"),
     }));
 }
 
@@ -93,10 +93,11 @@ test("no authored stylesheet hardcodes a motion duration", () => {
       if (hit) offenders.push(`${name}: ${prop}: ${value.trim()}  (${hit[1]})`);
     }
   }
+  // deepEqual prints the offending entries itself, so the message only has to say
+  // what to do about them.
   assert.deepEqual(
     offenders,
     [],
-    "use var(--dur-fast|--dur|--dur-slow) instead of a literal duration:\n" +
-      offenders.join("\n"),
+    "use var(--dur-fast|--dur|--dur-slow) instead of a literal duration",
   );
 });

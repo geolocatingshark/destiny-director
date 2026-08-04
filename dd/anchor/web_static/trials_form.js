@@ -78,7 +78,7 @@ for (const c of cards) {
   const radio = el("input", {
     type: "radio",
     name: "focusSet",
-    className: "set-radio",
+    className: "set-radio no-focus-ring",
     value: c.value,
     checked: c.value === checkedValue,
   });

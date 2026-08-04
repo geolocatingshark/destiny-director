@@ -177,8 +177,13 @@
   animation: cv2b-defocus var(--dur) var(--ease-out) both;
 }
 ::view-transition-new(cv2-canvas) {
-  animation: cv2b-defocus var(--dur) var(--ease-out) both reverse;
+  animation: cv2b-refocus var(--dur) var(--ease-out) both;
 }
+/* Only the OUTGOING snapshot blurs. Each snapshot is the full clipped scroll box — on a
+   phone at DPR 3 that is megapixels — so blurring both means two separable blur passes
+   plus a blend every frame. Blurring just the old one at 3px reads the same and costs
+   about a quarter as much; the incoming half is opacity + scale, which are pure
+   compositor properties. */
 @keyframes cv2b-defocus {
   from {
     opacity: 1;
@@ -187,7 +192,13 @@
   }
   to {
     opacity: 0;
-    filter: blur(6px);
+    filter: blur(3px);
+    transform: scale(0.985);
+  }
+}
+@keyframes cv2b-refocus {
+  from {
+    opacity: 0;
     transform: scale(0.985);
   }
 }
@@ -366,7 +377,11 @@ body.cv2b-dragging-now * {
    pixels tall, and opening that much would lurch the tree and fight the autoscroll edge
    band. The gap says "it lands here", it is not a preview of the final layout. */
 .cv2b-rail.cv2b-armed {
-  height: var(--cv2b-gap, 0.62rem);
+  /* The bounds live here, not in the JS that measures: the floor keeps a palette drag
+     (nothing to measure, so --cv2b-gap is 0) readable, and the ceiling stops a tall
+     container lurching the tree and moving the content the autoscroll edge band measures
+     against. Retuning a visual bound should not mean editing cv2_builder.js. */
+  height: clamp(28px, var(--cv2b-gap, 0px), 64px);
 }
 .cv2b-rail::before {
   content: "";
@@ -829,30 +844,30 @@ body.cv2b-dragging-now * {
   transition:
     opacity var(--dur-slow) var(--ease-out),
     transform var(--dur-slow) var(--ease-out),
-    display var(--dur-slow) allow-discrete,
-    overlay var(--dur-slow) allow-discrete;
+    display var(--dur-slow),
+    overlay var(--dur-slow);
+  transition-behavior: allow-discrete;
 }
 .cv2b-confirm[open] {
   opacity: 1;
   transform: translateY(0) scale(1);
+}
+.cv2b-confirm::backdrop {
+  background: rgba(0, 0, 0, 0);
+  transition:
+    background var(--dur-slow) var(--ease-out),
+    display var(--dur-slow),
+    overlay var(--dur-slow);
+  transition-behavior: allow-discrete;
+}
+.cv2b-confirm[open]::backdrop {
+  background: rgba(0, 0, 0, 0.55);
 }
 @starting-style {
   .cv2b-confirm[open] {
     opacity: 0;
     transform: translateY(0.75rem) scale(0.97);
   }
-}
-.cv2b-confirm::backdrop {
-  background: rgba(0, 0, 0, 0);
-  transition:
-    background var(--dur-slow) var(--ease-out),
-    display var(--dur-slow) allow-discrete,
-    overlay var(--dur-slow) allow-discrete;
-}
-.cv2b-confirm[open]::backdrop {
-  background: rgba(0, 0, 0, 0.55);
-}
-@starting-style {
   .cv2b-confirm[open]::backdrop {
     background: rgba(0, 0, 0, 0);
   }
