@@ -69,9 +69,17 @@ DB layer, or building a message/embed, read it.** Quick orientation:
 - **Run via `make test`** (= `uv run --env-file .env python -m pytest -m "not discord"`),
   not bare `uv run python -m pytest` — the latter skips `.env`, so `cfg.py`'s import-time
   validation raises a cryptic `ValueError: Environment variable '…' not found.`
-- Two markers: `integration` (DB layer; SQLite by default, `TEST_USE_MYSQL=1` for MySQL)
-  and `discord` (hits live Discord, needs a real token). The safe default suite is
-  `-m "not discord"`. Also: `make test-unit`, `make test-integration`, `make coverage`.
+- Three markers: `integration` (DB layer; SQLite by default, `TEST_USE_MYSQL=1` for
+  MySQL), `discord` (hits live Discord, needs a real token), and `browser` (drives a real
+  Chromium via Playwright). The safe default suite is `-m "not discord"`. Also:
+  `make test-unit`, `make test-integration`, `make test-browser`, `make coverage`.
+- **Browser tests** cover the CV2 builder's drag layer against the no-server fixture
+  `dd/anchor/web_static/tests/builder_harness.html`. Playwright is a dev dep, but the
+  browser is a separate ~150MB download `uv sync` does not fetch, so they **skip** until
+  you run `uv run playwright install chromium` (CI installs it, so they run there every
+  push). Assert behaviour only — never appearance, or restyling breaks them.
+- **JS unit tests** (`make test-js`, `node --test`, no bundler) live in
+  `dd/*/web_static/tests/`. `make check` runs them alongside the Python suite.
 
 ## Linting, formatting & type checking
 

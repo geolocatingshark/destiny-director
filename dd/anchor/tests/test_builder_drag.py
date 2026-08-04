@@ -26,22 +26,21 @@ widget over ``file://`` with a fixed tree. ``initCv2Builder`` takes its seed nod
 all three server round-trips as injected options, so no server, auth or database is
 involved.
 
-**Not wired into the default suite yet.** Playwright is deliberately not a project
-dependency — that is an open call about what the dev container should carry. Until it is
-made, these skip. To run them::
+Playwright is a dev dependency, but the *browser* is a separate ~150MB download that
+``uv sync`` does not fetch, so these **skip** rather than fail on a machine that has not
+run it::
 
-    uv add --dev playwright && uv run playwright install chromium
-    uv run python -m pytest dd/anchor/tests/test_builder_drag.py
+    uv run playwright install chromium
+    make test-browser
+
+CI installs the browser and runs them on every push — a browser test that only ever runs
+on one developer's box rots exactly as fast as one nobody wrote.
 
 Where a Chromium is already provisioned and ``playwright install`` cannot reach the
-download host — a sandboxed CI runner, or a container that bakes the browser in — point
-at it instead::
+download host — a sandboxed runner, or a container that bakes the browser in — point at
+it instead::
 
-    PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium-1194/chrome-linux/chrome \\
-        uv run python -m pytest dd/anchor/tests/test_builder_drag.py
-
-If the answer turns out to be no, deleting this file costs nothing: it shares no code
-with the rest of the suite.
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chrome make test-browser
 """
 
 import os
@@ -52,8 +51,10 @@ import pytest
 
 playwright_api = pytest.importorskip(
     "playwright.sync_api",
-    reason="playwright is not a project dependency yet; see this module's docstring",
+    reason="playwright is not installed (it is in the `dev` dependency group)",
 )
+
+pytestmark = pytest.mark.browser
 
 HARNESS = (
     Path(__file__).resolve().parent.parent / "web_static/tests/builder_harness.html"
@@ -69,10 +70,19 @@ BLOCK_HEADING = 1  # the "# Weekly Reset" text INSIDE the container
 def page() -> t.Iterator[t.Any]:
     """A mounted harness, with any page error escalated to a test failure."""
     with playwright_api.sync_playwright() as p:
-        # Falls back to Playwright's own download when unset (the normal case).
-        browser = p.chromium.launch(
-            executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None
-        )
+        try:
+            # Falls back to Playwright's own download when unset (the normal case).
+            browser = p.chromium.launch(
+                executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None
+            )
+        except playwright_api.Error as exc:
+            # The package is installed but the browser binary is not — a plain `uv sync`
+            # gets you here. Skip with the fix rather than failing the whole suite for
+            # someone who never asked to run browser tests.
+            pytest.skip(
+                "no Chromium available — run "
+                f"`uv run playwright install chromium` ({exc})"
+            )
         pg = browser.new_page(viewport={"width": 1280, "height": 900})
         errors: list[str] = []
         pg.on("pageerror", lambda e: errors.append(str(e)))

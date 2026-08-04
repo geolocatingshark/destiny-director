@@ -50,6 +50,13 @@ jobs:
       - name: Type check (ty)
         run: uv run ty check dd
 
+      # Playwright ships as a dev dep but the browser binary is a separate download.
+      # Without this the CV2 builder's drag tests SKIP rather than fail, so the step is
+      # what makes them real — that layer has no other automated coverage
+      # (plans/web_cv2_builder_followups.md §6).
+      - name: Install Chromium (Playwright)
+        run: uv run playwright install --with-deps chromium
+
       - name: Test (pytest, SQLite)
         # Mirror `make coverage`: skip the live-Discord tests (they need a real
         # bot token + guild and are opt-in via `make test-integration`).
