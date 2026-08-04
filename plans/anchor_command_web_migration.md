@@ -53,7 +53,7 @@ The `auto` subcommand is generated inside `make_autopost_control_commands`
 | `/control_panel` | The entry point into everything above. |
 | `/post components` | Already a thin handoff — writes a `Cv2Draft` and links to `/cv2-builder/{draft}`. The **invoking channel is the input**; replacing it on web means building a channel picker for no gain. |
 | `Edit post`, `Copy post`, `Convert to components` (context menus) | "Right-click *this* message" has no web equivalent short of pasting message links. They already hand off to the web builder for the actual editing — the ideal hybrid. |
-| `ls_update` (context menu) | Same reason, for now. **Deferred migration** — see `plans/ls_update_web_migration.md`. |
+| `ls_update` (context menu) | Same reason, for now. **Deferred migration**, reusing weekly reset's `DraftMeta` / `post_or_edit_unpublished` lifecycle — see `plans/ls_update_web_migration.md`. |
 | `/help`, `/source_code` | Cheap, conventional, no web work. `/help` and `help_details.py` need pruning as entries disappear. |
 | `/testing convert_sample`, `/testing overflow_alert` | Both exist to post a Discord message and eyeball a rendering path. Discord-native by construction. |
 
@@ -81,12 +81,25 @@ Kills the 12 remaining autopost subcommands, which empties
 `make_autopost_control_commands` entirely — the factory and its `lb.Group` disappear, and
 each feature module keeps only its cron listener and constructor.
 
-**This phase must first answer `plans/anchor_web_ia.md` §4.** That plan explored a
-feed-centric hub, had it rejected on scaling grounds (`FOLLOWABLES` carries 12 feeds and
-beacon has more coming), and left two candidate shapes: exceptions-first, or organise by
-time. Adding "Preview" and "Send now" to every feed is exactly the pressure that decides
-it — a flat 12-row list with two action buttons each is the layout that was already
-rejected.
+**`plans/anchor_web_ia.md` §4 is *not* a blocker for this phase** (an earlier draft of
+this plan said it was — it was wrong). The §3 scaling objection was specifically about
+*status chips and sparklines* — per-instance health data, where 20–30 healthy rows crowd
+out the one that matters. A per-feed **settings** list has no such problem, and the proof
+is that `/autopost_settings` is already exactly that flat list, already carries every
+feed, and drew no objection.
+
+So this phase needs two things, neither of which is the rejected hub:
+
+1. A **feed detail page** — autopost toggle, Preview, Send now. §2's feed page already
+   survived the rejection; `anchor_web_ia.md` says so explicitly.
+2. A link into it from each existing `/autopost_settings` row. An arrow per row adds no
+   noise to a list that is already there.
+
+The exceptions-first / by-time hub stays deferred indefinitely — it is an *observability*
+question that belongs with mirror log and stats, and it blocks none of the 12 subcommands
+this phase kills. §4's durable insight is that per-feed and per-instance state are
+tangled; the clean cut is to put **actions** on the feed page and leave **health** to a
+hub that does not exist yet.
 
 The finding in `anchor_web_ia.md` §1 still holds and makes the data side easy: `feed`
 (the followable name) is already the shared key across autopost settings, mirror log and
@@ -127,6 +140,39 @@ Port with it: the DANGER-override confirm flow, and the restart-disabled-in-prod
 **Do not delete `make_controller_group`** — beacon uses it too (`/beacon stop|restart|
 info`) and beacon has no web server. Only anchor's wrapper (`dd/anchor/extensions/
 controller.py`) goes away. Beacon's `mirror_check` argument stays untouched.
+
+#### Should `restart` or `stop` be removed from the codebase entirely?
+
+Asked 2026-08-04 on the premise that one of the two is broken or dangerous in prod.
+**Verified against live Railway state — the premise does not hold. Neither is.**
+
+| Service | Env | `restartPolicyType` | max retries |
+| --- | --- | --- | --- |
+| beacon | production | unset → **ON_FAILURE** | default (10) |
+| beacon | dev | unset → **ON_FAILURE** | default (10) |
+| anchor | production | unset → **ON_FAILURE** | **7** (explicit) |
+| anchor | dev | unset → **ON_FAILURE** | **7** (explicit) |
+| MySQL | production | unset → **ON_FAILURE** | default (10) |
+
+**No service is set to `ALWAYS`**, and no restart policy is committed in the repo
+(`railway.toml` carries only a `[build]` block). So:
+
+- **`stop` works everywhere**, prod included — exit 0 under `ON_FAILURE` stays down.
+  The docstring's claim about the 2026-06-25 flip off `ALWAYS` still holds.
+- **`restart` is unreachable in prod by design**, not broken: `restarts_enabled()`
+  (`dd/common/controller.py:64`) is `bool(cfg.test_env)`, and `TEST_ENV` is set on the
+  dev services only. The gate keys off exactly the right thing.
+
+If one is still to go, it is **`restart`** — but for a different reason than the premise
+gave: it is prod-dead by design, so it exists only for dev, where each invocation burns
+one of anchor's 7 retries and repeated use inside a deployment can exhaust the budget and
+leave dev anchor down until a redeploy. That is a "narrow utility, real cost" argument,
+not a "broken" one. **Not actioned — needs a decision on the corrected facts**, and note
+it would take `restart` off `/beacon` too, which has no web panel to replace it with.
+
+Separate small fix this turned up: the docstring's "`restart` … works under any
+restart-on-failure policy" glosses over the retry ceiling, and anchor's explicit
+`restartPolicyMaxRetries: 7` is undocumented anywhere. Worth a sentence.
 
 `info` with `show_followables=True` is a read-only config dump — the easy half of this
 phase, and a reasonable first slice.
