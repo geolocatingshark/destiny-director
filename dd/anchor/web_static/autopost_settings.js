@@ -71,6 +71,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const publish = byId("publish");
 
   let pending = null; // the slug the send dialog is currently confirming
+  // Bumped whenever a preview starts or a dialog closes. A build takes seconds (live
+  // API), so a slow one can land after its dialog was cancelled — and would otherwise
+  // draw into a closed dialog, or worse, into the NEXT feed's. Each draw checks the
+  // token it started with and abandons if it is no longer current.
+  let drawToken = 0;
 
   /** The feed's label as rendered on its row, for modal copy. */
   function labelFor(slug) {
@@ -85,6 +90,20 @@ document.addEventListener("DOMContentLoaded", () => {
     el.textContent = message;
   }
 
+  /** A status line with a spinner in front of it — for waits measured in seconds. */
+  function busy(el, message) {
+    el.classList.remove("err");
+    el.replaceChildren(
+      Object.assign(document.createElement("span"), { className: "spinner" }),
+      document.createTextNode(message),
+    );
+  }
+
+  /** Abandon any in-flight preview draw, so a slow one cannot land after this. */
+  function cancelDraw() {
+    drawToken++;
+  }
+
   /**
    * Build the feed's post and draw it into `host`.
    *
@@ -93,11 +112,13 @@ document.addEventListener("DOMContentLoaded", () => {
    * it lands in the status line rather than throwing.
    */
   async function drawPreview(slug, host, statusEl) {
+    const token = ++drawToken;
     host.replaceChildren();
-    say(statusEl, "Building…", false);
+    busy(statusEl, "Building the post…");
     try {
       const res = await fetch("/feed/" + encodeURIComponent(slug) + "/preview");
       const data = await res.json();
+      if (token !== drawToken) return false; // superseded or cancelled — drop it
       if (data.error) {
         say(statusEl, data.error, true);
         return false;
@@ -110,6 +131,7 @@ document.addEventListener("DOMContentLoaded", () => {
       say(statusEl, "", false);
       return true;
     } catch (e) {
+      if (token !== drawToken) return false;
       say(statusEl, "Render error: " + e, true);
       return false;
     }
@@ -128,29 +150,33 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       // Send: confirm against the post that is actually going out, so the dialog shows
-      // WHAT is being sent, not just where. Confirm stays disabled until it renders —
-      // there is no reason to allow a blind send when a preview is one call away.
+      // WHAT is being sent, not just where. The preview is context, NOT a gate — send
+      // stays available while it builds and even if it fails, because a feed whose
+      // preview is broken is exactly one you may still need to push.
       pending = slug;
       sendTitle.textContent = "Send the " + label + " post?";
       sendBody.textContent =
         "This posts to the " + label + " channel straight away. It cannot be recalled, " +
         "only edited or deleted afterwards.";
       publish.checked = true;
-      sendConfirm.disabled = true;
+      sendConfirm.disabled = false;
       sendDialog.showModal();
-      const drawn = await drawPreview(slug, sendPreview, sendStatus);
-      sendConfirm.disabled = !drawn;
+      await drawPreview(slug, sendPreview, sendStatus);
     });
   });
 
+  // Closing either dialog abandons an in-flight draw — including via Escape or the
+  // backdrop, which is why this listens for `close` rather than only the button.
   byId("previewClose").addEventListener("click", () => previewDialog.close());
   byId("sendCancel").addEventListener("click", () => sendDialog.close());
+  previewDialog.addEventListener("close", cancelDraw);
+  sendDialog.addEventListener("close", cancelDraw);
 
   sendConfirm.addEventListener("click", async () => {
     const slug = pending;
     const wantPublish = publish.checked;
     sendConfirm.disabled = true;
-    say(sendStatus, "Sending…", false);
+    busy(sendStatus, "Sending…");
     try {
       const res = await window.api("/feed/" + encodeURIComponent(slug) + "/send", {
         publish: wantPublish,

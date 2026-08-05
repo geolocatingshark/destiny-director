@@ -38,8 +38,7 @@
 
   fetchBtn.addEventListener("click", async () => {
     fetchBtn.disabled = true;
-    numbersStatus.classList.remove("err");
-    numbersStatus.textContent = "Fetching…";
+    busy(numbersStatus, "Revealing…");
     numbers.textContent = "";
     try {
       const res = await fetch("/bungie/account");
@@ -60,6 +59,32 @@
       numbersStatus.textContent = "Network error — try again.";
     } finally {
       fetchBtn.disabled = false;
+    }
+  });
+
+  const logoutDialog = byId("logoutDialog");
+  byId("logoutBtn").addEventListener("click", () => logoutDialog.showModal());
+  byId("logoutCancel").addEventListener("click", () => logoutDialog.close());
+  byId("logoutConfirm").addEventListener("click", async () => {
+    const confirmBtn = byId("logoutConfirm");
+    confirmBtn.disabled = true;
+    try {
+      const res = await window.api("/bungie/logout", {});
+      logoutDialog.close();
+      if (res.ok) {
+        // Re-read rather than assuming: the status line is driven by /bungie/data
+        // everywhere else, and this keeps one source of truth for it.
+        numbers.textContent = "";
+        say(numbersStatus, "", false);
+        await loadStatus();
+      } else {
+        say(numbersStatus, "Log out failed.", true);
+      }
+    } catch (_) {
+      logoutDialog.close();
+      say(numbersStatus, "Network error — try again.", true);
+    } finally {
+      confirmBtn.disabled = false;
     }
   });
 

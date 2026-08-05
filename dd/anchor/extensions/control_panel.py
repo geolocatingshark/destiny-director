@@ -26,7 +26,7 @@ The page also carries **bot administration** — the web replacement for ``/anch
 and ``/anchor stop``. It lives on the panel itself rather than a page of its own: it is
 two actions and a read-only dump, and the panel is already the bot's front door.
 
-- ``GET  /bot/info``  configuration state, as ``/anchor info`` printed it
+- ``GET  /bot/info``  configuration state + the configured channels, by name
 - ``POST /bot/stop``  shut the process down
 
 **Stop is one-way from here.** The aiohttp app runs *inside* this process, so stopping
@@ -37,6 +37,7 @@ request_shutdown`` only *schedules* ``bot.close()``, so the response is written 
 the gateway unwinds and the browser gets a confirmation rather than a dropped socket.
 """
 
+import asyncio
 import html
 import logging
 from pathlib import Path
@@ -92,12 +93,36 @@ async def _handle_panel(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.Response(text=_render_panel_html(), content_type="text/html")
 
 
+async def _channel_label(channel_id: int) -> str | None:
+    """``#channel-name`` for a configured followable, or ``None`` if unresolvable.
+
+    A raw snowflake tells the reader nothing. Resolution is best-effort and per-channel:
+    the bot may not be in the guild, the channel may be deleted, or it may simply not be
+    up yet — none of which should cost the whole panel its config dump.
+    """
+    if _bot is None:
+        return None
+    try:
+        channel = await _bot.fetch_channel(channel_id)
+    except Exception:
+        logger.info("Could not resolve channel %s for /bot/info", channel_id)
+        return None
+    name = getattr(channel, "name", None)
+    return f"#{name}" if name else None
+
+
 async def _handle_bot_info(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    """Configuration state — what ``/anchor info`` printed.
+    """Configuration state — what ``/anchor info`` printed, plus channel names.
 
     Anchor never had the mirror-status block (that is beacon's, gated on a
-    ``mirror_check``), so this is the config dump and the followable map.
+    ``mirror_check``), so this is the config dump and the configured channels.
     """
+    channels = await asyncio.gather(
+        *(
+            _channel_label(channel_id) if channel_id else _none()
+            for channel_id in cfg.followables.values()
+        )
+    )
     return aiohttp.web.json_response(
         {
             "bot": "anchor",
@@ -105,12 +130,23 @@ async def _handle_bot_info(request: aiohttp.web.Request) -> aiohttp.web.Response
             # A tuple of guild ids, empty in prod — its emptiness is what marks an
             # environment as production, so it is worth showing verbatim.
             "testEnv": [str(guild_id) for guild_id in cfg.test_env],
-            "followables": [
-                {"name": name, "channelId": str(channel_id) if channel_id else None}
-                for name, channel_id in cfg.followables.items()
+            "channels": [
+                {
+                    "feed": name,
+                    "channelId": str(channel_id) if channel_id else None,
+                    "channelName": label,
+                }
+                for (name, channel_id), label in zip(
+                    cfg.followables.items(), channels, strict=True
+                )
             ],
         }
     )
+
+
+async def _none() -> None:
+    """``None`` as an awaitable, so the gather above stays one flat comprehension."""
+    return None
 
 
 async def _handle_bot_stop(request: aiohttp.web.Request) -> aiohttp.web.Response:

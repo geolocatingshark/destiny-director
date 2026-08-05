@@ -139,12 +139,15 @@ def _render_row(setting: _Setting, state: bool | str | None) -> str:
     what the client save script and ``_handle_save`` read back.
     """
     base_class = "row sub" if setting.sub else "row"
-    label_block = (
-        '<div class="text">'
-        f'<div class="name">{html.escape(setting.label)}</div>'
-        f'<div class="desc">{html.escape(setting.desc)}</div>'
-        "</div>"
-    )
+
+    def _label_block(actions_html: str = "") -> str:
+        return (
+            '<div class="text">'
+            f'<div class="name">{html.escape(setting.label)}</div>'
+            f'<div class="desc">{html.escape(setting.desc)}</div>'
+            f"{actions_html}"
+            "</div>"
+        )
     # A top-level slug that names a registered feed gets its two actions inline — the
     # replacement for the old `/<feed> show` and `send` commands. They live here rather
     # than on a per-feed page: a feed has no state a page could show that this row does
@@ -152,12 +155,12 @@ def _render_row(setting: _Setting, state: bool | str | None) -> str:
     # this page's modals (see autopost_settings.js), not in the row.
     actions = (
         '<div class="rowactions">'
-        f'<button type="button" class="feedaction" data-action="preview"'
+        f'<button type="button" class="feedaction small" data-action="preview"'
         f' data-slug="{html.escape(setting.slug)}"'
         ' title="Builds the post exactly as the producer would right now, and shows it.'
         ' Nothing is sent. The data comes from the live API, so this can take a few'
         ' seconds.">Preview</button>'
-        f'<button type="button" class="feedaction" data-action="send"'
+        f'<button type="button" class="feedaction small" data-action="send"'
         f' data-slug="{html.escape(setting.slug)}"'
         ' title="Posts to this feed&#39;s channel immediately, and (if publishing)'
         ' crossposts it so beacon mirrors it to every following server.">Send now'
@@ -166,11 +169,12 @@ def _render_row(setting: _Setting, state: bool | str | None) -> str:
     )
     if setting.sub or setting.slug not in registered_feeds():
         actions = ""
+    label_block = _label_block(actions)
     if setting.kind == "url":
         value = html.escape(state or "") if isinstance(state, str) else ""
         return (
             f'<div class="{base_class} urlrow">'
-            f"{label_block}"
+            f"{_label_block()}"
             '<input type="url" class="urlfield" '
             f'data-slug="{html.escape(setting.slug)}"'
             f' value="{value}" placeholder="https://example.com/banner.png" />'
@@ -180,7 +184,6 @@ def _render_row(setting: _Setting, state: bool | str | None) -> str:
     return (
         f'<div class="{base_class}">'
         f"{label_block}"
-        f"{actions}"
         '<label class="switch">'
         f'<input type="checkbox" class="no-focus-ring" '
         f'data-slug="{html.escape(setting.slug)}"{checked} />'

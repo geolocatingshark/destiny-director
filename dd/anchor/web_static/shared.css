@@ -67,6 +67,10 @@
   --dur-fast: 80ms;
   --dur: 140ms;
   --dur-slow: 240ms;
+  /* One spinner rotation. Deliberately NOT one of the --dur* transition tokens: those
+     are 80-240ms (right for a state flip, absurd for a rotation) and the reduced-motion
+     block zeroes them, which would spin at strobe speed rather than stopping. */
+  --dur-spin: 700ms;
   --ease-out: cubic-bezier(.2, 0, 0, 1);
 }
 
@@ -83,6 +87,9 @@
     --dur-fast: 0.01ms;
     --dur: 0.01ms;
     --dur-slow: 0.01ms;
+    /* Slowed, not zeroed: a spinner's job is to say "still working", so it has to keep
+       moving. Zeroing it would strobe. */
+    --dur-spin: 2400ms;
   }
 }
 * { box-sizing: border-box; }
@@ -240,19 +247,52 @@ p.nav { margin: 0 0 .4rem; }
   padding: .7rem 0; margin-top: 1rem;
   background: var(--surface-1); border-top: 1px solid var(--border);
 }
-.form-page button {
-  padding: .5rem .9rem; font: inherit; cursor: pointer;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--accent-strong); color: #fff;
-}
+/* `.secondary` predates the base rule below, where quiet is already the default; kept
+   as a no-op alias so the existing markup does not all have to change at once. */
 .form-page button.secondary { background: var(--surface-3); color: var(--text-1); }
-.form-page button.danger {
-  background: var(--danger-surface); color: var(--danger-text);
-  border-color: var(--danger-border);
-}
-.form-page button.danger:disabled { opacity: .5; cursor: not-allowed; }
-.form-page button.tiny { padding: .25rem .6rem; font-size: .8rem; }
 .form-page .grow { flex: 1; }
 
 .form-page #status.ok { color: var(--ok); }
 .form-page #status.err { color: var(--err); white-space: pre-wrap; }
+
+/* --- buttons, one definition for every page ---------------------------------------
+   There was no base `button` rule, only `.form-page button`, so every page that grew a
+   button reinvented one — and they drifted: different radii, different padding, and a
+   UA-default button sitting 8px out of line beside a styled <a>. Everything below is
+   the former .form-page style promoted, with the fill made opt-in.
+
+   Default is the QUIET one. `.primary` is the action a page wants pressed; `.danger`
+   is the one that destroys something. A page having two primaries means it has not
+   decided what it is for. */
+button,
+a.button {
+  display: inline-block; box-sizing: border-box;
+  padding: .5rem .9rem; font: inherit; cursor: pointer; text-decoration: none;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-3); color: var(--text-1);
+}
+button:hover:not(:disabled),
+a.button:hover { border-color: var(--border-hover); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+button.primary,
+a.button.primary {
+  background: var(--accent-strong); color: #fff; border-color: var(--accent-strong);
+}
+button.danger {
+  background: var(--danger-surface); color: var(--danger-text);
+  border-color: var(--danger-border);
+}
+button.tiny { padding: .25rem .6rem; font-size: .8rem; }
+button.small { padding: .35rem .75rem; font-size: .85rem; }
+
+/* --- spinner ----------------------------------------------------------------------
+   For waits measured in seconds — a live Bungie fetch, a post going out. Shared because
+   more than one page needs one, and two hand-rolled spinners drift. */
+.spinner {
+  display: inline-block; width: .85em; height: .85em; vertical-align: -.1em;
+  margin-right: .4em; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin var(--dur-spin) linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }

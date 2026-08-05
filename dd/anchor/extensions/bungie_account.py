@@ -34,7 +34,8 @@ Routes (all behind the shared Discord-OAuth middleware in ``web_auth``, except
 - ``GET /bungie``          the static page shell
 - ``GET /bungie/data``     link status: linked, expiry, expired
 - ``GET /bungie/login``    mint a state code and redirect to Bungie's consent screen
-- ``GET /bungie/account``  the character / membership ids, fetched on demand
+- ``GET  /bungie/account``  the character / membership ids, fetched on demand
+- ``POST /bungie/logout``   forget the stored refresh token
 
 **The access token is never sent to the browser.** The Discord command carried an
 explicit note about that (an ephemeral message is still a message); it holds here too,
@@ -58,6 +59,7 @@ from .bungie_api import (
     oauth_url,
     refresh_api_tokens as _refresh_api_tokens,
 )
+from .bungie_api.oauth import OAuthStateManager
 
 logger = logging.getLogger(__name__)
 
@@ -143,12 +145,30 @@ async def _handle_account(request: aiohttp.web.Request) -> aiohttp.web.Response:
     )
 
 
+async def _handle_logout(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Forget the stored Bungie link.
+
+    Clears the in-memory access token and blanks the persisted refresh token, so the
+    next producer fetch raises "please log in" rather than silently using a link the
+    operator believed they had revoked. Bungie is not told — this is the bot forgetting
+    its credential, not an OAuth revocation, and the docstring says so because the
+    difference matters if the token leaked.
+    """
+    OAuthStateManager.clear_access_token()
+    await schemas.BungieCredentials.set_refresh_token(
+        refresh_token=None, refresh_token_expires=0
+    )
+    logger.warning("Bungie link cleared from the web control panel")
+    return aiohttp.web.json_response({"ok": True})
+
+
 def register_bungie_account_routes(app: aiohttp.web.Application) -> None:
     """Add the Bungie account routes to the shared persistent app."""
     app.router.add_get("/bungie", _handle_page)
     app.router.add_get("/bungie/data", _handle_data)
     app.router.add_get("/bungie/login", _handle_login)
     app.router.add_get("/bungie/account", _handle_account)
+    app.router.add_post("/bungie/logout", _handle_logout)
 
 
 web.register_routes(register_bungie_account_routes)

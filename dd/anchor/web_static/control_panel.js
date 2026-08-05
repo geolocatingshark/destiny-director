@@ -57,13 +57,15 @@ document.addEventListener("DOMContentLoaded", () => {
       infoBody.appendChild(dl);
 
       const heading = document.createElement("h3");
-      heading.textContent = "Followables";
+      heading.textContent = "Channels";
       infoBody.appendChild(heading);
 
       const feeds = document.createElement("dl");
-      if (data.followables.length) {
-        data.followables.forEach((f) =>
-          row(feeds, f.name, f.channelId || "(not set)"),
+      if (data.channels.length) {
+        // Prefer the name; fall back to the id only when the bot could not resolve it
+        // (not in the guild, channel deleted, or still starting up).
+        data.channels.forEach((c) =>
+          row(feeds, c.feed, c.channelName || c.channelId || "(not set)"),
         );
       } else {
         row(feeds, "—", "(none configured)");

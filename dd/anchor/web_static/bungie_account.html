@@ -31,6 +31,16 @@
              background: var(--muted); }
       .dot.ok { background: #3fb950; }
       .dot.bad { background: var(--danger, #d9534f); }
+      dialog.panelmodal {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-3); color: var(--text-1); padding: 1.1rem;
+        max-width: 32rem; width: calc(100% - 2rem);
+      }
+      dialog.panelmodal::backdrop { background: rgba(0, 0, 0, .55); }
+      dialog.panelmodal h2 { margin: 0 0 .6rem; font-size: 1.05rem; }
+      dialog.panelmodal p { margin: 0 0 1rem; font-size: .92rem; color: var(--muted); }
+      .modal-actions { display: flex; justify-content: flex-end; gap: .6rem; }
+
       /* Account numbers, in a monospace block that is easy to copy out. */
       #numbers:empty { display: none; }
       #numbers {
@@ -38,12 +48,6 @@
         background: var(--surface-1); border: 1px solid var(--border);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem;
         white-space: pre; overflow-x: auto;
-      }
-      a.button {
-        display: inline-block; text-decoration: none;
-        border: 1px solid var(--accent-strong); border-radius: var(--radius);
-        padding: .45rem 1rem; background: var(--accent-strong); color: #fff;
-        font-size: .92rem;
       }
     </style>
   </head>
@@ -67,23 +71,40 @@
         <div class="actions" style="margin-top: .8rem">
           <!-- A plain link, not fetch(): the browser must follow the redirect to
                Bungie's consent screen, and come back via /oauth/callback. -->
-          <a class="button" href="/bungie/login">Log in with Bungie</a>
+          <a class="button primary" href="/bungie/login">Log in with Bungie</a>
+          <button type="button" class="danger" id="logoutBtn"
+                  title="Forgets the stored token, so the vendor-backed feeds stop being able to fetch until you log in again.">
+            Log out
+          </button>
         </div>
       </div>
 
       <div class="panel">
         <h2>Account numbers</h2>
         <p class="hint">
-          The character and membership ids for the linked account. Fetched on demand —
+          The character and membership ids for the linked account. Revealed on demand —
           it costs a token refresh plus a couple of Bungie round-trips.
         </p>
         <div class="actions">
-          <button id="fetchBtn" type="button">Fetch account numbers</button>
+          <button id="fetchBtn" type="button">Reveal account numbers</button>
           <span class="status" id="numbersStatus"></span>
         </div>
         <div id="numbers"></div>
       </div>
     </main>
+
+    <dialog class="panelmodal" id="logoutDialog">
+      <h2>Log out of Bungie?</h2>
+      <p>
+        The bot forgets its stored token, and the vendor-backed feeds — Xûr, Eververse,
+        Ada-1, Portal Ops — stop being able to fetch until you log in again. This does
+        not revoke anything on Bungie's side; it only clears what the bot holds.
+      </p>
+      <div class="modal-actions">
+        <button type="button" id="logoutCancel">Cancel</button>
+        <button type="button" class="danger" id="logoutConfirm">Log out</button>
+      </div>
+    </dialog>
 
     <!-- shared.js first (defer preserves order) though this page only reads; kept for
          consistency with every other page. No inline script: CSP is script-src 'self'. -->

@@ -122,7 +122,7 @@ async def test_handle_panel_returns_html_response(clean_cards: None) -> None:
 # a page of its own: two actions and a read-only dump, on the bot's front door.
 
 
-async def test_bot_info_reports_configuration() -> None:
+async def test_bot_info_reports_configured_channels() -> None:
     resp = await control_panel._handle_bot_info(_as_request(_FakeRequest()))
     payload = json.loads(_text(resp))
 
@@ -130,8 +130,46 @@ async def test_bot_info_reports_configuration() -> None:
     # Snowflakes exceed JS's safe-integer range, so ids travel as strings.
     assert isinstance(payload["controlServerId"], str)
     assert isinstance(payload["testEnv"], list)
-    names = {f["name"] for f in payload["followables"]}
-    assert "lost_sector" in names
+    feeds = {c["feed"] for c in payload["channels"]}
+    assert "lost_sector" in feeds
+
+
+async def test_bot_info_resolves_channel_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A raw snowflake tells the reader nothing; the point of the panel is the name.
+    class _Channel:
+        name = "lost-sector"
+
+    class _Bot:
+        async def fetch_channel(self, _channel_id: int) -> _Channel:
+            return _Channel()
+
+    monkeypatch.setattr(control_panel, "_bot", _Bot())
+    payload = json.loads(
+        _text(await control_panel._handle_bot_info(_as_request(_FakeRequest())))
+    )
+    named = [c for c in payload["channels"] if c["channelName"]]
+    assert named and all(c["channelName"] == "#lost-sector" for c in named)
+
+
+async def test_bot_info_survives_an_unresolvable_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Not in the guild, channel deleted, bot still starting — none of which should cost
+    # the panel its whole config dump.
+    class _Bot:
+        async def fetch_channel(self, _channel_id: int) -> object:
+            raise RuntimeError("not found")
+
+    monkeypatch.setattr(control_panel, "_bot", _Bot())
+    payload = json.loads(
+        _text(await control_panel._handle_bot_info(_as_request(_FakeRequest())))
+    )
+    assert payload["channels"]
+    assert all(c["channelName"] is None for c in payload["channels"])
+    # The id is still there, so the row degrades to a snowflake rather than vanishing.
+    assert any(c["channelId"] for c in payload["channels"])
 
 
 async def test_bot_stop_503s_before_the_bot_is_up(

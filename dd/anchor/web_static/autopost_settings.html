@@ -47,15 +47,10 @@
          than squashing. Sits between the label and the toggle, so the switch stays
          where the eye expects it down the right edge. Explanations are hover cards —
          two labelled buttons do not need two paragraphs. */
-      .rowactions { display: flex; flex-wrap: wrap; gap: .4rem; margin-left: auto; }
-      .rowactions .feedaction {
-        box-sizing: border-box; border: 1px solid var(--border);
-        border-radius: var(--radius); padding: .3rem .7rem; background: var(--surface-2);
-        color: var(--text-1); font: inherit; font-size: .82rem; line-height: 1.4;
-        cursor: pointer;
-      }
-      .rowactions .feedaction:hover:not(:disabled) { border-color: var(--border-hover); }
-      .rowactions .feedaction:disabled { opacity: .55; cursor: default; }
+      .rowactions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+      /* The row's text column holds the actions now, so it must be allowed to grow. */
+      .row .text { flex: 1; }
+
 
       /* Modals. Native <dialog>, so Escape and the backdrop come free. */
       dialog.feedmodal {
@@ -71,11 +66,6 @@
         margin: .9rem 0 1rem;
       }
       .modal-actions { display: flex; justify-content: flex-end; gap: .6rem; }
-      .modal-actions .primary {
-        border: 1px solid var(--accent-strong); border-radius: var(--radius);
-        padding: .45rem 1rem; background: var(--accent-strong); color: #fff;
-        font-size: .92rem; cursor: pointer;
-      }
       /* The rendered post inside a modal — bounded so a long post scrolls rather than
          pushing the confirm buttons off-screen. */
       .modalpreview { max-height: 50vh; overflow-y: auto; }
@@ -120,11 +110,6 @@
       .actions {
         display: flex; align-items: center; gap: .8rem; margin-top: 1rem;
       }
-      button#save {
-        border: 1px solid var(--accent-strong); border-radius: var(--radius); padding: .5rem 1.1rem;
-        background: var(--accent-strong); color: #fff; font-size: .95rem; cursor: pointer;
-      }
-      button#save:disabled { opacity: .6; cursor: default; }
       #status { color: var(--text-faint); font-size: .85rem; }
     </style>
   </head>
@@ -143,7 +128,7 @@
         <!--__TOGGLES__-->
       </form>
       <div class="actions">
-        <button type="button" id="save">Save</button>
+        <button type="button" class="primary" id="save">Save</button>
         <span id="status"></span>
       </div>
     </main>
@@ -169,7 +154,7 @@
       >
       <div class="modal-actions">
         <button type="button" id="sendCancel">Cancel</button>
-        <button type="button" class="primary" id="sendConfirm" disabled>Send now</button>
+        <button type="button" class="primary" id="sendConfirm">Send now</button>
       </div>
     </dialog>
 
