@@ -49,7 +49,7 @@ from dd.hmessage import HMessage
 from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
-from ..autopost import make_autopost_control_commands
+from ..autopost import Feed, make_autopost_control_commands, register_feed
 from . import (
     bungie_api as api,
     xur,
@@ -522,3 +522,16 @@ else:
     )
 
     loader.command(_portal_ops_autopost_group)
+
+
+# Contribute this feed's producer wiring to the web feed page (Preview / Send now).
+# Registered unconditionally, outside the dormancy gate above — see the same note in
+# iron_banner.py: a dormant feed still gets a page that explains itself, and previews.
+register_feed(
+    Feed(
+        name="portal_ops",
+        channel_id=_PORTAL_OPS_CHANNEL,
+        message_constructor_coro=portal_ops_message_constructor,
+        message_announcer_coro=xur.api_to_discord_announcer,
+    )
+)

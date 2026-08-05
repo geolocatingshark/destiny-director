@@ -37,7 +37,6 @@ import asyncio as aio
 import collections.abc
 import contextlib
 import datetime as dt
-import enum
 import json
 import logging
 import typing as t
@@ -68,6 +67,7 @@ from ..common.utils import (
     reference_code,
 )
 from ..hmessage import HMessage
+from ..hmessage.snapshot import cv2_payload, json_primitive
 from . import utils
 from .mirror_core import rate_limiter
 
@@ -124,22 +124,6 @@ _MAX_SNAPSHOT_BYTES = 60_000
 _SUMMARY_LEN = 200
 
 
-def _json_primitive(obj: t.Any) -> t.Any:
-    """Deep-convert a build/serialize payload to plain JSON primitives.
-
-    hikari's ``build()`` / ``serialize_embed`` payloads carry ``IntEnum`` type tags
-    (``ComponentType``, ``ButtonStyle``) and the odd ``datetime``/``Color``; round-trip
-    through ``json`` with a coercing default so the stored JSON is clean primitives the
-    anchor renderer can walk without importing hikari."""
-
-    def _default(o: t.Any) -> t.Any:
-        if isinstance(o, enum.Enum):
-            return o.value
-        return str(o)
-
-    return json.loads(json.dumps(obj, default=_default))
-
-
 def _first_text_line(nodes: t.Iterable[t.Any]) -> str | None:
     """First non-empty text-display line anywhere in a CV2 component tree."""
     for node in nodes:
@@ -167,13 +151,13 @@ def _snapshot_payload(
     followers receive. Over-cap payloads collapse to a truncated marker.
     """
     if hmsg.components:
-        components = [_json_primitive(c.build()[0]) for c in hmsg.components]
-        payload: dict[str, t.Any] = {"components": components}
+        payload: dict[str, t.Any] = cv2_payload(hmsg)
+        components = payload["components"]
         kind = "cv2"
         summary = _first_text_line(components)
     else:
         embeds = [
-            _json_primitive(bot.entity_factory.serialize_embed(e)[0])
+            json_primitive(bot.entity_factory.serialize_embed(e)[0])
             for e in hmsg.embeds
         ]
         payload = {"content": hmsg.content, "embeds": embeds}

@@ -29,6 +29,48 @@ from . import utils
 logger = logging.getLogger(__name__)
 
 
+class Feed(t.NamedTuple):
+    """One autopost feed's producer wiring, as the web feed page needs it.
+
+    ``name`` is the **followable name** (``lost_sector``, not the old ``ls`` command
+    abbreviation) — the shared key that already joins autopost settings, the mirror log
+    and stats (see ``plans/anchor_web_ia.md`` §1), so a feed page URL lines up with
+    every other surface.
+
+    ``channel_id`` is ``None`` for a *dormant* feed: one whose followable is absent from
+    this environment's ``FOLLOWABLES`` (portal_ops, iron_banner). Such a feed still
+    registers and still previews — construction needs no channel — but cannot be sent.
+    """
+
+    name: str
+    channel_id: int | None
+    message_constructor_coro: t.Callable[..., t.Awaitable[HMessage]]
+    message_announcer_coro: t.Callable[..., t.Awaitable[t.Any]] | None = None
+    cv2: bool = True
+
+
+# Feeds contributed by the producer modules at import time, mirroring how they
+# contribute web routes and homepage cards (``web.register_routes`` /
+# ``register_card``). Read at request time, so contribution order does not matter.
+_feeds: dict[str, Feed] = {}
+
+
+def register_feed(feed: Feed) -> None:
+    """Contribute a feed's producer wiring for the web feed page.
+
+    Call at import time from the producer module, next to its cron listener.
+    Registration is unconditional — a dormant feed (no configured channel) registers
+    too, so its page exists and explains itself rather than 404-ing behind a link the
+    settings page shows regardless.
+    """
+    _feeds[feed.name] = feed
+
+
+def registered_feeds() -> dict[str, Feed]:
+    """The contributed feeds, keyed by followable name (a copy)."""
+    return dict(_feeds)
+
+
 async def discord_announcer(
     bot: CachedFetchBot,
     channel_id: int,

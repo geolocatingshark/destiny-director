@@ -41,7 +41,7 @@ from ...common.components import (
 from ...common.utils import accumulate, fetch_emoji_dict
 from ...sector_accounting import xur as xur_support_data
 from .. import utils
-from ..autopost import make_autopost_control_commands
+from ..autopost import Feed, make_autopost_control_commands, register_feed
 from . import bungie_api as api
 
 logger = logging.getLogger(__name__)
@@ -701,3 +701,14 @@ _xur_autopost_group = make_autopost_control_commands(
 )
 
 loader.command(_xur_autopost_group)
+
+
+# Contribute this feed's producer wiring to the web feed page (Preview / Send now).
+register_feed(
+    Feed(
+        name="xur",
+        channel_id=cfg.followables["xur"],
+        message_constructor_coro=xur_message_constructor,
+        message_announcer_coro=api_to_discord_announcer,
+    )
+)

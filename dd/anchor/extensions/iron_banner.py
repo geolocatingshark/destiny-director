@@ -52,7 +52,12 @@ from ...common import (
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
 from .. import hybrid_post_core
-from ..autopost import discord_announcer, make_autopost_control_commands
+from ..autopost import (
+    Feed,
+    discord_announcer,
+    make_autopost_control_commands,
+    register_feed,
+)
 
 logger = logging.getLogger(__name__)
 loader = lb.Loader()
@@ -188,3 +193,17 @@ if _CHANNEL_ID:
         cv2=True,
     )
     loader.command(_iron_banner_autopost_group)
+
+
+# Contribute this feed's producer wiring to the web feed page (Preview / Send now).
+# Registered unconditionally, unlike the command group above: with no configured
+# followable the feed is *dormant*, and its page says so rather than 404-ing behind a
+# link /autopost_settings shows either way. Preview still works — it needs no channel.
+register_feed(
+    Feed(
+        name="iron_banner",
+        channel_id=_CHANNEL_ID,
+        message_constructor_coro=format_post,
+        message_announcer_coro=discord_announcer,
+    )
+)

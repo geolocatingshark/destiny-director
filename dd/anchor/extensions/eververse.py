@@ -13,7 +13,7 @@ from dd.hmessage import HMessage
 from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
-from ..autopost import make_autopost_control_commands
+from ..autopost import Feed, make_autopost_control_commands, register_feed
 from . import (
     bungie_api as api,
     xur,
@@ -415,3 +415,14 @@ _eververse_autopost_group = make_autopost_control_commands(
 )
 
 loader.command(_eververse_autopost_group)
+
+
+# Contribute this feed's producer wiring to the web feed page (Preview / Send now).
+register_feed(
+    Feed(
+        name="eververse",
+        channel_id=cfg.followables["eververse"],
+        message_constructor_coro=eververse_message_constructor,
+        message_announcer_coro=xur.api_to_discord_announcer,
+    )
+)

@@ -24,7 +24,12 @@ from ...common.bot import CachedFetchBot
 from ...common.components import cv2_error, cv2_notice, cv2_success, respond_cv2
 from ...common.lost_sector import format_post
 from ...common.utils import guild_scope
-from ..autopost import discord_announcer, make_autopost_control_commands
+from ..autopost import (
+    Feed,
+    discord_announcer,
+    make_autopost_control_commands,
+    register_feed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,4 +101,16 @@ loader.command(
         cfg.control_discord_server_id,
         cfg.kyber_discord_server_id,
     ),
+)
+
+
+# Contribute this feed's producer wiring to the web feed page (Preview / Send now).
+# Keyed on the followable name — the old "ls" abbreviation was a command-name artefact.
+register_feed(
+    Feed(
+        name="lost_sector",
+        channel_id=cfg.followables["lost_sector"],
+        message_constructor_coro=format_post,
+        message_announcer_coro=discord_announcer,
+    )
 )
