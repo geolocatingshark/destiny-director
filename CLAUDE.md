@@ -3,7 +3,7 @@
 Two Discord bots (`hikari-lightbulb` v3) sharing one codebase under `dd/`:
 
 - `dd.beacon` — main bot
-- `dd.anchor` — secondary bot (larger than it sounds: web UI + Bungie API + cv2 images)
+- `dd.anchor` — secondary bot (larger than it sounds: web UI + Bungie API + CV2 posts)
 - `dd.common` — shared config, DB schemas, bot classes, helpers
 - `dd.hmessage`, `dd.sector_accounting` — shared domain code
 
@@ -26,7 +26,8 @@ DB layer, or building a message/embed, read it.** Quick orientation:
 - **`dd.common` is large** — config (`cfg.py`), bot classes (`bot.py`), owner gating
   (`auth.py`), Components V2 (`components.py`), logging, lifecycle, DB (`schemas.py`).
 - **`dd.anchor` is not just a "secondary bot"** — aiohttp web UI (`web.py`), Bungie
-  OAuth/API client (`extensions/bungie_api/`), OpenCV image generation (`cv2_*.py`).
+  OAuth/API client (`extensions/bungie_api/`), Components V2 post rendering
+  (`cv2_*.py` — "CV2" is Discord Components V2, **not** OpenCV).
 - **Reuse, don't reinvent:** `db_session()` / `@ensure_session` for DB; `HMessage`
   (`dd.hmessage`) for messages; `dd/beacon/nav.py` for paged messages; `cfg.py` for env.
 - **Implicit namespace packages** — there is intentionally no `dd/__init__.py`,

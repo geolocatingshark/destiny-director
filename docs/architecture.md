@@ -12,8 +12,9 @@ Everything lives under `dd/`:
   (`mirror_worker.py` + `mirror_core.py`, see below), `nav.py` (paged-message system),
   `utils.py`, `help_details.py`, and **`extensions/`** (the command modules).
 - `dd.anchor` — the "secondary" bot, but substantial: `__main__.py`, an aiohttp **web UI**
-  (`web.py` + `web_static/`) for rotation editing, **OpenCV** image generation
-  (`cv2_builder.py`, `cv2_nodes.py`, `cv2_raw.py`), `embeds.py`, `search_json.py`, and
+  (`web.py` + `web_static/`) for rotation editing, the **Components V2** ("CV2") post
+  layer — node rules, rendering and raw-payload handling (`cv2_nodes.py`,
+  `cv2_render.py`, `cv2_html.py`, `cv2_raw.py`), `embeds.py`, `search_json.py`, and
   `extensions/` — including the **`bungie_api/`** subpackage (Bungie OAuth + API client).
 - `dd.common` — shared infrastructure (far more than schemas): `cfg.py`, `bot.py`,
   `auth.py`, `components.py`, `discord_logging.py`, `extension_loader.py`, `lifecycle.py`,
