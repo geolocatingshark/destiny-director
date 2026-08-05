@@ -938,7 +938,11 @@ def resolve_weapon(value: str, items: t.Sequence[WeaponItem]) -> WeaponRef | Non
     value = value.strip()
     if not value:
         return None
-    if value.isdigit():
+    # ASCII digits only. ``str.isdigit()`` is true for superscripts and enclosed forms
+    # too ("²", "①"), which ``int()`` then refuses — so the bare check let a lone "²"
+    # in a weapon slot 500 the form instead of becoming a weapon named "²". A manifest
+    # hash is ASCII digits; this is the same narrow reading the emoji-id checks take.
+    if value.isascii() and value.isdigit():
         wanted = int(value)
         for name, hash_, type_name, _item_type, _rarity in items:
             if hash_ == wanted:

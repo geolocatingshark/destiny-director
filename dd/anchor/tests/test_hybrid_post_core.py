@@ -55,13 +55,6 @@ def test_autopostsettings_has_no_weekly_or_trials_toggle() -> None:
     assert hasattr(aps, "get_enabled") and hasattr(aps, "get_iron_banner_enabled")
 
 
-class _StubEmoji:
-    """A stand-in for a guild ``KnownCustomEmoji`` — only ``.url`` is read."""
-
-    def __init__(self, url: str) -> None:
-        self.url = url
-
-
 def test_postspec_cv2_factory_and_from_payload() -> None:
     direct = hpc.PostSpec.cv2("# Hi", "https://ex.com/a.png")
     assert direct.kind == "cv2"
@@ -81,9 +74,6 @@ def test_postspec_from_payload_rejects_unknown_kind() -> None:
         hpc.PostSpec.from_payload({"kind": "embed", "title": "x"})
 
 
-
-
-
 def test_footer_button_specs() -> None:
     from dd.common import components as c
 
@@ -97,11 +87,6 @@ def test_footer_button_specs() -> None:
     # A row caps at 5 buttons, so at most 4 guides.
     with pytest.raises(ValueError):
         c.footer_button_specs(guides=[("a", "https://x")] * 5)
-
-
-
-
-
 
 
 # --- post_spec_nodes ------------------------------------------------------------------
@@ -163,3 +148,30 @@ def test_post_spec_nodes_drops_a_non_http_image() -> None:
     spec = hpc.PostSpec.cv2("body", "ftp://example.com/i.png")
     kinds = [c["type"] for c in hpc.post_spec_nodes(spec)[0]["components"]]
     assert kinds == [10]
+
+
+# --- resolve_weapon -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["²", "³", "①", "⑵"])
+def test_resolve_weapon_survives_a_non_decimal_digit(value: str) -> None:
+    """A digit `int()` refuses must not reach it.
+
+    ``str.isdigit()`` is true for superscripts and enclosed forms; ``int()`` only takes
+    decimal ones. The gap used to raise ValueError out of the weekly-reset and trials
+    forms, where a free-typed weapon name is the intended fallback — so the interesting
+    assertion is that these resolve to a plain name rather than blowing up.
+    """
+    assert hpc.resolve_weapon(value, []) == hpc.WeaponRef(name=value)
+
+
+def test_resolve_weapon_still_matches_a_real_hash() -> None:
+    items: list[hpc.WeaponItem] = [
+        ("Null Composure", 222, "Fusion Rifle", 3, "legendary")
+    ]
+    assert hpc.resolve_weapon("222", items) == hpc.WeaponRef(
+        "Null Composure", 222, hpc.api.likely_emoji_name("Fusion Rifle")
+    )
+    # Arabic-Indic digits are decimal, so int() takes them — but nobody types those
+    # meaning a manifest hash, so they stay a name.
+    assert hpc.resolve_weapon("٢٢٢", items) == hpc.WeaponRef(name="٢٢٢")
