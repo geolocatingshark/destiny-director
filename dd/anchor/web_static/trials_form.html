@@ -102,13 +102,17 @@
     </div>
 
     <!--
-      The server (dd.anchor.extensions.trials) injects the bootstrap JSON by
-      .replace()-ing the __BOOTSTRAP__ placeholder in the inline script below. That
-      placeholder MUST stay inline here (this page is templated per request). This tiny
-      non-deferred script runs at parse time — before the deferred vendor / shared.js /
-      trials_form.js — so the global is set first.
+      The server injects this page's data by .replace()-ing the placeholder below. It
+      MUST stay in the document (the page is templated per request), so it can't live in
+      the statically-served page script.
+
+      It is a JSON block, not an executable one: CSP's `script-src 'self'` forbids inline
+      scripts, and a non-executable type is data as far as the policy is concerned.
+      shared.js parses it into window.__BOOTSTRAP__ before any page script runs — defer
+      preserves order, and shared.js is listed first. (This comment deliberately omits
+      the exact marker text so the server's replace() only ever touches the block below.)
     -->
-    <script>window.__BOOTSTRAP__ = /*__BOOTSTRAP__*/ null;</script>
+    <script type="application/json" id="bootstrap">/*__BOOTSTRAP__*/ null</script>
     <script defer src="/static/cv2_model.js"></script>
     <script defer src="/static/cv2_render.js"></script>
     <script defer src="/static/shared.js"></script>

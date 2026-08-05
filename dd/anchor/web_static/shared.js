@@ -14,6 +14,27 @@
 // route prefix, a couple of delete-confirm strings, and their per-form widgets +
 // readForm() payload shape — so everything except those stays here.
 
+// The page's server-injected data, from its <script type="application/json"> block.
+//
+// It used to be an inline executable script assigning the global directly. It is a JSON
+// block now so `script-src 'self'` can forbid inline scripts outright (SECURITY_HEADERS
+// in dd/anchor/web.py) — CSP treats a non-executable script type as data. Parsed here
+// rather than per page because all three bootstrap pages already load this file first.
+//
+// A parse failure means the template was served with its placeholder unsubstituted —
+// i.e. someone opened /static/editor.html directly rather than the real route. `null` is
+// what the old inline placeholder evaluated to in that case, so the behaviour is
+// unchanged; a page reading a null bootstrap already handles it.
+window.__BOOTSTRAP__ = (() => {
+  const el = document.getElementById("bootstrap");
+  if (!el) return null;
+  try {
+    return JSON.parse(el.textContent);
+  } catch (e) {
+    return null;
+  }
+})();
+
 // Same-origin JSON POST. Auth is the session cookie, which a same-origin fetch sends
 // automatically, so nothing is embedded in the page. Returns the raw Response so callers
 // can branch on res.ok and read res.text() themselves — the editors surface the server's

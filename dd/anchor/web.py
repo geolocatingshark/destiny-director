@@ -94,6 +94,72 @@ def registered_cards() -> list[Card]:
 _TEST_FIXTURE_ROUTE = "/static/tests/{tail:.*}"
 
 
+#: The response headers every route gets, including ``/static/``.
+#:
+#: **Why CSP is here.** The mirror log renders *other servers'* captured Discord posts,
+#: in the browser (``web_static/cv2_render.js``). That input is controlled by anyone who
+#: can post in a mirrored channel. The renderer's own defences are structural — text
+#: reaches the DOM through ``textContent``, URLs are ``http(s)``-checked at the one
+#: place they become attributes, and a single field reaches ``innerHTML`` carrying only
+#: escape-by-construction markdown — but the markdown tokenizer is hand-rolled, and the
+#: comment at ``cv2_model.js``'s ``INLINE`` records that its predecessor really did
+#: mangle escaping on real posts. ``script-src 'self'`` is what caps the cost of that
+#: happening again at defacement, instead of script execution in an owner's session on a
+#: cookie-authed app whose routes publish to Discord.
+#:
+#: Directive notes, since the shape is deliberate:
+#:
+#: - ``default-src 'none'`` — the app loads nothing in the unlisted categories (fonts,
+#:   media, workers, frames), so an accidental future dependency fails loudly rather
+#:   than riding a permissive default. Subsumes ``object-src 'none'``.
+#: - ``style-src`` keeps ``'unsafe-inline'`` deliberately: ``charts.js`` and
+#:   ``mirror_log.js`` build ``style=`` attributes into markup, for tooltip swatches
+#:   and progress-bar widths. Removing it means refactoring those, and what it
+#:   concedes to an attacker who already has HTML injection is CSS-based exfiltration
+#:   of a DOM holding no secrets (the session cookie is HttpOnly). Not worth it here.
+#: - ``img-src ... https:`` is the mirrored-post reality: a captured post embeds images
+#:   on any host, so a host list would be fiction. It still excludes ``data:`` and
+#:   ``blob:``.
+#: - ``base-uri 'none'`` stops injected markup retargeting every ``/static/*.js``
+#:   path, and ``form-action 'self'`` blunts the phishing-form variant that survives
+#:   CSP — both are one token against attacks the threat model actually has.
+_CSP = (
+    "default-src 'none'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' https:; "
+    "connect-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+
+SECURITY_HEADERS = {
+    "Content-Security-Policy": _CSP,
+    # A rendered post loads images from arbitrary third-party hosts, and each of those
+    # requests would otherwise hand the admin app's URL to whoever runs the image host.
+    "Referrer-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+async def _security_headers(
+    request: aiohttp.web.Request, response: aiohttp.web.StreamResponse
+) -> None:
+    """Attach :data:`SECURITY_HEADERS` to every response.
+
+    A response hook rather than a middleware, and that is load-bearing: :func:`start`
+    fails closed on ``app.middlewares`` being empty, because the auth middleware is this
+    app's only security boundary. A second middleware would satisfy that check even when
+    ``web_auth`` failed to load — silently reopening the hole the guard exists to close.
+
+    Every response, including ``/static/``: the static mount is allowlisted
+    unauthenticated so a page's assets load before sign-in, and it serves the raw page
+    templates too (``/static/editor.html`` renders).
+    """
+    response.headers.update(SECURITY_HEADERS)
+
+
 async def _hide_test_fixtures(request: aiohttp.web.Request) -> aiohttp.web.Response:
     """404 the browser-test fixtures, which are not app assets.
 
@@ -151,6 +217,7 @@ async def start(port: int | None = None) -> None:
             response.headers["Cache-Control"] = "no-cache"
 
     app.on_response_prepare.append(_revalidate_static)
+    app.on_response_prepare.append(_security_headers)
 
     # access_log=None disables aiohttp's default request-line access log. The editor
     # entry links and the OAuth callback carry secrets in the query string

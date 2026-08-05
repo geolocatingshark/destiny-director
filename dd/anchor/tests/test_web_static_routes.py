@@ -33,6 +33,7 @@ def _app() -> aiohttp.web.Application:
     app = aiohttp.web.Application()
     app.router.add_route("*", web._TEST_FIXTURE_ROUTE, web._hide_test_fixtures)
     app.router.add_static("/static/", web._WEB_STATIC_DIR)
+    app.on_response_prepare.append(web._security_headers)
     return app
 
 
@@ -67,3 +68,62 @@ def test_the_harness_the_route_hides_actually_exists() -> None:
     Without this, deleting the harness would make the security test vacuously green.
     """
     assert (web._WEB_STATIC_DIR / "tests" / "builder_harness.html").is_file()
+
+
+# --- security headers ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_security_headers_reach_static_assets() -> None:
+    """``/static/`` gets them too, and that is the point of the response hook.
+
+    The mount is allowlisted unauthenticated so a page's css/js load before sign-in,
+    and it serves the raw page templates as well — ``/static/editor.html`` renders as
+    a page. A per-route opt-in would be one route away from missing that.
+    """
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.get("/static/shared.css")
+        assert resp.status == 200
+        for name, value in web.SECURITY_HEADERS.items():
+            assert resp.headers[name] == value
+
+
+def test_the_policy_forbids_inline_script() -> None:
+    """The one directive the whole change is for, asserted by meaning not by string.
+
+    ``script-src 'self'`` with no ``'unsafe-inline'`` is what caps an escaping bug
+    in the shared renderer at defacement rather than script execution in an owner
+    session.
+    ``style-src`` deliberately DOES carry ``'unsafe-inline'`` (charts and the mirror
+    log build ``style=`` attributes), so this checks the script directive
+    specifically rather than the policy as a whole.
+    """
+    directives = {
+        part.strip().split(" ", 1)[0]: part.strip()
+        for part in web.SECURITY_HEADERS["Content-Security-Policy"].split(";")
+    }
+    assert directives["script-src"] == "script-src \'self\'"
+    assert directives["default-src"] == "default-src \'none\'"
+    assert "unsafe" not in directives["script-src"]
+
+
+def test_the_full_policy_is_pinned() -> None:
+    """One place the exact policy is spelled out — the change-review chokepoint.
+
+    Pinned here and nowhere else, so loosening a directive shows up as a deliberate edit
+    to this string rather than as a quiet change nobody reads.
+    """
+    assert web.SECURITY_HEADERS == {
+        "Content-Security-Policy": (
+            "default-src \'none\'; "
+            "script-src \'self\'; "
+            "style-src \'self\' \'unsafe-inline\'; "
+            "img-src \'self\' https:; "
+            "connect-src \'self\'; "
+            "base-uri \'none\'; "
+            "form-action \'self\'; "
+            "frame-ancestors \'none\'"
+        ),
+        "Referrer-Policy": "same-origin",
+        "X-Content-Type-Options": "nosniff",
+    }

@@ -145,3 +145,26 @@ test("the shared focus ring stays at element specificity", () => {
     `the shared focus ring must not carry a class selector — found: ${rule[1].trim()}`,
   );
 });
+
+test("no page carries an executable inline script", () => {
+  // This is the invariant `script-src 'self'` rests on (SECURITY_HEADERS in
+  // dd/anchor/web.py). A `<script>` with no `src` and no non-executable `type` is
+  // exactly what CSP blocks — and it would fail in production only, on a page a
+  // developer had already tested locally without the header. Catch it here instead.
+  //
+  // `type="application/json"` is allowed: the three templated pages ship their
+  // server-injected data that way, and CSP treats a non-executable type as data.
+  const offenders = [];
+  for (const page of pages()) {
+    for (const [, attrs] of page.text.matchAll(/<script([^>]*)>/g)) {
+      const hasSrc = /\ssrc=/.test(attrs);
+      const isData = /\stype="application\/json"/.test(attrs);
+      if (!hasSrc && !isData) offenders.push(`${page.name}: <script${attrs}>`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "inline scripts are blocked by script-src 'self' — move them to /static/",
+  );
+});

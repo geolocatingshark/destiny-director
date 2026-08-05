@@ -124,6 +124,18 @@ async def test_home_lists_all_rotation_types():
 # --- GET /rotation/edit ----------------------------------------------------------
 
 
+def _bootstrap(page: str) -> t.Any:
+    """The parsed contents of the page's ``<script type="application/json">`` block.
+
+    The block is a JSON one so CSP can forbid inline *executable* scripts outright (see
+    ``web.SECURITY_HEADERS``), which means the substituted text now has to be valid JSON
+    rather than merely valid JavaScript — worth asserting rather than assuming.
+    """
+    marker = '<script type="application/json" id="bootstrap">'
+    start = page.index(marker) + len(marker)
+    return json.loads(page[start : page.index("</script>", start)])
+
+
 async def test_edit_get_renders_page():
     resp = await editor._handle_edit_get(_req(query={"type": "lost_sector"}))
     assert resp.status == 200
@@ -131,7 +143,30 @@ async def test_edit_get_renders_page():
     body = resp.text
     assert body is not None
     assert "/*__BOOTSTRAP__*/ null" not in body
-    assert "lost_sector" in body
+
+    boot = _bootstrap(body)
+    assert boot["type"] == "lost_sector"
+    assert "data" in boot and "vocab" in boot
+
+
+async def test_bootstrap_survives_a_closing_script_tag_in_the_data():
+    """A ``</script>`` in stored data must not break out of the block.
+
+    The handler escapes ``<`` to ``\\u003c`` before substituting, which is both valid
+    JSON and inert inside the block. This is the case that escaping exists for, and
+    until now it was asserted only by the *absence* of the placeholder.
+    """
+    doc = _doc()
+    doc["sectors"][0]["name"] = "Alpha</script><script>alert(1)</script>"
+    await schemas.RotationData.set_data("lost_sector", doc)
+
+    resp = await editor._handle_edit_get(_req(query={"type": "lost_sector"}))
+    body = resp.text or ""
+
+    # Exactly one script block carries data, and the payload round-trips intact.
+    assert body.count('<script type="application/json"') == 1
+    assert "</script><script>alert(1)" not in body
+    assert _bootstrap(body)["data"]["sectors"][0]["name"] == doc["sectors"][0]["name"]
 
 
 async def test_edit_get_unknown_type_is_404():
