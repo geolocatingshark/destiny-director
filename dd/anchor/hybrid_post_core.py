@@ -269,7 +269,7 @@ class PostSpec:
         Defaults to the ``cv2`` kind. Raises :class:`ValueError` on an unknown kind so a
         route can 422 it — the ``embed`` kind isn't renderable until its branch lands
         with the user-commands work. Buttons are coerced to ``(str, str)`` pairs here;
-        non-http(s) URLs are dropped at render time (see :func:`_render_buttons_html`).
+        non-http(s) URLs are dropped at render time (see :func:`post_spec_nodes`).
         """
         kind = payload.get("kind", "cv2")
         if kind != "cv2":

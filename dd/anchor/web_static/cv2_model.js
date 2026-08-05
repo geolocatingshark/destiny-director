@@ -574,9 +574,15 @@
    *
    * `now` is an injectable epoch-ms clock for the relative format; tests that need a
    * fixed zone set `process.env.TZ` (see tests/preview_fixtures.test.js).
+   *
+   * Returns null for a unix value `Date` cannot represent — the caller then leaves the
+   * token as literal text. The token regex accepts unbounded `\d+`, so a mirrored post
+   * can carry one, and every getter on an Invalid Date returns NaN: without this the
+   * reader saw the words "undefined" and "NaN" laid out as if they were a date.
    */
   function _timestampText(unix, fmt, now) {
     const d = new Date(unix * 1000);
+    if (Number.isNaN(d.getTime())) return null;
     const hour24 = d.getHours();
     const h12 = hour24 % 12 || 12;
     const mm = String(d.getMinutes()).padStart(2, "0");
@@ -673,7 +679,10 @@
             "</a>"
           : esc(m[0]);
       } else if (g.ts !== undefined) {
-        out += esc(_timestampText(Number(g.tsval), g.tsfmt, now));
+        // An unrepresentable unix value stays the literal token — the honest degrade,
+        // and what a Discord client shows for one it cannot render either.
+        const when = _timestampText(Number(g.tsval), g.tsfmt, now);
+        out += esc(when === null ? m[0] : when);
       } else {
         out += _emojiHtml(m[0], g.eprefix, g.ename, g.eid, emoji);
       }

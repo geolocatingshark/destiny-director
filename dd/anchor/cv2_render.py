@@ -98,14 +98,35 @@ def _annotate(node: t.Any, how: str) -> t.Any:
     return {**node, "_mark": how} if isinstance(node, dict) else node
 
 
+#: Above this many tokens on either side, a changed block is reported whole rather than
+#: word-diffed. ``SequenceMatcher(autojunk=False)`` is quadratic in the worst case, and
+#: this runs synchronously inside an ``async`` request handler in the same process as
+#: the bot, on text captured from someone else's server — a ~4000-character block of
+#: short tokens measured at 1.4 s of blocked event loop. A CV2 text display is capped at
+#: ``CV2_TEXT_BUDGET`` characters, which does not bound the TOKEN count at all. Roughly
+#: 1200 tokens is a paragraph nobody word-diffs by eye anyway, and it keeps the work in
+#: single-digit milliseconds.
+_WORD_DIFF_TOKEN_CAP = 1200
+
+
 def _word_runs(old: str, new: str) -> list[dict[str, str]]:
     """Word-level runs for a changed block, as ``{op, text}`` in reading order.
 
     Whitespace runs are their own tokens (``_WORD``), so re-joining the ``text`` values
     reproduces the original spacing exactly.
+
+    Past :data:`_WORD_DIFF_TOKEN_CAP` the block degrades to one delete plus one insert —
+    still correct, still complete, just less precise about where inside it the edit was.
     """
     old_tokens = _WORD.findall(old)
     new_tokens = _WORD.findall(new)
+    if max(len(old_tokens), len(new_tokens)) > _WORD_DIFF_TOKEN_CAP:
+        runs = []
+        if old:
+            runs.append({"op": "del", "text": old})
+        if new:
+            runs.append({"op": "ins", "text": new})
+        return runs
     sm = difflib.SequenceMatcher(a=old_tokens, b=new_tokens, autojunk=False)
     runs: list[dict[str, str]] = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
@@ -160,12 +181,18 @@ def _diff_lines(old: str, new: str) -> list[dict[str, t.Any]]:
     return out
 
 
-def _accessory_renders(node: t.Any) -> bool:
-    """Whether an accessory would draw at all.
+#: The component kinds ``cv2_render.js``'s ``accessory()`` will draw. This is the one
+#: place the "Python aligns, JS draws" line leaks: the aligner has to know a *rendering*
+#: rule, because it must not report as "removed" something the renderer was never going
+#: to draw. Held to the JS by a paired tripwire — ``test_accessory_kinds_match_the_js``
+#: here and "the renderer draws exactly the accessory kinds Python knows about" in
+#: ``web_static/tests/preview_fixtures.test.js``. Adding a third kind on either side
+#: fails the other.
+ACCESSORY_KINDS = (_THUMBNAIL, _BUTTON)
 
-    Mirrors what ``cv2_render.js``'s ``accessory`` refuses, because a diff must not mark
-    as "removed" something the renderer was never going to draw in the first place.
-    """
+
+def _accessory_renders(node: t.Any) -> bool:
+    """Whether an accessory would draw at all — see :data:`ACCESSORY_KINDS`."""
     if not isinstance(node, dict):
         return False
     if node.get("type") == _THUMBNAIL:

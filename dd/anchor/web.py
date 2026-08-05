@@ -117,9 +117,14 @@ _TEST_FIXTURE_ROUTE = "/static/tests/{tail:.*}"
 #:   and progress-bar widths. Removing it means refactoring those, and what it
 #:   concedes to an attacker who already has HTML injection is CSS-based exfiltration
 #:   of a DOM holding no secrets (the session cookie is HttpOnly). Not worth it here.
-#: - ``img-src ... https:`` is the mirrored-post reality: a captured post embeds images
-#:   on any host, so a host list would be fiction. It still excludes ``data:`` and
-#:   ``blob:``.
+#: - ``img-src ... http: https:`` is the mirrored-post reality: a captured post embeds
+#:   images on any host, so a host list would be fiction. It still excludes ``data:``
+#:   and ``blob:``. ``http:`` is listed because every URL check in this codebase accepts
+#:   it — ``cv2_render.js``'s ``isHttpUrl``, ``hybrid_post_core.post_spec_nodes`` — so
+#:   omitting it made the POLICY the one component that disagreed: an author pasting an
+#:   ``http://`` image into the weekly-reset form saw a blank where the published post
+#:   carried the image fine. Over HTTPS the browser's own mixed-content rules block it
+#:   anyway; that is the browser being honest about an http image, not us hiding one.
 #: - ``base-uri 'none'`` stops injected markup retargeting every ``/static/*.js``
 #:   path, and ``form-action 'self'`` blunts the phishing-form variant that survives
 #:   CSP — both are one token against attacks the threat model actually has.
@@ -127,7 +132,7 @@ _CSP = (
     "default-src 'none'; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' https:; "
+    "img-src 'self' http: https:; "
     "connect-src 'self'; "
     "base-uri 'none'; "
     "form-action 'self'; "

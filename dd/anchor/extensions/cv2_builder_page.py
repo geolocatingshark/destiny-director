@@ -46,7 +46,7 @@ the server vouched for, and it differs from the canvas exactly where
 :func:`cv2_nodes.sanitize_for_preview` changed something, which is the part worth
 seeing. What replaces the lost cross-check is the golden corpus in
 ``dd/anchor/preview_fixtures``, which holds the renderer to a pinned output from both
-languages. See ``plans/preview_renderer_unification.md``.
+languages. See ``docs/architecture.md``, "Rendering a message on the web".
 """
 
 import logging
@@ -227,9 +227,7 @@ async def _handle_publish(request: aiohttp.web.Request) -> aiohttp.web.Response:
     # rules that matter are the ones enforced here.
     problems = cv2_nodes.validate(nodes)
     if problems:
-        return aiohttp.web.json_response(
-            {"error": " ".join(problems)}, status=400
-        )
+        return aiohttp.web.json_response({"error": " ".join(problems)}, status=400)
 
     bot = _require_bot()
     components = [RawComponentBuilder(node) for node in nodes]

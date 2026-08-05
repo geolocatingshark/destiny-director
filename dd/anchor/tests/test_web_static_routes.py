@@ -107,7 +107,7 @@ def test_the_security_headers_are_pinned() -> None:
             "default-src 'none'; "
             "script-src 'self'; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' https:; "
+            "img-src 'self' http: https:; "
             "connect-src 'self'; "
             "base-uri 'none'; "
             "form-action 'self'; "

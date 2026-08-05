@@ -199,7 +199,7 @@ async def _handle_render(request: aiohttp.web.Request) -> aiohttp.web.Response:
     diff against version ``m`` instead. Pull/stateless — no live message, no lifecycle.
 
     Two shapes, because the two halves are at different stages of
-    ``plans/preview_renderer_unification.md``:
+    ``docs/architecture.md``, "Rendering a message on the web":
 
     - ``{"kind": "snapshot", "payload": …, "message_kind": "cv2"|"classic"}`` — the
       captured payload itself, drawn client-side by the shared renderer.

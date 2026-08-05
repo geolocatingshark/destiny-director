@@ -4,7 +4,7 @@
 
 **§2 is obsolete.** It targets `hybrid_post_core`'s `render_post_html` machinery and a
 `PostSpec` embed kind — all of which was deleted by
-`plans/preview_renderer_unification.md`. There is one renderer now
+`docs/architecture.md`, "Rendering a message on the web". There is one renderer now
 (`dd/anchor/web_static/cv2_render.js`), it already draws classic embeds (`embed()`), and
 the corpus in `dd/anchor/preview_fixtures` pins that rendering from both languages.
 

@@ -8,7 +8,7 @@
 // The Python half is dd/anchor/tests/test_preview_fixtures.py, and it asserts the SAME
 // `expected_html` strings from the SAME files. That is the entire point: while the
 // renderer is being moved from Python to JavaScript
-// (plans/preview_renderer_unification.md), a corpus that only one side reads proves
+// (docs/architecture.md), a corpus that only one side reads proves
 // nothing. Two implementations held to one byte-exact expectation is what makes the
 // port checkable instead of hopeful.
 //
@@ -143,5 +143,36 @@ test("the corpus covered every render mode, in the depth it is meant to", () => 
   assert.ok(
     seen.snapshot > 30,
     `only ${seen.snapshot} snapshot cases ran — check the fixtures' render fields`,
+  );
+});
+
+test("the renderer draws exactly the accessory kinds Python knows about", () => {
+  // The other half of the tripwire in dd/anchor/tests/test_preview_fixtures.py. The
+  // diff aligner (cv2_render.py) has to know which kinds `accessory()` will draw, so
+  // that it never reports as "removed" something the renderer was never going to draw.
+  // Nothing structural holds the two lists together — this is what fails if a third
+  // kind lands on this side only.
+  const THUMBNAIL = 11;
+  const BUTTON = 2;
+  const drawable = [];
+  for (let type = 1; type < 20; type += 1) {
+    const spec = R.nodesSpec([
+      {
+        type: 9,
+        components: [{ type: 10, content: "body" }],
+        accessory: {
+          type: type,
+          media: { url: "https://example.invalid/a.png" },
+          url: "https://example.invalid/go",
+          label: "go",
+        },
+      },
+    ]);
+    if (R.serialize(spec, {}).includes("cv2-accessory")) drawable.push(type);
+  }
+  assert.deepEqual(
+    drawable,
+    [BUTTON, THUMBNAIL],
+    "accessory kinds changed — update cv2_render.py's ACCESSORY_KINDS to match",
   );
 });

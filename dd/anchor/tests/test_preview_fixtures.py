@@ -210,3 +210,27 @@ def test_update_mode_writes_the_data_fields() -> None:
         path.write_text(
             json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
+
+
+def test_accessory_kinds_match_the_js() -> None:
+    """Half of a tripwire; the other half is in ``preview_fixtures.test.js``.
+
+    ``_accessory_renders`` has to know which kinds the *renderer* draws — see
+    :data:`cv2_render.ACCESSORY_KINDS` for why that is the one place the Python/JS
+    split leaks. The two agree today, and nothing structural holds them together: the
+    corpus only exercises these two kinds, so a third one added on either side would
+    leave every existing test passing while the diff quietly mismarked it.
+    """
+    assert set(cv2_render.ACCESSORY_KINDS) == {11, 2}, (
+        "if the renderer gained an accessory kind, add it here AND in the JS twin"
+    )
+    # Only those two are reported as drawable, whatever else is thrown at it.
+    for type_id in range(1, 20):
+        node = {
+            "type": type_id,
+            "media": {"url": "https://example.invalid/a.png"},
+            "url": "https://example.invalid/go",
+        }
+        assert cv2_render._accessory_renders(node) == (
+            type_id in cv2_render.ACCESSORY_KINDS
+        ), type_id

@@ -138,7 +138,11 @@ def page() -> t.Iterator[t.Any]:
                 "no Chromium available — run "
                 f"`uv run playwright install chromium` ({exc})"
             )
-        pg = browser.new_page()
+        # UTC, to match the corpus. `<t:…>` renders in the VIEWER'S zone now, so a page
+        # left on the host's zone fails this suite everywhere but a UTC machine — which
+        # CI is, so CI would never have caught it. The JS twin pins the same thing with
+        # `process.env.TZ` (tests/preview_fixtures.test.js).
+        pg = browser.new_page(timezone_id="UTC")
         errors: list[str] = []
         pg.on("pageerror", lambda e: errors.append(str(e)))
         pg.goto(HARNESS.as_uri())

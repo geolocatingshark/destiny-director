@@ -17,7 +17,7 @@
 
 This module used to render CV2 snapshots to HTML. It does not any more: there is one
 renderer and it is ``web_static/cv2_render.js`` (see
-``plans/preview_renderer_unification.md``). What is left here needs ``difflib``, so it
+``docs/architecture.md``). What is left here needs ``difflib``, so it
 stayed: aligning two captured versions and annotating what moved.
 
 These name the properties directly. The end-to-end check — that drawing these

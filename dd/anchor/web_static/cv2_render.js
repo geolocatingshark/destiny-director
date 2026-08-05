@@ -14,7 +14,7 @@
 // picture drift, and they had — a backtick code span rendered one way on the canvas and
 // another in the dialog that claims to show exactly what Discord will render. The canvas
 // repaints per keystroke and cannot round-trip to a server, so the JavaScript side is
-// the one that survives. See plans/preview_renderer_unification.md.
+// the one that survives. See docs/architecture.md, "Rendering a message on the web".
 //
 // IT EMITS A SPEC, NOT MARKUP
 // ---------------------------
@@ -109,6 +109,17 @@
   const el = (tag, cls, extra) => Object.assign({ tag: tag, cls: cls }, extra || {});
   const text = (value) => ({ text: String(value) });
 
+  /**
+   * A child collection, as an array — `[]` for anything that is not one.
+   *
+   * `x || []` is not enough: this walker's input is Discord JSON captured from someone
+   * else's server, and a `components` that arrives as a string or an object throws out
+   * of `.map` rather than degrading. The Python renderer this replaced degraded, and
+   * the builder can persist such a tree (its save path validates only "a list of
+   * dicts"), where a throw wedges the canvas on every repaint.
+   */
+  const list = (value) => (Array.isArray(value) ? value : []);
+
   function placeholder(message) {
     return el("div", "cv2-placeholder", { text: "⚠️ " + message });
   }
@@ -191,7 +202,7 @@
   }
 
   function section(node) {
-    const body = (node.components || []).map(walk).filter(Boolean);
+    const body = list(node.components).map(walk).filter(Boolean);
     // In a diff, `accessory` may be a LIST — the three-state case where one was swapped
     // for another, so both the old and the new are shown.
     const accs = Array.isArray(node.accessory)
@@ -206,7 +217,7 @@
 
   function media(node) {
     const items = [];
-    for (const item of node.items || []) {
+    for (const item of list(node.items)) {
       if (!item || typeof item !== "object") continue;
       const url = mediaUrl(item.media);
       if (url) {
@@ -239,7 +250,7 @@
   }
 
   function actionRow(node) {
-    const buttons = (node.components || [])
+    const buttons = list(node.components)
       .map((b) => marked(b, button(b)))
       .filter(Boolean);
     return buttons.length ? el("div", "cv2-buttons", { children: buttons }) : null;
@@ -248,7 +259,7 @@
   function container(node) {
     return el("div", "cv2-container", {
       accent: accentHex(node.accent_color),
-      children: (node.components || []).map(walk).filter(Boolean),
+      children: list(node.components).map(walk).filter(Boolean),
     });
   }
 
@@ -262,21 +273,29 @@
    */
   function diffText(lines) {
     const parts = [];
-    (lines || []).forEach((entry, i) => {
-      if (i) parts.push(text("\n"));
-      if (entry.op === "equal") {
-        parts.push({ line: String(entry.line || "") });
-      } else if (entry.op === "ins") {
+    list(lines).forEach((entry) => {
+      if (!entry || typeof entry !== "object") return;
+      // Keyed on what was actually emitted, not on the index — a skipped entry must not
+      // leave a blank line where a line never was.
+      if (parts.length) parts.push(text("\n"));
+      if (entry.op === "ins") {
         parts.push(el("ins", null, { line: String(entry.line || "") }));
       } else if (entry.op === "del") {
         parts.push(el("del", null, { text: String(entry.line || "") }));
-      } else {
-        for (const run of entry.runs || []) {
+      } else if (entry.op === "replace") {
+        for (const run of list(entry.runs)) {
+          if (!run || typeof run !== "object") continue;
           const body = text(String(run.text || ""));
           if (run.op === "del") parts.push(el("del", null, { children: [body] }));
           else if (run.op === "ins") parts.push(el("ins", null, { children: [body] }));
           else parts.push(body);
         }
+      } else {
+        // `equal`, and anything unrecognised. Drawing an unknown op as its plain line is
+        // the safe default for a view whose whole job is being trustworthy about what
+        // the text said: a missing arm used to fall into `replace` and, with no `runs`,
+        // delete the line outright.
+        parts.push({ line: String(entry.line || "") });
       }
     });
     return el("div", "cv2-text", { children: parts });
@@ -290,9 +309,11 @@
    * has no tree around it.
    */
   function textLeaf(node) {
-    return node._lines
-      ? diffText(node._lines)
-      : textBlock(node.content === undefined ? "" : node.content);
+    // An empty or unusable `_lines` falls back to `content` rather than drawing nothing:
+    // the annotation is an *overlay* on a text leaf, and losing it must not lose the
+    // text underneath it.
+    if (list(node._lines).length) return diffText(node._lines);
+    return textBlock(node.content === undefined ? "" : node.content);
   }
 
   /** One CV2 node → its spec, degrading an unknown kind to a labelled placeholder. */
@@ -352,7 +373,7 @@
         el("div", "embed-desc", { children: [textBlock(data.description)] }),
       );
     }
-    for (const field of data.fields || []) {
+    for (const field of list(data.fields)) {
       if (!field || typeof field !== "object") continue;
       const fp = [];
       if (field.name) {
@@ -381,9 +402,7 @@
 
   function classic(payload) {
     const content = String(payload.content || "");
-    const embeds = (payload.embeds || []).filter(
-      (e) => e && typeof e === "object",
-    );
+    const embeds = list(payload.embeds).filter((e) => e && typeof e === "object");
     const bits = [];
     if (content.trim()) bits.push("text");
     if (embeds.length) bits.push(embeds.length + " embed(s)");
@@ -400,7 +419,7 @@
 
   /** A CV2 node list → the `.cv2-root` spec the preview surfaces draw. */
   function nodesSpec(nodes) {
-    const body = (nodes || []).map(walk).filter(Boolean);
+    const body = list(nodes).map(walk).filter(Boolean);
     return body.length
       ? el("div", "cv2-root", { children: body })
       : placeholder("This version captured no renderable components.");
@@ -452,8 +471,12 @@
     // Classic: the diffed content leaf, then the embeds. No "Classic message — …"
     // summary here; the diff is about what moved, not what the message is made of.
     const parts = [];
-    if (data.content) parts.push(textLeaf(data.content));
-    for (const e of data.embeds || []) parts.push(marked(e, embed(e)));
+    if (data.content && typeof data.content === "object") {
+      parts.push(textLeaf(data.content));
+    }
+    for (const e of list(data.embeds)) {
+      if (e && typeof e === "object") parts.push(marked(e, embed(e)));
+    }
     return [note, el("div", "cv2-root classic", { children: parts })].filter(Boolean);
   }
 
@@ -564,14 +587,21 @@
       return frag;
     }
     if (!spec.tag) {
-      if (spec.line !== undefined) {
-        // A bare markdown fragment. It goes through a template rather than an added
-        // wrapper element so the DOM matches what serialize() writes exactly — and it
-        // is the same escape-by-construction output `md` is, not raw input.
+      // The same field dispatch serialize()'s tagless branch does, or the two back ends
+      // disagree about a spec no walker happens to emit today — and `el`/`text` are
+      // exported so a host CAN assemble one. A markdown fragment goes through a template
+      // rather than an added wrapper element so the DOM matches what serialize() writes
+      // exactly, and it is the same escape-by-construction output `md` is, not raw input.
+      if (
+        spec.md !== undefined ||
+        spec.inline !== undefined ||
+        spec.line !== undefined
+      ) {
         const tpl = doc.createElement("template");
-        tpl.innerHTML = M.lineMd(spec.line, opts.emoji, opts.now);
+        tpl.innerHTML = inner(spec, opts);
         return tpl.content;
       }
+      if (spec.children) return materialize(spec.children, opts, doc);
       return doc.createTextNode(spec.text === undefined ? "" : spec.text);
     }
 

@@ -187,13 +187,33 @@ test("a page driven by initPostForm has every element it dereferences", () => {
   ];
   assert.ok(required.length > 5, "expected shared.js to dereference several ids");
 
+  // Which pages drive the form lifecycle. Derived from the SCRIPTS, because a shell
+  // never names `initPostForm` itself — it loads a page script that calls it. Filtering
+  // the pages on that string directly matched nothing at all, so the first version of
+  // this guard passed on a page with its whole toolbar deleted.
+  const drivers = fs
+    .readdirSync(STATIC_DIR)
+    .filter((n) => n.endsWith(".js") && n !== "shared.js")
+    .filter((n) =>
+      fs.readFileSync(path.join(STATIC_DIR, n), "utf8").includes("initPostForm("),
+    );
+  assert.ok(drivers.length > 1, "expected both hybrid-post forms to call initPostForm");
+
+  const inspected = [];
   const missing = [];
   for (const page of pages()) {
-    // Only the pages that actually drive the form lifecycle.
-    if (!page.text.includes("initPostForm")) continue;
+    if (!drivers.some((d) => page.text.includes(`/static/${d}`))) continue;
+    inspected.push(page.name);
     for (const id of required) {
       if (!page.text.includes(`id="${id}"`)) missing.push(`${page.name}: #${id}`);
     }
   }
+  // The guard on the guard. A filter that selects nothing reports no problems, which is
+  // exactly how this test passed while being inert.
+  assert.equal(
+    inspected.length,
+    drivers.length,
+    `expected one page per driver script; inspected ${JSON.stringify(inspected)}`,
+  );
   assert.deepEqual(missing, [], "shared.js will throw on these pages");
 });
