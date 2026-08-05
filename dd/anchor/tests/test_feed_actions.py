@@ -13,12 +13,12 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-# Per-feed actions page: the shell stays static (the CSP forbids inline script) and
-# /data describes the feed, preview returns the node tree the shared renderer draws (and
-# reports a build failure as data rather than a 500), and send guards its preconditions
-# — dormant feed, no announcer, one already in flight — and never posts when the build
-# fails. Exercised with fake requests (no live server); auth is the web_auth middleware,
-# covered in test_web_auth.py.
+# Per-feed actions: preview returns the node tree the shared renderer draws (and reports
+# a build failure as data rather than a 500), and send guards its preconditions —
+# dormant feed, no announcer, one already in flight — and never posts when the build
+# fails. The buttons that call these live on /autopost_settings; see
+# test_autopost_settings.py. Exercised with fake requests (no live server); auth is the
+# web_auth middleware, covered in test_web_auth.py.
 
 import asyncio
 import json
@@ -29,7 +29,7 @@ import hikari as h
 import pytest
 
 from dd.anchor import autopost
-from dd.anchor.extensions import feed_page
+from dd.anchor.extensions import feed_actions
 from dd.hmessage import HMessage
 
 pytestmark = pytest.mark.asyncio
@@ -73,8 +73,8 @@ def _isolated_registry(monkeypatch: pytest.MonkeyPatch) -> t.Iterator[None]:
     predictable feeds (including a dormant one) without touching them.
     """
     monkeypatch.setattr(autopost, "_feeds", {})
-    monkeypatch.setattr(feed_page, "_bot", object())
-    monkeypatch.setattr(feed_page, "_sending", set())
+    monkeypatch.setattr(feed_actions, "_bot", object())
+    monkeypatch.setattr(feed_actions, "_sending", set())
     yield
 
 
@@ -106,76 +106,9 @@ def _register(
 # --- the page shell ----------------------------------------------------------------
 
 
-async def test_page_shell_carries_no_inline_script() -> None:
-    # script-src 'self' (web.py's CSP) forbids inline script, so the shell must be
-    # static and fetch /data for itself. A server-injected bootstrap would be dead.
-    _register("lost_sector", channel_id=987)
-    body = _text(await feed_page._handle_page(_as_request(_FakeRequest("lost_sector"))))
-    assert "/static/feed_page.js" in body
-    assert "/static/cv2_render.js" in body
-    assert "<script>" not in body
-
-
-async def test_actions_are_three_controls_with_hover_cards() -> None:
-    # Three actions on one line, explained by title attributes rather than paragraphs.
-    # Pinning the shape here because the alternative — a <button> next to a styled <a> —
-    # silently rendered them 8px out of line: shared.css has no base `button` rule, so
-    # the two do not share a box unless this page gives them one.
-    _register("lost_sector", channel_id=987)
-    body = _text(await feed_page._handle_page(_as_request(_FakeRequest("lost_sector"))))
-    for element_id in ('id="previewBtn"', 'id="sendBtn"'):
-        assert element_id in body
-    assert 'class="action" href="/autopost_settings"' in body
-    assert body.count("title=") >= 3
-    assert ".actionbar > button," in body
-
-
-async def test_send_is_behind_a_dialog_carrying_the_publish_choice() -> None:
-    # Send publishes to a real channel, so it is never one click: the publish checkbox
-    # lives in the confirmation, not on the page, so the choice is made deliberately at
-    # the moment of confirming rather than set and forgotten.
-    _register("lost_sector", channel_id=987)
-    body = _text(await feed_page._handle_page(_as_request(_FakeRequest("lost_sector"))))
-    assert '<dialog id="sendDialog">' in body
-    assert 'id="publish"' in body
-    assert 'id="confirmSend"' in body
-    assert 'id="cancelSend"' in body
-
-
-async def test_preview_host_opts_into_the_shared_preview_styling() -> None:
-    # Every rule in cv2_preview.css is scoped under `.cv2-preview`. Without the class
-    # the renderer still builds correct DOM — right element counts, right structure —
-    # and the post draws as an unstyled run of inline text: no accent bar, no heading,
-    # no bullets, buttons as bare links. Nothing else here would catch that.
-    _register("lost_sector", channel_id=987)
-    body = _text(await feed_page._handle_page(_as_request(_FakeRequest("lost_sector"))))
-    assert 'id="previewBox" class="cv2-preview"' in body
-
-
-async def test_data_describes_the_named_feed() -> None:
-    _register("lost_sector", channel_id=987)
-    res = await feed_page._handle_data(_as_request(_FakeRequest("lost_sector")))
-    payload = json.loads(_text(res))
-    assert payload["title"] == "Lost Sector"
-    assert payload["dormant"] is False
-    # Snowflakes exceed JS's safe-integer range, so ids travel as strings.
-    assert payload["channelId"] == "987"
-
-
-async def test_data_marks_a_dormant_feed() -> None:
-    _register("iron_banner", channel_id=None)
-    payload = json.loads(
-        _text(await feed_page._handle_data(_as_request(_FakeRequest("iron_banner"))))
-    )
-    assert payload["dormant"] is True
-    assert payload["channelId"] is None
-
-
 async def test_unknown_feed_404s() -> None:
     with pytest.raises(aiohttp.web.HTTPNotFound):
-        await feed_page._handle_page(_as_request(_FakeRequest("nope")))
-    with pytest.raises(aiohttp.web.HTTPNotFound):
-        await feed_page._handle_data(_as_request(_FakeRequest("nope")))
+        await feed_actions._handle_preview(_as_request(_FakeRequest("nope")))
 
 
 # --- preview -----------------------------------------------------------------------
@@ -185,7 +118,7 @@ async def test_preview_returns_the_node_tree_for_the_shared_renderer() -> None:
     # The same {kind, payload, message_kind} shape /mirror-logs/render serves, so the
     # page draws it with the identical CV2Render.snapshotSpec call.
     _register()
-    res = await feed_page._handle_preview(_as_request(_FakeRequest("xur")))
+    res = await feed_actions._handle_preview(_as_request(_FakeRequest("xur")))
     payload = json.loads(_text(res))
     assert payload["kind"] == "snapshot"
     assert payload["message_kind"] == "cv2"
@@ -196,14 +129,14 @@ async def test_preview_reports_a_build_failure_as_data() -> None:
     # Iron Banner between events raises; the Discord `show` reported that inline, so the
     # page must render it in the preview box rather than 500.
     _register(constructor=_failing_constructor)
-    res = await feed_page._handle_preview(_as_request(_FakeRequest("xur")))
+    res = await feed_actions._handle_preview(_as_request(_FakeRequest("xur")))
     assert "no event scheduled" in json.loads(_text(res))["error"]
 
 
 async def test_preview_works_while_dormant() -> None:
     # Construction needs no channel, so a dormant feed still previews.
     _register(channel_id=None)
-    res = await feed_page._handle_preview(_as_request(_FakeRequest("xur")))
+    res = await feed_actions._handle_preview(_as_request(_FakeRequest("xur")))
     assert "Hello from the feed" in json.dumps(json.loads(_text(res))["payload"])
 
 
@@ -219,7 +152,7 @@ async def test_send_starts_the_announcer_and_returns() -> None:
         started.set()
 
     _register(announcer=_announcer)
-    res = await feed_page._handle_send(_as_request(_FakeRequest("xur", {})))
+    res = await feed_actions._handle_send(_as_request(_FakeRequest("xur", {})))
     assert json.loads(_text(res)) == {"ok": True, "started": True}
 
     await asyncio.wait_for(started.wait(), timeout=1)
@@ -238,7 +171,9 @@ async def test_send_honours_publish_false() -> None:
         started.set()
 
     _register(announcer=_announcer)
-    await feed_page._handle_send(_as_request(_FakeRequest("xur", {"publish": False})))
+    await feed_actions._handle_send(
+        _as_request(_FakeRequest("xur", {"publish": False}))
+    )
     await asyncio.wait_for(started.wait(), timeout=1)
     assert seen["publish_message"] is False
 
@@ -251,7 +186,7 @@ async def test_send_refuses_a_dormant_feed() -> None:
         called = True
 
     _register(channel_id=None, announcer=_announcer)
-    res = await feed_page._handle_send(_as_request(_FakeRequest("xur", {})))
+    res = await feed_actions._handle_send(_as_request(_FakeRequest("xur", {})))
     assert res.status == 409
     assert "dormant" in json.loads(_text(res))["error"]
     assert not called
@@ -259,7 +194,7 @@ async def test_send_refuses_a_dormant_feed() -> None:
 
 async def test_send_refuses_without_an_announcer() -> None:
     _register(announcer=None)
-    res = await feed_page._handle_send(_as_request(_FakeRequest("xur", {})))
+    res = await feed_actions._handle_send(_as_request(_FakeRequest("xur", {})))
     assert res.status == 409
 
 
@@ -273,7 +208,7 @@ async def test_send_does_not_post_when_the_build_fails() -> None:
         called = True
 
     _register(constructor=_failing_constructor, announcer=_announcer)
-    res = await feed_page._handle_send(_as_request(_FakeRequest("xur", {})))
+    res = await feed_actions._handle_send(_as_request(_FakeRequest("xur", {})))
     assert res.status == 502
     assert "nothing was sent" in json.loads(_text(res))["error"]
     assert not called
@@ -286,10 +221,10 @@ async def test_send_rejects_a_second_send_while_one_is_in_flight() -> None:
         await release.wait()
 
     _register(announcer=_announcer)
-    first = await feed_page._handle_send(_as_request(_FakeRequest("xur", {})))
+    first = await feed_actions._handle_send(_as_request(_FakeRequest("xur", {})))
     assert first.status == 200
 
-    second = await feed_page._handle_send(_as_request(_FakeRequest("xur", {})))
+    second = await feed_actions._handle_send(_as_request(_FakeRequest("xur", {})))
     assert second.status == 409
     assert "already in flight" in json.loads(_text(second))["error"]
 
@@ -297,16 +232,15 @@ async def test_send_rejects_a_second_send_while_one_is_in_flight() -> None:
     release.set()
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    assert "xur" not in feed_page._sending
+    assert "xur" not in feed_actions._sending
 
 
-async def test_routes_and_no_card_registered() -> None:
-    # The feed page is reached from an /autopost_settings row, not from the control
-    # panel's card grid — a card per feed is exactly the flat list that was rejected.
+async def test_routes_registered_without_a_page_or_card() -> None:
+    # Actions only: no page shell and no control-panel card. The buttons live on the
+    # /autopost_settings rows, so a per-feed page (or a card per feed — exactly the flat
+    # list that was rejected) would be a click in the way.
     app = aiohttp.web.Application()
-    feed_page.register_feed_page_routes(app)
+    feed_actions.register_feed_action_routes(app)
     paths = {getattr(r.resource, "canonical", None) for r in app.router.routes()}
-    assert "/feed/{name}" in paths
-    assert "/feed/{name}/data" in paths
     assert "/feed/{name}/preview" in paths
     assert "/feed/{name}/send" in paths

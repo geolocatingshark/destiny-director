@@ -57,7 +57,6 @@ background task and returns. Delivery is observable in the mirror log.
 import asyncio
 import logging
 import typing as t
-from pathlib import Path
 
 import aiohttp.web
 import hikari as h
@@ -73,10 +72,6 @@ from ..autopost import Feed, registered_feeds
 logger = logging.getLogger(__name__)
 
 loader = lb.Loader()
-
-_PAGE_HTML_PATH = (
-    Path(__file__).resolve().parent.parent / "web_static" / "feed_page.html"
-)
 
 # The live bot, stashed at StartedEvent so the routes can reach the REST client (the
 # pattern weekly_reset / rotation_editor / cv2_builder_page already use).
@@ -120,29 +115,6 @@ def _title(name: str) -> str:
 async def _build(feed: Feed) -> HMessage:
     """Build the feed's post once, as the producer would right now."""
     return await feed.message_constructor_coro(bot=_require_bot())
-
-
-async def _handle_page(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    """The static shell. 404s an unknown feed here, so a bad link fails at the page."""
-    _feed_or_404(request)
-    return aiohttp.web.Response(
-        text=_PAGE_HTML_PATH.read_text(encoding="utf-8"), content_type="text/html"
-    )
-
-
-async def _handle_data(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    """Which feed this is, and whether Send is available."""
-    feed = _feed_or_404(request)
-    return aiohttp.web.json_response(
-        {
-            "name": feed.name,
-            "title": _title(feed.name),
-            # A dormant feed (no configured followable) still previews — construction
-            # needs no channel — but has nowhere to send.
-            "dormant": feed.channel_id is None,
-            "channelId": str(feed.channel_id) if feed.channel_id else None,
-        }
-    )
 
 
 async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -238,12 +210,10 @@ async def _handle_send(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.json_response({"ok": True, "started": True})
 
 
-def register_feed_page_routes(app: aiohttp.web.Application) -> None:
-    """Add the feed-page routes to the shared persistent app."""
-    app.router.add_get("/feed/{name}", _handle_page)
-    app.router.add_get("/feed/{name}/data", _handle_data)
+def register_feed_action_routes(app: aiohttp.web.Application) -> None:
+    """Add the per-feed action routes to the shared persistent app."""
     app.router.add_get("/feed/{name}/preview", _handle_preview)
     app.router.add_post("/feed/{name}/send", _handle_send)
 
 
-web.register_routes(register_feed_page_routes)
+web.register_routes(register_feed_action_routes)

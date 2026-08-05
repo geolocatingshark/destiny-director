@@ -92,10 +92,15 @@ box, not 500), and one real Send with publish on.
 
 What differs from the plan as written:
 
-- **The page carries no toggle.** The plan had toggle + Preview + Send. Two surfaces
-  writing the same `AutoPostSettings` row is a needless second write path, and it would
-  have falsified `/autopost_settings`' "sole surface" docstring a second time — so the
-  feed page links there instead.
+- **There is no page.** The plan had a feed page carrying toggle + Preview + Send. The
+  toggle stayed on `/autopost_settings` (two surfaces writing one row is a needless
+  second write path), which left a page holding two buttons — so the buttons moved onto
+  the row instead and the page went away. `dd/anchor/extensions/feed_actions.py` is now
+  two endpoints with no shell.
+- **Send confirms against the post.** The send modal renders what is about to go out,
+  and its confirm button stays disabled until that render succeeds — there is no reason
+  to allow a blind send when a preview is one call away. The publish checkbox lives in
+  the modal, so the crosspost choice is made at the moment of confirming.
 - **Send returns before the post lands.** Awaiting the announcer inside an HTTP handler
   would mean a request that can hang for hours: both announcers retry construction
   forever, `send_message` retries too, and `api_to_discord_announcer` posts its
@@ -135,12 +140,12 @@ out the one that matters. A per-feed **settings** list has no such problem, and 
 is that `/autopost_settings` is already exactly that flat list, already carries every
 feed, and drew no objection.
 
-So this phase needs two things, neither of which is the rejected hub:
-
-1. A **feed detail page** — autopost toggle, Preview, Send now. §2's feed page already
-   survived the rejection; `anchor_web_ia.md` says so explicitly.
-2. A link into it from each existing `/autopost_settings` row. An arrow per row adds no
-   noise to a list that is already there.
+**There is no feed detail page** (an earlier revision built one; it was removed
+2026-08-05). The actions live inline on each `/autopost_settings` row — two buttons,
+Preview and Send now — and the rendered post appears in that page's modals. A feed has
+no state a page could show that the row does not already, so a page was only ever a
+click in the way. §2's feed page "surviving as the detail view" turned out not to hold
+once the detail was just two buttons.
 
 The exceptions-first / by-time hub stays deferred indefinitely — it is an *observability*
 question that belongs with mirror log and stats, and it blocks none of the 12 subcommands
