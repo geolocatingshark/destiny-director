@@ -220,7 +220,13 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">&lt;script&gt;alert(1)&lt;/script&gt; <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">&lt;script&gt;alert(1)&lt;/script&gt; <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"></div></div>",
+      "sanitized": [
+        {
+          "type": 10,
+          "content": "<script>alert(1)</script> :kyber:"
+        }
+      ]
     },
     {
       "name": "script_in_diffed_text",

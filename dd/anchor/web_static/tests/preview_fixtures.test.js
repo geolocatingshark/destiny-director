@@ -17,11 +17,13 @@
 //   markdown  the leaf layer — cv2_model.renderMd
 //   snapshot  the node walker — cv2_render.snapshotSpec + serialize
 //
-// The other two stay Python-only for now, on purpose:
+//   authored  the builder's publish confirmation — the server sanitizes, the client
+//             renders. sanitize_for_preview is a send-safety transform with no client
+//             mirror and is not getting one, so the fixture carries its output and this
+//             asserts the render from there, which is exactly the split in production.
 //
-//   authored  runs cv2_nodes.sanitize_for_preview first, which is a send-safety
-//             transform with no client mirror and is not getting one — the server sends
-//             an already-sanitized tree (plan phase 3).
+// Two stay Python-only for now, on purpose:
+//
 //   diff      needs the annotation layer that does not exist yet (plan phase 6).
 //   post_spec renders the .post-* vocabulary that plan phase 4 retires outright.
 
@@ -98,6 +100,24 @@ for (const file of WALKER_FILES) {
       );
     });
   }
+}
+
+// The builder's confirmation: the server hands back a sanitized tree, the client draws
+// it. `sanitized` is what sanitize_for_preview produced, recorded by the Python side.
+const authored = load("authored.json");
+
+for (const c of authored.cases) {
+  test(`authored:${c.name} renders the sanitized tree`, () => {
+    assert.ok(Array.isArray(c.sanitized), `${c.name} has no sanitized tree`);
+    assert.equal(
+      R.serialize(R.nodesSpec(c.sanitized), {
+        emoji: authored.emoji || {},
+        now: NOW_MS,
+      }),
+      c.expected_html,
+      `${c.name} diverged from the Python renderer`,
+    );
+  });
 }
 
 test("the walker corpus actually covered the node kinds", () => {

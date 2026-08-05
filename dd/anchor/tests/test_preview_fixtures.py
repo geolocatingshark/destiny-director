@@ -46,7 +46,7 @@ from html.parser import HTMLParser
 import hikari as h
 import pytest
 
-from dd.anchor import cv2_html, cv2_render, hybrid_post_core
+from dd.anchor import cv2_nodes, cv2_render, hybrid_post_core
 
 FIXTURE_DIR = pathlib.Path(__file__).resolve().parent.parent / "preview_fixtures"
 
@@ -121,8 +121,17 @@ def _render(case: dict[str, t.Any], defaults: dict[str, t.Any]) -> str:
     if how == "snapshot":
         return cv2_render.render_snapshot(case["payload"], case["kind"])
     if how == "authored":
-        nodes = case["payload"].get("components") or []
-        return cv2_html.render_cv2_nodes_html(nodes, emoji_dict)
+        # The builder's path: sanitize first, then render. `sanitize_for_preview` is a
+        # send-safety transform — it downgrades a mid-construction node to placeholder
+        # text — and it is the half that stays server-side, so the fixture records its
+        # output as `sanitized` for the JS side to render from.
+        safe = cv2_nodes.sanitize_for_preview(case["payload"].get("components") or [])
+        case["sanitized"] = safe
+        return cv2_render.render_snapshot(
+            {"components": safe},
+            "cv2",
+            emoji_sub=hybrid_post_core._html_emoji_substituter(emoji_dict),
+        )
     if how == "diff":
         return cv2_render.render_diff(
             case["payload"], case["kind"], case["old_payload"], case["old_kind"]

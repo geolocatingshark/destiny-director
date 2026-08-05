@@ -94,7 +94,10 @@
         defaultAccent: 0xec42a5,
         actionLabel: "Post",
         onSave: async () => ({ ok: true }),
-        onPreview: async () => "<p class='cv2b-help'>(harness preview)</p>",
+        // Stands in for POST /preview, which returns the sanitized tree the server
+        // would post. Echoing the nodes back unchanged is the no-op sanitize — enough
+        // for the dialog to render something real.
+        onPreview: async (nodes) => ({ nodes: nodes, problems: [] }),
         onPublish: async () => ({ ok: true, message_link: "https://example.com/msg" }),
       });
     </script>

@@ -27,15 +27,26 @@ the draft's creator — see :meth:`Cv2Draft.get_for_user`):
 - ``GET  /cv2-builder/{draft}``          the static page shell
 - ``GET  /cv2-builder/{draft}/data``     seed nodes, action copy, guild emoji
 - ``POST /cv2-builder/{draft}/save``     autosave the node list
-- ``POST /cv2-builder/{draft}/preview``  authoritative server render (the confirmation)
+- ``POST /cv2-builder/{draft}/preview``  the tree the server would post (confirmation)
 - ``POST /cv2-builder/{draft}/publish``  perform the action, return the message link
 
-**Trust boundary.** The client renders its own canvas so inline editing stays instant,
-but nothing about that is load-bearing: ``/publish`` re-runs
-:func:`cv2_nodes.validate` and sends through :class:`RawComponentBuilder` from the node
-list *it* was given, and ``/preview`` re-renders through the same whitelisted walker the
-mirror log uses. A tampered or stale client cannot post something the server did not
-independently accept.
+**Trust boundary.** Rendering is the client's job — the canvas is the live editing
+surface, so a round-trip per keystroke is not an option, and one shared renderer
+(``web_static/cv2_render.js``) draws every preview surface. None of that is
+load-bearing. ``/publish`` re-runs :func:`cv2_nodes.validate` and sends through
+:class:`RawComponentBuilder` from the node list *it* was given, so a tampered or stale
+client cannot post something the server did not independently accept.
+
+What ``/preview`` is *for* changed with that, and the distinction is worth keeping
+straight. It used to return server-rendered HTML, which made the confirmation dialog a
+second, independent implementation of the render — a client-side bug was visible there
+before an irreversible send. Sharing the renderer gives that up, so ``/preview`` now
+returns the **sanitized, validated node tree**: the confirmation still shows something
+the server vouched for, and it differs from the canvas exactly where
+:func:`cv2_nodes.sanitize_for_preview` changed something, which is the part worth
+seeing. What replaces the lost cross-check is the golden corpus in
+``dd/anchor/preview_fixtures``, which holds the renderer to a pinned output from both
+languages. See ``plans/preview_renderer_unification.md``.
 """
 
 import logging
@@ -52,7 +63,6 @@ from ...common.bot import CachedFetchBot
 from ...common.schemas import Cv2Draft
 from ...common.utils import fetch_emoji_dict
 from .. import cv2_nodes, web
-from ..cv2_html import render_cv2_nodes_html
 from ..cv2_raw import RawComponentBuilder
 from .web_auth import authed_user_id
 
@@ -87,9 +97,10 @@ async def _emoji_map() -> dict[str, dict[str, t.Any]]:
     Discord renders a custom emoji on a button only from ``{"id": …, "name": …}`` — a
     name alone is valid for a unicode emoji and silently nothing for a custom one.
 
-    A failure here only costs shortcode rendering in the canvas and the button emoji
-    picker (the server render still resolves them), so it degrades to an empty map
-    rather than failing the page.
+    A failure here costs shortcode rendering across the page — the canvas, the button
+    emoji picker and the publish confirmation all resolve from this one map now — so it
+    degrades to an empty map (shortcodes render as their literal text) rather than
+    failing the page.
     """
     global _emoji_cache
     if _emoji_cache is not None:
@@ -189,14 +200,23 @@ async def _handle_save(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
 
 async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """The tree the server would post, for the confirmation dialog to draw.
+
+    :func:`cv2_nodes.sanitize_for_preview` downgrades a mid-construction node — an empty
+    container, a section still missing its accessory — to placeholder text, so what
+    comes back is always something Discord would accept. The client renders it with the
+    same module it draws the canvas with; the authority here is the *data*, not markup.
+
+    No emoji dict: the page already holds one from ``/data`` and resolves shortcodes
+    itself, so a preview no longer costs a Discord round-trip.
+    """
     await _load_draft(request)  # 404s a draft that isn't the caller's
     nodes = await _nodes_from_body(request)
-    try:
-        emoji_dict = await fetch_emoji_dict(t.cast(h.GatewayBot, _require_bot()))
-    except Exception:
-        emoji_dict = {}
     return aiohttp.web.json_response(
-        {"html": render_cv2_nodes_html(nodes, emoji_dict)}
+        {
+            "nodes": cv2_nodes.sanitize_for_preview(nodes),
+            "problems": cv2_nodes.validate(nodes),
+        }
     )
 
 

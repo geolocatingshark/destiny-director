@@ -2200,13 +2200,20 @@
         return;
       }
       await flush();
-      // The server render is the authoritative one — confirm against it, not against
-      // the client's approximation of the markdown.
+      // Confirm against the tree the SERVER would post, not the one in this tab. The
+      // renderer is shared now, so the dialog is no longer a second opinion on the
+      // markup — but the data still is: what comes back has been through
+      // sanitize_for_preview, so a half-built block shows here as the placeholder it
+      // will actually post as. Links are live (unlike the canvas, which is inert): this
+      // is the post as a reader meets it, and they open in a new tab.
       if (options.onPreview) {
         el.confirmBody.innerHTML = '<p class="cv2b-help">Rendering…</p>';
         el.dialog.showModal();
         try {
-          swapConfirmBody(await options.onPreview(clone(state.nodes)));
+          const reply = await options.onPreview(clone(state.nodes));
+          swapConfirmBody(
+            R.serialize(R.nodesSpec(reply.nodes || []), { emoji: emoji }),
+          );
         } catch (err) {
           swapConfirmBody(
             '<p class="cv2b-err">Could not render a preview. You can still post.</p>',
