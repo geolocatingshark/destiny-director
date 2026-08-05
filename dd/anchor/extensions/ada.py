@@ -37,7 +37,7 @@ from dd.hmessage import HMessage
 from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
-from ..autopost import Feed, make_autopost_control_commands, register_feed
+from ..autopost import Feed, register_feed
 from . import (
     bungie_api as api,
     xur,
@@ -173,15 +173,6 @@ async def on_start_schedule_autoposts(
         )
 
 
-_ada_autopost_group = make_autopost_control_commands(
-    autopost_name="ada",
-    channel_id=cfg.followables["ada"],
-    message_constructor_coro=ada_message_constructor,
-    message_announcer_coro=xur.api_to_discord_announcer,
-    cv2=True,
-)
-
-loader.command(_ada_autopost_group)
 
 
 # Contribute this feed's producer wiring to the web feed page (Preview / Send now).

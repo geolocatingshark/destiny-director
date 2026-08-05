@@ -24,12 +24,7 @@ from ...common.bot import CachedFetchBot
 from ...common.components import cv2_error, cv2_notice, cv2_success, respond_cv2
 from ...common.lost_sector import format_post
 from ...common.utils import guild_scope
-from ..autopost import (
-    Feed,
-    discord_announcer,
-    make_autopost_control_commands,
-    register_feed,
-)
+from ..autopost import Feed, discord_announcer, register_feed
 
 logger = logging.getLogger(__name__)
 
@@ -83,17 +78,8 @@ async def on_start_schedule_autoposts(
         )
 
 
-_ls_autopost_group = make_autopost_control_commands(
-    "ls",
-    cfg.followables["lost_sector"],
-    format_post,
-    message_announcer_coro=discord_announcer,
-    cv2=True,
-)
-
-# Slash autopost group inherits the client default (control + test_env). The
-# ls_update context-menu command additionally appears in the Kyber server.
-loader.command(_ls_autopost_group)
+# The ls_update context-menu command appears in the Kyber server in addition to the
+# client default (control + test_env).
 loader.command(
     LsUpdate,
     guilds=guild_scope(
