@@ -116,6 +116,16 @@ async def test_page_shell_carries_no_inline_script() -> None:
     assert "<script>" not in body
 
 
+async def test_preview_host_opts_into_the_shared_preview_styling() -> None:
+    # Every rule in cv2_preview.css is scoped under `.cv2-preview`. Without the class
+    # the renderer still builds correct DOM — right element counts, right structure —
+    # and the post draws as an unstyled run of inline text: no accent bar, no heading,
+    # no bullets, buttons as bare links. Nothing else here would catch that.
+    _register("lost_sector", channel_id=987)
+    body = _text(await feed_page._handle_page(_as_request(_FakeRequest("lost_sector"))))
+    assert 'id="previewBox" class="cv2-preview"' in body
+
+
 async def test_data_describes_the_named_feed() -> None:
     _register("lost_sector", channel_id=987)
     res = await feed_page._handle_data(_as_request(_FakeRequest("lost_sector")))

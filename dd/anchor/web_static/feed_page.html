@@ -63,7 +63,10 @@
           <button id="previewBtn" type="button" disabled>Preview post</button>
           <span class="status" id="previewStatus"></span>
         </div>
-        <div id="previewBox"></div>
+        <!-- `cv2-preview` opts this box into the shared CV2 render styling: every rule
+             in cv2_preview.css is scoped under it, so without the class the renderer
+             draws the right DOM with none of its appearance. -->
+        <div id="previewBox" class="cv2-preview"></div>
       </div>
 
       <div class="panel">
