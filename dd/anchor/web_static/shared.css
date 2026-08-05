@@ -150,52 +150,6 @@ h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
 .backlink:hover { text-decoration: underline; }
 p.nav { margin: 0 0 .4rem; }
 
-/* ---------------------------------------------------------------------------
-   Post preview markup (render_post_spec output)
-   ---------------------------------------------------------------------------
-   The rendered-post appearance, shared by EVERY preview surface — the web-form live
-   previews (`<pre id="previewBox" class="post-preview">`) and the read-only preview wall
-   (`.post-preview` cards). render_post_spec emits only a small whitelist of tags (span
-   headings/footer/bullets, strong/em, a, img.emoji, img.post-image); style them here so
-   one class renders any post consistently. Page-specific layout (the form's sticky
-   preview column, the wall's scroll) stays with each page. */
-.post-preview {
-  white-space: pre-wrap; word-break: break-word;
-  background: var(--surface-0); border: 1px solid var(--border);
-  /* Mirror the CV2 container's left accent bar (--post-accent is set per post by the form
-     JS; the wall leaves it at the default --accent). */
-  border-left: 4px solid var(--post-accent);
-  border-radius: var(--radius); padding: 1rem; font: inherit;
-}
-.post-preview .emoji {
-  /* Fixed square box so every custom emoji renders at a uniform size regardless of the
-     source image's aspect ratio (Discord emoji aren't all square); object-fit keeps
-     non-square art centered and undistorted rather than stretched. */
-  height: 1.2em; width: 1.2em; vertical-align: middle;
-  margin: 0 .05em; object-fit: contain;
-}
-.post-preview .md-h1 { font-weight: 700; font-size: 1.3em; }
-.post-preview .md-h2 { font-weight: 700; font-size: 1.15em; }
-.post-preview .md-h3 { font-weight: 700; font-size: 1.05em; }
-.post-preview .md-small { color: var(--text-muted); font-size: .82em; }
-.post-preview .md-bullet::before { content: "• "; color: var(--text-muted); }
-.post-preview a { color: var(--link); }
-.post-preview .post-image {
-  display: block; max-width: 100%; height: auto;
-  border-radius: var(--radius); margin: .5rem 0;
-}
-/* The footer link-button row (render_post_html) — mirrors the CV2 post's LinkButton row.
-   white-space:normal escapes the .post-preview pre-wrap so the flex row lays out cleanly. */
-.post-preview .post-buttons {
-  white-space: normal; display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .8rem;
-}
-.post-preview .post-button {
-  display: inline-block; padding: .35rem .7rem; border-radius: var(--radius);
-  background: var(--surface-2, var(--surface-1)); border: 1px solid var(--border);
-  color: var(--text); text-decoration: none; font-size: .9em; font-weight: 600;
-}
-.post-preview .post-button:hover { border-color: var(--post-accent); }
-
 /* A stacked, labelled wall of post previews (render_post_wall) — the rotation editor's
    live preview shows the next few posts a rotation will publish. */
 .post-wall { display: flex; flex-direction: column; gap: 1rem; }

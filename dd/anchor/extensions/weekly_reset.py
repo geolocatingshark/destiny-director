@@ -88,7 +88,6 @@ from ..hybrid_post_core import (
     current_reset_ts,
     get_weapon_pool,
     next_reset_ts,
-    render_post_html as render_post_html,
     resolve_weapon,
 )
 from . import (
@@ -775,12 +774,13 @@ def validate_post(ctx: WeeklyResetContext) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Rich HTML preview (web form)
+# Rich preview (web form)
 # ---------------------------------------------------------------------------
 #
-# The safe markdown->HTML preview renderer (``render_post_html`` + its ``_INLINE_MD`` /
-# ``_render_line`` / emoji-substituter internals) is generic and lives in
-# ``hybrid_post_core``; ``render_post_html`` + ``_format_reset_ts`` are imported above.
+# There is no preview renderer here any more. ``POST /weekly_reset/preview`` hands the
+# page the post's own CV2 node tree (``hybrid_post_core.post_spec_nodes``) and the
+# shared client renderer draws it — the same one the builder canvas and the mirror log
+# use. ``_format_reset_ts`` is still imported above, for the body text itself.
 
 
 # ---------------------------------------------------------------------------

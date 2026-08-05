@@ -23,6 +23,7 @@
     <meta name="robots" content="noindex, nofollow" />
     <title>Trials of Osiris</title>
     <link rel="stylesheet" href="/static/shared.css" />
+    <link rel="stylesheet" href="/static/cv2_preview.css" />
     <link rel="stylesheet" href="/static/trials_form.css" />
   </head>
   <body class="form-page">
@@ -86,7 +87,7 @@
           <button id="refreshBtn" class="secondary tiny" type="button">↻ Refresh</button>
         </div>
         <ul id="problems" class="hidden"></ul>
-        <pre id="previewBox" class="post-preview">Loading preview…</pre>
+        <div id="previewBox" class="cv2-preview">Loading preview…</div>
       </aside>
     </main>
 
@@ -108,6 +109,8 @@
       trials_form.js — so the global is set first.
     -->
     <script>window.__BOOTSTRAP__ = /*__BOOTSTRAP__*/ null;</script>
+    <script defer src="/static/cv2_model.js"></script>
+    <script defer src="/static/cv2_render.js"></script>
     <script defer src="/static/shared.js"></script>
     <script defer src="/static/trials_form.js"></script>
   </body>

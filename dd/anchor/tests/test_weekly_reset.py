@@ -23,7 +23,6 @@ Components V2 builder.
 
 import datetime as dt
 import json
-import re
 import types
 import typing as t
 
@@ -31,6 +30,10 @@ import aiohttp.web
 import hikari as h
 import pytest
 
+from dd.anchor import (
+    cv2_render,
+    hybrid_post_core as hpc,
+)
 from dd.anchor.extensions import weekly_reset as wr
 
 # The three real "Weekly Reset Overview" posts this feature was reverse-engineered from.
@@ -752,7 +755,11 @@ def test_render_post_html_renders_markdown_and_emoji() -> None:
             "[bad](ftp://nope.example)",
         ]
     )
-    out = wr.render_post_html(body, t.cast("dict[str, h.Emoji]", emoji))
+    # The leaf layer the preview still runs on: the route hands the page a node
+    # tree, and this is the markdown inside its text block.
+    out = cv2_render._render_markdown(
+        body, hpc._html_emoji_substituter(t.cast("dict[str, h.Emoji]", emoji))
+    )
     # H1 span + bold header, custom emoji as <img>, masked link with escaped label.
     assert '<span class="md-h1">Weekly Reset Overview</span>' in out
     assert "<strong>UPDATES &amp; EVENTS</strong>" in out
@@ -797,27 +804,22 @@ def test_discord_error_note() -> None:
     assert "Some other Discord failure" in other
 
 
-def test_render_post_html_bottom_image() -> None:
-    emoji: dict = {}
-    out = wr.render_post_html(
-        "# Title", t.cast("dict[str, h.Emoji]", emoji), "https://ex.com/a.png?x=1&y"
-    )
-    # Image rendered at the bottom, with the src escaped.
-    assert '<img class="post-image" src="https://ex.com/a.png?x=1&amp;y"' in out
-    # The old "via Destiny Director (Kyber)" credit line is gone (buttons replaced it).
-    assert "md-small" not in out
-    assert "via Destiny Director" not in out
-    # No image URL -> no <img>.
-    assert "post-image" not in wr.render_post_html(
-        "# Title", t.cast("dict[str, h.Emoji]", emoji), None
-    )
-    # Non-http(s) image URL rejected.
-    assert "post-image" not in wr.render_post_html(
-        "# Title", t.cast("dict[str, h.Emoji]", emoji), "javascript:alert(1)"
-    )
-    # ONLY the whitelisted tags are ever emitted.
-    tags = set(re.findall(r"</?([a-zA-Z]+)", out))
-    assert tags <= {"span", "strong", "em", "a", "img"}, tags
+def test_post_spec_nodes_places_the_image_and_rejects_bad_urls() -> None:
+    """The image sits below the body, and only an http(s) one survives.
+
+    Placement used to be the previewer's business; it is the post's now — the media
+    gallery is a real node in the tree the form previews and publishes alike.
+    """
+
+    def kinds(image: str | None) -> list[int]:
+        spec = hpc.PostSpec.cv2("# Title", image)
+        return [c["type"] for c in hpc.post_spec_nodes(spec)[0]["components"]]
+
+    # Text, then the gallery — the order build_cv2 sends.
+    assert kinds("https://ex.com/a.png?x=1&y") == [10, 12]
+    assert kinds(None) == [10]
+    assert kinds("javascript:alert(1)") == [10]
+    assert kinds("ftp://nope.example/a.png") == [10]
 
 
 def test_format_reset_ts_is_utc_long_short() -> None:

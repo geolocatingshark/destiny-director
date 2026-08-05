@@ -817,12 +817,44 @@ async function runPreview() {
   box.textContent = "Rendering…";
   try {
     const res = await post("/rotation/preview");
-    const body = await res.text();
     if (!res.ok) {
-      box.textContent = "Preview failed:\n" + body;
+      box.textContent = "Preview failed:\n" + (await res.text());
       return setStatus("Preview failed — see the Preview tab.", false);
     }
-    box.innerHTML = body;
+    const data = await res.json();
+    if (data.kind === "html") {
+      // xur_location / trials_loot are data views of a document that never posts on
+      // its own — a small server-rendered table, not a message.
+      box.innerHTML = data.html;
+    } else {
+      // A wall of real posts, each drawn from the node tree build_cv2 would send. The
+      // .post-wall wrapper is what spaces the cards — the labelled-card layout stayed
+      // behind when the post *rendering* moved to the shared renderer.
+      const R = window.CV2Render;
+      const posts = data.posts || [];
+      if (!posts.length) {
+        const empty = document.createElement("p");
+        empty.className = "post-wall-empty";
+        empty.textContent = "No upcoming posts to show.";
+        box.replaceChildren(empty);
+      } else {
+        const wall = document.createElement("div");
+        wall.className = "post-wall";
+        for (const item of posts) {
+          const card = document.createElement("article");
+          card.className = "post-wall-item";
+          const label = document.createElement("h3");
+          label.className = "post-wall-label";
+          label.textContent = item.label;
+          const body = document.createElement("div");
+          body.className = "cv2-preview";
+          R.render(body, R.nodesSpec(item.nodes || []), { emoji: data.emoji || {} });
+          card.append(label, body);
+          wall.appendChild(card);
+        }
+        box.replaceChildren(wall);
+      }
+    }
     setStatus("Preview updated.", true);
   } catch (e) {
     box.textContent = "Preview error: " + e;

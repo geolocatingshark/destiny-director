@@ -137,13 +137,23 @@ def _render(case: dict[str, t.Any], defaults: dict[str, t.Any]) -> str:
             case["payload"], case["kind"], case["old_payload"], case["old_kind"]
         )
     if how == "post_spec":
+        # The weekly-reset / trials / rotation previews. These used to render a flat
+        # `.post-*` approximation; they render the post's own node tree now, so the
+        # fixture records that tree for the JS side and renders it the same way a
+        # captured snapshot is rendered — because it is the same thing.
         spec = case["spec"]
         post = hybrid_post_core.PostSpec.cv2(
             body=spec.get("body", ""),
             image_url=spec.get("image_url"),
             buttons=[tuple(b) for b in spec.get("buttons") or []],
         )
-        return hybrid_post_core.render_post_spec(post, emoji_dict)
+        nodes = hybrid_post_core.post_spec_nodes(post)
+        case["nodes"] = nodes
+        return cv2_render.render_snapshot(
+            {"components": nodes},
+            "cv2",
+            emoji_sub=hybrid_post_core._html_emoji_substituter(emoji_dict),
+        )
     raise AssertionError(f"Unknown render mode {how!r} in fixture {case['name']!r}")
 
 

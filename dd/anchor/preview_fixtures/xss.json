@@ -264,7 +264,34 @@
           ]
         ]
       },
-      "expected_html": "&lt;script&gt;alert(1)&lt;/script&gt;\n<div class=\"post-buttons\"><a class=\"post-button\" href=\"https://example.com/ok\" target=\"_blank\" rel=\"noopener noreferrer\">&lt;script&gt;x&lt;/script&gt;</a></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\" style=\"border-left-color:#000000\"><div class=\"cv2-text\">&lt;script&gt;alert(1)&lt;/script&gt;</div><hr class=\"cv2-sep\"><div class=\"cv2-buttons\"><a class=\"cv2-button\" href=\"https://example.com/ok\" target=\"_blank\" rel=\"noopener noreferrer\">&lt;script&gt;x&lt;/script&gt;</a></div></div></div>",
+      "nodes": [
+        {
+          "type": 17,
+          "accent_color": 0,
+          "components": [
+            {
+              "type": 10,
+              "content": "<script>alert(1)</script>"
+            },
+            {
+              "type": 14,
+              "divider": true
+            },
+            {
+              "type": 1,
+              "components": [
+                {
+                  "type": 2,
+                  "style": 5,
+                  "label": "<script>x</script>",
+                  "url": "https://example.com/ok"
+                }
+              ]
+            }
+          ]
+        }
+      ]
     }
   ]
 }

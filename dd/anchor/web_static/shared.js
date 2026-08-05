@@ -56,14 +56,19 @@ function initPostPreview({
   async function render() {
     try {
       const res = await api(`/${routePrefix}/preview`, readForm());
-      const body = await res.text();
-      // On ok the server returns SAFE HTML (render_post_html: escaped leaves, whitelisted
-      // tags, http(s)-validated URLs) — innerHTML renders emoji/markdown. On failure the
-      // body is an untrusted error string, so use textContent to keep it escaped.
+      // On ok the server returns the post's own CV2 node tree plus the emoji map to
+      // resolve shortcodes against, and the shared renderer draws it into real DOM —
+      // the same renderer, from the same tree, that the builder canvas and the mirror
+      // log use. It used to return HTML in a second markup vocabulary that only
+      // approximated the container a post actually is.
       if (res.ok) {
-        box.innerHTML = body;
+        const data = await res.json();
+        window.CV2Render.render(box, window.CV2Render.nodesSpec(data.nodes || []), {
+          emoji: data.emoji || {},
+        });
       } else {
-        box.textContent = "Preview failed:\n" + body;
+        // A failure body is an untrusted error string — textContent keeps it escaped.
+        box.textContent = "Preview failed:\n" + (await res.text());
       }
     } catch (e) {
       box.textContent = "Preview error: " + e;

@@ -22,10 +22,12 @@
 //             mirror and is not getting one, so the fixture carries its output and this
 //             asserts the render from there, which is exactly the split in production.
 //
-// Two stay Python-only for now, on purpose:
+//   post_spec the weekly-reset / trials / rotation previews — the server sends the
+//             post's own node tree (post_spec_nodes) and the client draws it.
+//
+// One stays Python-only for now, on purpose:
 //
 //   diff      needs the annotation layer that does not exist yet (plan phase 6).
-//   post_spec renders the .post-* vocabulary that plan phase 4 retires outright.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -112,6 +114,24 @@ for (const c of authored.cases) {
     assert.equal(
       R.serialize(R.nodesSpec(c.sanitized), {
         emoji: authored.emoji || {},
+        now: NOW_MS,
+      }),
+      c.expected_html,
+      `${c.name} diverged from the Python renderer`,
+    );
+  });
+}
+
+// The hybrid-post form previews: the route hands over post_spec_nodes' tree, recorded
+// here as `nodes`, and this is the client drawing it.
+const postSpec = load("post_spec.json");
+
+for (const c of postSpec.cases) {
+  test(`post_spec:${c.name} renders the post's own tree`, () => {
+    assert.ok(Array.isArray(c.nodes), `${c.name} has no node tree`);
+    assert.equal(
+      R.serialize(R.nodesSpec(c.nodes), {
+        emoji: postSpec.emoji || {},
         now: NOW_MS,
       }),
       c.expected_html,

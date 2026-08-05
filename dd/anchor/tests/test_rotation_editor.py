@@ -18,6 +18,7 @@
 # live server). Authentication is handled centrally by the web_auth middleware (covered
 # in test_web_auth.py), so these handlers assume an already-authenticated request.
 
+import json
 import typing as t
 
 import aiohttp.web
@@ -146,11 +147,14 @@ async def test_preview_renders_valid_document():
         _req(body={"type": "lost_sector", "data": _doc()})
     )
     assert resp.status == 200
-    body = resp.text or ""
-    # The preview now renders the actual Discord post (a wall of .post-preview cards),
-    # not the old data table — the sector name appears as a :LS: masked link.
+    # The preview is a wall of real posts now: each entry carries the node tree
+    # build_cv2 would send, which the page draws with the shared renderer. It used to
+    # be server-rendered `.post-*` markup approximating the same thing.
+    payload = json.loads(resp.text or "{}")
+    assert payload["kind"] == "wall"
+    assert payload["posts"], "expected at least one upcoming post"
+    body = json.dumps(payload["posts"])
     assert "Alpha" in body
-    assert "post-preview" in body
     assert "World Lost Sectors" in body  # the post header, from lost_sector.build_body
 
 

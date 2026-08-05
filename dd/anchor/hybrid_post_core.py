@@ -169,6 +169,49 @@ def build_cv2(
     return HMessage(components=[container])
 
 
+def emoji_payload(emoji_dict: dict[str, h.Emoji]) -> dict[str, str]:
+    """``{name: url}`` for a client-side render's ``:shortcode:`` substitution.
+
+    The bare-string shape ``cv2_model.js``'s ``emojiEntry`` accepts. Buttons need an id
+    as well as a url, but a *rendered* post never does — a captured ``<:name:id>``
+    carries its own id, and a typed ``:name:`` only ever becomes an ``<img>``.
+    """
+    return {name: str(getattr(emoji, "url", "")) for name, emoji in emoji_dict.items()}
+
+
+def post_spec_nodes(spec: "PostSpec") -> list[dict[str, t.Any]]:
+    """The same post as :func:`build_cv2`, as a raw CV2 node list.
+
+    The preview surfaces render the *post*, and the post is a node tree — so rather than
+    approximate it in a second markup vocabulary (which is what ``.post-*`` was), hand
+    the previewer the tree and let the shared renderer draw it. Structure is pinned to
+    ``build_cv2`` by ``test_post_spec_nodes_matches_build_cv2`` — two descriptions of
+    one post is exactly the drift this whole change exists to remove.
+    """
+    children: list[dict[str, t.Any]] = [{"type": 10, "content": spec.body}]
+    if spec.image_url and spec.image_url.startswith(("http://", "https://")):
+        children.append(
+            {"type": 12, "items": [{"media": {"url": spec.image_url}}]},
+        )
+    buttons = [
+        {"type": 2, "style": 5, "label": str(label), "url": str(url)}
+        for label, url in spec.buttons
+        if str(url).startswith(("http://", "https://"))
+    ]
+    if buttons:
+        # No explicit `spacing`: hikari omits it too, and the renderer reads its absence
+        # as the small default. Matching exactly is what lets the two be compared.
+        children.append({"type": 14, "divider": True})
+        children.append({"type": 1, "components": buttons})
+    return [
+        {
+            "type": 17,
+            "accent_color": cfg.embed_default_color,
+            "components": children,
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Rich HTML preview (web form)
 # ---------------------------------------------------------------------------
@@ -388,58 +431,6 @@ def _normalize_heading_spacing(lines: list[str]) -> list[str]:
     return out
 
 
-def _render_buttons_html(buttons: t.Sequence[tuple[str, str]]) -> str:
-    """Render the footer link buttons as a safe ``<div>`` of ``<a>`` button links.
-
-    Mirrors the CV2 post's footer button row (:func:`build_cv2`) so the preview matches
-    the publish. Each label is escaped and each URL http(s)-validated (a non-http(s)
-    URL is dropped, not rendered as a link) — safe for the ``innerHTML`` sink even for
-    the future client-supplied ``PostSpec.from_payload`` buttons.
-    """
-    items: list[str] = []
-    for label, url in buttons:
-        if not str(url).startswith(("http://", "https://")):
-            continue
-        href = html.escape(str(url), quote=True)
-        text = html.escape(str(label))
-        items.append(
-            f'<a class="post-button" href="{href}" target="_blank" '
-            f'rel="noopener noreferrer">{text}</a>'
-        )
-    if not items:
-        return ""
-    return '\n<div class="post-buttons">' + "".join(items) + "</div>"
-
-
-def render_post_html(
-    body: str,
-    emoji_dict: dict[str, h.Emoji],
-    image_url: str | None = None,
-    buttons: t.Sequence[tuple[str, str]] = (),
-) -> str:
-    """Render a ``build_body`` string (+ image + footer buttons) to safe preview HTML.
-
-    Mirrors what Discord renders for the published post: the same markdown subset,
-    custom emoji as images, and the footer button row ``build_cv2`` appends. Newlines
-    are preserved for the <pre> preview (heading spacing normalised to Discord's via
-    :func:`_normalize_heading_spacing`). Only whitelisted tags (strong / em / span / a /
-    img) are emitted; every text leaf is escaped and every URL is http(s)-validated, so
-    it is safe to drop into the form's ``innerHTML`` sink despite the owner-authored
-    input.
-    """
-    emoji_sub = _html_emoji_substituter(emoji_dict)
-    lines = [
-        _render_line(line, emoji_sub)
-        for line in _normalize_heading_spacing(body.split("\n"))
-    ]
-    # Image sits below the body and above the footer buttons — mirroring build_cv2's
-    # media gallery placement — so the preview shows it exactly where the post does.
-    if image_url and image_url.startswith(("http://", "https://")):
-        src = html.escape(image_url, quote=True)
-        lines += ["", f'<img class="post-image" src="{src}" alt="post image">']
-    return "\n".join(lines) + _render_buttons_html(buttons)
-
-
 # ---------------------------------------------------------------------------
 # PostSpec — the format-tagged, serializable description a previewer renders
 # ---------------------------------------------------------------------------
@@ -503,41 +494,6 @@ class PostSpec:
             image_url=(payload.get("image_url") or None),
             buttons=buttons,
         )
-
-
-def render_post_spec(spec: PostSpec, emoji_dict: dict[str, h.Emoji]) -> str:
-    """Render any :class:`PostSpec` to safe preview HTML — the shared render path.
-
-    Dispatches on ``spec.kind``: ``cv2`` runs the existing markdown->HTML machinery
-    (:func:`render_post_html`), unchanged; ``embed`` is reserved and raises until its
-    branch lands (see :class:`PostSpec`). Output is safe for an ``innerHTML`` sink
-    (escaped leaves, whitelisted tags, http(s)-validated URLs) — see
-    :func:`render_post_html`.
-    """
-    if spec.kind == "cv2":
-        return render_post_html(spec.body, emoji_dict, spec.image_url, spec.buttons)
-    raise ValueError(f"Cannot render post kind {spec.kind!r} yet")
-
-
-def render_post_wall(
-    posts: t.Sequence[tuple[str, PostSpec]], emoji_dict: dict[str, h.Emoji]
-) -> str:
-    """Render ``(label, PostSpec)`` entries as stacked, labelled cards (safe HTML).
-
-    The shared "wall of posts" presentation: each entry is a labelled card whose body is
-    :func:`render_post_spec`. Used by the rotation editor's live preview to show the
-    next few posts a rotation will publish. Empty list → an empty-state note.
-    """
-    if not posts:
-        return '<p class="post-wall-empty">No upcoming posts to show.</p>'
-    cards = [
-        f'<article class="post-wall-item">'
-        f'<h3 class="post-wall-label">{html.escape(label)}</h3>'
-        f'<div class="post-preview">{render_post_spec(spec, emoji_dict)}</div>'
-        f"</article>"
-        for label, spec in posts
-    ]
-    return '<div class="post-wall">' + "".join(cards) + "</div>"
 
 
 # ---------------------------------------------------------------------------
@@ -914,21 +870,23 @@ async def preview(
     except Exception:
         return aiohttp.web.Response(status=400, text="Malformed body.")
     ctx = await spec.context_from_payload(payload)
-    # Rich preview: render the post's markdown subset to safe HTML (emoji as <img>,
-    # bold/italic/links/dates), matching what Discord shows for the published post. The
-    # renderer escapes every text leaf and validates URLs, so this is safe for the
-    # client's innerHTML sink. Emoji come from the short-TTL guild-emoji cache. Flows
-    # through render_post_spec — the one render path shared with the coming rotation
-    # preview wall and user-commands manager.
+    # The preview IS the post: this hands back the very node tree `build_cv2` would send
+    # (pinned to it by test_post_spec_nodes_matches_build_cv2), and the page draws it
+    # with the shared renderer every preview surface uses. It used to return HTML from a
+    # second, flatter markup vocabulary that only approximated the container the post
+    # actually is.
+    #
+    # The emoji map rides along rather than sitting in the page bootstrap, so the
+    # response carries everything needed to draw it. Cheap: `preview_emoji_dict` is a
+    # short-TTL cache, so a burst of previews costs no extra Discord traffic.
     emoji_dict = await preview_emoji_dict(bot)
     post = PostSpec.cv2(
         spec.build_body(ctx),
         ctx.image_url,
         buttons=footer_button_specs(guides=spec.footer_guides),
     )
-    return aiohttp.web.Response(
-        text=render_post_spec(post, emoji_dict),
-        content_type="text/html",
+    return aiohttp.web.json_response(
+        {"nodes": post_spec_nodes(post), "emoji": emoji_payload(emoji_dict)}
     )
 
 

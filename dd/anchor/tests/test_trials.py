@@ -32,7 +32,10 @@ import aiohttp.web
 import hikari as h
 import pytest
 
-from dd.anchor import hybrid_post_core as hpc
+from dd.anchor import (
+    cv2_render,
+    hybrid_post_core as hpc,
+)
 from dd.anchor.extensions import trials as tr
 
 # ---------------------------------------------------------------------------
@@ -635,7 +638,12 @@ def test_preview_emits_h3_and_bullets_only_whitelisted_tags() -> None:
         focus_pool=[tr.WeaponRef("The Scholar", 123)],
     )
     emoji: dict = {}
-    out = hpc.render_post_html(tr.build_body(ctx), t.cast("dict[str, h.Emoji]", emoji))
+    # The body's markdown, through the renderer the preview now uses. (The preview route
+    # itself hands back a node tree; this is the leaf layer inside its text block.)
+    out = cv2_render._render_markdown(
+        tr.build_body(ctx),
+        hpc._html_emoji_substituter(t.cast("dict[str, h.Emoji]", emoji)),
+    )
     # H3 headers and bullets render as their spans; the title's inner *of* italicises.
     assert '<span class="md-h3">' in out
     assert '<span class="md-bullet">' in out
@@ -647,4 +655,4 @@ def test_preview_emits_h3_and_bullets_only_whitelisted_tags() -> None:
     )
     # ONLY the whitelisted tags are ever emitted (no <ul>/<li>/<script>).
     tags = set(re.findall(r"</?([a-zA-Z]+)", out))
-    assert tags <= {"span", "strong", "em", "a", "img"}, tags
+    assert tags <= {"span", "strong", "em", "code", "a", "img"}, tags
