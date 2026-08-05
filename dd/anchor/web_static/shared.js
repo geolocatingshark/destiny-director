@@ -136,6 +136,45 @@ function initPostForm({
     statusEl.textContent = msg;
     statusEl.className = ok ? "ok" : "err";
   }
+  /** Status with a spinner: creating, publishing and deleting all hit Discord. */
+  function setBusy(msg) {
+    statusEl.className = "ok";
+    statusEl.replaceChildren(
+      Object.assign(document.createElement("span"), { className: "spinner" }),
+      document.createTextNode(msg),
+    );
+  }
+
+  /**
+   * An in-page confirmation, replacing window.confirm.
+   *
+   * The browser dialog is unstyled, unplaceable, and on some platforms suppressible —
+   * a poor last gate in front of "publish to every follower". Resolves true/false.
+   */
+  function confirmInPage(title, body, confirmLabel, danger) {
+    return new Promise((resolve) => {
+      const dialog = _byId("confirmDialog");
+      _byId("confirmTitle").textContent = title;
+      _byId("confirmBody").textContent = body;
+      const go = _byId("confirmGo");
+      go.textContent = confirmLabel;
+      go.className = danger ? "danger" : "primary";
+
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        dialog.close();
+        resolve(value);
+      };
+      go.onclick = () => finish(true);
+      _byId("confirmCancel").onclick = () => finish(false);
+      // Escape and the backdrop close the dialog without touching a button; treat both
+      // as a cancel rather than leaving the promise dangling forever.
+      dialog.addEventListener("close", () => finish(false), { once: true });
+      dialog.showModal();
+    });
+  }
   function showProblems(problems) {
     problemsEl.replaceChildren(
       ...problems.map((p) => Object.assign(document.createElement("li"), { textContent: p })),
@@ -199,8 +238,18 @@ function initPostForm({
   // A button handler wrapping postAction with a confirm (publish only) + status framing.
   function wirePost(id, path, publish, framing, okMsg, confirmMsg) {
     _byId(id).addEventListener("click", async () => {
-      if (confirmMsg && !confirm(confirmMsg)) return;
-      setStatus(framing, true);
+      if (
+        confirmMsg &&
+        !(await confirmInPage(
+          "Publish to every follower?",
+          confirmMsg,
+          "Publish",
+          false,
+        ))
+      ) {
+        return;
+      }
+      setBusy(framing);
       try {
         await postAction(path, publish, okMsg);
       } catch (e) {
@@ -216,15 +265,16 @@ function initPostForm({
   wirePost("editBtn", "edit", false, "Editing post…", "Post edited ✓");
   wirePost(
     "editPublishBtn", "edit", true, "Editing & publishing…", "Published ✓",
-    "Edit the post AND publish it to every follower?",
+    "This edits the live post and crossposts it, so beacon mirrors the change to every "
+      + "server following this feed.",
   );
 
   // --- delete post ------------------------------------------------------
   _byId("deleteBtn").addEventListener("click", async () => {
     if (!postThisPeriod) return;
     const msg = crossposted ? labels.deletePublished : labels.deleteDraft;
-    if (!confirm(msg)) return;
-    setStatus("Deleting…", true);
+    if (!(await confirmInPage("Delete this post?", msg, "Delete", true))) return;
+    setBusy("Deleting…");
     try {
       const res = await api(`/${routePrefix}/delete`, {});
       const data = await res.json();

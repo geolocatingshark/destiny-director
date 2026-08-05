@@ -116,6 +116,19 @@
     <script defer src="/static/cv2_model.js"></script>
     <script defer src="/static/cv2_render.js"></script>
     <script defer src="/static/shared.js"></script>
+
+    <!-- The shared confirmation for publish/delete (shared.js confirmInPage). Replaces
+         window.confirm, which is unstyled, unplaceable, and suppressible on some
+         platforms — a poor last gate in front of "publish to every follower". -->
+    <dialog class="confirmmodal" id="confirmDialog">
+      <h2 id="confirmTitle"></h2>
+      <p id="confirmBody"></p>
+      <div class="modal-actions">
+        <button type="button" id="confirmCancel">Cancel</button>
+        <button type="button" class="primary" id="confirmGo">Confirm</button>
+      </div>
+    </dialog>
+
     <script defer src="/static/trials_form.js"></script>
   </body>
 </html>
