@@ -103,11 +103,24 @@ What differs from the plan as written:
   bounded from outside. The handler builds once up front (catching the common failure
   without touching the channel), then hands off to a background task. A per-feed
   in-flight slot stops a double-click double-posting.
-- **The snapshot serializer moved.** `render_snapshot` walks raw component dicts, but
+- **The snapshot serializer moved.** The renderer walks raw component dicts, but
   constructors return `HMessage`; the bridge lived in `dd/beacon/mirror_worker.py`, and
   anchor imports nothing from beacon. Hoisted the pure transform to
   `dd.hmessage.snapshot`, beacon delegates. (The plan's "`show` renders through
   `cv2_render`" skipped this step.)
+
+**Rebased onto dev 2026-08-05**, after the preview-renderer unification landed. That
+branch deleted the Python renderer and added a CSP, and the rebase produced **no
+textual conflicts** while invalidating two things the page was built on — the failure
+mode worth remembering here:
+
+- `cv2_render.render_snapshot` no longer exists; drawing is `web_static/cv2_render.js`.
+  `/preview` now returns `{kind, payload, message_kind}` — byte-identical to what
+  `/mirror-logs/render` serves — and the page draws it with the same
+  `CV2Render.snapshotSpec` call. Both preview surfaces go through the one renderer.
+- `script-src 'self'` forbids inline script, so the page's server-injected bootstrap
+  and its inline handlers would both have been dead on arrival. The shell is now static
+  and fetches `GET /feed/{name}/data`; behaviour lives in `web_static/feed_page.js`.
 
 #### Original design notes
 

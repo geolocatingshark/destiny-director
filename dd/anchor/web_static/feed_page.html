@@ -58,7 +58,9 @@
           The data comes from the live API, so this can take a few seconds.
         </p>
         <div class="actions">
-          <button id="previewBtn" type="button">Preview post</button>
+          <!-- Both actions start disabled; feed_page.js enables them once /data says
+               which feed this is and whether it can be sent. -->
+          <button id="previewBtn" type="button" disabled>Preview post</button>
           <span class="status" id="previewStatus"></span>
         </div>
         <div id="previewBox"></div>
@@ -71,7 +73,7 @@
           mirrors it to every following server.
         </p>
         <div class="actions">
-          <button id="sendBtn" type="button">Send now</button>
+          <button id="sendBtn" type="button" disabled>Send now</button>
           <label><input type="checkbox" id="publish" checked /> Publish (crosspost)</label>
           <span class="status" id="sendStatus"></span>
         </div>
@@ -86,92 +88,12 @@
       </div>
     </main>
 
-    <!-- shared.js is deferred, so window.api is not defined while the inline script
-         below runs. That is fine: api() is only ever dereferenced inside a click
-         handler, which cannot fire before the deferred script has executed. The inline
-         script sits at the end of <body>, so every element it looks up already exists. -->
+    <!-- defer preserves order: cv2_model → cv2_render → shared (window.api) →
+         this page. The renderer draws the preview, exactly as the mirror log does.
+         No inline script: the CSP is script-src 'self' (see web.py). -->
+    <script src="/static/cv2_model.js" defer></script>
+    <script src="/static/cv2_render.js" defer></script>
     <script src="/static/shared.js" defer></script>
-    <script>
-      const FEED = /*__BOOTSTRAP__*/ null;
-
-      const heading = document.getElementById("heading");
-      const previewBtn = document.getElementById("previewBtn");
-      const previewStatus = document.getElementById("previewStatus");
-      const previewBox = document.getElementById("previewBox");
-      const sendBtn = document.getElementById("sendBtn");
-      const publish = document.getElementById("publish");
-      const sendStatus = document.getElementById("sendStatus");
-
-      heading.textContent = FEED.title;
-      document.title = FEED.title + " — Destiny Director";
-
-      // A dormant feed has no configured followable channel: it can still be previewed
-      // (construction needs no channel), but there is nowhere to send it.
-      if (FEED.dormant) {
-        const panel = document.getElementById("dormantPanel");
-        panel.hidden = false;
-        document.getElementById("dormantNote").textContent =
-          "Dormant — no '" + FEED.name + "' entry in FOLLOWABLES, so there is no " +
-          "channel to post to. Preview still works. Add the followable channel id " +
-          "to enable sending.";
-        sendBtn.disabled = true;
-        publish.disabled = true;
-      }
-
-      previewBtn.addEventListener("click", async () => {
-        previewBtn.disabled = true;
-        previewStatus.classList.remove("err");
-        previewStatus.textContent = "Building…";
-        try {
-          const res = await fetch("/feed/" + encodeURIComponent(FEED.name) + "/preview");
-          const data = await res.json();
-          if (data.error) {
-            previewBox.innerHTML = "";
-            previewStatus.classList.add("err");
-            previewStatus.textContent = data.error;
-          } else {
-            // Server-rendered, pre-escaped HTML from cv2_render — the same trusted
-            // sink the mirror-log viewer uses.
-            previewBox.innerHTML = data.html;
-            previewStatus.textContent = "";
-          }
-        } catch (_) {
-          previewStatus.classList.add("err");
-          previewStatus.textContent = "Network error — try again.";
-        } finally {
-          previewBtn.disabled = false;
-        }
-      });
-
-      sendBtn.addEventListener("click", async () => {
-        const where = FEED.channelId ? "#" + FEED.channelId : "its channel";
-        const what = publish.checked
-          ? "post it to " + where + " and crosspost it to every following server"
-          : "post it to " + where + " without crossposting";
-        if (!window.confirm("Send the " + FEED.title + " post now? This will " + what + ".")) {
-          return;
-        }
-        sendBtn.disabled = true;
-        sendStatus.classList.remove("err");
-        sendStatus.textContent = "Building…";
-        try {
-          const res = await window.api("/feed/" + encodeURIComponent(FEED.name) + "/send", {
-            publish: publish.checked,
-          });
-          const data = await res.json().catch(() => ({}));
-          if (res.ok) {
-            sendStatus.textContent = "Send started — check Mirror logs for delivery.";
-          } else {
-            sendStatus.classList.add("err");
-            sendStatus.textContent = data.error || "Send failed.";
-          }
-        } catch (_) {
-          sendStatus.classList.add("err");
-          sendStatus.textContent = "Network error — try again.";
-        } finally {
-          sendBtn.disabled = false;
-        }
-      });
-    </script>
+    <script src="/static/feed_page.js" defer></script>
   </body>
 </html>

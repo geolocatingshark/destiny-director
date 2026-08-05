@@ -30,9 +30,17 @@ Deliberately *not* here:
 Routes (all behind the shared Discord-OAuth middleware in ``web_auth``, which also
 Origin-checks the POST, so there is no auth code here):
 
-- ``GET  /feed/{name}``          the page shell
-- ``GET  /feed/{name}/preview``  build the post now, return it as safe HTML
+- ``GET  /feed/{name}``          the static page shell
+- ``GET  /feed/{name}/data``     which feed this is, and whether it can be sent
+- ``GET  /feed/{name}/preview``  build the post now, return its node tree
 - ``POST /feed/{name}/send``     publish it to the feed's channel
+
+The shell carries no server-injected bootstrap: ``script-src 'self'`` (see ``web.py``'s
+CSP) forbids inline script, so the page is static and fetches ``/data`` for itself —
+the same shape ``cv2_builder_page`` uses. ``/preview`` likewise returns the **payload**,
+not HTML, and the page draws it with the shared renderer in ``web_static/cv2_render.js``
+— matching ``/mirror-logs/render``'s contract, so both preview surfaces go through one
+renderer.
 
 **Why send returns before the post lands.** Both announcers retry construction forever
 with backoff (``autopost.discord_announcer``, ``xur.api_to_discord_announcer``), and
@@ -47,7 +55,6 @@ background task and returns. Delivery is observable in the mirror log.
 """
 
 import asyncio
-import json
 import logging
 import typing as t
 from pathlib import Path
@@ -62,7 +69,6 @@ from dd.hmessage.snapshot import cv2_payload
 from ...common.bot import CachedFetchBot
 from .. import web
 from ..autopost import Feed, registered_feeds
-from ..cv2_render import render_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +77,6 @@ loader = lb.Loader()
 _PAGE_HTML_PATH = (
     Path(__file__).resolve().parent.parent / "web_static" / "feed_page.html"
 )
-#: Replaced with the feed's JSON bootstrap (the ``rotation_editor`` / ``cv2_builder``
-#: idiom), so the shell knows which feed it is and whether Send is available.
-_BOOTSTRAP_PLACEHOLDER = "/*__BOOTSTRAP__*/ null"
 
 # The live bot, stashed at StartedEvent so the routes can reach the REST client (the
 # pattern weekly_reset / rotation_editor / cv2_builder_page already use).
@@ -120,8 +123,17 @@ async def _build(feed: Feed) -> HMessage:
 
 
 async def _handle_page(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """The static shell. 404s an unknown feed here, so a bad link fails at the page."""
+    _feed_or_404(request)
+    return aiohttp.web.Response(
+        text=_PAGE_HTML_PATH.read_text(encoding="utf-8"), content_type="text/html"
+    )
+
+
+async def _handle_data(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Which feed this is, and whether Send is available."""
     feed = _feed_or_404(request)
-    bootstrap = json.dumps(
+    return aiohttp.web.json_response(
         {
             "name": feed.name,
             "title": _title(feed.name),
@@ -130,11 +142,7 @@ async def _handle_page(request: aiohttp.web.Request) -> aiohttp.web.Response:
             "dormant": feed.channel_id is None,
             "channelId": str(feed.channel_id) if feed.channel_id else None,
         }
-    ).replace("<", "\\u003c")  # never let a value close the <script> block
-    body = _PAGE_HTML_PATH.read_text(encoding="utf-8").replace(
-        _BOOTSTRAP_PLACEHOLDER, bootstrap
     )
-    return aiohttp.web.Response(text=body, content_type="text/html")
 
 
 async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -152,8 +160,10 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
     except Exception as e:
         logger.exception("feed preview failed for %s", feed.name)
         return aiohttp.web.json_response({"error": str(e) or e.__class__.__name__})
+    # The same shape /mirror-logs/render returns for a captured version, so the page
+    # draws it with the identical CV2Render.snapshotSpec call.
     return aiohttp.web.json_response(
-        {"html": render_snapshot(cv2_payload(hmsg), "cv2")}
+        {"kind": "snapshot", "payload": cv2_payload(hmsg), "message_kind": "cv2"}
     )
 
 
@@ -231,6 +241,7 @@ async def _handle_send(request: aiohttp.web.Request) -> aiohttp.web.Response:
 def register_feed_page_routes(app: aiohttp.web.Application) -> None:
     """Add the feed-page routes to the shared persistent app."""
     app.router.add_get("/feed/{name}", _handle_page)
+    app.router.add_get("/feed/{name}/data", _handle_data)
     app.router.add_get("/feed/{name}/preview", _handle_preview)
     app.router.add_post("/feed/{name}/send", _handle_send)
 

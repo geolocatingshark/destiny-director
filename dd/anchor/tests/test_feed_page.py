@@ -105,35 +105,54 @@ def _register(
 # --- the page shell ----------------------------------------------------------------
 
 
-async def test_page_bootstraps_the_named_feed() -> None:
+async def test_page_shell_carries_no_inline_script() -> None:
+    # script-src 'self' (web.py's CSP) forbids inline script, so the shell must be
+    # static and fetch /data for itself. A server-injected bootstrap would be dead.
     _register("lost_sector", channel_id=987)
-    res = await feed_page._handle_page(_as_request(_FakeRequest("lost_sector")))
-    assert "Lost Sector" in _text(res)
-    assert '"dormant": false' in _text(res)
-    assert '"channelId": "987"' in _text(res)
-    # The placeholder must be consumed, or the page ships a literal `null` bootstrap.
-    assert feed_page._BOOTSTRAP_PLACEHOLDER not in _text(res)
+    body = _text(await feed_page._handle_page(_as_request(_FakeRequest("lost_sector"))))
+    assert "/static/feed_page.js" in body
+    assert "/static/cv2_render.js" in body
+    assert "<script>" not in body
 
 
-async def test_dormant_feed_bootstraps_as_dormant() -> None:
+async def test_data_describes_the_named_feed() -> None:
+    _register("lost_sector", channel_id=987)
+    res = await feed_page._handle_data(_as_request(_FakeRequest("lost_sector")))
+    payload = json.loads(_text(res))
+    assert payload["title"] == "Lost Sector"
+    assert payload["dormant"] is False
+    # Snowflakes exceed JS's safe-integer range, so ids travel as strings.
+    assert payload["channelId"] == "987"
+
+
+async def test_data_marks_a_dormant_feed() -> None:
     _register("iron_banner", channel_id=None)
-    res = await feed_page._handle_page(_as_request(_FakeRequest("iron_banner")))
-    assert '"dormant": true' in _text(res)
-    assert '"channelId": null' in _text(res)
+    payload = json.loads(
+        _text(await feed_page._handle_data(_as_request(_FakeRequest("iron_banner"))))
+    )
+    assert payload["dormant"] is True
+    assert payload["channelId"] is None
 
 
 async def test_unknown_feed_404s() -> None:
     with pytest.raises(aiohttp.web.HTTPNotFound):
         await feed_page._handle_page(_as_request(_FakeRequest("nope")))
+    with pytest.raises(aiohttp.web.HTTPNotFound):
+        await feed_page._handle_data(_as_request(_FakeRequest("nope")))
 
 
 # --- preview -----------------------------------------------------------------------
 
 
-async def test_preview_renders_the_built_post() -> None:
+async def test_preview_returns_the_node_tree_for_the_shared_renderer() -> None:
+    # The same {kind, payload, message_kind} shape /mirror-logs/render serves, so the
+    # page draws it with the identical CV2Render.snapshotSpec call.
     _register()
     res = await feed_page._handle_preview(_as_request(_FakeRequest("xur")))
-    assert "Hello from the feed" in json.loads(_text(res))["html"]
+    payload = json.loads(_text(res))
+    assert payload["kind"] == "snapshot"
+    assert payload["message_kind"] == "cv2"
+    assert "Hello from the feed" in json.dumps(payload["payload"])
 
 
 async def test_preview_reports_a_build_failure_as_data() -> None:
@@ -148,7 +167,7 @@ async def test_preview_works_while_dormant() -> None:
     # Construction needs no channel, so a dormant feed still previews.
     _register(channel_id=None)
     res = await feed_page._handle_preview(_as_request(_FakeRequest("xur")))
-    assert "Hello from the feed" in json.loads(_text(res))["html"]
+    assert "Hello from the feed" in json.dumps(json.loads(_text(res))["payload"])
 
 
 # --- send --------------------------------------------------------------------------
@@ -251,5 +270,6 @@ async def test_routes_and_no_card_registered() -> None:
     feed_page.register_feed_page_routes(app)
     paths = {getattr(r.resource, "canonical", None) for r in app.router.routes()}
     assert "/feed/{name}" in paths
+    assert "/feed/{name}/data" in paths
     assert "/feed/{name}/preview" in paths
     assert "/feed/{name}/send" in paths

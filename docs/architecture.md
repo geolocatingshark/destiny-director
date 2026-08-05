@@ -118,8 +118,9 @@ For **Components V2** posts, use `build_container()` from `dd/common/components.
 ## Rendering a message on the web — one renderer
 
 Every web surface that shows what a Discord message will look like — the CV2 builder's
-canvas and its publish confirmation, the mirror log's snapshot and diff panes, and the
-weekly-reset / trials / rotation form previews — draws through **one** renderer:
+canvas and its publish confirmation, the mirror log's snapshot and diff panes, the
+weekly-reset / trials / rotation form previews, and the per-feed page's post preview —
+draws through **one** renderer:
 `dd/anchor/web_static/cv2_render.js`. It walks a CV2 node tree (or a classic
 content+embeds payload) into a plain-data *spec*, which two back ends turn into
 something: `serialize()` for an HTML string (pure, so `node --test` can assert it) and
