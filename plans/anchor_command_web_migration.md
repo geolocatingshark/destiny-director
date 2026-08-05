@@ -1,6 +1,10 @@
 # Anchor Discord commands → web control panel
 
-## Status: decided, not started (owner decisions locked 2026-08-04)
+## Status: Phases 0, 1 and 4 built (2026-08-04/05). Phases 2 and 3 remain.
+
+Phase 4 was taken out of order, ahead of 2 and 3 — the phases are independent, and it
+was the smallest. Phase 1 is **built but not verified against a real Discord channel**;
+see its section. Owner decisions locked 2026-08-04.
 
 Anchor's Discord surface is **39 invocable entries**, all owner-gated
 (`hooks=[owner_only]` on the whole client in `dd/anchor/__main__.py:53`). The web control
