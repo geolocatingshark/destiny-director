@@ -167,7 +167,11 @@ async def _handle_oauth_callback(
         logger.error("Error during bungie api authentication: %s", response_json)
         return aiohttp.web.Response(text="Error during bungie api authentication")
 
-    return aiohttp.web.Response(text="You can close this tab/window now.")
+    # Land back on the Bungie account page, which re-reads the link status on load — so
+    # the redirect itself is the confirmation. This used to say "you can close this tab
+    # now", which was right when the flow started from `/bungie login` in Discord and
+    # the browser was a detour; now the page is where the operator started.
+    raise aiohttp.web.HTTPFound(location="/bungie")
 
 
 def register_oauth_routes(app: aiohttp.web.Application) -> None:

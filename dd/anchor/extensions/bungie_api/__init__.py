@@ -9,11 +9,9 @@ manifest helpers, constants) so importers keep using
 ``dd.anchor.extensions.bungie_api.<symbol>`` unchanged.
 """
 
-import aiohttp
 import lightbulb as lb
 
 from dd.anchor import web
-from dd.common.components import cv2_error, cv2_notice, cv2_success, respond_cv2
 
 from . import client
 from .constants import (
@@ -83,7 +81,6 @@ __all__ = [
     "register_oauth_routes",
     "webserver_runner_preparation",
     "loader",
-    "bungie",
 ]
 
 # Serve the Bungie OAuth callback from the anchor's persistent web app (replaces the
@@ -94,76 +91,8 @@ web.register_routes(register_oauth_routes)
 
 loader = lb.Loader()
 
-bungie = lb.Group("bungie", "Bungie API related commands")
-
-
-@bungie.register
-class Login(
-    lb.SlashCommand,
-    name="login",
-    description="Log in to the app with a Bungie account",
-):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context):
-        initial = await respond_cv2(
-            ctx, cv2_notice(f"Please log in at {oauth_url()}"), ephemeral=True
-        )
-        try:
-            await refresh_api_tokens(runner=get_webserver_runner(), with_login=True)
-        except TimeoutError:
-            await ctx.edit_response(
-                initial,
-                components=[
-                    cv2_error(
-                        "Login timed out",
-                        "Timed out after 15 minutes. Run `/bungie login` again.",
-                    )
-                ],
-            )
-            return
-        await ctx.edit_response(
-            initial, components=[cv2_success("Successfully logged in")]
-        )
-
-
-@bungie.register
-class AccountNumbers(
-    lb.SlashCommand,
-    name="account_numbers",
-    description="Get the character id, destiny membership id and membership type",
-):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context):
-        # Ack within Discord's 3s window with a placeholder, then edit in the result;
-        # the token refresh + Bungie round-trips below take longer than 3s.
-        initial = await respond_cv2(
-            ctx, cv2_notice("Fetching account numbers…"), ephemeral=True
-        )
-        access_token = await refresh_api_tokens(runner=get_webserver_runner())
-
-        async with aiohttp.ClientSession() as session:
-            destiny_membership = await DestinyMembership.from_api(session, access_token)
-            character_id = await destiny_membership.get_character_id(
-                session, access_token
-            )
-
-        # Note: the OAuth access token is intentionally not included here. It is a
-        # live credential and must never be surfaced in a Discord message, even an
-        # ephemeral one.
-        await ctx.edit_response(
-            initial,
-            components=[
-                cv2_notice(
-                    "```\n"
-                    f"Destiny Character ID: {character_id}\n"
-                    f"Destiny Membership ID: {destiny_membership.membership_id}\n"
-                    f"Destiny Membership Type: {destiny_membership.membership_type}"
-                    "\n```"
-                )
-            ],
-        )
-
-
-# No guilds= → inherits the client's default_enabled_guilds (control + test_env); the
-# client-level owner hook gates these Bungie-credential commands to bot owners.
-loader.command(bungie)
+# No commands live here any more: `/bungie login` and `/bungie account_numbers` moved to
+# the web control panel (dd/anchor/extensions/bungie_account.py, `/bungie`). Login in
+# particular was a poor fit for Discord — it printed a URL and then blocked for up to 15
+# minutes polling for the token, where on the web the redirect back IS the completion
+# signal. The loader stays because load_extensions_strict requires one.

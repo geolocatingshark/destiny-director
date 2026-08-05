@@ -224,7 +224,30 @@ restart-on-failure policy" glosses over the retry ceiling, and anchor's explicit
 `info` with `show_followables=True` is a read-only config dump — the easy half of this
 phase, and a reasonable first slice.
 
-### Phase 4 — Bungie account card on web
+### Phase 4 — Bungie account card on web ✅ BUILT 2026-08-05
+
+`/bungie` carries link status (linked / expired / never linked, with the stored expiry),
+a **Log in with Bungie** action, and an on-demand account-numbers lookup. `/bungie login`
+and `/bungie account_numbers` are gone, and with them the whole `bungie` command group.
+
+Notes worth keeping:
+
+- **Login stopped needing to wait.** The command printed a URL then blocked up to 15
+  minutes polling `OAuthStateManager.get_access_token()`. On the web the redirect back
+  *is* the completion signal, so `GET /bungie/login` mints a state code, redirects, and
+  the callback returns the browser to `/bungie`, which re-reads status on load.
+  `_wait_for_token_from_login` now has no caller — left in place, since it is the
+  documented shape of the flow and costs nothing.
+- **The state code is minted on click, not on render.** `oauth_url()` stores a one-shot
+  code per call, so minting it in the page handler would litter unused codes for the
+  sweeper. There is a test pinning that.
+- **The access token still never leaves the server** — the constraint the Discord
+  command carried in a comment, now also a test.
+- The callback's "you can close this tab" response became a redirect to `/bungie`. That
+  wording was right when the flow started in Discord and the browser was a detour; it
+  isn't now.
+
+#### Original design notes
 
 `/bungie login` and `/bungie account_numbers` become one card. The OAuth callback is
 already web-side (`/oauth/callback`, `bungie_api/oauth.py:179`), so login becomes a link
