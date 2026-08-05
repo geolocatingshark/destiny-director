@@ -21,6 +21,18 @@
 
 const BOOT = window.__BOOTSTRAP__;
 const { draft, options, conquest_tiers } = BOOT;
+
+// The manifest-backed pools (weapons, GM strikes, conquests) are large and cold on a
+// fresh process, so the server renders the form without waiting past a few seconds. Say
+// so rather than presenting empty pickers as if those pools were genuinely empty.
+if (options.ready === false) {
+  const warning = document.createElement("p");
+  warning.className = "options-warning";
+  warning.textContent =
+    "Weapon, GM strike and Conquest options are still loading from the Destiny " +
+    "manifest. Reload in a moment to get them — everything else on this form works now.";
+  document.querySelector("header").appendChild(warning);
+}
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, kids = []) => {
   const n = Object.assign(document.createElement(tag), props);

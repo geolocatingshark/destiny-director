@@ -971,6 +971,9 @@ class _Indexes:
     activities: dict[str, list[str]]
     #: Conquests pool: post tier ("Expert"/"Master"/"GM"/"Ultimate") -> sorted names.
     conquests: dict[str, list[str]]
+    #: False when the manifest could not be read, so the activity/conquest pools are
+    #: empty rather than genuinely so. Such a build is NOT cached — see get_indexes.
+    complete: bool = True
 
 
 _indexes: _Indexes | None = None
@@ -1097,11 +1100,17 @@ async def _build_indexes() -> _Indexes:
                         strikes.add(cleaned)
     except Exception:
         logger.warning("weekly_reset: manifest index build failed", exc_info=True)
+        complete = False
+    else:
+        complete = True
 
     result = _Indexes(
         items=items,
         activities={"strike": sorted(strikes)},
         conquests={tier: sorted(names) for tier, names in conquest_by_tier.items()},
+        # The item pool comes from get_weapon_pool, which returns [] uncached on its own
+        # failure; an empty pool means that failed too, and is equally not cacheable.
+        complete=complete and bool(items),
     )
     logger.info(
         "weekly_reset indexes: %d items; strikes=%d; conquests=%d",
@@ -1113,13 +1122,22 @@ async def _build_indexes() -> _Indexes:
 
 
 async def get_indexes() -> _Indexes:
-    """Build (once) and cache the manifest-backed autocomplete indexes."""
+    """Build (once) and cache the manifest-backed autocomplete indexes.
+
+    A build that could not read the manifest is returned but **not cached**, mirroring
+    :func:`hybrid_post_core.get_weapon_pool`. Caching one used to be permanent: a single
+    transient manifest failure at startup left the form with empty strike/conquest
+    pickers for the life of the process, with nothing to indicate why.
+    """
     global _indexes
     if _indexes is not None:
         return _indexes
     async with _indexes_lock:
         if _indexes is None:
-            _indexes = await _build_indexes()
+            built = await _build_indexes()
+            if not built.complete:
+                return built
+            _indexes = built
         return _indexes
 
 
@@ -1265,10 +1283,50 @@ def _pair(raw: t.Any) -> tuple[str, str]:
     return (values[0], values[1])
 
 
+#: How long the form waits for the manifest-backed pools before rendering without them.
+#: The manifest is a large download the first time (its own timeout is 600s) plus a full
+#: scan of two definition tables, so a cold process used to make ``GET /weekly_reset``
+#: hang for 40s+ and sometimes never answer. A prewarm runs at StartedEvent, so in the
+#: normal case this wait is already satisfied and costs nothing; this bound is what
+#: happens when the form is opened before it finishes.
+_OPTIONS_WAIT_SECONDS = 5
+
+
 async def _build_options() -> dict[str, t.Any]:
-    """Option pools shipped in the page bootstrap and filtered client-side."""
-    indexes = await get_indexes()
+    """Option pools shipped in the page bootstrap and filtered client-side.
+
+    Never blocks the page for long: on timeout the form renders with empty
+    manifest-backed pools and ``ready: False``, which the page surfaces as a "still
+    loading, reload shortly" banner. The prewarm keeps building in the background, so a
+    reload a moment later gets the full pools.
+    """
+    try:
+        # shield() so the timeout abandons the *wait*, not the build: the prewarm's
+        # in-flight manifest download keeps going and a reload picks it up.
+        indexes = await asyncio.wait_for(
+            asyncio.shield(get_indexes()), _OPTIONS_WAIT_SECONDS
+        )
+    except Exception:  # TimeoutError included — either way, render without the pools.
+        logger.info(
+            "weekly_reset: manifest pools not ready within %ss; serving the form "
+            "without them",
+            _OPTIONS_WAIT_SECONDS,
+        )
+        return {
+            "ready": False,
+            "items": [],
+            "conquests": {tier: [] for tier in CONQUEST_TIERS},
+            "strikes": [],
+            "raids": list(RAIDS),
+            "dungeons": list(DUNGEONS),
+            "pantheon": list(PANTHEON_BOSSES),
+            "crucible_modes": list(CRUCIBLE_MODES),
+            "crucible_3v3_first": CRUCIBLE_3V3_FIRST,
+            "crucible_6v6_first": CRUCIBLE_6V6_FIRST,
+        }
     return {
+        # False when the manifest was not ready in time, or could not be read at all.
+        "ready": indexes.complete,
         "items": [
             {"name": name, "hash": hash_, "type": type_name, "rarity": rarity}
             for (name, hash_, type_name, _item_type, rarity) in indexes.items
