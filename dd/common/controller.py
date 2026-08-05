@@ -13,14 +13,19 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Shared bot-administration command group (stop / info) for both bots.
+"""Beacon's bot-administration command group (stop / info).
 
-Factory mirroring ``make_source_command``: each call builds a *fresh* group named
-after the bot (``/anchor`` or ``/beacon``). Lightbulb command objects carry per-client
-registration state, so a fresh group is built per call, not shared across clients. The
-factory applies ``owner_only`` to each subcommand itself rather than relying on a
-client-wide gate (anchor gates its whole client, beacon does not); harmless on anchor.
-The wrappers scope registration to the control guild.
+**Only beacon uses this now.** Anchor's ``/anchor stop | info`` moved to its web
+control panel (``/bot/info``, ``/bot/stop``) on 2026-08-05; beacon has no web surface to
+move to, so it keeps the commands. The factory keeps its ``bot_name`` parameter rather
+than hardcoding "beacon" — it costs nothing, and the anchor wrapper is one file away if
+that ever reverses.
+
+Factory mirroring ``make_source_command``: each call builds a *fresh* group. Lightbulb
+command objects carry per-client registration state, so a fresh group is built per call
+rather than shared across clients. The factory applies ``owner_only`` to each subcommand
+itself rather than relying on a client-wide gate (beacon has none). The wrapper scopes
+registration to the control guild.
 
 Beacon passes a ``mirror_check`` so ``stop`` warns and requires a DANGER override while
 mirror operations are in progress. Termination goes through
@@ -32,7 +37,7 @@ hikari's fire-and-forget task wrapper.
 ``ALWAYS``. Every Railway service is on the ``ON_FAILURE`` default (prod beacon was
 flipped from ``ALWAYS`` on 2026-06-25; re-verified against Railway 2026-08-04, no
 service carries an ``ALWAYS`` override and none is set in ``railway.toml``), so
-``/beacon stop`` and ``/anchor stop`` work everywhere.
+``/beacon stop`` works everywhere.
 
 There is deliberately **no ``restart``** (removed 2026-08-04). It worked by exiting
 non-zero so Railway would bring the process back, which made it unusable in prod — a
@@ -159,20 +164,15 @@ def make_controller_group(
     bot_name: str,
     *,
     mirror_check: t.Callable[[], t.Awaitable[int]] | None = None,
-    show_followables: bool = False,
 ) -> lb.Group:
     """Build a fresh bot-administration group named after ``bot_name``.
 
     Args:
-        bot_name: The group name / top-level command, e.g. ``"anchor"`` or ``"beacon"``
-            (yields ``/anchor stop`` etc.).
+        bot_name: The group name / top-level command, e.g. ``"beacon"`` (yields
+            ``/beacon stop`` etc.).
         mirror_check: Optional callable returning the number of in-progress mirror
             operations. When it returns > 0, ``stop`` warns and requires a DANGER
-            override. Beacon supplies this; anchor (no mirrors) leaves it ``None``. It
-            also gates ``info``'s mirror-status block (present iff this is set).
-        show_followables: When ``True``, ``info`` lists every followable name → its
-            announce channel (as a ``<#id>`` mention). Anchor (the poster) sets this;
-            beacon shows per-followable mirror-dest counts instead.
+            override. It also gates ``info``'s mirror-status block (present iff set).
     """
     group = lb.Group(bot_name, "Bot administration")
 
@@ -208,15 +208,6 @@ def make_controller_group(
                 f"- Control Discord Server ID: {cfg.control_discord_server_id}",
                 f"- Test Environment: {cfg.test_env}",
             ]
-
-            if show_followables:
-                lines.append("\n**Followables**")
-                if cfg.followables:
-                    for name, channel_id in cfg.followables.items():
-                        link = f"<#{channel_id}>" if channel_id else "*(not set)*"
-                        lines.append(f"- `{name}` → {link}")
-                else:
-                    lines.append("*(none configured)*")
 
             if mirror_check is not None:
                 lines.append("\n**Mirror status**")

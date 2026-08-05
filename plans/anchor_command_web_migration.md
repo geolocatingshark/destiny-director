@@ -1,15 +1,18 @@
 # Anchor Discord commands → web control panel
 
-## Status: Phases 0, 1 and 4 built (2026-08-04/05). Phases 2 and 3 remain.
+## Status: Phases 0, 1, 3 and 4 built (2026-08-04/05). **Phase 2 deferred indefinitely.**
 
-Phase 4 was taken out of order, ahead of 2 and 3 — the phases are independent, and it
-was the smallest. Phase 1 is **built but not verified against a real Discord channel**;
-see its section. Owner decisions locked 2026-08-04.
+Phases 4 and 3 were taken out of order, ahead of 2 — the phases are independent. Phase 2
+(the web embed builder, dropping `/post embed`) was **deferred indefinitely by the owner
+on 2026-08-05**; `/post embed` stays in Discord, and `plans/web_embed_builder.md` stays
+unbuilt. Phase 1 is built and **partly verified** on dev. Owner decisions locked
+2026-08-04.
 
 Anchor's Discord surface is **39 invocable entries**, all owner-gated
 (`hooks=[owner_only]` on the whole client in `dd/anchor/__main__.py:53`). The web control
 panel already covers settings and observability; this plan takes it the rest of the way
-and reduces Discord to a **10-entry** minimal set.
+and reduces Discord to a minimal set — **11 entries** as built, since Phase 2's
+`/post embed` is staying.
 
 Related: `plans/anchor_web_ia.md` (the unresolved page-shape question that Phase 1 must
 answer), `plans/web_embed_builder.md` (dependency of Phase 2),
@@ -46,8 +49,8 @@ The `auto` subcommand is generated inside `make_autopost_control_commands`
 | Commands | Target | Notes |
 | --- | --- | --- |
 | `send` × 6, `show` × 6 | per-feed preview + send-now on web | Phase 1. The one genuinely new feature. |
-| `/post embed` | web embed builder | Phase 2. Blocked on `plans/web_embed_builder.md`. |
-| `/anchor restart \| stop \| info` | web admin controls | Phase 3. |
+| `/post embed` | web embed builder | Phase 2. **Deferred indefinitely 2026-08-05** — stays in Discord. |
+| `/anchor restart \| stop \| info` | web admin controls | Phase 3. `restart` was deleted outright rather than migrated. |
 | `/bungie login`, `/bungie account_numbers` | web Bungie account card | Phase 4. |
 
 ### Set C — stays in Discord (10 entries)
@@ -82,17 +85,15 @@ actually use.
 
 `help_details.py` needed no change — none of its entries covered a Set A command.
 
-### Phase 1 — per-feed send + preview on web ✅ BUILT 2026-08-05, NOT YET VERIFIED
+### Phase 1 — per-feed send + preview on web ✅ BUILT 2026-08-05, PARTLY VERIFIED
 
 Built in three commits (registry groundwork → page → removal). `make lint`,
 `make typecheck` and the full non-Discord suite (1209 passed) are green.
 
-**Outstanding: nobody has driven this against a real Discord channel.** The tests use
-fake requests and a stub bot, so they prove the guards and the wiring, not that a real
-post renders or lands. Verify on dev before prod. In particular exercise: a preview of a
-Bungie-backed feed (xur/eververse/ada/portal_ops — these hit the live API), a preview of
-Iron Banner while no event is scheduled (should render the constructor's error in the
-box, not 500), and one real Send with publish on.
+**Partly verified on dev 2026-08-05** (owner). The pages and preview were driven in a
+browser; what remains unconfirmed is a **real Send landing in a channel and mirroring**
+— beacon was never deployed to dev, so the mirror leg has never run end to end. Worth
+finishing before prod.
 
 What differs from the plan as written:
 
@@ -181,10 +182,16 @@ today (`posts.py:292`, `posts.py:335`) and should hand off to the web embed buil
 same way their CV2 paths hand off to `cv2_builder_page`, so the in-Discord embed builder
 (`dd/anchor/embeds.py`) can be deleted rather than kept alive for two callers.
 
-### Phase 3 — bot admin on web
+### Phase 3 — bot admin on web ✅ BUILT 2026-08-05
 
-`/anchor restart | stop | info` move to the panel. **Owner's call, against my
-recommendation — recording the tradeoff so it is not rediscovered:** the aiohttp app runs
+`/anchor stop | info` moved to the panel — as `GET /bot/info` and `POST /bot/stop`, with
+the buttons and their modals on `/` itself rather than a page of their own (two actions
+and a read-only dump do not need one). `dd/anchor/extensions/controller.py` is gone;
+beacon keeps `/beacon stop | info` via the shared factory, which shed its now-dead
+`show_followables` parameter (anchor was its only user).
+
+**Owner's call, against my recommendation — recording the tradeoff so it is not
+rediscovered:** the aiohttp app runs
 *inside* the anchor process, so a web-only control cannot restart a wedged web server. The
 fallback is redeploying from Railway. Two things soften it: `restart` is already disabled
 in prod (`dd/common/controller.py` — a non-zero exit is a crash to Railway, which applies

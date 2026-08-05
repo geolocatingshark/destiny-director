@@ -19,6 +19,7 @@ from dd.common.controller import make_controller_group
 
 
 def test_group_named_after_bot() -> None:
+    # Only beacon builds one now — anchor's stop/info moved to its web control panel.
     group = make_controller_group("beacon")
     assert group.name == "beacon"
     assert group.description == "Bot administration"
@@ -27,14 +28,14 @@ def test_group_named_after_bot() -> None:
 def test_group_has_stop_info_subcommands() -> None:
     # `restart` was removed 2026-08-04 — it only worked by exiting non-zero, which is a
     # crash to Railway. Assert the exact set so it can't creep back in unnoticed.
-    group = make_controller_group("anchor")
+    group = make_controller_group("beacon")
     assert set(group.subcommands.keys()) == {"stop", "info"}
 
 
 def test_each_call_builds_fresh_instances() -> None:
     # Lightbulb command objects carry per-client registration state, so the two bots
     # must not share one group/command instance.
-    first = make_controller_group("anchor")
-    second = make_controller_group("anchor")
+    first = make_controller_group("beacon")
+    second = make_controller_group("beacon")
     assert first is not second
     assert first.subcommands["stop"] is not second.subcommands["stop"]

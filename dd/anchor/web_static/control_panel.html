@@ -34,6 +34,46 @@
       a.card:hover .title { text-decoration: underline; }
       a.card .desc { color: var(--text-faint); font-size: .85rem; margin-top: .25rem; }
       p.empty { color: var(--text-faint); }
+      /* Bot administration, below the card grid. Deliberately quiet: it is two
+         buttons, one of which stops the process. */
+      .botadmin { margin: 1.6rem 0 0; }
+      .botadmin h2 { font-size: .95rem; margin: 0 0 .5rem; color: var(--text-faint); }
+      .botactions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+      .botactions button {
+        box-sizing: border-box; border: 1px solid var(--border);
+        border-radius: var(--radius); padding: .4rem .9rem; background: var(--surface-2);
+        color: var(--text-1); font: inherit; font-size: .88rem; line-height: 1.4;
+        cursor: pointer;
+      }
+      .botactions button:hover:not(:disabled) { border-color: var(--border-hover); }
+      .botactions button:disabled { opacity: .55; cursor: default; }
+      .status { color: var(--text-faint); font-size: .85rem; }
+      .status.err { color: var(--danger, #d9534f); }
+
+      dialog.panelmodal {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-3); color: var(--text-1); padding: 1.1rem;
+        max-width: 34rem; width: calc(100% - 2rem);
+      }
+      dialog.panelmodal::backdrop { background: rgba(0, 0, 0, .55); }
+      dialog.panelmodal h2 { margin: 0 0 .6rem; font-size: 1.05rem; }
+      dialog.panelmodal p.lede {
+        margin: 0 0 .8rem; font-size: .92rem; color: var(--muted);
+      }
+      .modal-actions { display: flex; justify-content: flex-end; gap: .6rem; }
+      .modal-actions .danger {
+        border: 1px solid var(--danger, #d9534f); border-radius: var(--radius);
+        padding: .45rem 1rem; background: var(--danger, #d9534f); color: #fff;
+        font-size: .92rem; cursor: pointer;
+      }
+      .modalstatus { color: var(--text-faint); font-size: .85rem; }
+      .modalstatus.err { color: var(--danger, #d9534f); }
+      /* The config dump: a definition list, monospace values so ids are scannable. */
+      #infoBody dl { margin: 0; display: grid; grid-template-columns: auto 1fr;
+        gap: .3rem .8rem; font-size: .88rem; }
+      #infoBody dt { color: var(--text-faint); }
+      #infoBody dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      #infoBody h3 { font-size: .85rem; margin: .9rem 0 .4rem; color: var(--text-faint); }
     </style>
   </head>
   <body>
@@ -47,5 +87,48 @@
     <main class="cards">
       <!--__CARDS__-->
     </main>
+
+    <!-- Bot administration: the web replacement for /anchor info and /anchor stop. On
+         the panel itself rather than a page of its own — it is two actions and a
+         read-only dump, and this is already the bot's front door. -->
+    <section class="botadmin">
+      <h2>Bot</h2>
+      <div class="botactions">
+        <button type="button" id="infoBtn"
+                title="Configuration state: control server, test environment, and the followable channel each feed posts to.">
+          Bot info
+        </button>
+        <button type="button" id="stopBtn"
+                title="Shuts the bot down cleanly. The panel runs inside the bot, so this takes this page down too — recovery is a Railway redeploy.">
+          Shut down
+        </button>
+        <span class="status" id="botStatus"></span>
+      </div>
+    </section>
+
+    <dialog class="panelmodal" id="infoDialog">
+      <h2>Configuration</h2>
+      <div id="infoBody"></div>
+      <div class="modal-actions">
+        <button type="button" id="infoClose">Close</button>
+      </div>
+    </dialog>
+
+    <dialog class="panelmodal" id="stopDialog">
+      <h2>Shut the bot down?</h2>
+      <p class="lede">
+        The bot stops and stays stopped — a clean exit, so Railway will not restart it.
+        <strong>This panel runs inside the bot</strong>, so this page goes down with it.
+        Bringing it back means redeploying from Railway.
+      </p>
+      <p class="modalstatus" id="stopStatus"></p>
+      <div class="modal-actions">
+        <button type="button" id="stopCancel">Cancel</button>
+        <button type="button" class="danger" id="stopConfirm">Shut down</button>
+      </div>
+    </dialog>
+
+    <script src="/static/shared.js" defer></script>
+    <script src="/static/control_panel.js" defer></script>
   </body>
 </html>
