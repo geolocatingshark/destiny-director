@@ -85,19 +85,8 @@ document.addEventListener("DOMContentLoaded", () => {
     return name ? name.textContent.trim() : slug;
   }
 
-  function say(el, message, isError) {
-    el.classList.toggle("err", !!isError);
-    el.textContent = message;
-  }
-
-  /** A status line with a spinner in front of it — for waits measured in seconds. */
-  function busy(el, message) {
-    el.classList.remove("err");
-    el.replaceChildren(
-      Object.assign(document.createElement("span"), { className: "spinner" }),
-      document.createTextNode(message),
-    );
-  }
+  // say/busy come from shared.js.
+  const { say, busy } = window;
 
   /** Abandon any in-flight preview draw, so a slow one cannot land after this. */
   function cancelDraw() {

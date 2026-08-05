@@ -4,6 +4,8 @@
 
 (() => {
   const byId = (id) => document.getElementById(id);
+  // say/busy come from shared.js (loaded first, deferred — order is preserved).
+  const { say, busy } = window;
   const dot = byId("dot");
   const state = byId("state");
   const fetchBtn = byId("fetchBtn");
@@ -44,19 +46,17 @@
       const res = await fetch("/bungie/account");
       const data = await res.json();
       if (data.error) {
-        numbersStatus.classList.add("err");
-        numbersStatus.textContent = data.error;
+        say(numbersStatus, data.error, true);
       } else {
         // textContent, not innerHTML — these are ids from a remote API.
         numbers.textContent =
           "Destiny Character ID:   " + data.characterId + "\n" +
           "Destiny Membership ID:  " + data.membershipId + "\n" +
           "Destiny Membership Type:" + " " + data.membershipType;
-        numbersStatus.textContent = "";
+        say(numbersStatus, "", false);
       }
     } catch (_) {
-      numbersStatus.classList.add("err");
-      numbersStatus.textContent = "Network error — try again.";
+      say(numbersStatus, "Network error — try again.", true);
     } finally {
       fetchBtn.disabled = false;
     }

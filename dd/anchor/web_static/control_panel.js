@@ -21,10 +21,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const stopConfirm = byId("stopConfirm");
   const botStatus = byId("botStatus");
 
-  function say(el, message, isError) {
-    el.classList.toggle("err", !!isError);
-    el.textContent = message;
-  }
+  // say comes from shared.js.
+  const { say } = window;
 
   /** A <dt>/<dd> pair. textContent throughout — ids come from config, not literals. */
   function row(list, label, value) {
