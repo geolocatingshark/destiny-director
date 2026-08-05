@@ -42,6 +42,44 @@ test("a page that draws charts also loads the chart styles", () => {
   );
 });
 
+test("a page that styles a rendered post also loads the renderer", () => {
+  // The mirror image of the charts rule. cv2_preview.css styles what cv2_render.js
+  // emits; a page with the sheet and no renderer shows nothing, and a page with the
+  // renderer and no sheet shows an unstyled pile of divs that still reads as a message
+  // — plausible enough to ship by accident.
+  const mismatched = pages()
+    .filter(
+      (p) =>
+        p.text.includes("/static/cv2_preview.css") !==
+        p.text.includes("/static/cv2_render.js"),
+    )
+    .map((p) => p.name);
+  assert.deepEqual(
+    mismatched,
+    [],
+    "cv2_preview.css and cv2_render.js must be loaded together",
+  );
+});
+
+test("cv2_render.js is loaded after the model it consumes", () => {
+  // Load order IS the dependency graph here — cv2_render.js reads window.CV2Model at
+  // definition time, so a page that lists it first gets `undefined` and dies on the
+  // first render with a message that points nowhere near the real mistake. Two shared
+  // files were manageable by convention; four are not.
+  const wrong = pages()
+    .filter((p) => p.text.includes("/static/cv2_render.js"))
+    .filter((p) => {
+      const model = p.text.indexOf("/static/cv2_model.js");
+      return model === -1 || model > p.text.indexOf("/static/cv2_render.js");
+    })
+    .map((p) => p.name);
+  assert.deepEqual(
+    wrong,
+    [],
+    "these pages load cv2_render.js without cv2_model.js before it",
+  );
+});
+
 test("charts.css is not loaded by pages that draw no charts", () => {
   // The reverse direction, so the sheet does not quietly become a second shared.css.
   const pointless = pages()
@@ -106,4 +144,76 @@ test("the shared focus ring stays at element specificity", () => {
     /\.[a-zA-Z]/,
     `the shared focus ring must not carry a class selector — found: ${rule[1].trim()}`,
   );
+});
+
+test("no page carries an executable inline script", () => {
+  // This is the invariant `script-src 'self'` rests on (SECURITY_HEADERS in
+  // dd/anchor/web.py). A `<script>` with no `src` and no non-executable `type` is
+  // exactly what CSP blocks — and it would fail in production only, on a page a
+  // developer had already tested locally without the header. Catch it here instead.
+  //
+  // `type="application/json"` is allowed: the three templated pages ship their
+  // server-injected data that way, and CSP treats a non-executable type as data.
+  const offenders = [];
+  for (const page of pages()) {
+    for (const [, attrs] of page.text.matchAll(/<script([^>]*)>/g)) {
+      const hasSrc = /\ssrc=/.test(attrs);
+      const isData = /\stype="application\/json"/.test(attrs);
+      if (!hasSrc && !isData) offenders.push(`${page.name}: <script${attrs}>`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "inline scripts are blocked by script-src 'self' — move them to /static/",
+  );
+});
+
+test("a page driven by initPostForm has every element it dereferences", () => {
+  // shared.js reaches for these by id and assigns straight through
+  // (`_byId("createBtn").hidden = …`), so a missing one is a TypeError on page load,
+  // not a degraded form. That is exactly what happened while editing these templates:
+  // an over-greedy edit removed weekly_reset_form.html's whole toolbar, and nothing
+  // failed — the JS tests don't load pages and the Python tests don't read them.
+  //
+  // The ids are shared.js's contract with both hybrid-post forms, which its own header
+  // comment describes as "the SAME element ids". Deriving them from the source keeps
+  // this honest if that contract grows.
+  const sharedJs = fs.readFileSync(path.join(STATIC_DIR, "shared.js"), "utf8");
+  const required = [
+    ...new Set(
+      [...sharedJs.matchAll(/_byId\("([a-zA-Z]+)"\)/g)].map((m) => m[1]),
+    ),
+  ];
+  assert.ok(required.length > 5, "expected shared.js to dereference several ids");
+
+  // Which pages drive the form lifecycle. Derived from the SCRIPTS, because a shell
+  // never names `initPostForm` itself — it loads a page script that calls it. Filtering
+  // the pages on that string directly matched nothing at all, so the first version of
+  // this guard passed on a page with its whole toolbar deleted.
+  const drivers = fs
+    .readdirSync(STATIC_DIR)
+    .filter((n) => n.endsWith(".js") && n !== "shared.js")
+    .filter((n) =>
+      fs.readFileSync(path.join(STATIC_DIR, n), "utf8").includes("initPostForm("),
+    );
+  assert.ok(drivers.length > 1, "expected both hybrid-post forms to call initPostForm");
+
+  const inspected = [];
+  const missing = [];
+  for (const page of pages()) {
+    if (!drivers.some((d) => page.text.includes(`/static/${d}`))) continue;
+    inspected.push(page.name);
+    for (const id of required) {
+      if (!page.text.includes(`id="${id}"`)) missing.push(`${page.name}: #${id}`);
+    }
+  }
+  // The guard on the guard. A filter that selects nothing reports no problems, which is
+  // exactly how this test passed while being inert.
+  assert.equal(
+    inspected.length,
+    drivers.length,
+    `expected one page per driver script; inspected ${JSON.stringify(inspected)}`,
+  );
+  assert.deepEqual(missing, [], "shared.js will throw on these pages");
 });

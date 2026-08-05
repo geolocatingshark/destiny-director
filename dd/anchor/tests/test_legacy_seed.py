@@ -133,8 +133,9 @@ async def test_editor_builds_and_previews_legacy_type():
     obj = editor._build_domain_object("world_activity_throne_world", doc)
     assert isinstance(obj, LegacyRotation)
     # bot=None → preview_emoji_dict returns {} (raw :emoji: tokens survive).
-    html = await editor._render_preview("world_activity_throne_world", obj, None)
-    assert "Wellspring" in html
+    payload = await editor._render_preview("world_activity_throne_world", obj, None)
+    assert payload["kind"] == "wall"
+    assert "Wellspring" in json.dumps(payload["posts"])
 
 
 def test_home_page_lists_legacy_slugs():

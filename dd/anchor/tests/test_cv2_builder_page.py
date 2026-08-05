@@ -195,18 +195,46 @@ async def test_save_round_trips_the_nodes() -> None:
 # --- preview --------------------------------------------------------------------
 
 
-async def test_preview_returns_server_rendered_html(stub_bot: _StubBot) -> None:
+async def test_preview_returns_the_sanitized_tree(stub_bot: _StubBot) -> None:
+    """The confirmation renders client-side now, so this route returns DATA.
+
+    What makes it worth a round-trip is the sanitize: the tree that comes back is the
+    one the server would actually post, so a mid-construction block shows in the
+    confirmation as the placeholder it will publish as rather than as the author left
+    it. Escaping is the renderer's job and is pinned by the shared corpus
+    (``dd/anchor/preview_fixtures``), not re-asserted here.
+    """
     draft_id = await _draft()
 
     payload = _payload(
         await page._handle_preview(
-            _req(draft_id, body={"nodes": [{"type": 10, "content": "<b>x</b>"}]})
+            _req(
+                draft_id,
+                # An empty container is exactly the mid-construction state sanitize
+                # exists for: unsendable as-is, and Discord would reject the edit.
+                body={"nodes": [{"type": 17, "components": []}]},
+            )
         )
     )
 
-    # The authoritative render escapes; the client's approximation is not trusted here.
-    assert "&lt;b&gt;" in payload["html"]
-    assert "<b>x</b>" not in payload["html"]
+    assert payload["nodes"] == [
+        {
+            "type": 17,
+            "components": [
+                {"type": 10, "content": "-# ⚠️ empty container — open it to add blocks"}
+            ],
+        }
+    ]
+
+
+async def test_preview_leaves_a_sound_tree_alone(stub_bot: _StubBot) -> None:
+    draft_id = await _draft()
+
+    payload = _payload(
+        await page._handle_preview(_req(draft_id, body={"nodes": GOOD_NODES}))
+    )
+
+    assert payload["nodes"] == GOOD_NODES
 
 
 # --- publish --------------------------------------------------------------------
@@ -288,9 +316,7 @@ async def test_routes_are_registered() -> None:
     app = aiohttp.web.Application()
     page.register_cv2_builder_routes(app)
     paths = {
-        r.resource.canonical
-        for r in app.router.routes()
-        if r.resource is not None
+        r.resource.canonical for r in app.router.routes() if r.resource is not None
     }
     assert "/cv2-builder/{draft}" in paths
     assert "/cv2-builder/{draft}/publish" in paths
@@ -300,4 +326,3 @@ async def test_page_shell_is_servable() -> None:
     # A missing/renamed template would otherwise only fail in production.
     assert page._PAGE_HTML_PATH.exists()
     assert "cv2_builder_page.js" in page._PAGE_HTML_PATH.read_text()
-

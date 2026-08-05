@@ -100,11 +100,10 @@ def _vocab() -> dict[str, t.Any]:
     }
 
 
-def _render_lost_sector_preview(
+def _lost_sector_posts(
     rotation: sector_accounting.Rotation,
-    emoji_dict: dict[str, h.Emoji],
     details_enabled: bool,
-) -> str:
+) -> list[tuple[str, hybrid_post_core.PostSpec]]:
     """The next few days of Lost Sector posts, rendered as Discord messages.
 
     Uses the SAME body builder the live post uses (``lost_sector.build_body``) so the
@@ -139,7 +138,7 @@ def _render_lost_sector_preview(
                 ),
             )
         )
-    return hybrid_post_core.render_post_wall(posts, emoji_dict)
+    return posts
 
 
 def _render_xur_location_preview_html(
@@ -161,11 +160,10 @@ def _render_xur_location_preview_html(
     return "<ul>" + "".join(items) + "</ul>"
 
 
-def _render_legacy_preview(
+def _legacy_posts(
     destination_key: str,
     rotation: legacy_activities.LegacyRotation,
-    emoji_dict: dict[str, h.Emoji],
-) -> str:
+) -> list[tuple[str, hybrid_post_core.PostSpec]]:
     """The next few legacy posts for a destination, rendered as Discord messages.
 
     Reuses ``dd.common.legacy_activities.iter_wall_posts`` — the same per-mode paging
@@ -173,13 +171,12 @@ def _render_legacy_preview(
     ``/<destination>`` command posts, capped to a few periods for a compact editor pane.
     """
     now = dt.datetime.now(dt.UTC)
-    posts = [
+    return [
         (label, hybrid_post_core.PostSpec.cv2(body, None))
         for label, body in iter_wall_posts(
             destination_key, rotation, now, count=_PREVIEW_DAYS
         )
     ]
-    return hybrid_post_core.render_post_wall(posts, emoji_dict)
 
 
 # --- per-type dispatch ------------------------------------------------------------
@@ -212,10 +209,10 @@ def _render_trials_loot_preview_html(rotation: list[tuple[str, list[str]]]) -> s
     return "<ol>" + "".join(items) + "</ol>"
 
 
-async def _render_iron_banner_preview(
+async def _iron_banner_posts(
     rotation: iron_banner.IronBannerRotation,
     emoji_dict: dict[str, h.Emoji],
-) -> str:
+) -> list[tuple[str, hybrid_post_core.PostSpec]]:
     """The next few Iron Banner events, rendered as the real Discord posts.
 
     Uses the SAME layout the live post uses (``iron_banner.build_body`` +
@@ -246,7 +243,7 @@ async def _render_iron_banner_preview(
                 ),
             )
         )
-    return hybrid_post_core.render_post_wall(posts, emoji_dict)
+    return posts
 
 
 def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
@@ -269,23 +266,43 @@ def _build_domain_object(post_type: str, data: t.Any) -> t.Any:
 
 async def _render_preview(
     post_type: str, obj: t.Any, bot: CachedFetchBot | None
-) -> str:
-    # Each branch fetches only what it needs: xur_location (a location map) and
-    # trials_loot (a set schedule) aren't standalone Discord posts, so they render a
-    # compact data preview with no emoji/DB lookups; lost_sector + legacy render the
-    # actual Discord message (needing guild emoji), and only lost_sector reads the DB.
+) -> dict[str, t.Any]:
+    """The preview payload for a rotation document, tagged by what it is.
+
+    Two shapes, because two of these are not Discord posts:
+
+    - ``{"kind": "html", "html": …}`` — xur_location (a location map) and trials_loot
+      (a set schedule) are *data* views of a document that never posts on its own, so
+      they stay small server-rendered tables with no emoji or DB lookup.
+    - ``{"kind": "wall", "posts": [{"label", "nodes"}], "emoji": {…}}`` — the rest are
+      real posts, and the page draws them with the shared renderer from the same node
+      trees ``build_cv2`` would send.
+    """
     if post_type == "xur_location":
-        return _render_xur_location_preview_html(obj)
+        return {"kind": "html", "html": _render_xur_location_preview_html(obj)}
     if post_type == rotation_schema.TRIALS_LOOT_SLUG:
-        return _render_trials_loot_preview_html(obj)
+        return {"kind": "html", "html": _render_trials_loot_preview_html(obj)}
+
     emoji_dict = await hybrid_post_core.preview_emoji_dict(bot)
     if post_type == rotation_schema.IRON_BANNER_SLUG:
-        return await _render_iron_banner_preview(obj, emoji_dict)
-    if rotation_schema.is_world_activity(post_type):
+        # Iron Banner needs the dict for more than rendering: which weapon-type emoji
+        # the guild actually has decides what goes in the body text.
+        posts = await _iron_banner_posts(obj, emoji_dict)
+    elif rotation_schema.is_world_activity(post_type):
         key = post_type.removeprefix(rotation_schema.ROTATION_SLUG_PREFIX)
-        return _render_legacy_preview(key, obj, emoji_dict)
-    details = bool(await schemas.AutoPostSettings.get_lost_sector_details_enabled())
-    return _render_lost_sector_preview(obj, emoji_dict, details)
+        posts = _legacy_posts(key, obj)
+    else:
+        details = bool(await schemas.AutoPostSettings.get_lost_sector_details_enabled())
+        posts = _lost_sector_posts(obj, details)
+
+    return {
+        "kind": "wall",
+        "posts": [
+            {"label": label, "nodes": hybrid_post_core.post_spec_nodes(spec)}
+            for label, spec in posts
+        ],
+        "emoji": hybrid_post_core.emoji_payload(emoji_dict),
+    }
 
 
 # --- route handlers ---------------------------------------------------------------
@@ -364,10 +381,10 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
     try:
         obj = _build_domain_object(post_type, data)
-        body = await _render_preview(post_type, obj, _bot)
+        payload_out = await _render_preview(post_type, obj, _bot)
     except Exception as e:
         return aiohttp.web.Response(status=400, text=f"Could not render preview:\n{e}")
-    return aiohttp.web.Response(text=body, content_type="text/html")
+    return aiohttp.web.json_response(payload_out)
 
 
 async def _handle_edit_post(request: aiohttp.web.Request) -> aiohttp.web.Response:

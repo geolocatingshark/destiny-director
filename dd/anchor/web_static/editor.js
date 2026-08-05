@@ -817,12 +817,44 @@ async function runPreview() {
   box.textContent = "Rendering…";
   try {
     const res = await post("/rotation/preview");
-    const body = await res.text();
     if (!res.ok) {
-      box.textContent = "Preview failed:\n" + body;
+      box.textContent = "Preview failed:\n" + (await res.text());
       return setStatus("Preview failed — see the Preview tab.", false);
     }
-    box.innerHTML = body;
+    const data = await res.json();
+    if (data.kind === "html") {
+      // xur_location / trials_loot are data views of a document that never posts on
+      // its own — a small server-rendered table, not a message.
+      box.innerHTML = data.html;
+    } else {
+      // A wall of real posts, each drawn from the node tree build_cv2 would send. The
+      // .post-wall wrapper is what spaces the cards — the labelled-card layout stayed
+      // behind when the post *rendering* moved to the shared renderer.
+      //
+      // Described in the renderer's own spec vocabulary rather than assembled by hand:
+      // the cards are chrome around a post, so they may as well go through the same
+      // one-pass draw, which also keeps each label in a `text` field (textContent).
+      const R = window.CV2Render;
+      const posts = data.posts || [];
+      R.render(
+        box,
+        posts.length
+          ? R.el("div", "post-wall", {
+              children: posts.map((item) =>
+                R.el("article", "post-wall-item", {
+                  children: [
+                    R.el("h3", "post-wall-label", { text: item.label }),
+                    R.el("div", "cv2-preview", {
+                      children: [R.nodesSpec(item.nodes || [])],
+                    }),
+                  ],
+                }),
+              ),
+            })
+          : R.el("p", "post-wall-empty", { text: "No upcoming posts to show." }),
+        { emoji: data.emoji || {} },
+      );
+    }
     setStatus("Preview updated.", true);
   } catch (e) {
     box.textContent = "Preview error: " + e;

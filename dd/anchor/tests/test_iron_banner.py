@@ -207,8 +207,10 @@ async def test_editor_preview_renders_the_post(monkeypatch) -> None:
 
     monkeypatch.setattr(hpc, "get_weapon_pool", fake_pool)
     rotation = ib.IronBannerRotation.from_json(_DOC)
-    html = await red._render_iron_banner_preview(rotation, {})
-    # The preview is the real Discord post wall: it carries the event label + the
-    # resolved bonus-pool weapon (light.gg linked).
-    assert "Pool 1" in html
-    assert "light.gg/db/items/999" in html
+    posts = await red._iron_banner_posts(rotation, {})
+    # The preview is the real Discord post: the wall carries the event label, and the
+    # body carries the resolved bonus-pool weapon (light.gg linked).
+    labels = " ".join(label for label, _ in posts)
+    bodies = " ".join(spec.body for _, spec in posts)
+    assert "Pool 1" in labels
+    assert "light.gg/db/items/999" in bodies

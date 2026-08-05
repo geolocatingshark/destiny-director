@@ -37,7 +37,6 @@ code.
 import asyncio
 import dataclasses
 import datetime as dt
-import html
 import json
 import logging
 import re
@@ -53,7 +52,7 @@ from dd.hmessage import HMessage
 from ..common import cfg, schemas
 from ..common.bot import CachedFetchBot
 from ..common.components import footer_button_specs, link_button_row
-from ..common.utils import fetch_emoji_dict, re_user_side_emoji
+from ..common.utils import fetch_emoji_dict
 from . import utils
 from .extensions import bungie_api as api
 
@@ -169,248 +168,56 @@ def build_cv2(
     return HMessage(components=[container])
 
 
+def emoji_payload(emoji_dict: dict[str, h.Emoji]) -> dict[str, str]:
+    """``{name: url}`` for a client-side render's ``:shortcode:`` substitution.
+
+    The bare-string shape ``cv2_model.js``'s ``emojiEntry`` accepts. Buttons need an id
+    as well as a url, but a *rendered* post never does — a captured ``<:name:id>``
+    carries its own id, and a typed ``:name:`` only ever becomes an ``<img>``.
+    """
+    return {name: str(getattr(emoji, "url", "")) for name, emoji in emoji_dict.items()}
+
+
+def post_spec_nodes(spec: "PostSpec") -> list[dict[str, t.Any]]:
+    """The same post as :func:`build_cv2`, as a raw CV2 node list.
+
+    The preview surfaces render the *post*, and the post is a node tree — so rather than
+    approximate it in a second markup vocabulary (which is what ``.post-*`` was), hand
+    the previewer the tree and let the shared renderer draw it. Structure is pinned to
+    ``build_cv2`` by ``test_post_spec_nodes_matches_build_cv2`` — two descriptions of
+    one post is exactly the drift this whole change exists to remove.
+    """
+    children: list[dict[str, t.Any]] = [{"type": 10, "content": spec.body}]
+    if spec.image_url and spec.image_url.startswith(("http://", "https://")):
+        children.append(
+            {"type": 12, "items": [{"media": {"url": spec.image_url}}]},
+        )
+    buttons = [
+        {"type": 2, "style": 5, "label": str(label), "url": str(url)}
+        for label, url in spec.buttons
+        if str(url).startswith(("http://", "https://"))
+    ]
+    if buttons:
+        # No explicit `spacing`: hikari omits it too, and the renderer reads its absence
+        # as the small default. Matching exactly is what lets the two be compared.
+        children.append({"type": 14, "divider": True})
+        children.append({"type": 1, "components": buttons})
+    return [
+        {
+            "type": 17,
+            "accent_color": cfg.embed_default_color,
+            "components": children,
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
-# Rich HTML preview (web form)
+# Body-text helpers
 # ---------------------------------------------------------------------------
 #
-# ``render_post_html`` renders the EXACT markdown subset the producers' ``build_body``
-# emits into a small, safe HTML fragment for the web form's live preview: every text
-# leaf is escaped, masked-link URLs are http(s)-validated, ``:emoji:`` tokens become
-# <img> from the guild emoji dict (unknown names fall back to escaped text), and ONLY
-# the whitelisted tags (strong / em / span / a / img) are emitted. The <pre> preview
-# keeps newlines.
-
-#: One inline-markdown token. Ordered so ``***`` beats ``**`` beats ``*`` and the
-#: ``<t:…>`` timestamp beats the emoji rule (both can start with ``<``). The emoji arm
-#: reuses ``re_user_side_emoji`` verbatim; its inner capture groups are ignored — the
-#: matched span is re-substituted through the emoji substituter (which uses that regex).
-_INLINE_MD = re.compile(
-    r"(?P<bi>\*\*\*(?P<bi_inner>.+?)\*\*\*)"
-    r"|(?P<b>\*\*(?P<b_inner>.+?)\*\*)"
-    r"|(?P<i>\*(?P<i_inner>.+?)\*)"
-    r"|(?P<link>\[(?P<label>[^\]]+)\]\((?P<url>[^)\s]+)\))"
-    r"|(?P<ts><t:(?P<tsval>\d+):(?P<tsfmt>[A-Za-z])>)"
-    r"|(?P<emoji>" + re_user_side_emoji.pattern + r")"
-)
-
-
-def _format_reset_ts(unix: int) -> str:
-    """Render a ``<t:UNIX:f>`` instant as Discord's ``:f`` long-date short-time, in UTC.
-
-    Discord shows ``:f`` in the *viewer's* local zone; the preview can't know that, so
-    it renders in UTC with an explicit ``(UTC)`` note (e.g. "Jul 14, 2026 5:00 PM").
-    """
-    d = dt.datetime.fromtimestamp(unix, tz=dt.UTC)
-    hour12 = d.hour % 12 or 12
-    ampm = "AM" if d.hour < 12 else "PM"
-    return f"{d.strftime('%b')} {d.day}, {d.year} {hour12}:{d.minute:02d} {ampm} (UTC)"
-
-
-def _relative_ts(seconds: int) -> str:
-    """A coarse ``:R`` relative string, largest whole unit (e.g. "in 3 days")."""
-    future = seconds >= 0
-    seconds = abs(seconds)
-    name, n = "second", seconds
-    for unit_name, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
-        if seconds >= size:
-            name, n = unit_name, seconds // size
-            break
-    label = f"{n} {name}" + ("s" if n != 1 else "")
-    return f"in {label}" if future else f"{label} ago"
-
-
-def _format_ts(unix: int, fmt: str, now: dt.datetime | None = None) -> str:
-    """Render a ``<t:UNIX:X>`` token per its format letter, in UTC.
-
-    ``R`` is Discord's *relative* time (a live countdown in Discord) — rendered here as
-    a coarse "in N units" / "N units ago" string from the render-time clock (``now``,
-    injectable for tests). ``t``/``T`` render the time-of-day, ``d``/``D`` the date;
-    ``f``/``F`` (and anything else) fall back to :func:`_format_reset_ts`'s long-date
-    short-time. Discord shows these in the viewer's local zone; the preview can't know
-    it, so times/dates carry an explicit ``(UTC)``.
-    """
-    if fmt == "R":
-        now = now or dt.datetime.now(tz=dt.UTC)
-        return _relative_ts(int(unix - now.timestamp()))
-    d = dt.datetime.fromtimestamp(unix, tz=dt.UTC)
-    hour12 = d.hour % 12 or 12
-    ampm = "AM" if d.hour < 12 else "PM"
-    if fmt in ("t", "T"):
-        secs = f":{d.second:02d}" if fmt == "T" else ""
-        return f"{hour12}:{d.minute:02d}{secs} {ampm} (UTC)"
-    if fmt == "d":
-        return f"{d.month:02d}/{d.day:02d}/{d.year}"
-    if fmt == "D":
-        return f"{d.strftime('%B')} {d.day}, {d.year}"
-    return _format_reset_ts(unix)
-
-
-def _html_emoji_substituter(
-    emoji_dict: dict[str, h.Emoji],
-) -> t.Callable[[t.Any], str]:
-    """An ``re_user_side_emoji`` substituter emitting <img> (modeled on the CV2 one).
-
-    Emits ``<img class="emoji" src="{emoji.url}" alt=":name:">`` for a known guild
-    emoji, else the escaped ``:name:`` text. Every attribute value is escaped.
-    """
-
-    def func(match: t.Any) -> str:
-        name = str(match.group(2))
-        emoji = emoji_dict.get(name) or emoji_dict.get(name.lower())
-        if emoji is None:
-            return html.escape(match.group(0))
-        url = html.escape(str(getattr(emoji, "url", "")), quote=True)
-        alt = html.escape(name, quote=True)
-        return f'<img class="emoji" src="{url}" alt=":{alt}:">'
-
-    return func
-
-
-def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
-    """Render one line's inline markdown to safe HTML (escaping every text leaf)."""
-    out: list[str] = []
-    pos = 0
-    for m in _INLINE_MD.finditer(text):
-        if m.start() > pos:
-            out.append(html.escape(text[pos : m.start()]))
-        # Bold/italic recurse into their inner span so nested inline markup renders —
-        # notably a masked link inside bold, "**[Title](url)**" (Lost Sector titles).
-        if m.group("bi") is not None:
-            inner = _render_inline(m.group("bi_inner"), emoji_sub)
-            out.append(f"<strong><em>{inner}</em></strong>")
-        elif m.group("b") is not None:
-            inner = _render_inline(m.group("b_inner"), emoji_sub)
-            out.append(f"<strong>{inner}</strong>")
-        elif m.group("i") is not None:
-            out.append(f"<em>{_render_inline(m.group('i_inner'), emoji_sub)}</em>")
-        elif m.group("link") is not None:
-            url = m.group("url")
-            # Discord's ``[label](<url>)`` form wraps the URL in angle brackets to
-            # suppress its preview embed; the real URL is inside them.
-            if len(url) > 1 and url.startswith("<") and url.endswith(">"):
-                url = url[1:-1]
-            if url.startswith(("http://", "https://")):
-                href = html.escape(url, quote=True)
-                # The label may itself carry markdown (e.g. "[**View…**](url)").
-                label = _render_inline(m.group("label"), emoji_sub)
-                out.append(f'<a href="{href}">{label}</a>')
-            else:  # non-http(s): not a real link — render the raw text, escaped.
-                out.append(html.escape(m.group("link")))
-        elif m.group("ts") is not None:
-            out.append(html.escape(_format_ts(int(m.group("tsval")), m.group("tsfmt"))))
-        else:  # emoji
-            out.append(re_user_side_emoji.sub(emoji_sub, m.group("emoji")))
-        pos = m.end()
-    if pos < len(text):
-        out.append(html.escape(text[pos:]))
-    return "".join(out)
-
-
-def _render_line(line: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
-    """Render one body line, handling the heading, small-text and bullet prefixes.
-
-    The heading (``# ``/``## ``/``### ``), small (``-# ``) and bullet (``- ``) prefixes
-    render as spans (never ``<ul>``/``<li>``), so the emitted tags stay within the
-    ``{span, strong, em, a, img}`` whitelist the preview is trusted against. Longer
-    prefixes are tested first (``### `` before ``## `` before ``# ``; ``-# `` before
-    ``- ``) so the longest wins; the bullet marker is supplied by CSS
-    ``.md-bullet::before``.
-    """
-    if line.startswith("### "):
-        return f'<span class="md-h3">{_render_inline(line[4:], emoji_sub)}</span>'
-    if line.startswith("## "):
-        return f'<span class="md-h2">{_render_inline(line[3:], emoji_sub)}</span>'
-    if line.startswith("# "):
-        return f'<span class="md-h1">{_render_inline(line[2:], emoji_sub)}</span>'
-    if line.startswith("-# "):
-        return f'<span class="md-small">{_render_inline(line[3:], emoji_sub)}</span>'
-    if line.startswith("- "):
-        return f'<span class="md-bullet">{_render_inline(line[2:], emoji_sub)}</span>'
-    return _render_inline(line, emoji_sub)
-
-
-def _normalize_heading_spacing(lines: list[str]) -> list[str]:
-    """Rework blank lines around ``##``/``###`` headings to match Discord's spacing.
-
-    Discord gives a sub-heading margin *above* and renders the content right below it
-    tight — but a producer's ``build_body`` conventionally puts the blank line *after*
-    the heading (``["### Foo", ""]``). In the ``white-space: pre-wrap`` preview that
-    literal blank lands *below* the heading, so the preview reads differently from the
-    posted message. Normalise here (shared by every producer's preview, not per-post):
-    collapse to exactly one blank line *before* each ``##``/``###`` heading (none if
-    it's the first line) and drop any blank directly after it. ``#`` (the H1 title) is
-    left as-is — its body-authored trailing blank already matches Discord's title.
-    """
-
-    def is_sub(line: str) -> bool:
-        return line.startswith("## ") or line.startswith("### ")
-
-    out: list[str] = []
-    for line in lines:
-        if is_sub(line):
-            while out and out[-1] == "":  # collapse any blanks the body put above
-                out.pop()
-            if out:  # a gap above the heading, unless it's the very first line
-                out.append("")
-            out.append(line)
-        elif line == "" and out and is_sub(out[-1]):
-            continue  # drop a blank right below a sub-heading (Discord renders tight)
-        else:
-            out.append(line)
-    return out
-
-
-def _render_buttons_html(buttons: t.Sequence[tuple[str, str]]) -> str:
-    """Render the footer link buttons as a safe ``<div>`` of ``<a>`` button links.
-
-    Mirrors the CV2 post's footer button row (:func:`build_cv2`) so the preview matches
-    the publish. Each label is escaped and each URL http(s)-validated (a non-http(s)
-    URL is dropped, not rendered as a link) — safe for the ``innerHTML`` sink even for
-    the future client-supplied ``PostSpec.from_payload`` buttons.
-    """
-    items: list[str] = []
-    for label, url in buttons:
-        if not str(url).startswith(("http://", "https://")):
-            continue
-        href = html.escape(str(url), quote=True)
-        text = html.escape(str(label))
-        items.append(
-            f'<a class="post-button" href="{href}" target="_blank" '
-            f'rel="noopener noreferrer">{text}</a>'
-        )
-    if not items:
-        return ""
-    return '\n<div class="post-buttons">' + "".join(items) + "</div>"
-
-
-def render_post_html(
-    body: str,
-    emoji_dict: dict[str, h.Emoji],
-    image_url: str | None = None,
-    buttons: t.Sequence[tuple[str, str]] = (),
-) -> str:
-    """Render a ``build_body`` string (+ image + footer buttons) to safe preview HTML.
-
-    Mirrors what Discord renders for the published post: the same markdown subset,
-    custom emoji as images, and the footer button row ``build_cv2`` appends. Newlines
-    are preserved for the <pre> preview (heading spacing normalised to Discord's via
-    :func:`_normalize_heading_spacing`). Only whitelisted tags (strong / em / span / a /
-    img) are emitted; every text leaf is escaped and every URL is http(s)-validated, so
-    it is safe to drop into the form's ``innerHTML`` sink despite the owner-authored
-    input.
-    """
-    emoji_sub = _html_emoji_substituter(emoji_dict)
-    lines = [
-        _render_line(line, emoji_sub)
-        for line in _normalize_heading_spacing(body.split("\n"))
-    ]
-    # Image sits below the body and above the footer buttons — mirroring build_cv2's
-    # media gallery placement — so the preview shows it exactly where the post does.
-    if image_url and image_url.startswith(("http://", "https://")):
-        src = html.escape(image_url, quote=True)
-        lines += ["", f'<img class="post-image" src="{src}" alt="post image">']
-    return "\n".join(lines) + _render_buttons_html(buttons)
-
+# Producers write their post body as a markdown string; how that markdown *draws* is
+# the shared client renderer's business (``web_static/cv2_render.js``). What lives here
+# is the formatting a producer does to build the string itself.
 
 # ---------------------------------------------------------------------------
 # PostSpec — the format-tagged, serializable description a previewer renders
@@ -419,15 +226,18 @@ def render_post_html(
 
 @dataclasses.dataclass(frozen=True)
 class PostSpec:
-    """A format-tagged, JSON-friendly description of a post, for the shared previewer.
+    """A format-tagged, JSON-friendly description of a post.
 
-    :func:`render_post_spec` is the ONE render path every preview surface shares — the
-    weekly_reset/trials web forms today, the upcoming rotation preview wall and the
-    user-commands manager later. Only the ``cv2`` kind is renderable now: a single
-    markdown body + optional image, the shape every current producer emits via
-    ``build_body``. An ``embed`` kind is reserved for the user-commands manager (the
-    first classic-embed consumer); adding that variant + its render branch is tracked in
-    ``plans/website_user_commands.md``.
+    The one description every preview surface starts from — the weekly_reset/trials web
+    forms and the rotation preview wall today, the user-commands manager later.
+    :func:`post_spec_nodes` turns it into the CV2 node tree ``build_cv2`` would send,
+    which is what a previewer actually draws.
+
+    Only the ``cv2`` kind exists: a markdown body + optional image + footer buttons, the
+    shape every current producer emits via ``build_body``. An ``embed`` kind is reserved
+    for the user-commands manager (the first classic-embed consumer) and tracked in
+    ``plans/website_user_commands.md``; the shared renderer already draws embeds, so
+    that variant needs a ``post_spec_nodes`` branch rather than a new renderer.
     """
 
     kind: str
@@ -459,7 +269,7 @@ class PostSpec:
         Defaults to the ``cv2`` kind. Raises :class:`ValueError` on an unknown kind so a
         route can 422 it — the ``embed`` kind isn't renderable until its branch lands
         with the user-commands work. Buttons are coerced to ``(str, str)`` pairs here;
-        non-http(s) URLs are dropped at render time (see :func:`_render_buttons_html`).
+        non-http(s) URLs are dropped at render time (see :func:`post_spec_nodes`).
         """
         kind = payload.get("kind", "cv2")
         if kind != "cv2":
@@ -475,41 +285,6 @@ class PostSpec:
             image_url=(payload.get("image_url") or None),
             buttons=buttons,
         )
-
-
-def render_post_spec(spec: PostSpec, emoji_dict: dict[str, h.Emoji]) -> str:
-    """Render any :class:`PostSpec` to safe preview HTML — the shared render path.
-
-    Dispatches on ``spec.kind``: ``cv2`` runs the existing markdown->HTML machinery
-    (:func:`render_post_html`), unchanged; ``embed`` is reserved and raises until its
-    branch lands (see :class:`PostSpec`). Output is safe for an ``innerHTML`` sink
-    (escaped leaves, whitelisted tags, http(s)-validated URLs) — see
-    :func:`render_post_html`.
-    """
-    if spec.kind == "cv2":
-        return render_post_html(spec.body, emoji_dict, spec.image_url, spec.buttons)
-    raise ValueError(f"Cannot render post kind {spec.kind!r} yet")
-
-
-def render_post_wall(
-    posts: t.Sequence[tuple[str, PostSpec]], emoji_dict: dict[str, h.Emoji]
-) -> str:
-    """Render ``(label, PostSpec)`` entries as stacked, labelled cards (safe HTML).
-
-    The shared "wall of posts" presentation: each entry is a labelled card whose body is
-    :func:`render_post_spec`. Used by the rotation editor's live preview to show the
-    next few posts a rotation will publish. Empty list → an empty-state note.
-    """
-    if not posts:
-        return '<p class="post-wall-empty">No upcoming posts to show.</p>'
-    cards = [
-        f'<article class="post-wall-item">'
-        f'<h3 class="post-wall-label">{html.escape(label)}</h3>'
-        f'<div class="post-preview">{render_post_spec(spec, emoji_dict)}</div>'
-        f"</article>"
-        for label, spec in posts
-    ]
-    return '<div class="post-wall">' + "".join(cards) + "</div>"
 
 
 # ---------------------------------------------------------------------------
@@ -886,21 +661,23 @@ async def preview(
     except Exception:
         return aiohttp.web.Response(status=400, text="Malformed body.")
     ctx = await spec.context_from_payload(payload)
-    # Rich preview: render the post's markdown subset to safe HTML (emoji as <img>,
-    # bold/italic/links/dates), matching what Discord shows for the published post. The
-    # renderer escapes every text leaf and validates URLs, so this is safe for the
-    # client's innerHTML sink. Emoji come from the short-TTL guild-emoji cache. Flows
-    # through render_post_spec — the one render path shared with the coming rotation
-    # preview wall and user-commands manager.
+    # The preview IS the post: this hands back the very node tree `build_cv2` would send
+    # (pinned to it by test_post_spec_nodes_matches_build_cv2), and the page draws it
+    # with the shared renderer every preview surface uses. It used to return HTML from a
+    # second, flatter markup vocabulary that only approximated the container the post
+    # actually is.
+    #
+    # The emoji map rides along rather than sitting in the page bootstrap, so the
+    # response carries everything needed to draw it. Cheap: `preview_emoji_dict` is a
+    # short-TTL cache, so a burst of previews costs no extra Discord traffic.
     emoji_dict = await preview_emoji_dict(bot)
     post = PostSpec.cv2(
         spec.build_body(ctx),
         ctx.image_url,
         buttons=footer_button_specs(guides=spec.footer_guides),
     )
-    return aiohttp.web.Response(
-        text=render_post_spec(post, emoji_dict),
-        content_type="text/html",
+    return aiohttp.web.json_response(
+        {"nodes": post_spec_nodes(post), "emoji": emoji_payload(emoji_dict)}
     )
 
 
@@ -1161,7 +938,11 @@ def resolve_weapon(value: str, items: t.Sequence[WeaponItem]) -> WeaponRef | Non
     value = value.strip()
     if not value:
         return None
-    if value.isdigit():
+    # ASCII digits only. ``str.isdigit()`` is true for superscripts and enclosed forms
+    # too ("²", "①"), which ``int()`` then refuses — so the bare check let a lone "²"
+    # in a weapon slot 500 the form instead of becoming a weapon named "²". A manifest
+    # hash is ASCII digits; this is the same narrow reading the emoji-id checks take.
+    if value.isascii() and value.isdigit():
         wanted = int(value)
         for name, hash_, type_name, _item_type, _rarity in items:
             if hash_ == wanted:

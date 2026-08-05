@@ -1,0 +1,323 @@
+{
+  "comment": "Injection probes. The mirror log renders other people's captured posts, so every one of these is attacker-controlled in production. The expectations must never contain an executable sink: no raw <script>, no javascript: in an href/src, no attribute broken out of by a quote. When the renderer moves to the client these same cases must still hold.",
+  "emoji": {
+    "kyber": "https://cdn.discordapp.com/emojis/1234567890.png"
+  },
+  "cases": [
+    {
+      "name": "script_tag_in_text",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "<script>alert('xss')</script> & <img src=x onerror=alert(1)>"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt; &amp; &lt;img src=x onerror=alert(1)&gt;</div></div>"
+    },
+    {
+      "name": "javascript_url_in_masked_link",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "[click me](javascript:alert(1)) and [data](data:text/html,<script>1</script>)"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">[click me](javascript:alert(1)) and [data](data:text/html,&lt;script&gt;1&lt;/script&gt;)</div></div>"
+    },
+    {
+      "name": "quote_breakout_in_masked_link",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "[label](https://example.com/\"onmouseover=\"alert(1))"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><a href=\"https://example.com/&quot;onmouseover=&quot;alert(1\" target=\"_blank\" rel=\"noopener noreferrer\">label</a>)</div></div>"
+    },
+    {
+      "name": "javascript_url_in_button",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Go",
+                "url": "javascript:alert(1)"
+              },
+              {
+                "type": 2,
+                "style": 5,
+                "label": "<script>x</script>",
+                "url": "https://example.com/ok"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-buttons\"><a class=\"cv2-button\" href=\"https://example.com/ok\" target=\"_blank\" rel=\"noopener noreferrer\">&lt;script&gt;x&lt;/script&gt;</a></div></div>"
+    },
+    {
+      "name": "javascript_url_in_media_and_thumbnail",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "javascript:alert(1)"
+                }
+              }
+            ]
+          },
+          {
+            "type": 11,
+            "media": {
+              "url": "javascript:alert(1)"
+            }
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-placeholder\">⚠️ This version captured no renderable components.</div>"
+    },
+    {
+      "name": "quote_breakout_in_alt_text",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "https://example.com/1.png"
+                },
+                "description": "\" onerror=\"alert(1)"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-media n1\"><a class=\"cv2-media-item\" href=\"https://example.com/1.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/1.png\" alt=\"&quot; onerror=&quot;alert(1)\" loading=\"lazy\"></a></div></div>"
+    },
+    {
+      "name": "non_numeric_emoji_id",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "<:evil:notanumber> and <:evil:1\"onload=\"x>"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">&lt;:evil:notanumber&gt; and &lt;:evil:1&quot;onload=&quot;x&gt;</div></div>"
+    },
+    {
+      "name": "button_emoji_id_not_numeric",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Go",
+                "url": "https://example.com/ok",
+                "emoji": {
+                  "id": "1)\" onerror=\"alert(1",
+                  "name": "evil"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-buttons\"><a class=\"cv2-button\" href=\"https://example.com/ok\" target=\"_blank\" rel=\"noopener noreferrer\">evil Go</a></div></div>"
+    },
+    {
+      "name": "accent_color_not_an_int",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 17,
+            "accent_color": "red;background:url(javascript:alert(1))",
+            "components": [
+              {
+                "type": 10,
+                "content": "safe body"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\"><div class=\"cv2-text\">safe body</div></div></div>"
+    },
+    {
+      "name": "script_in_embed_fields",
+      "render": "snapshot",
+      "kind": "classic",
+      "payload": {
+        "content": "<script>a</script>",
+        "embeds": [
+          {
+            "author": {
+              "name": "<script>b</script>"
+            },
+            "title": "<script>c</script>",
+            "description": "<script>d</script>",
+            "fields": [
+              {
+                "name": "<script>e</script>",
+                "value": "<script>f</script>"
+              }
+            ],
+            "image": {
+              "url": "javascript:alert(1)"
+            },
+            "footer": {
+              "text": "<script>g</script>"
+            }
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-note\">Classic message — text · 1 embed(s)</div><div class=\"cv2-text\">&lt;script&gt;a&lt;/script&gt;</div><div class=\"cv2-embed\"><div class=\"embed-author\">&lt;script&gt;b&lt;/script&gt;</div><div class=\"embed-title\">&lt;script&gt;c&lt;/script&gt;</div><div class=\"embed-desc\"><div class=\"cv2-text\">&lt;script&gt;d&lt;/script&gt;</div></div><div class=\"embed-field\"><div class=\"embed-field-name\">&lt;script&gt;e&lt;/script&gt;</div><div class=\"embed-field-value\"><div class=\"cv2-text\">&lt;script&gt;f&lt;/script&gt;</div></div></div><div class=\"embed-footer\">&lt;script&gt;g&lt;/script&gt;</div></div></div>"
+    },
+    {
+      "name": "script_in_authored_text",
+      "render": "authored",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "<script>alert(1)</script> :kyber:"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">&lt;script&gt;alert(1)&lt;/script&gt; <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"></div></div>",
+      "sanitized": [
+        {
+          "type": 10,
+          "content": "<script>alert(1)</script> :kyber:"
+        }
+      ]
+    },
+    {
+      "name": "script_in_diffed_text",
+      "render": "diff",
+      "kind": "cv2",
+      "old_kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "<script>new</script>"
+          }
+        ]
+      },
+      "old_payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "<script>old</script>"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><del>&lt;script&gt;old&lt;/script&gt;</del><ins>&lt;script&gt;new&lt;/script&gt;</ins></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "<script>new</script>",
+            "_lines": [
+              {
+                "op": "replace",
+                "runs": [
+                  {
+                    "op": "del",
+                    "text": "<script>old</script>"
+                  },
+                  {
+                    "op": "ins",
+                    "text": "<script>new</script>"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "script_in_post_spec_body",
+      "render": "post_spec",
+      "spec": {
+        "body": "<script>alert(1)</script>",
+        "image_url": "javascript:alert(1)",
+        "buttons": [
+          [
+            "<script>x</script>",
+            "https://example.com/ok"
+          ]
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\" style=\"border-left-color:#000000\"><div class=\"cv2-text\">&lt;script&gt;alert(1)&lt;/script&gt;</div><hr class=\"cv2-sep\"><div class=\"cv2-buttons\"><a class=\"cv2-button\" href=\"https://example.com/ok\" target=\"_blank\" rel=\"noopener noreferrer\">&lt;script&gt;x&lt;/script&gt;</a></div></div></div>",
+      "nodes": [
+        {
+          "type": 17,
+          "accent_color": 0,
+          "components": [
+            {
+              "type": 10,
+              "content": "<script>alert(1)</script>"
+            },
+            {
+              "type": 14,
+              "divider": true
+            },
+            {
+              "type": 1,
+              "components": [
+                {
+                  "type": 2,
+                  "style": 5,
+                  "label": "<script>x</script>",
+                  "url": "https://example.com/ok"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

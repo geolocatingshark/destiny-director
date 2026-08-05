@@ -1,10 +1,10 @@
 /*
   Trials of Osiris form styles. The full form skeleton — page layout, fieldsets, inputs,
   the toolbar and its buttons — lives in shared.css under `.form-page` (this page's <body>
-  carries that class); the rendered-post markup (incl. the '### '/'- ' rules) is the shared
-  `.post-preview` block in shared.css. Served statically from /static/trials_form.css — no
-  build step. This file holds only what's unique to Trials: the .set-* card picker for the
-  bonus focus pool. Colours come from the shared tokens.
+  carries that class); the rendered post is drawn by the shared renderer and styled by
+  cv2_preview.css. Served statically from /static/trials_form.css — no build step. This
+  file holds only what's unique to Trials: the .set-* card picker for the bonus focus
+  pool. Colours come from the shared tokens.
 */
 
 /* --- bonus focus pool: set-card picker --- */

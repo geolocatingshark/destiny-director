@@ -478,6 +478,17 @@ body.cv2b-dragging-now * {
   border-color: var(--err);
   color: var(--danger-text);
 }
+/* A link button with no URL yet. The shared renderer refuses to draw one — it cannot be
+   posted — so the canvas stands in for it (cv2_builder.js `unfinishedButton`), and that
+   stand-in has to READ as unfinished. Without this it was pixel-identical to a finished
+   button while the validation list went on demanding a URL, which is the one state the
+   marker exists to make visible. Dashed, because the accessory slot's empty state next
+   to it is dashed for the same reason. */
+.cv2-button.cv2b-acc-bad {
+  border-color: var(--err);
+  border-style: dashed;
+  color: var(--danger-text);
+}
 
 /* In-place text editing: raw markdown while focused, but emoji stay as images.
    A contenteditable rather than a textarea, so those images can exist at all —
@@ -955,6 +966,14 @@ body.cv2b-dragging-now * {
   }
   .cv2b-canvas {
     padding-left: 1.6rem;
+    font-size: 0.92rem;
+  }
+  /* The canvas draws through the shared renderer now, so its contents sit inside
+     `.cv2-root` and pick up `.cv2-preview .cv2-root { font-size: 0.86rem }` — which at
+     (0,2,0) out-specifies the rule above at (0,1,0) and silently killed this whole
+     media query's purpose, which is making the canvas BIGGER on a phone. Matching the
+     wrapper directly is what restores it. */
+  .cv2b-canvas .cv2-root {
     font-size: 0.92rem;
   }
   /* Touch has no hover, so the drag handle must always be visible or it may as well

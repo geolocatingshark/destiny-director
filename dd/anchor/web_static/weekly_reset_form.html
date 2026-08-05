@@ -22,6 +22,7 @@
     <meta name="robots" content="noindex, nofollow" />
     <title>Weekly Reset Overview</title>
     <link rel="stylesheet" href="/static/shared.css" />
+    <link rel="stylesheet" href="/static/cv2_preview.css" />
     <link rel="stylesheet" href="/static/vendor/tom-select.min.css" />
     <link rel="stylesheet" href="/static/weekly_reset_form.css" />
   </head>
@@ -201,7 +202,7 @@
           <button id="refreshBtn" class="secondary tiny" type="button">↻ Refresh</button>
         </div>
         <ul id="problems" class="hidden"></ul>
-        <pre id="previewBox" class="post-preview">Loading preview…</pre>
+        <div id="previewBox" class="cv2-preview">Loading preview…</div>
       </aside>
     </main>
 
@@ -220,18 +221,21 @@
       <span class="grow"></span>
       <span id="status"></span>
     </div>
-
     <!--
-      The server (dd.anchor.extensions.weekly_reset) injects the bootstrap JSON by
-      .replace()-ing the __BOOTSTRAP__ placeholder in the inline script below with
-      {draft, options, conquest_tiers, reward_fields}. That placeholder
-      MUST stay inline here (this page is templated per request), so it can't live in the
-      statically-served weekly_reset_form.js. This tiny non-deferred script runs at parse
-      time — before the deferred vendor / shared.js / weekly_reset_form.js — so the global
-      is set first.
+      The server injects this page's data by .replace()-ing the placeholder below. It
+      MUST stay in the document (the page is templated per request), so it can't live in
+      the statically-served page script.
+
+      It is a JSON block, not an executable one: CSP's `script-src 'self'` forbids inline
+      scripts, and a non-executable type is data as far as the policy is concerned.
+      shared.js parses it into window.__BOOTSTRAP__ before any page script runs — defer
+      preserves order, and shared.js is listed first. (This comment deliberately omits
+      the exact marker text so the server's replace() only ever touches the block below.)
     -->
-    <script>window.__BOOTSTRAP__ = /*__BOOTSTRAP__*/ null;</script>
+    <script type="application/json" id="bootstrap">/*__BOOTSTRAP__*/ null</script>
     <script defer src="/static/vendor/tom-select.complete.min.js"></script>
+    <script defer src="/static/cv2_model.js"></script>
+    <script defer src="/static/cv2_render.js"></script>
     <script defer src="/static/shared.js"></script>
     <script defer src="/static/weekly_reset_form.js"></script>
   </body>

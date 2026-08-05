@@ -1,0 +1,664 @@
+{
+  "comment": "One case per CV2 node kind, rendered as a captured snapshot (CDN emoji).",
+  "cases": [
+    {
+      "name": "text_block_prefixes",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "# Title\n## Section\n### Sub\n-# small print\n- a bullet\nplain line"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h1\">Title</span>\n\n<span class=\"md-h2\">Section</span>\n\n<span class=\"md-h3\">Sub</span>\n<span class=\"md-small\">small print</span>\n<span class=\"md-bullet\">a bullet</span>\nplain line</div></div>"
+    },
+    {
+      "name": "text_heading_spacing_normalised",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "intro\n\n\n## Heading\n\nbody after"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">intro\n\n<span class=\"md-h2\">Heading</span>\nbody after</div></div>"
+    },
+    {
+      "name": "text_inline_markdown",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "***both*** and **bold** and *italic* and [a link](https://example.com/x) and `code`"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><strong><em>both</em></strong> and <strong>bold</strong> and <em>italic</em> and <a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">a link</a> and <code>code</code></div></div>"
+    },
+    {
+      "name": "text_timestamps_absolute",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "t=<t:1785430800:t> T=<t:1785430800:T> d=<t:1785430800:d> D=<t:1785430800:D> f=<t:1785430800:f> F=<t:1785430800:F>"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">t=5:00 PM T=5:00:00 PM d=07/30/2026 D=July 30, 2026 f=Jul 30, 2026 5:00 PM F=Jul 30, 2026 5:00 PM</div></div>"
+    },
+    {
+      "name": "text_timestamp_relative",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "future=<t:1785690000:R> past=<t:1785344400:R> soon=<t:1785434400:R>"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">future=in 3 days past=1 day ago soon=in 1 hour</div></div>"
+    },
+    {
+      "name": "text_captured_emoji",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "static <:kyber:1234567890> animated <a:spin:9876543210> unknown :nosuch:"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">static <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"> animated <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/9876543210.gif\" alt=\":spin:\"> unknown :nosuch:</div></div>"
+    },
+    {
+      "name": "container_with_accent",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 17,
+            "accent_color": 15483557,
+            "components": [
+              {
+                "type": 10,
+                "content": "inside the card"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\" style=\"border-left-color:#ec42a5\"><div class=\"cv2-text\">inside the card</div></div></div>"
+    },
+    {
+      "name": "container_without_accent",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 17,
+            "components": [
+              {
+                "type": 10,
+                "content": "no accent set"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\"><div class=\"cv2-text\">no accent set</div></div></div>"
+    },
+    {
+      "name": "section_with_thumbnail_accessory",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "## Heading beside art"
+              },
+              {
+                "type": 10,
+                "content": "second line"
+              }
+            ],
+            "accessory": {
+              "type": 11,
+              "media": {
+                "url": "https://example.com/thumb.png"
+              },
+              "description": "a described thumbnail"
+            }
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\"><span class=\"md-h2\">Heading beside art</span></div><div class=\"cv2-text\">second line</div></div><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/thumb.png\" alt=\"a described thumbnail\"></div></div></div>"
+    },
+    {
+      "name": "section_with_spoiler_thumbnail",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "hidden art"
+              }
+            ],
+            "accessory": {
+              "type": 11,
+              "media": {
+                "url": "https://example.com/secret.png"
+              },
+              "spoiler": true
+            }
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">hidden art</div></div><div class=\"cv2-accessory\"><img class=\"cv2-thumb cv2-spoiler\" src=\"https://example.com/secret.png\" alt=\"thumbnail\"></div></div></div>"
+    },
+    {
+      "name": "section_with_button_accessory",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "text beside a button"
+              }
+            ],
+            "accessory": {
+              "type": 2,
+              "style": 5,
+              "label": "Open",
+              "url": "https://example.com/go",
+              "emoji": {
+                "id": "1234567890",
+                "name": "kyber"
+              }
+            }
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">text beside a button</div></div><div class=\"cv2-accessory\"><a class=\"cv2-button\" href=\"https://example.com/go\" target=\"_blank\" rel=\"noopener noreferrer\"><img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"> Open</a></div></div></div>"
+    },
+    {
+      "name": "media_gallery_one",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "https://example.com/1.png"
+                },
+                "description": "the only image"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-media n1\"><a class=\"cv2-media-item\" href=\"https://example.com/1.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/1.png\" alt=\"the only image\" loading=\"lazy\"></a></div></div>"
+    },
+    {
+      "name": "media_gallery_two",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "https://example.com/1.png"
+                }
+              },
+              {
+                "media": {
+                  "url": "https://example.com/2.png"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-media n2\"><a class=\"cv2-media-item\" href=\"https://example.com/1.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/1.png\" alt=\"\" loading=\"lazy\"></a><a class=\"cv2-media-item\" href=\"https://example.com/2.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/2.png\" alt=\"\" loading=\"lazy\"></a></div></div>"
+    },
+    {
+      "name": "media_gallery_three",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "https://example.com/1.png"
+                }
+              },
+              {
+                "media": {
+                  "url": "https://example.com/2.png"
+                }
+              },
+              {
+                "media": {
+                  "url": "https://example.com/3.png"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-media n3\"><a class=\"cv2-media-item\" href=\"https://example.com/1.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/1.png\" alt=\"\" loading=\"lazy\"></a><a class=\"cv2-media-item\" href=\"https://example.com/2.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/2.png\" alt=\"\" loading=\"lazy\"></a><a class=\"cv2-media-item\" href=\"https://example.com/3.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/3.png\" alt=\"\" loading=\"lazy\"></a></div></div>"
+    },
+    {
+      "name": "media_gallery_four",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "https://example.com/1.png"
+                }
+              },
+              {
+                "media": {
+                  "url": "https://example.com/2.png"
+                }
+              },
+              {
+                "media": {
+                  "url": "https://example.com/3.png"
+                }
+              },
+              {
+                "media": {
+                  "url": "https://example.com/4.png"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-media n4\"><a class=\"cv2-media-item\" href=\"https://example.com/1.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/1.png\" alt=\"\" loading=\"lazy\"></a><a class=\"cv2-media-item\" href=\"https://example.com/2.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/2.png\" alt=\"\" loading=\"lazy\"></a><a class=\"cv2-media-item\" href=\"https://example.com/3.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/3.png\" alt=\"\" loading=\"lazy\"></a><a class=\"cv2-media-item\" href=\"https://example.com/4.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/4.png\" alt=\"\" loading=\"lazy\"></a></div></div>"
+    },
+    {
+      "name": "media_gallery_many_with_alt_and_spoiler",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "https://example.com/1.png"
+                },
+                "description": "alt one"
+              },
+              {
+                "media": {
+                  "url": "https://example.com/2.png"
+                },
+                "spoiler": true
+              },
+              {
+                "media": {
+                  "url": "https://example.com/3.png"
+                }
+              },
+              {
+                "media": {
+                  "url": "https://example.com/4.png"
+                }
+              },
+              {
+                "media": {
+                  "url": "https://example.com/5.png"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-media many\"><a class=\"cv2-media-item\" href=\"https://example.com/1.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/1.png\" alt=\"alt one\" loading=\"lazy\"></a><a class=\"cv2-media-item cv2-spoiler\" href=\"https://example.com/2.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/2.png\" alt=\"\" loading=\"lazy\"></a><a class=\"cv2-media-item\" href=\"https://example.com/3.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/3.png\" alt=\"\" loading=\"lazy\"></a><a class=\"cv2-media-item\" href=\"https://example.com/4.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/4.png\" alt=\"\" loading=\"lazy\"></a><a class=\"cv2-media-item\" href=\"https://example.com/5.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/5.png\" alt=\"\" loading=\"lazy\"></a></div></div>"
+    },
+    {
+      "name": "media_gallery_drops_non_http_item",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "https://example.com/ok.png"
+                }
+              },
+              {
+                "media": {
+                  "url": "attachment://local.png"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-media n1\"><a class=\"cv2-media-item\" href=\"https://example.com/ok.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/ok.png\" alt=\"\" loading=\"lazy\"></a></div></div>"
+    },
+    {
+      "name": "separator_with_divider",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "above"
+          },
+          {
+            "type": 14,
+            "divider": true,
+            "spacing": 1
+          },
+          {
+            "type": 10,
+            "content": "below"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">above</div><hr class=\"cv2-sep\"><div class=\"cv2-text\">below</div></div>"
+    },
+    {
+      "name": "separator_large_spacing",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "above"
+          },
+          {
+            "type": 14,
+            "divider": true,
+            "spacing": 2
+          },
+          {
+            "type": 10,
+            "content": "below"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">above</div><hr class=\"cv2-sep cv2-lg\"><div class=\"cv2-text\">below</div></div>"
+    },
+    {
+      "name": "separator_spacer_only",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "above"
+          },
+          {
+            "type": 14,
+            "divider": false,
+            "spacing": 1
+          },
+          {
+            "type": 10,
+            "content": "below"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">above</div><div class=\"cv2-spacer\"></div><div class=\"cv2-text\">below</div></div>"
+    },
+    {
+      "name": "action_row_link_buttons",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Docs",
+                "url": "https://example.com/docs"
+              },
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Emoji one",
+                "url": "https://example.com/e",
+                "emoji": {
+                  "id": "1234567890",
+                  "name": "kyber"
+                }
+              },
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Animated",
+                "url": "https://example.com/a",
+                "emoji": {
+                  "id": "9876543210",
+                  "name": "spin",
+                  "animated": true
+                }
+              },
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Unicode",
+                "url": "https://example.com/u",
+                "emoji": {
+                  "name": "🎯"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-buttons\"><a class=\"cv2-button\" href=\"https://example.com/docs\" target=\"_blank\" rel=\"noopener noreferrer\">Docs</a><a class=\"cv2-button\" href=\"https://example.com/e\" target=\"_blank\" rel=\"noopener noreferrer\"><img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"> Emoji one</a><a class=\"cv2-button\" href=\"https://example.com/a\" target=\"_blank\" rel=\"noopener noreferrer\"><img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/9876543210.gif\" alt=\":spin:\"> Animated</a><a class=\"cv2-button\" href=\"https://example.com/u\" target=\"_blank\" rel=\"noopener noreferrer\">🎯 Unicode</a></div></div>"
+    },
+    {
+      "name": "action_row_drops_interactive_button",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "style": 1,
+                "label": "Press me",
+                "custom_id": "x"
+              },
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Real link",
+                "url": "https://example.com/ok"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-buttons\"><a class=\"cv2-button\" href=\"https://example.com/ok\" target=\"_blank\" rel=\"noopener noreferrer\">Real link</a></div></div>"
+    },
+    {
+      "name": "standalone_thumbnail",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 11,
+            "media": {
+              "url": "https://example.com/solo.png"
+            },
+            "description": "standalone art"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><img class=\"cv2-thumb\" src=\"https://example.com/solo.png\" alt=\"standalone art\"></div>"
+    },
+    {
+      "name": "file_component_degrades",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 13,
+            "file": {
+              "url": "attachment://x.pdf"
+            }
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-placeholder\">⚠️ File attachment (from the original post)</div></div>"
+    },
+    {
+      "name": "unknown_component_degrades",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 99,
+            "mystery": true
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-placeholder\">⚠️ Unsupported component (type 99)</div></div>"
+    },
+    {
+      "name": "nested_container_section_media",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": [
+          {
+            "type": 17,
+            "accent_color": 3447003,
+            "components": [
+              {
+                "type": 10,
+                "content": "## Weekly reset"
+              },
+              {
+                "type": 9,
+                "components": [
+                  {
+                    "type": 10,
+                    "content": "Nightfall: **Warden**"
+                  }
+                ],
+                "accessory": {
+                  "type": 11,
+                  "media": {
+                    "url": "https://example.com/nf.png"
+                  }
+                }
+              },
+              {
+                "type": 12,
+                "items": [
+                  {
+                    "media": {
+                      "url": "https://example.com/wide.png"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": 14,
+                "divider": true,
+                "spacing": 1
+              },
+              {
+                "type": 1,
+                "components": [
+                  {
+                    "type": 2,
+                    "style": 5,
+                    "label": "Details",
+                    "url": "https://example.com/d"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\" style=\"border-left-color:#3498db\"><div class=\"cv2-text\"><span class=\"md-h2\">Weekly reset</span></div><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">Nightfall: <strong>Warden</strong></div></div><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/nf.png\" alt=\"thumbnail\"></div></div><div class=\"cv2-media n1\"><a class=\"cv2-media-item\" href=\"https://example.com/wide.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/wide.png\" alt=\"\" loading=\"lazy\"></a></div><hr class=\"cv2-sep\"><div class=\"cv2-buttons\"><a class=\"cv2-button\" href=\"https://example.com/d\" target=\"_blank\" rel=\"noopener noreferrer\">Details</a></div></div></div>"
+    },
+    {
+      "name": "empty_component_list",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "components": []
+      },
+      "expected_html": "<div class=\"cv2-placeholder\">⚠️ This version captured no renderable components.</div>"
+    },
+    {
+      "name": "truncated_snapshot",
+      "render": "snapshot",
+      "kind": "cv2",
+      "payload": {
+        "truncated": true
+      },
+      "expected_html": "<div class=\"cv2-placeholder\">⚠️ This version&#x27;s snapshot was too large to store in full.</div>"
+    }
+  ]
+}

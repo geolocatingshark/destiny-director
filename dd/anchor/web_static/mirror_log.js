@@ -44,19 +44,11 @@
     return res.json();
   }
 
-  function esc(s) {
-    return String(s ?? "").replace(
-      /[&<>"']/g,
-      (c) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[c],
-    );
-  }
+  // The shared escaper — this page loads cv2_model.js for the renderer anyway, and its
+  // own copy had already drifted to a different spelling of the apostrophe. Nullish
+  // collapses to "" here rather than to the string "null", which the optional fields
+  // below rely on.
+  const esc = (s) => window.CV2Model.esc(s ?? "");
 
   function statusOf(run) {
     if (run.pending > 0) return { cls: "progress", label: "In progress" };
@@ -480,10 +472,29 @@
       body.innerHTML = `<p class="detail-loading">Loading…</p>`;
       try {
         const res = await fetch(url, { credentials: "same-origin" });
-        const html = await res.text();
+        if (!res.ok) {
+          const text = await res.text();
+          if (tokens.get(col) === token) body.textContent = `Render failed: ${text}`;
+          return;
+        }
+        const data = await res.json();
         if (tokens.get(col) !== token) return; // superseded
-        if (res.ok) body.innerHTML = html;
-        else body.textContent = `Render failed: ${html}`;
+        if (data.kind === "snapshot") {
+          // A captured message from SOMEONE ELSE'S server — the untrusted sink. The
+          // shared renderer builds real DOM: text lands via textContent, URLs are
+          // http(s)-checked where they become attributes, and only renderMd output
+          // reaches innerHTML.
+          window.CV2Render.render(
+            body,
+            window.CV2Render.snapshotSpec(data.payload, data.message_kind),
+            {},
+          );
+        } else {
+          // A diff of the same, from the annotated tree the server aligned. Every run
+          // is pre-split there, so nothing is diffed in the browser — the client only
+          // draws, which keeps the trust story the same as a plain render.
+          window.CV2Render.render(body, window.CV2Render.diffSpec(data.diff), {});
+        }
       } catch (e) {
         if (tokens.get(col) === token) body.textContent = `Render error: ${e}`;
       }

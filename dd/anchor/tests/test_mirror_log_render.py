@@ -92,14 +92,23 @@ async def _capture(
     )
 
 
-async def test_render_route_returns_version_html() -> None:
+async def test_render_route_returns_the_captured_payload() -> None:
+    """The route hands over the snapshot; the page draws it.
+
+    Rendering moved to the shared client renderer, so what this has to get right is the
+    payload and the kind tag that selects the branch. The render itself is pinned by the
+    corpus in ``dd/anchor/preview_fixtures`` — which is also where the injection probes
+    live, because this route is the one untrusted sink in the app.
+    """
     await _capture(100, 1, "Weekly reset v1", guild=42)
 
     resp = await mirror_log._handle_render(_as_request({"src": "100", "v": "1"}))
 
     assert resp.status == 200
-    assert resp.content_type == "text/html"
-    assert "Weekly reset v1" in (resp.text or "")
+    body = json.loads(resp.text or "{}")
+    assert body["kind"] == "snapshot"
+    assert body["message_kind"] == "cv2"
+    assert "Weekly reset v1" in json.dumps(body["payload"])
 
 
 async def test_render_route_diff_marks_changes() -> None:
@@ -110,9 +119,24 @@ async def test_render_route_diff_marks_changes() -> None:
         _as_request({"src": "200", "v": "2", "diff": "1"})
     )
 
-    body = resp.text or ""
-    assert "<del>beta</del>" in body
-    assert "<ins>gamma</ins>" in body
+    # The alignment stays here (it needs difflib); what ships is its verdict, as
+    # pre-split runs the client only has to draw. The rendering of these annotations is
+    # pinned by the shared corpus, against what the old Python diff renderer emitted.
+    body = json.loads(resp.text or "{}")
+    assert body["kind"] == "diff"
+
+    def runs(node: t.Any) -> list[t.Any]:
+        """Every word-level run in the tree, wherever the changed leaf sits."""
+        if isinstance(node, list):
+            return [r for n in node for r in runs(n)]
+        if not isinstance(node, dict):
+            return []
+        out = [r for entry in (node.get("_lines") or []) for r in entry.get("runs", [])]
+        return out + runs(node.get("components") or [])
+
+    found = runs(body["diff"]["components"])
+    assert {"op": "del", "text": "beta"} in found
+    assert {"op": "ins", "text": "gamma"} in found
 
 
 async def test_render_route_404_for_missing_version() -> None:
