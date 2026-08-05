@@ -9,9 +9,13 @@ manifest helpers, constants) so importers keep using
 ``dd.anchor.extensions.bungie_api.<symbol>`` unchanged.
 """
 
+import asyncio
+
+import hikari as h
 import lightbulb as lb
 
 from dd.anchor import web
+from dd.common import schemas
 
 from . import client
 from .constants import (
@@ -26,7 +30,12 @@ from .constants import (
     XUR_VENDOR_HASH,
     likely_emoji_name,
 )
-from .manifest import _build_manifest_dict, _get_latest_manifest
+from .manifest import (
+    _build_manifest_dict,
+    _get_latest_manifest,
+    invalidate_manifest_cache,
+    prewarm_manifest,
+)
 from .models import (
     APIOffline,
     DestinyArmor,
@@ -63,6 +72,8 @@ __all__ = [
     "likely_emoji_name",
     "_build_manifest_dict",
     "_get_latest_manifest",
+    "invalidate_manifest_cache",
+    "prewarm_manifest",
     "APIOffline",
     "APIOfflineException",
     "DestinyArmor",
@@ -95,4 +106,20 @@ loader = lb.Loader()
 # the web control panel (dd/anchor/extensions/bungie_account.py, `/bungie`). Login in
 # particular was a poor fit for Discord — it printed a URL and then blocked for up to 15
 # minutes polling for the token, where on the web the redirect back IS the completion
-# signal. The loader stays because load_extensions_strict requires one.
+# signal. The loader stays because load_extensions_strict requires one — and, now, for
+# the manifest prewarm below.
+
+
+@loader.listener(h.StartedEvent)
+async def _prewarm_manifest_on_start(_event: h.StartedEvent) -> None:
+    """Pull the manifest at boot so no request has to wear the download.
+
+    Here rather than in a producer because the manifest is not any one feature's: xur,
+    eververse, ada, portal_ops, the weekly-reset option pools and the item index all
+    resolve it. weekly_reset prewarms its *indexes* on start, but only when it is a
+    configured followable — an environment without it left the manifest entirely cold.
+
+    Fire-and-forget: ``StartedEvent`` listeners run before the bot is fully up, and this
+    can take minutes on a cold volume.
+    """
+    asyncio.create_task(prewarm_manifest(schemas.BungieCredentials.api_key))

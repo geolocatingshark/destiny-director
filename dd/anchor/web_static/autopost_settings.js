@@ -144,9 +144,14 @@ document.addEventListener("DOMContentLoaded", () => {
       // preview is broken is exactly one you may still need to push.
       pending = slug;
       sendTitle.textContent = "Send the " + label + " post?";
+      // The "you can close this page" line matters more than it looks: the send runs in
+      // the bot, detached from this request, so closing the tab cancels nothing — and
+      // without saying so, an operator sits here waiting on a post that needs no
+      // watching. See plans/send_status_feedback.md.
       sendBody.textContent =
         "This posts to the " + label + " channel straight away. It cannot be recalled, " +
-        "only edited or deleted afterwards.";
+        "only edited or deleted afterwards. Sending continues in the bot, so you can " +
+        "close this page once it starts.";
       publish.checked = true;
       sendConfirm.disabled = false;
       sendDialog.showModal();
@@ -173,7 +178,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         sendDialog.close();
-        status.textContent = "Send started — check Mirror logs for delivery.";
+        status.textContent =
+          "Send started — it continues even if you leave. Check Mirror logs for " +
+          "delivery.";
       } else {
         say(sendStatus, data.error || "Send failed.", true);
         sendConfirm.disabled = false;

@@ -212,6 +212,45 @@ async def test_send_does_not_post_when_the_build_fails() -> None:
     assert res.status == 502
     assert "nothing was sent" in json.loads(_text(res))["error"]
     assert not called
+    # And the slot is released, or a failed build would make the feed unsendable.
+    assert "xur" not in feed_actions._sending
+
+
+async def test_a_send_during_another_send_s_build_is_refused() -> None:
+    """The in-flight guard must cover the pre-flight build, not just the announcer.
+
+    The build takes seconds against the live Bungie API. When the slot was only claimed
+    after it, two requests arriving inside that window both passed the check and both
+    posted — the exact double-post the guard exists to prevent.
+    """
+    building = asyncio.Event()
+    release = asyncio.Event()
+    builds = 0
+
+    async def _slow_constructor(**_kwargs: object) -> HMessage:
+        nonlocal builds
+        builds += 1
+        building.set()
+        await release.wait()
+        return _post()
+
+    async def _announcer(**_kwargs: t.Any) -> None:
+        return None
+
+    _register(constructor=_slow_constructor, announcer=_announcer)
+
+    first = asyncio.create_task(
+        feed_actions._handle_send(_as_request(_FakeRequest("xur", {})))
+    )
+    await building.wait()  # the first request is mid-build, not yet started
+
+    second = await feed_actions._handle_send(_as_request(_FakeRequest("xur", {})))
+    assert second.status == 409
+    assert "already in flight" in json.loads(_text(second))["error"]
+
+    release.set()
+    assert (await first).status == 200
+    assert builds == 1  # the second never got as far as building
 
 
 async def test_send_rejects_a_second_send_while_one_is_in_flight() -> None:

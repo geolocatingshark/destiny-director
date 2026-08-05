@@ -184,30 +184,45 @@ async def _handle_send(request: aiohttp.web.Request) -> aiohttp.web.Response:
             {"error": "A send is already in flight for this feed."}, status=409
         )
 
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    publish = bool(payload.get("publish", True))
-
-    # Build once here so a constructor failure (the common one) is reported in the
-    # response, before anything is posted. The announcer rebuilds — an extra API fetch
-    # on a rare manual action, in exchange for not posting a placeholder into the live
-    # channel only to have construction fail behind it.
-    try:
-        await _build(feed)
-    except Exception as e:
-        logger.exception("Manual send of %s aborted: build failed", feed.name)
-        return aiohttp.web.json_response(
-            {"error": f"Building the post failed, nothing was sent: {e}"}, status=502
-        )
-
+    # Claim the slot here, before the first await — not after the build below. The
+    # build takes seconds on the Bungie-backed feeds, and a check that far from its
+    # claim is not a guard: two requests arriving inside that window both saw an empty
+    # set, and both posted. Adding immediately after the `in` test is atomic, because
+    # nothing between them yields to the loop.
     _sending.add(feed.name)
-    task = asyncio.create_task(_run_send(feed, publish))
-    _send_tasks.add(task)
-    task.add_done_callback(_send_tasks.discard)
-    logger.info("Manual send of %s started (publish=%s)", feed.name, publish)
-    return aiohttp.web.json_response({"ok": True, "started": True})
+    started = False
+    try:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        publish = bool(payload.get("publish", True))
+
+        # Build once here so a constructor failure (the common one) is reported in the
+        # response, before anything is posted. The announcer rebuilds — an extra API
+        # fetch on a rare manual action, in exchange for not posting a placeholder into
+        # the live channel only to have construction fail behind it.
+        try:
+            await _build(feed)
+        except Exception as e:
+            logger.exception("Manual send of %s aborted: build failed", feed.name)
+            return aiohttp.web.json_response(
+                {"error": f"Building the post failed, nothing was sent: {e}"},
+                status=502,
+            )
+
+        task = asyncio.create_task(_run_send(feed, publish))
+        _send_tasks.add(task)
+        task.add_done_callback(_send_tasks.discard)
+        started = True
+        logger.info("Manual send of %s started (publish=%s)", feed.name, publish)
+        return aiohttp.web.json_response({"ok": True, "started": True})
+    finally:
+        # Once the task exists it owns the slot and releases it in `_run_send`. Every
+        # other exit from here — build failure, or anything unexpected — must not leave
+        # the feed permanently unsendable.
+        if not started:
+            _sending.discard(feed.name)
 
 
 def register_feed_action_routes(app: aiohttp.web.Application) -> None:

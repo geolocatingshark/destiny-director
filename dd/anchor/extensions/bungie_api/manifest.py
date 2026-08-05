@@ -1,7 +1,14 @@
-"""Destiny 2 manifest download, caching, and in-memory table building."""
+"""Destiny 2 manifest download, caching, and in-memory table building.
+
+**The cache is the extracted file on disk**, keyed by the versioned filename Bungie
+itself hands out. That makes invalidation fall out for free — a new manifest is a new
+name, so it can never be served from an old copy — at the price of one small metadata
+round-trip per resolve, which :func:`prewarm_manifest` keeps off the first request.
+"""
 
 import asyncio
 import json
+import logging
 import os
 import sqlite3
 import typing as t
@@ -12,6 +19,8 @@ import aiofiles
 import aiohttp
 
 from .constants import API_MANIFEST, BUNGIE_NET, manifest_table_names
+
+logger = logging.getLogger(__name__)
 
 # Timeouts for the manifest fetch. The metadata call is tiny; the manifest zip
 # is large (hundreds of MB) so it gets a much longer allowance.
@@ -24,19 +33,14 @@ _MANIFEST_DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=600)
 # same file, one wipes ``manifest/`` while the other is extracting, and both
 # ``extractall`` concurrently — corrupting the sqlite ("database disk image is
 # malformed"). The first caller downloads; the rest wait and hit the cached path below.
+# Kept as the last line of defence even though `_inflight` normally means there is only
+# ever one resolve running: `invalidate_manifest_cache` deletes files under it too.
 _manifest_lock = asyncio.Lock()
 
-#: How long a resolved manifest path is trusted without re-asking Bungie which version
-#: is current. Every caller used to make the metadata round-trip even when the file was
-#: already on disk, which is a network hop (and a 30s timeout) in front of what is
-#: otherwise a local sqlite open. Bungie ships a new manifest every week or two, so
-#: hours of staleness costs nothing and a restart re-checks anyway.
-_MANIFEST_MAX_AGE_SECONDS = 6 * 60 * 60
-
-#: (path, monotonic timestamp) of the last resolved manifest — the "already downloaded
-#: elsewhere" fast path shared by every producer.
-_cached_manifest: tuple[str, float] | None = None
-
+#: The resolve currently running, if any, so a burst of callers shares one rather than
+#: each making its own Bungie round-trip. Not a cache — it is dropped as soon as it
+#: completes, so the next caller performs a fresh currency check.
+_inflight: "asyncio.Task[str] | None" = None
 
 def _downloaded_manifests() -> list[str]:
     """Every extracted manifest on disk, newest first."""
@@ -52,33 +56,78 @@ def _downloaded_manifests() -> list[str]:
     )
 
 
-def invalidate_manifest_cache() -> None:
-    """Forget the resolved path, so the next call re-asks Bungie which is current.
+async def invalidate_manifest_cache() -> None:
+    """Delete the extracted manifest, so the next resolve downloads a fresh copy.
 
-    The cache is time-based, not event-based — nothing tells us when Bungie ships a new
-    manifest — so this exists for the cases where waiting out the TTL is wrong: a
-    corrupt extract, or a deliberate refresh.
+    Not needed for ordinary staleness — a new manifest arrives under a new filename and
+    :func:`_get_latest_manifest` picks it up on its next currency check. This is the
+    escape hatch for the case that check cannot see: a copy on disk that is *current but
+    broken* (a truncated download, an extract interrupted mid-write — "database disk
+    image is malformed"), where the filename says we already have what Bungie is
+    serving. Takes the same lock as the download, so it cannot delete out from under an
+    in-flight extract.
     """
-    global _cached_manifest
-    _cached_manifest = None
+    async with _manifest_lock:
+        for path in _downloaded_manifests():
+            os.remove(path)
+
+
+async def prewarm_manifest(api_key: str) -> None:
+    """Resolve (and if needed download) the manifest, ignoring failures.
+
+    Run once at ``StartedEvent``. The download is hundreds of MB and the extract is
+    slow, so a process that does this lazily makes whichever request arrives first —
+    typically a weekly-reset form load or a vendor post — wear the whole cost. Doing it
+    at startup means the manifest is on disk before anything asks, and every later
+    resolve is a small metadata round-trip plus a local sqlite open.
+
+    Failures are logged and swallowed: a bot that cannot reach Bungie at boot must still
+    start, and every consumer already resolves the manifest itself.
+    """
+    try:
+        path = await _get_latest_manifest(api_key)
+    except Exception:
+        logger.warning("Manifest prewarm failed; it will be resolved on first use")
+        return
+    logger.info("Manifest prewarmed: %s", path)
 
 
 async def _get_latest_manifest(api_key: str) -> str:
-    global _cached_manifest
+    """The path to the current manifest, downloading it if we do not have it.
+
+    Concurrent callers are **coalesced onto one resolve**: several pages that each need
+    the manifest (a weekly-reset form load alone touches the option indexes and the
+    weapon pool) share a single metadata round-trip and, on a cold volume, a single
+    download. Previously they queued on the lock and each made its own Bungie call once
+    it got in — harmless but wasteful, and it multiplied the wait for the last in line.
+
+    ``shield`` so a caller that gives up (a cancelled request) does not cancel the
+    resolve that everyone else is waiting on.
+    """
+    global _inflight
+    task = _inflight
+    if task is None or task.done():
+        # No await between the check and the assignment, so this cannot interleave: a
+        # burst of callers all see the same task.
+        task = asyncio.create_task(_resolve_manifest(api_key))
+        _inflight = task
+    return await asyncio.shield(task)
+
+
+async def _resolve_manifest(api_key: str) -> str:
     async with _manifest_lock:
         # Prep the manifest directory
         Path("manifest").mkdir(exist_ok=True)
 
-        # Already resolved recently — reuse it without touching the network at all.
-        if _cached_manifest is not None:
-            path, resolved_at = _cached_manifest
-            fresh = (asyncio.get_running_loop().time() - resolved_at) < (
-                _MANIFEST_MAX_AGE_SECONDS
-            )
-            if fresh and os.path.exists(path):
-                return path
-
-        # Get the latest manifest url from the API
+        # Ask Bungie which manifest is current — on every resolve, deliberately. This
+        # round-trip IS the currency check, and it is what makes the extracted file on
+        # disk safe to reuse: Bungie versions the manifest in its own filename, so a new
+        # one cannot be mistaken for the copy we hold. Skipping the check on a timer was
+        # tried and reverted — it bounded staleness at hours, and the window it opened
+        # (a mid-week hotfix landing between the check and the post that reads it) is
+        # exactly when the definitions matter. The cost it saved is a small JSON GET;
+        # the cost that actually hurts is the download, which this still avoids, and
+        # which `prewarm_manifest` moves off the first request entirely.
         try:
             async with (
                 aiohttp.ClientSession(timeout=_MANIFEST_META_TIMEOUT) as session,
@@ -90,10 +139,16 @@ async def _get_latest_manifest(api_key: str) -> str:
         except Exception:
             # Bungie unreachable. A manifest already on disk is stale at worst — its
             # content changes every week or two — and is enormously better than failing
-            # every autocomplete pool and post derivation until Bungie comes back.
+            # every autocomplete pool and post derivation until Bungie comes back. No
+            # state is written here, so the next call re-checks rather than committing
+            # to the stale copy.
             existing = _downloaded_manifests()
             if existing:
-                _cached_manifest = (existing[0], asyncio.get_running_loop().time())
+                logger.warning(
+                    "Could not reach Bungie to check the manifest version; reusing %s",
+                    existing[0],
+                    exc_info=True,
+                )
                 return existing[0]
             raise
 
@@ -101,10 +156,6 @@ async def _get_latest_manifest(api_key: str) -> str:
         # Check if the manifest is already downloaded (a concurrent caller that waited
         # on the lock finds the freshly-extracted file here and returns, no re-fetch)
         if os.path.exists("manifest/" + manifest_url_filename):
-            _cached_manifest = (
-                "manifest/" + manifest_url_filename,
-                asyncio.get_running_loop().time(),
-            )
             return "manifest/" + manifest_url_filename
 
         manifest_url = BUNGIE_NET + manifest_url_fragment
@@ -129,9 +180,7 @@ async def _get_latest_manifest(api_key: str) -> str:
 
         await asyncio.get_event_loop().run_in_executor(None, _extract)
 
-        manifest_path = "manifest/" + os.listdir("manifest")[0]
-        _cached_manifest = (manifest_path, asyncio.get_running_loop().time())
-        return manifest_path
+        return "manifest/" + os.listdir("manifest")[0]
 
 
 _MANIFEST_TABLE_NAMES = frozenset(manifest_table_names)
