@@ -25,9 +25,10 @@
 //   post_spec the weekly-reset / trials / rotation previews — the server sends the
 //             post's own node tree (post_spec_nodes) and the client draws it.
 //
-// One stays Python-only for now, on purpose:
-//
-//   diff      needs the annotation layer that does not exist yet (plan phase 6).
+//   diff      the mirror log's version diff. The alignment stays in Python (it needs
+//             difflib), so the fixture carries the annotated tree it produces and this
+//             asserts the render from there — against the HTML the OLD Python diff
+//             renderer emitted, which is what makes the port checkable.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -136,6 +137,23 @@ for (const c of postSpec.cases) {
       }),
       c.expected_html,
       `${c.name} diverged from the Python renderer`,
+    );
+  });
+}
+
+// The mirror-log diff, drawn from the tree Python aligned and annotated.
+const diffs = load("diff.json");
+
+for (const c of diffs.cases) {
+  test(`diff:${c.name} renders its annotated tree`, () => {
+    assert.ok(c.annotated, `${c.name} has no annotated tree`);
+    assert.equal(
+      R.serialize(R.diffSpec(c.annotated), {
+        emoji: diffs.emoji || {},
+        now: NOW_MS,
+      }),
+      c.expected_html,
+      `${c.name} diverged from the Python diff renderer`,
     );
   });
 }

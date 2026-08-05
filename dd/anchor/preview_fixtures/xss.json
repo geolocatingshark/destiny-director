@@ -249,7 +249,33 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><del>&lt;script&gt;old&lt;/script&gt;</del><ins>&lt;script&gt;new&lt;/script&gt;</ins></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><del>&lt;script&gt;old&lt;/script&gt;</del><ins>&lt;script&gt;new&lt;/script&gt;</ins></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "<script>new</script>",
+            "_lines": [
+              {
+                "op": "replace",
+                "runs": [
+                  {
+                    "op": "del",
+                    "text": "<script>old</script>"
+                  },
+                  {
+                    "op": "ins",
+                    "text": "<script>new</script>"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "script_in_post_spec_body",

@@ -133,6 +133,13 @@ def _render(case: dict[str, t.Any], defaults: dict[str, t.Any]) -> str:
             emoji_sub=hybrid_post_core._html_emoji_substituter(emoji_dict),
         )
     if how == "diff":
+        # The alignment stays server-side; what the client gets is the annotated tree,
+        # recorded here so the JS side can render from it. `expected_html` is still what
+        # the *old* Python diff renderer produced, which is the point: the JS render of
+        # these annotations has to reproduce it exactly.
+        case["annotated"] = cv2_render.diff_payload(
+            case["payload"], case["kind"], case["old_payload"], case["old_kind"]
+        )
         return cv2_render.render_diff(
             case["payload"], case["kind"], case["old_payload"], case["old_kind"]
         )

@@ -498,9 +498,10 @@
             {},
           );
         } else {
-          // The diff is still server-rendered (pre-escaped) until its structural
-          // alignment becomes tree annotations the shared renderer can draw.
-          body.innerHTML = data.html;
+          // A diff of the same, from the annotated tree the server aligned. Every run
+          // is pre-split there, so nothing is diffed in the browser — the client only
+          // draws, which keeps the trust story the same as a plain render.
+          window.CV2Render.render(body, window.CV2Render.diffSpec(data.diff), {});
         }
       } catch (e) {
         if (tokens.get(col) === token) body.textContent = `Render error: ${e}`;

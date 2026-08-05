@@ -31,8 +31,8 @@ Three routes, mirroring the ``/stats`` shell + JSON pattern:
   list for the expandable detail view (the mirrored message itself).
 - ``GET /mirror-logs/render?src=<id>&v=<n>`` returns one captured version for the page
   to draw with the shared renderer (``web_static/cv2_render.js``); adding ``&diff=<m>``
-  returns a word-level diff against version ``m``, which is still server-rendered HTML
-  (see :func:`_handle_render`). Pull/stateless.
+  returns a word-level diff against version ``m`` as an annotated tree (see
+  :func:`cv2_render.diff_payload`). Pull/stateless.
 
 Discord snowflake ids exceed JavaScript's safe-integer range, so ids are emitted as
 strings; ledger timestamps are naive-UTC wall clocks, stamped UTC here so the browser
@@ -50,7 +50,7 @@ import lightbulb as lb
 from ...common import schemas
 from ...common.utils import followable_name
 from .. import web
-from ..cv2_render import render_diff
+from ..cv2_render import diff_payload
 
 logger = logging.getLogger(__name__)
 
@@ -203,8 +203,9 @@ async def _handle_render(request: aiohttp.web.Request) -> aiohttp.web.Response:
 
     - ``{"kind": "snapshot", "payload": …, "message_kind": "cv2"|"classic"}`` — the
       captured payload itself, drawn client-side by the shared renderer.
-    - ``{"kind": "html", "html": …}`` — the diff, still server-rendered until its
-      structural alignment is reworked into tree annotations (phase 6).
+    - ``{"kind": "diff", "diff": …}`` — the *annotated* tree: the alignment stays here
+      (it needs ``difflib``), but what ships is its verdict, which the same renderer
+      draws. See :func:`cv2_render.diff_payload`.
 
     **This is the untrusted sink.** A payload here is whatever some other server's
     message contained, so the renderer's guarantees are what stand between it and the
@@ -231,8 +232,8 @@ async def _handle_render(request: aiohttp.web.Request) -> aiohttp.web.Response:
             )
         return aiohttp.web.json_response(
             {
-                "kind": "html",
-                "html": render_diff(
+                "kind": "diff",
+                "diff": diff_payload(
                     new["payload"], new["kind"], old["payload"], old["kind"]
                 ),
             }

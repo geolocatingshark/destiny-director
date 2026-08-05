@@ -113,6 +113,19 @@
     return el("div", "cv2-placeholder", { text: "⚠️ " + message });
   }
 
+  /**
+   * Wrap a drawn node in its diff mark, if it carries one.
+   *
+   * Always OUTSIDE whatever the node draws as, so a departed button or accessory reads
+   * as a whole thing gone rather than as one with red contents. Three callers reach a
+   * node without going through `walk` — accessories and buttons are drawn by their
+   * parent — so the rule lives here rather than in any one of them.
+   */
+  function marked(node, spec) {
+    if (!spec || !node || !node._mark) return spec;
+    return el("div", "cv2-" + node._mark, { children: [spec] });
+  }
+
   function textBlock(content) {
     return el("div", "cv2-text", { md: String(content) });
   }
@@ -169,17 +182,22 @@
     const inner = node.type === THUMBNAIL ? thumbnail(node) : null;
     const btn = node.type === BUTTON ? button(node) : null;
     const child = inner || btn;
-    return child ? el("div", "cv2-accessory", { children: [child] }) : null;
+    if (!child) return null;
+    return marked(node, el("div", "cv2-accessory", { children: [child] }));
   }
 
   function section(node) {
     const body = (node.components || []).map(walk).filter(Boolean);
-    const acc = accessory(node.accessory);
+    // In a diff, `accessory` may be a LIST — the three-state case where one was swapped
+    // for another, so both the old and the new are shown.
+    const accs = Array.isArray(node.accessory)
+      ? node.accessory.map(accessory).filter(Boolean)
+      : [accessory(node.accessory)].filter(Boolean);
     // The body wrapper is emitted even when empty: it is what holds the text column
     // beside the accessory, and a section with no text still has to reserve it.
-    const children = [el("div", "cv2-section-body", { children: body })];
-    if (acc) children.push(acc);
-    return el("div", "cv2-section", { children: children });
+    return el("div", "cv2-section", {
+      children: [el("div", "cv2-section-body", { children: body })].concat(accs),
+    });
   }
 
   function media(node) {
@@ -217,7 +235,9 @@
   }
 
   function actionRow(node) {
-    const buttons = (node.components || []).map(button).filter(Boolean);
+    const buttons = (node.components || [])
+      .map((b) => marked(b, button(b)))
+      .filter(Boolean);
     return buttons.length ? el("div", "cv2-buttons", { children: buttons }) : null;
   }
 
@@ -228,14 +248,51 @@
     });
   }
 
+  /**
+   * A text leaf a diff has annotated: per-line equal / ins / del / replace.
+   *
+   * The rules differ per op and the difference is deliberate. An unchanged or inserted
+   * line renders its markdown; a *removed* line renders as raw text, because dressing up
+   * markup that no longer exists reads as though it still does. A replace-run is
+   * word-level over raw text for the same reason — that is where an edit is legible.
+   */
+  function diffText(lines) {
+    const parts = [];
+    (lines || []).forEach((entry, i) => {
+      if (i) parts.push(text("\n"));
+      if (entry.op === "equal") {
+        parts.push({ line: String(entry.line || "") });
+      } else if (entry.op === "ins") {
+        parts.push(el("ins", null, { line: String(entry.line || "") }));
+      } else if (entry.op === "del") {
+        parts.push(el("del", null, { text: String(entry.line || "") }));
+      } else {
+        for (const run of entry.runs || []) {
+          const body = text(String(run.text || ""));
+          if (run.op === "del") parts.push(el("del", null, { children: [body] }));
+          else if (run.op === "ins") parts.push(el("ins", null, { children: [body] }));
+          else parts.push(body);
+        }
+      }
+    });
+    return el("div", "cv2-text", { children: parts });
+  }
+
   /** One CV2 node → its spec, degrading an unknown kind to a labelled placeholder. */
   function walk(node) {
     if (!node || typeof node !== "object") return null;
+    return marked(node, draw(node));
+  }
+
+  /** The undecorated draw of one node — `walk` adds any diff mark on top. */
+  function draw(node) {
     switch (node.type) {
       case CONTAINER:
         return container(node);
       case TEXT_DISPLAY:
-        return textBlock(node.content === undefined ? "" : node.content);
+        return node._lines
+          ? diffText(node._lines)
+          : textBlock(node.content === undefined ? "" : node.content);
       case SECTION:
         return section(node);
       case MEDIA_GALLERY:
@@ -350,6 +407,52 @@
     return classic(payload);
   }
 
+  /**
+   * A diff payload from the server → its spec.
+   *
+   * The alignment stays in Python (it needs difflib, and there is no zero-dependency
+   * equal here); what arrives is the new tree with three annotations — `_mark` on a
+   * whole node, `_lines` on a changed text leaf, and an `accessory` that may be a list.
+   * Everything is pre-split, so the client only draws: no diffing happens in the
+   * browser, on content that came from someone else's server.
+   */
+  function diffSpec(data) {
+    if (!data || typeof data !== "object") return placeholder("No diff to show.");
+    if (data.mode === "placeholder") return placeholder(data.message || "");
+
+    const note = data.note
+      ? el("div", "cv2-note", { text: data.note })
+      : null;
+    if (data.mode === "snapshot") {
+      // The message changed format between versions, so the two are not comparable.
+      return [note, snapshotSpec(data.payload, data.kind)].filter(Boolean);
+    }
+
+    if (data.kind === "cv2") {
+      const body = (data.components || []).map(walk).filter(Boolean);
+      const root = body.length
+        ? el("div", "cv2-root", { children: body })
+        : placeholder("This version captured no renderable components.");
+      return [note, root].filter(Boolean);
+    }
+
+    // Classic: the diffed content leaf, then the embeds. No "Classic message — …"
+    // summary here; the diff is about what moved, not what the message is made of.
+    const parts = [];
+    if (data.content) {
+      parts.push(
+        data.content._lines
+          ? diffText(data.content._lines)
+          : textBlock(data.content.content || ""),
+      );
+    }
+    for (const e of data.embeds || []) {
+      const drawn = embed(e);
+      parts.push(e._mark ? el("div", "cv2-" + e._mark, { children: [drawn] }) : drawn);
+    }
+    return [note, el("div", "cv2-root classic", { children: parts })].filter(Boolean);
+  }
+
   // --- back end: html string -----------------------------------------------------------
 
   // Tags with no closing form. Matching the Python's output exactly matters: the golden
@@ -399,6 +502,9 @@
     if (spec.inline !== undefined) {
       return M.inlineMd(spec.inline, opts.emoji, opts.now);
     }
+    // One line, without the block-level heading-spacing pass — a diff has already
+    // decided where the lines fall, so re-flowing them would fight it.
+    if (spec.line !== undefined) return M.lineMd(spec.line, opts.emoji, opts.now);
     if (spec.children) return serialize(spec.children, opts);
     if (spec.text !== undefined) return M.esc(spec.text);
     return "";
@@ -424,7 +530,12 @@
     if (Array.isArray(spec)) {
       return spec.map((s) => serialize(s, opts)).join("");
     }
-    if (!spec.tag) return M.esc(spec.text === undefined ? "" : spec.text);
+    // A tagless spec is either escaped text or a bare markdown fragment — a diff's
+    // unchanged lines sit directly in the text block, with no wrapper of their own.
+    if (!spec.tag) {
+      if (spec.line !== undefined) return M.lineMd(spec.line, opts.emoji, opts.now);
+      return M.esc(spec.text === undefined ? "" : spec.text);
+    }
     const tag = tagOf(spec, opts);
     const open = "<" + tag + attrs(spec, opts) + ">";
     if (VOID[tag]) return open;
@@ -451,6 +562,14 @@
       return frag;
     }
     if (!spec.tag) {
+      if (spec.line !== undefined) {
+        // A bare markdown fragment. It goes through a template rather than an added
+        // wrapper element so the DOM matches what serialize() writes exactly — and it
+        // is the same escape-by-construction output `md` is, not raw input.
+        const tpl = doc.createElement("template");
+        tpl.innerHTML = M.lineMd(spec.line, opts.emoji, opts.now);
+        return tpl.content;
+      }
       return doc.createTextNode(spec.text === undefined ? "" : spec.text);
     }
 
@@ -475,6 +594,8 @@
       node.innerHTML = M.renderMd(spec.md, opts.emoji, opts.now);
     } else if (spec.inline !== undefined) {
       node.innerHTML = M.inlineMd(spec.inline, opts.emoji, opts.now);
+    } else if (spec.line !== undefined) {
+      node.innerHTML = M.lineMd(spec.line, opts.emoji, opts.now);
     } else if (spec.children) {
       for (const child of spec.children) {
         node.appendChild(materialize(child, opts, doc));
@@ -495,6 +616,7 @@
     walk,
     nodesSpec,
     snapshotSpec,
+    diffSpec,
     classic,
     embed,
     // back ends

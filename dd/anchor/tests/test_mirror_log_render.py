@@ -119,12 +119,24 @@ async def test_render_route_diff_marks_changes() -> None:
         _as_request({"src": "200", "v": "2", "diff": "1"})
     )
 
-    # The diff is still server-rendered HTML — its structural alignment has yet to be
-    # reworked into the tree annotations the shared renderer can draw.
+    # The alignment stays here (it needs difflib); what ships is its verdict, as
+    # pre-split runs the client only has to draw. The rendering of these annotations is
+    # pinned by the shared corpus, against what the old Python diff renderer emitted.
     body = json.loads(resp.text or "{}")
-    assert body["kind"] == "html"
-    assert "<del>beta</del>" in body["html"]
-    assert "<ins>gamma</ins>" in body["html"]
+    assert body["kind"] == "diff"
+
+    def runs(node: t.Any) -> list[t.Any]:
+        """Every word-level run in the tree, wherever the changed leaf sits."""
+        if isinstance(node, list):
+            return [r for n in node for r in runs(n)]
+        if not isinstance(node, dict):
+            return []
+        out = [r for entry in (node.get("_lines") or []) for r in entry.get("runs", [])]
+        return out + runs(node.get("components") or [])
+
+    found = runs(body["diff"]["components"])
+    assert {"op": "del", "text": "beta"} in found
+    assert {"op": "ins", "text": "gamma"} in found
 
 
 async def test_render_route_404_for_missing_version() -> None:

@@ -22,7 +22,18 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-note\">No changes from the previous version.</div><div class=\"cv2-root\"><div class=\"cv2-text\">unchanged</div></div>"
+      "expected_html": "<div class=\"cv2-note\">No changes from the previous version.</div><div class=\"cv2-root\"><div class=\"cv2-text\">unchanged</div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": "No changes from the previous version.",
+        "components": [
+          {
+            "type": 10,
+            "content": "unchanged"
+          }
+        ]
+      }
     },
     {
       "name": "diff_node_added",
@@ -49,7 +60,23 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">first</div><div class=\"cv2-added\"><div class=\"cv2-text\">second</div></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">first</div><div class=\"cv2-added\"><div class=\"cv2-text\">second</div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "first"
+          },
+          {
+            "type": 10,
+            "content": "second",
+            "_mark": "added"
+          }
+        ]
+      }
     },
     {
       "name": "diff_node_removed",
@@ -76,7 +103,23 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">first</div><div class=\"cv2-removed\"><div class=\"cv2-text\">second</div></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">first</div><div class=\"cv2-removed\"><div class=\"cv2-text\">second</div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "first"
+          },
+          {
+            "type": 10,
+            "content": "second",
+            "_mark": "removed"
+          }
+        ]
+      }
     },
     {
       "name": "diff_text_word_level_edit",
@@ -99,7 +142,37 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">Nightfall is The <del>Arms Dealer</del><ins>Corrupted</ins></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">Nightfall is The <del>Arms Dealer</del><ins>Corrupted</ins></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "Nightfall is The Corrupted",
+            "_lines": [
+              {
+                "op": "replace",
+                "runs": [
+                  {
+                    "op": "equal",
+                    "text": "Nightfall is The "
+                  },
+                  {
+                    "op": "del",
+                    "text": "Arms Dealer"
+                  },
+                  {
+                    "op": "ins",
+                    "text": "Corrupted"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_text_equal_lines_keep_markdown",
@@ -122,7 +195,45 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h2\">Weekly reset</span>\n<span class=\"md-bullet\"><strong>Nightfall</strong>: Warden</span>\n- Crucible: <del>Clash</del><ins>Control</ins></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h2\">Weekly reset</span>\n<span class=\"md-bullet\"><strong>Nightfall</strong>: Warden</span>\n- Crucible: <del>Clash</del><ins>Control</ins></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "## Weekly reset\n- **Nightfall**: Warden\n- Crucible: Control",
+            "_lines": [
+              {
+                "op": "equal",
+                "line": "## Weekly reset"
+              },
+              {
+                "op": "equal",
+                "line": "- **Nightfall**: Warden"
+              },
+              {
+                "op": "replace",
+                "runs": [
+                  {
+                    "op": "equal",
+                    "text": "- Crucible: "
+                  },
+                  {
+                    "op": "del",
+                    "text": "Clash"
+                  },
+                  {
+                    "op": "ins",
+                    "text": "Control"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_text_line_inserted",
@@ -145,7 +256,32 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h2\">Header</span>\nfirst line\n<ins><span class=\"md-bullet\"><strong>new</strong> bullet</span></ins></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h2\">Header</span>\nfirst line\n<ins><span class=\"md-bullet\"><strong>new</strong> bullet</span></ins></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "## Header\nfirst line\n- **new** bullet",
+            "_lines": [
+              {
+                "op": "equal",
+                "line": "## Header"
+              },
+              {
+                "op": "equal",
+                "line": "first line"
+              },
+              {
+                "op": "ins",
+                "line": "- **new** bullet"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_text_line_deleted",
@@ -168,7 +304,32 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h2\">Header</span>\nfirst line\n<del>- **gone** bullet</del></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-h2\">Header</span>\nfirst line\n<del>- **gone** bullet</del></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "## Header\nfirst line",
+            "_lines": [
+              {
+                "op": "equal",
+                "line": "## Header"
+              },
+              {
+                "op": "equal",
+                "line": "first line"
+              },
+              {
+                "op": "del",
+                "line": "- **gone** bullet"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_text_replace_multiline_block",
@@ -191,7 +352,57 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">keep\nalpha <del>original</del><ins>changed</ins>\nbravo <del>original</del><ins>changed</ins>\nkeep tail</div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">keep\nalpha <del>original</del><ins>changed</ins>\nbravo <del>original</del><ins>changed</ins>\nkeep tail</div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "keep\nalpha changed\nbravo changed\nkeep tail",
+            "_lines": [
+              {
+                "op": "equal",
+                "line": "keep"
+              },
+              {
+                "op": "replace",
+                "runs": [
+                  {
+                    "op": "equal",
+                    "text": "alpha "
+                  },
+                  {
+                    "op": "del",
+                    "text": "original"
+                  },
+                  {
+                    "op": "ins",
+                    "text": "changed"
+                  },
+                  {
+                    "op": "equal",
+                    "text": "\nbravo "
+                  },
+                  {
+                    "op": "del",
+                    "text": "original"
+                  },
+                  {
+                    "op": "ins",
+                    "text": "changed"
+                  }
+                ]
+              },
+              {
+                "op": "equal",
+                "line": "keep tail"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_container_recurses",
@@ -234,7 +445,47 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\" style=\"border-left-color:#ec42a5\"><div class=\"cv2-text\">steady</div><div class=\"cv2-text\">edited <del>before</del><ins>now</ins></div></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\" style=\"border-left-color:#ec42a5\"><div class=\"cv2-text\">steady</div><div class=\"cv2-text\">edited <del>before</del><ins>now</ins></div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 17,
+            "accent_color": 15483557,
+            "components": [
+              {
+                "type": 10,
+                "content": "steady"
+              },
+              {
+                "type": 10,
+                "content": "edited now",
+                "_lines": [
+                  {
+                    "op": "replace",
+                    "runs": [
+                      {
+                        "op": "equal",
+                        "text": "edited "
+                      },
+                      {
+                        "op": "del",
+                        "text": "before"
+                      },
+                      {
+                        "op": "ins",
+                        "text": "now"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_accessory_added",
@@ -273,7 +524,32 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">body</div></div><div class=\"cv2-added\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/new.png\" alt=\"thumbnail\"></div></div></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">body</div></div><div class=\"cv2-added\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/new.png\" alt=\"thumbnail\"></div></div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "body"
+              }
+            ],
+            "accessory": [
+              {
+                "type": 11,
+                "media": {
+                  "url": "https://example.com/new.png"
+                },
+                "_mark": "added"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_accessory_removed",
@@ -312,7 +588,32 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">body</div></div><div class=\"cv2-removed\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/old.png\" alt=\"thumbnail\"></div></div></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">body</div></div><div class=\"cv2-removed\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/old.png\" alt=\"thumbnail\"></div></div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "body"
+              }
+            ],
+            "accessory": [
+              {
+                "type": 11,
+                "media": {
+                  "url": "https://example.com/old.png"
+                },
+                "_mark": "removed"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_accessory_changed",
@@ -357,7 +658,39 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">body</div></div><div class=\"cv2-removed\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/old.png\" alt=\"thumbnail\"></div></div><div class=\"cv2-added\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/new.png\" alt=\"thumbnail\"></div></div></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-section\"><div class=\"cv2-section-body\"><div class=\"cv2-text\">body</div></div><div class=\"cv2-removed\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/old.png\" alt=\"thumbnail\"></div></div><div class=\"cv2-added\"><div class=\"cv2-accessory\"><img class=\"cv2-thumb\" src=\"https://example.com/new.png\" alt=\"thumbnail\"></div></div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "body"
+              }
+            ],
+            "accessory": [
+              {
+                "type": 11,
+                "media": {
+                  "url": "https://example.com/old.png"
+                },
+                "_mark": "removed"
+              },
+              {
+                "type": 11,
+                "media": {
+                  "url": "https://example.com/new.png"
+                },
+                "_mark": "added"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_kind_replaced_at_position",
@@ -386,7 +719,30 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-removed\"><div class=\"cv2-text\">used to be text</div></div><div class=\"cv2-added\"><div class=\"cv2-media n1\"><a class=\"cv2-media-item\" href=\"https://example.com/now.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/now.png\" alt=\"\" loading=\"lazy\"></a></div></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-removed\"><div class=\"cv2-text\">used to be text</div></div><div class=\"cv2-added\"><div class=\"cv2-media n1\"><a class=\"cv2-media-item\" href=\"https://example.com/now.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/now.png\" alt=\"\" loading=\"lazy\"></a></div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "used to be text",
+            "_mark": "removed"
+          },
+          {
+            "type": 12,
+            "items": [
+              {
+                "media": {
+                  "url": "https://example.com/now.png"
+                }
+              }
+            ],
+            "_mark": "added"
+          }
+        ]
+      }
     },
     {
       "name": "diff_replace_run_with_tail_extras",
@@ -421,7 +777,65 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">one <del>original</del><ins>changed</ins></div><div class=\"cv2-text\">two <del>original</del><ins>changed</ins></div><div class=\"cv2-added\"><div class=\"cv2-text\">three added</div></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">one <del>original</del><ins>changed</ins></div><div class=\"cv2-text\">two <del>original</del><ins>changed</ins></div><div class=\"cv2-added\"><div class=\"cv2-text\">three added</div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 10,
+            "content": "one changed",
+            "_lines": [
+              {
+                "op": "replace",
+                "runs": [
+                  {
+                    "op": "equal",
+                    "text": "one "
+                  },
+                  {
+                    "op": "del",
+                    "text": "original"
+                  },
+                  {
+                    "op": "ins",
+                    "text": "changed"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 10,
+            "content": "two changed",
+            "_lines": [
+              {
+                "op": "replace",
+                "runs": [
+                  {
+                    "op": "equal",
+                    "text": "two "
+                  },
+                  {
+                    "op": "del",
+                    "text": "original"
+                  },
+                  {
+                    "op": "ins",
+                    "text": "changed"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": 10,
+            "content": "three added",
+            "_mark": "added"
+          }
+        ]
+      }
     },
     {
       "name": "diff_action_row_button_edited",
@@ -458,7 +872,33 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-buttons\"><div class=\"cv2-removed\"><a class=\"cv2-button\" href=\"https://example.com/go\" target=\"_blank\" rel=\"noopener noreferrer\">Original</a></div><div class=\"cv2-added\"><a class=\"cv2-button\" href=\"https://example.com/go\" target=\"_blank\" rel=\"noopener noreferrer\">Renamed</a></div></div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-buttons\"><div class=\"cv2-removed\"><a class=\"cv2-button\" href=\"https://example.com/go\" target=\"_blank\" rel=\"noopener noreferrer\">Original</a></div><div class=\"cv2-added\"><a class=\"cv2-button\" href=\"https://example.com/go\" target=\"_blank\" rel=\"noopener noreferrer\">Renamed</a></div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "cv2",
+        "note": null,
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Original",
+                "url": "https://example.com/go",
+                "_mark": "removed"
+              },
+              {
+                "type": 2,
+                "style": 5,
+                "label": "Renamed",
+                "url": "https://example.com/go",
+                "_mark": "added"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "name": "diff_format_changed",
@@ -476,7 +916,20 @@
       "old_payload": {
         "content": "was a classic message"
       },
-      "expected_html": "<div class=\"cv2-note\">Message format changed since the previous version — showing the current version.</div><div class=\"cv2-root\"><div class=\"cv2-text\">now components</div></div>"
+      "expected_html": "<div class=\"cv2-note\">Message format changed since the previous version — showing the current version.</div><div class=\"cv2-root\"><div class=\"cv2-text\">now components</div></div>",
+      "annotated": {
+        "mode": "snapshot",
+        "note": "Message format changed since the previous version — showing the current version.",
+        "payload": {
+          "components": [
+            {
+              "type": 10,
+              "content": "now components"
+            }
+          ]
+        },
+        "kind": "cv2"
+      }
     },
     {
       "name": "diff_truncated_side",
@@ -494,7 +947,11 @@
       "old_payload": {
         "truncated": true
       },
-      "expected_html": "<div class=\"cv2-placeholder\">⚠️ Cannot diff — a version&#x27;s snapshot was stored truncated.</div>"
+      "expected_html": "<div class=\"cv2-placeholder\">⚠️ Cannot diff — a version&#x27;s snapshot was stored truncated.</div>",
+      "annotated": {
+        "mode": "placeholder",
+        "message": "Cannot diff — a version's snapshot was stored truncated."
+      }
     },
     {
       "name": "diff_classic_content_edit",
@@ -507,7 +964,44 @@
       "old_payload": {
         "content": "## Notice\nThe **old** wording."
       },
-      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-text\"><span class=\"md-h2\">Notice</span>\nThe <del>**old**</del><ins>**new**</ins> wording.</div></div>"
+      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-text\"><span class=\"md-h2\">Notice</span>\nThe <del>**old**</del><ins>**new**</ins> wording.</div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "classic",
+        "note": null,
+        "content": {
+          "type": 10,
+          "content": "## Notice\nThe **new** wording.",
+          "_lines": [
+            {
+              "op": "equal",
+              "line": "## Notice"
+            },
+            {
+              "op": "replace",
+              "runs": [
+                {
+                  "op": "equal",
+                  "text": "The "
+                },
+                {
+                  "op": "del",
+                  "text": "**old**"
+                },
+                {
+                  "op": "ins",
+                  "text": "**new**"
+                },
+                {
+                  "op": "equal",
+                  "text": " wording."
+                }
+              ]
+            }
+          ]
+        },
+        "embeds": []
+      }
     },
     {
       "name": "diff_classic_embed_changed",
@@ -532,7 +1026,25 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-removed\"><div class=\"cv2-embed\"><div class=\"embed-title\">Xur</div><div class=\"embed-desc\"><div class=\"cv2-text\">At the Hangar</div></div></div></div><div class=\"cv2-added\"><div class=\"cv2-embed\"><div class=\"embed-title\">Xur</div><div class=\"embed-desc\"><div class=\"cv2-text\">At the Tower</div></div></div></div></div>"
+      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-removed\"><div class=\"cv2-embed\"><div class=\"embed-title\">Xur</div><div class=\"embed-desc\"><div class=\"cv2-text\">At the Hangar</div></div></div></div><div class=\"cv2-added\"><div class=\"cv2-embed\"><div class=\"embed-title\">Xur</div><div class=\"embed-desc\"><div class=\"cv2-text\">At the Tower</div></div></div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "classic",
+        "note": null,
+        "content": null,
+        "embeds": [
+          {
+            "title": "Xur",
+            "description": "At the Hangar",
+            "_mark": "removed"
+          },
+          {
+            "title": "Xur",
+            "description": "At the Tower",
+            "_mark": "added"
+          }
+        ]
+      }
     },
     {
       "name": "diff_classic_embed_added",
@@ -558,7 +1070,25 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-text\">same</div><div class=\"cv2-embed\"><div class=\"embed-title\">First</div></div><div class=\"cv2-added\"><div class=\"cv2-embed\"><div class=\"embed-title\">Second</div></div></div></div>"
+      "expected_html": "<div class=\"cv2-root classic\"><div class=\"cv2-text\">same</div><div class=\"cv2-embed\"><div class=\"embed-title\">First</div></div><div class=\"cv2-added\"><div class=\"cv2-embed\"><div class=\"embed-title\">Second</div></div></div></div>",
+      "annotated": {
+        "mode": "diff",
+        "kind": "classic",
+        "note": null,
+        "content": {
+          "type": 10,
+          "content": "same"
+        },
+        "embeds": [
+          {
+            "title": "First"
+          },
+          {
+            "title": "Second",
+            "_mark": "added"
+          }
+        ]
+      }
     }
   ]
 }
