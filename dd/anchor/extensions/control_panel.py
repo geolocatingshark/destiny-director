@@ -93,22 +93,25 @@ async def _handle_panel(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.Response(text=_render_panel_html(), content_type="text/html")
 
 
-async def _channel_label(channel_id: int) -> str | None:
-    """``#channel-name`` for a configured followable, or ``None`` if unresolvable.
+async def _channel_label(channel_id: int) -> tuple[str | None, str | None]:
+    """``(#channel-name, guild_id)`` for a configured followable.
 
-    A raw snowflake tells the reader nothing. Resolution is best-effort and per-channel:
-    the bot may not be in the guild, the channel may be deleted, or it may simply not be
-    up yet — none of which should cost the whole panel its config dump.
+    A raw snowflake tells the reader nothing, and a name you cannot click is only
+    slightly better — the guild id is what turns it into a deep link. Resolution is
+    best-effort and per-channel: the bot may not be in the guild, the channel may be
+    deleted, or it may simply not be up yet, none of which should cost the whole panel
+    its config dump.
     """
     if _bot is None:
-        return None
+        return None, None
     try:
         channel = await _bot.fetch_channel(channel_id)
     except Exception:
         logger.info("Could not resolve channel %s for /bot/info", channel_id)
-        return None
+        return None, None
     name = getattr(channel, "name", None)
-    return f"#{name}" if name else None
+    guild_id = getattr(channel, "guild_id", None)
+    return (f"#{name}" if name else None), (str(guild_id) if guild_id else None)
 
 
 async def _handle_bot_info(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -117,7 +120,7 @@ async def _handle_bot_info(request: aiohttp.web.Request) -> aiohttp.web.Response
     Anchor never had the mirror-status block (that is beacon's, gated on a
     ``mirror_check``), so this is the config dump and the configured channels.
     """
-    channels = await asyncio.gather(
+    resolved = await asyncio.gather(
         *(
             _channel_label(channel_id) if channel_id else _none()
             for channel_id in cfg.followables.values()
@@ -135,18 +138,25 @@ async def _handle_bot_info(request: aiohttp.web.Request) -> aiohttp.web.Response
                     "feed": name,
                     "channelId": str(channel_id) if channel_id else None,
                     "channelName": label,
+                    # A deep link needs the guild too; without it the page shows the
+                    # name as plain text rather than a link that would 404.
+                    "url": (
+                        f"https://discord.com/channels/{guild_id}/{channel_id}"
+                        if guild_id and channel_id
+                        else None
+                    ),
                 }
-                for (name, channel_id), label in zip(
-                    cfg.followables.items(), channels, strict=True
+                for (name, channel_id), (label, guild_id) in zip(
+                    cfg.followables.items(), resolved, strict=True
                 )
             ],
         }
     )
 
 
-async def _none() -> None:
-    """``None`` as an awaitable, so the gather above stays one flat comprehension."""
-    return None
+async def _none() -> tuple[None, None]:
+    """``(None, None)`` as an awaitable, so the gather stays one flat comprehension."""
+    return None, None
 
 
 async def _handle_bot_stop(request: aiohttp.web.Request) -> aiohttp.web.Response:

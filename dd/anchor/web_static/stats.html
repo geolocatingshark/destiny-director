@@ -52,7 +52,7 @@
           down. Click a row to focus it in the chart above. The resolution toggle applies
           to every sparkline.
         </p>
-        <table class="data selectable" id="commandsTable">
+        <div class="table-scroll">        <table class="data selectable" id="commandsTable">
           <thead>
             <tr>
               <th>Command</th>
@@ -62,7 +62,7 @@
             </tr>
           </thead>
           <tbody></tbody>
-        </table>
+        </table></div>
       </section>
 
       <section id="section-autoposts" class="card hidden">
@@ -74,7 +74,7 @@
           Each feed's total reach (followers + mirrors) over time. Click a row to focus
           that feed in the chart above. The resolution toggle applies to every sparkline.
         </p>
-        <table class="data selectable" id="currentTable">
+        <div class="table-scroll">        <table class="data selectable" id="currentTable">
           <thead>
             <tr>
               <th>Feed</th>
@@ -85,7 +85,7 @@
             </tr>
           </thead>
           <tbody></tbody>
-        </table>
+        </table></div>
       </section>
 
       <section id="section-populations" class="card hidden">
@@ -108,12 +108,12 @@
               placeholder="Filter by server id…"
               autocomplete="off"
             />
-            <table class="data" id="serversTable">
+            <div class="table-scroll">            <table class="data" id="serversTable">
               <thead>
                 <tr><th>Server ID</th><th class="num">Population</th></tr>
               </thead>
               <tbody></tbody>
-            </table>
+            </table></div>
           </div>
         </details>
       </section>

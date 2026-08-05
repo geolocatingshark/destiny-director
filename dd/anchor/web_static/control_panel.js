@@ -25,11 +25,20 @@ document.addEventListener("DOMContentLoaded", () => {
   const { say } = window;
 
   /** A <dt>/<dd> pair. textContent throughout — ids come from config, not literals. */
-  function row(list, label, value) {
+  function row(list, label, value, href) {
     const dt = document.createElement("dt");
     dt.textContent = label;
     const dd = document.createElement("dd");
-    dd.textContent = value;
+    if (href) {
+      const link = document.createElement("a");
+      link.href = href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = value;
+      dd.appendChild(link);
+    } else {
+      dd.textContent = value;
+    }
     list.append(dt, dd);
   }
 
@@ -63,7 +72,8 @@ document.addEventListener("DOMContentLoaded", () => {
         // Prefer the name; fall back to the id only when the bot could not resolve it
         // (not in the guild, channel deleted, or still starting up).
         data.channels.forEach((c) =>
-          row(feeds, c.feed, c.channelName || c.channelId || "(not set)"),
+          // A link only when the bot resolved the guild — otherwise it would 404.
+          row(feeds, c.feed, c.channelName || c.channelId || "(not set)", c.url),
         );
       } else {
         row(feeds, "—", "(none configured)");

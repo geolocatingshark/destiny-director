@@ -506,6 +506,41 @@ def _bot_starting() -> aiohttp.web.Response:
     return aiohttp.web.json_response({"error": _STARTING_MSG}, status=503)
 
 
+async def post_still_exists(
+    meta: DraftMeta, channel_id: int, bot: CachedFetchBot | None
+) -> bool:
+    """Whether the tracked post is still in its channel.
+
+    ``DraftMeta`` records what we posted; it cannot know what happened to it afterwards.
+    Someone deleting the message in Discord used to leave the form offering **Edit** for
+    a message that no longer exists — the edit then fails, and Create is nowhere to be
+    found. Checked once per form load.
+
+    Unknown counts as *present*: a REST blip or a bot that is still starting must not
+    flip the form into offering a second post for the period. Only a definite "not
+    found" (Discord 404) retires the record.
+    """
+    if not meta.message_id or bot is None:
+        return bool(meta.message_id)
+    try:
+        await bot.fetch_message(channel_id, meta.message_id)
+    except h.NotFoundError:
+        logger.info(
+            "Tracked post %s is gone from channel %s; the form will offer Create",
+            meta.message_id,
+            channel_id,
+        )
+        return False
+    except Exception:
+        # Anything else (rate limit, forbidden, transport) is not evidence of deletion.
+        logger.warning(
+            "Could not confirm tracked post %s still exists; assuming it does",
+            meta.message_id,
+            exc_info=True,
+        )
+    return True
+
+
 async def form_get(
     spec: HybridPostSpec, request: aiohttp.web.Request, bot: CachedFetchBot | None
 ) -> aiohttp.web.Response:
@@ -516,7 +551,11 @@ async def form_get(
     # Keyed off the post's tracked period (is_current), NOT the draft's own reset_ts —
     # a user-overridable display field that must not decide staleness. A producer whose
     # post is optional (Trials) simply reports post_this_period False when none exists.
-    post_this_period = meta.is_current(spec.current_reset_ts())
+    # Both halves must hold: the record names THIS period, and the message is still
+    # there. Either failing means the form offers Create, not Edit.
+    post_this_period = meta.is_current(spec.current_reset_ts()) and (
+        await post_still_exists(meta, spec.channel_id, bot)
+    )
     draft = (await spec.load_draft() if post_this_period else None) or (
         await spec.build_context()
     )

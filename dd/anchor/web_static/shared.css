@@ -264,6 +264,13 @@ p.nav { margin: 0 0 .4rem; }
    Default is the QUIET one. `.primary` is the action a page wants pressed; `.danger`
    is the one that destroys something. A page having two primaries means it has not
    decided what it is for. */
+/* `hidden` is a UA style (`display: none`), and ANY author `display` on the element
+   beats it — so setting display below silently disabled every `hidden` button on the
+   post toolbars, showing Create and Edit at once. Restore it explicitly, first, so the
+   attribute keeps meaning what it says. */
+button[hidden],
+a.button[hidden] { display: none; }
+
 button,
 a.button {
   display: inline-block; box-sizing: border-box;

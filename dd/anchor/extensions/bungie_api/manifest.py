@@ -26,25 +26,85 @@ _MANIFEST_DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=600)
 # malformed"). The first caller downloads; the rest wait and hit the cached path below.
 _manifest_lock = asyncio.Lock()
 
+#: How long a resolved manifest path is trusted without re-asking Bungie which version
+#: is current. Every caller used to make the metadata round-trip even when the file was
+#: already on disk, which is a network hop (and a 30s timeout) in front of what is
+#: otherwise a local sqlite open. Bungie ships a new manifest every week or two, so
+#: hours of staleness costs nothing and a restart re-checks anyway.
+_MANIFEST_MAX_AGE_SECONDS = 6 * 60 * 60
+
+#: (path, monotonic timestamp) of the last resolved manifest — the "already downloaded
+#: elsewhere" fast path shared by every producer.
+_cached_manifest: tuple[str, float] | None = None
+
+
+def _downloaded_manifests() -> list[str]:
+    """Every extracted manifest on disk, newest first."""
+    try:
+        names = os.listdir("manifest")
+    except FileNotFoundError:
+        return []
+    paths = ["manifest/" + name for name in names]
+    return sorted(
+        (p for p in paths if os.path.isfile(p)),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+
+
+def invalidate_manifest_cache() -> None:
+    """Forget the resolved path, so the next call re-asks Bungie which is current.
+
+    The cache is time-based, not event-based — nothing tells us when Bungie ships a new
+    manifest — so this exists for the cases where waiting out the TTL is wrong: a
+    corrupt extract, or a deliberate refresh.
+    """
+    global _cached_manifest
+    _cached_manifest = None
+
 
 async def _get_latest_manifest(api_key: str) -> str:
+    global _cached_manifest
     async with _manifest_lock:
         # Prep the manifest directory
         Path("manifest").mkdir(exist_ok=True)
 
+        # Already resolved recently — reuse it without touching the network at all.
+        if _cached_manifest is not None:
+            path, resolved_at = _cached_manifest
+            fresh = (asyncio.get_running_loop().time() - resolved_at) < (
+                _MANIFEST_MAX_AGE_SECONDS
+            )
+            if fresh and os.path.exists(path):
+                return path
+
         # Get the latest manifest url from the API
-        async with (
-            aiohttp.ClientSession(timeout=_MANIFEST_META_TIMEOUT) as session,
-            session.get(API_MANIFEST, headers={"X-API-Key": api_key}) as response,
-        ):
-            manifest_url_fragment = (await response.json())["Response"][
-                "mobileWorldContentPaths"
-            ]["en"]
+        try:
+            async with (
+                aiohttp.ClientSession(timeout=_MANIFEST_META_TIMEOUT) as session,
+                session.get(API_MANIFEST, headers={"X-API-Key": api_key}) as response,
+            ):
+                manifest_url_fragment = (await response.json())["Response"][
+                    "mobileWorldContentPaths"
+                ]["en"]
+        except Exception:
+            # Bungie unreachable. A manifest already on disk is stale at worst — its
+            # content changes every week or two — and is enormously better than failing
+            # every autocomplete pool and post derivation until Bungie comes back.
+            existing = _downloaded_manifests()
+            if existing:
+                _cached_manifest = (existing[0], asyncio.get_running_loop().time())
+                return existing[0]
+            raise
 
         manifest_url_filename = manifest_url_fragment.split("/")[-1]
         # Check if the manifest is already downloaded (a concurrent caller that waited
         # on the lock finds the freshly-extracted file here and returns, no re-fetch)
         if os.path.exists("manifest/" + manifest_url_filename):
+            _cached_manifest = (
+                "manifest/" + manifest_url_filename,
+                asyncio.get_running_loop().time(),
+            )
             return "manifest/" + manifest_url_filename
 
         manifest_url = BUNGIE_NET + manifest_url_fragment
@@ -70,6 +130,7 @@ async def _get_latest_manifest(api_key: str) -> str:
         await asyncio.get_event_loop().run_in_executor(None, _extract)
 
         manifest_path = "manifest/" + os.listdir("manifest")[0]
+        _cached_manifest = (manifest_path, asyncio.get_running_loop().time())
         return manifest_path
 
 
