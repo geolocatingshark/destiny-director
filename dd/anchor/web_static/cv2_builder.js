@@ -47,11 +47,13 @@
 // rather than hidden — a section's accessory is a visible slot, and an illegal drag says
 // why instead of silently omitting the option.
 //
-// Rendering: the canvas is rendered client-side (cv2_model.renderMd) because it is the
-// live editing surface — a server round-trip per keystroke is not an option. The
-// authoritative render is cv2_html.render_cv2_nodes_html, shown in the publish
-// confirmation, and the server re-sanitizes and re-validates on publish regardless. See
-// the module docstring in dd/anchor/cv2_html.py.
+// Rendering: the canvas draws each block's CONTENT through cv2_render.js — the one
+// renderer, shared with the mirror log and the publish confirmation — and keeps only
+// the editor chrome around it. It has to be client-side because this is the live
+// editing surface and a round-trip per keystroke is not an option; that constraint is
+// why the shared renderer is the JavaScript one. The publish confirmation draws the
+// tree the SERVER hands back (sanitized), and /publish re-validates regardless of what
+// this tab believed. See docs/architecture.md, "Rendering a message on the web".
 
 (function () {
   "use strict";

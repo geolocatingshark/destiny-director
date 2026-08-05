@@ -730,7 +730,7 @@ async def test_create_publish_returns_problems_for_invalid_draft(monkeypatch) ->
     assert json.loads(resp.text or "")["problems"]
 
 
-# --- rich HTML preview (render_post_html) -----------------------------------------
+# --- post body markdown ------------------------------------------------------------
 
 
 class _StubEmoji:

@@ -475,13 +475,14 @@
     return problems;
   }
 
-  // --- markdown (a client mirror of hybrid_post_core._render_line) -------------------
-  // Renders the *canvas*, which is the live editing surface, so it cannot be a server
-  // round-trip. cv2_html.render_cv2_nodes_html stays the authoritative render (shown in
-  // the publish confirmation) and the server re-sanitizes on publish regardless.
+  // --- markdown --------------------------------------------------------------------
+  // The leaf layer of THE renderer — every preview surface's text goes through here
+  // (see cv2_render.js). It used to mirror a Python twin, hybrid_post_core._render_line;
+  // that twin is gone, and the drift between them is what motivated the unification.
   //
-  // Everything is escaped first and only http(s) links become anchors, so this holds the
-  // same line the server does even though the author is rendering their own text.
+  // Everything is escaped first and only http(s) links become anchors. That is not a
+  // formality: the mirror log draws captured posts from other servers, so this runs on
+  // untrusted input.
 
   // Matches Python's html.escape(s, quote=True) character for character, including the
   // apostrophe as &#x27;. That is not cosmetic: the shared golden corpus
@@ -522,9 +523,8 @@
     "August September October November December"
   ).split(" ");
 
-  // One inline-markdown token, mirroring hybrid_post_core._INLINE_MD — same alternation
-  // in the same ORDER, so *** beats ** beats *, and a <t:…> timestamp beats the emoji arm
-  // (both can start with "<").
+  // One inline-markdown token. The ORDER is the contract: *** beats ** beats *, and a
+  // <t:…> timestamp beats the emoji arm (both can start with "<").
   //
   // A single ordered pass is not a stylistic choice: a chain of .replace() calls
   // substitutes into HTML the earlier passes already emitted. That is what mangled real
@@ -565,7 +565,13 @@
     return entry && entry.url ? _img(entry.url, name) : esc(whole);
   }
 
-  /** A `<t:UNIX:X>` token, mirroring hybrid_post_core._format_ts (UTC, like the server). */
+  /**
+   * A `<t:UNIX:X>` token.
+   *
+   * Rendered in UTC with an explicit "(UTC)" note. Discord shows these in the *viewer's*
+   * zone, which the Python renderer this replaced could not know — but a client renderer
+   * can, and making it do so is filed in plans/preview_renderer_unification.md.
+   */
   function _timestampText(unix, fmt, now) {
     const d = new Date(unix * 1000);
     const hour24 = d.getUTCHours();
@@ -686,8 +692,9 @@
     if (line.startsWith("# ")) {
       return '<span class="md-h1">' + inlineMd(line.slice(2), emoji, now) + "</span>";
     }
-    // Discord accepts both `- ` and `* `; hybrid_post_core._render_line matches the
-    // same pair, and the corpus holds the two implementations to it.
+    // Discord accepts both `- ` and `* `. The Python renderer this replaced took only
+    // `- `, which is how a star bullet came to render differently on the builder canvas
+    // than in the confirmation claiming to show the same post.
     if (/^[-*] /.test(line)) {
       return '<span class="md-bullet">' + inlineMd(line.slice(2), emoji, now) + "</span>";
     }
@@ -704,7 +711,8 @@
    * before each `##`/`###` (none if it is the first line) and drop any blank directly
    * after it. `#` (the H1 title) is left alone — its trailing blank already matches.
    *
-   * The client mirror of hybrid_post_core._normalize_heading_spacing.
+   * Ported from the Python renderer this replaced, which applied it and whose
+   * absence here was the first measured drift between the two.
    */
   function normalizeHeadingSpacing(lines) {
     const isSub = (line) => line.startsWith("## ") || line.startsWith("### ");

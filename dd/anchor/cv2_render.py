@@ -13,32 +13,29 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Render a captured mirror-message snapshot (see :class:`MirrorMessageVersion`) to a
-safe HTML string for the web mirror-log render pane.
+"""What changed between two captured versions of a mirrored message.
 
-The snapshot payload is Discord's own component/embed JSON, in one of two shapes:
+The mirror log shows one snapshot (see :class:`MirrorMessageVersion`) against the one
+before it. Payloads are Discord's own component/embed JSON, in one of two shapes:
 
 - ``kind == "cv2"``:  a Components V2 tree — ``{"components": [raw node dicts]}``.
 - ``kind == "classic"``:  ``{"content": str, "embeds": [embed dicts]}``.
 
-This is the CV2-tree walker the design doc's Phase D2 called for, kept deliberately in
-one module with a strict *"known node kinds → labeled placeholder"* degrade contract so
-it can't sprawl. It reuses ``hybrid_post_core``'s battle-tested inline-markdown / emoji
-/ URL-whitelist leaf renderers (every text leaf escaped, masked-link + media + button
-URLs ``http(s)``-validated, only the ``{span, strong, em, a, img}`` tag whitelist plus
-the container/section wrappers here), so the output is safe for the ``box.innerHTML``
-sink the page injects it through.
+**This module does not render.** It used to — it was the CV2-tree → safe-HTML walker —
+but there is one renderer now, ``web_static/cv2_render.js``, and it is the client's
+(see ``docs/architecture.md``, "Rendering a message on the web"). What stayed here is
+the half that needs :mod:`difflib`: aligning two trees and annotating what moved.
 
-The **diff** view (:func:`render_diff`) renders the whole message in place and
-highlights what changed since the previous version, both **component-by-component** (a
-whole added/removed component is wrapped green/red) and **word-by-word** (text edits
-show inline ``<ins>``/``<del>`` marks). It is a recursive structural diff: sibling
-components are aligned, recursing into containers/sections, so an edit is localised
-rather than blowing away the whole message.
+:func:`diff_payload` is the whole public surface. It returns the *new* tree carrying
+three annotations the shared renderer knows how to draw — ``_mark`` on a whole node,
+``_lines`` on a changed text leaf, and an ``accessory`` that may become a list — so an
+edit shows up localised, component-by-component and word-by-word, rather than blowing
+away the whole message.
 
-Emoji: captured content carries full ``<:name:id>`` / ``<a:name:id>`` custom emoji, so
-we resolve straight to the Discord CDN (``cdn.discordapp.com/emojis/{id}.{png|gif}``) —
-no bot or guild-emoji dict needed, unlike the live post previewer.
+Everything it emits is **pre-split**: line runs and word runs are decided here, so the
+browser only draws. That is deliberate. This content came from someone else's server,
+and the less it is reasoned about client-side the smaller the surface that reasoning
+can be wrong about.
 """
 
 import difflib

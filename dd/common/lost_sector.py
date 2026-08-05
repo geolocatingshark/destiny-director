@@ -91,8 +91,8 @@ def build_body(sectors: list[sector_accounting.Sector], details_enabled: bool) -
     """The Lost Sector post body markdown (raw ``:emoji:`` tokens) for a day's sectors.
 
     The same header + per-sector lines + footer ``format_post`` renders into the CV2
-    text display, factored out so the web preview wall can render any day's post via
-    :func:`dd.anchor.hybrid_post_core.render_post_spec` without duplicating the layout.
+    text display, factored out so the web preview wall can show any day's post from the
+    same body the live post uses, rather than duplicating the layout.
     ``details_enabled`` mirrors the ``AutoPostSettings`` champions/shields toggle.
     """
     body = ""

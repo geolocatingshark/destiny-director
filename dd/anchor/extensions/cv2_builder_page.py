@@ -92,10 +92,11 @@ def _require_bot() -> CachedFetchBot:
 async def _emoji_map() -> dict[str, dict[str, t.Any]]:
     """``{name: {url, id, animated}}`` for the client's emoji handling.
 
-    The URL drives ``:shortcode:`` preview substitution (the client mirror of
-    ``hybrid_post_core._html_emoji_substituter``). The **id** is what a button needs:
-    Discord renders a custom emoji on a button only from ``{"id": …, "name": …}`` — a
-    name alone is valid for a unicode emoji and silently nothing for a custom one.
+    The URL drives ``:shortcode:`` substitution in the renderer (``cv2_model.js``'s
+    ``emojiEntry``). The **id** is what a *button* needs: Discord renders a custom emoji
+    on one only from ``{"id": …, "name": …}`` — a name alone is valid for a unicode
+    emoji and silently nothing for a custom one, which is why this map is richer than
+    the ``{name: url}`` shape :func:`hybrid_post_core.emoji_payload` sends elsewhere.
 
     A failure here costs shortcode rendering across the page — the canvas, the button
     emoji picker and the publish confirmation all resolve from this one map now — so it

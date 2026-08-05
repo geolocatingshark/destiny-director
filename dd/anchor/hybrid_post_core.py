@@ -212,15 +212,12 @@ def post_spec_nodes(spec: "PostSpec") -> list[dict[str, t.Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Rich HTML preview (web form)
+# Body-text helpers
 # ---------------------------------------------------------------------------
 #
-# ``render_post_html`` renders the EXACT markdown subset the producers' ``build_body``
-# emits into a small, safe HTML fragment for the web form's live preview: every text
-# leaf is escaped, masked-link URLs are http(s)-validated, ``:emoji:`` tokens become
-# <img> from the guild emoji dict (unknown names fall back to escaped text), and ONLY
-# the whitelisted tags (strong / em / span / a / img) are emitted. The <pre> preview
-# keeps newlines.
+# Producers write their post body as a markdown string; how that markdown *draws* is
+# the shared client renderer's business (``web_static/cv2_render.js``). What lives here
+# is the formatting a producer does to build the string itself.
 
 def _format_reset_ts(unix: int) -> str:
     """Render a ``<t:UNIX:f>`` instant as Discord's ``:f`` long-date short-time, in UTC.
@@ -243,15 +240,18 @@ def _format_reset_ts(unix: int) -> str:
 
 @dataclasses.dataclass(frozen=True)
 class PostSpec:
-    """A format-tagged, JSON-friendly description of a post, for the shared previewer.
+    """A format-tagged, JSON-friendly description of a post.
 
-    :func:`render_post_spec` is the ONE render path every preview surface shares — the
-    weekly_reset/trials web forms today, the upcoming rotation preview wall and the
-    user-commands manager later. Only the ``cv2`` kind is renderable now: a single
-    markdown body + optional image, the shape every current producer emits via
-    ``build_body``. An ``embed`` kind is reserved for the user-commands manager (the
-    first classic-embed consumer); adding that variant + its render branch is tracked in
-    ``plans/website_user_commands.md``.
+    The one description every preview surface starts from — the weekly_reset/trials web
+    forms and the rotation preview wall today, the user-commands manager later.
+    :func:`post_spec_nodes` turns it into the CV2 node tree ``build_cv2`` would send,
+    which is what a previewer actually draws.
+
+    Only the ``cv2`` kind exists: a markdown body + optional image + footer buttons, the
+    shape every current producer emits via ``build_body``. An ``embed`` kind is reserved
+    for the user-commands manager (the first classic-embed consumer) and tracked in
+    ``plans/website_user_commands.md``; the shared renderer already draws embeds, so
+    that variant needs a ``post_spec_nodes`` branch rather than a new renderer.
     """
 
     kind: str
