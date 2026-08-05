@@ -13,12 +13,16 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Golden-render + diff tests for the CV2/classic snapshot renderer (pure, no DB/bot).
+"""Tests for the structural diff — the alignment, not the drawing.
 
-Pins the safe-HTML discipline (every text leaf escaped, masked-link + media + button
-URLs http(s)-validated, custom emoji → CDN img, only the whitelisted tags emitted), the
-strict unknown-node → placeholder degrade, the classic embed card, and the word-level
-diff with its structural-change note.
+This module used to render CV2 snapshots to HTML. It does not any more: there is one
+renderer and it is ``web_static/cv2_render.js`` (see
+``plans/preview_renderer_unification.md``). What is left here needs ``difflib``, so it
+stayed: aligning two captured versions and annotating what moved.
+
+These name the properties directly. The end-to-end check — that drawing these
+annotations reproduces, byte for byte, what the old Python diff renderer emitted — is
+the shared corpus in ``dd/anchor/preview_fixtures``, asserted from the JS side.
 """
 
 from dd.anchor import cv2_render as r
@@ -32,233 +36,180 @@ def _text(content: str) -> dict:
     return {"type": 10, "content": content}
 
 
-def test_container_text_with_accent_and_markdown() -> None:
-    out = r.render_snapshot(
-        _cv2(
-            {
-                "type": 17,
-                "accent_color": 0x3498DB,
-                "components": [_text("# Reset\n**bold**")],
-            }
-        ),
-        "cv2",
+def _lines_of(payload: dict) -> list:
+    """The first annotated text leaf's line list."""
+    return payload["components"][0]["_lines"]
+
+
+def _diff(new: dict, old: dict) -> dict:
+    return r.diff_payload(new, "cv2", old, "cv2")
+
+
+# --- whole nodes ---------------------------------------------------------------------
+
+
+def test_an_added_node_is_marked_added() -> None:
+    out = _diff(_cv2(_text("a"), _text("b")), _cv2(_text("a")))
+    assert out["mode"] == "diff"
+    assert [n.get("_mark") for n in out["components"]] == [None, "added"]
+
+
+def test_a_removed_node_is_marked_removed_and_kept() -> None:
+    # The removed node stays in the stream — a diff shows what left, not just what is
+    # left over.
+    out = _diff(_cv2(_text("a")), _cv2(_text("a"), _text("b")))
+    assert [n.get("_mark") for n in out["components"]] == [None, "removed"]
+    assert out["components"][1]["content"] == "b"
+
+
+def test_a_changed_leaf_shows_the_old_going_and_the_new_arriving() -> None:
+    old = {"type": 12, "items": [{"media": {"url": "https://ex.com/old.png"}}]}
+    new = {"type": 12, "items": [{"media": {"url": "https://ex.com/new.png"}}]}
+    out = _diff(_cv2(new), _cv2(old))
+    assert [n["_mark"] for n in out["components"]] == ["removed", "added"]
+
+
+def test_a_container_recurses_rather_than_being_replaced_whole() -> None:
+    # The point of a structural diff: one edited line inside a container marks that
+    # line, not the entire card.
+    old = {"type": 17, "components": [_text("keep"), _text("before")]}
+    new = {"type": 17, "components": [_text("keep"), _text("after")]}
+    out = _diff(_cv2(new), _cv2(old))
+
+    container = out["components"][0]
+    assert container.get("_mark") is None
+    assert container["components"][0].get("_lines") is None  # untouched line
+    assert container["components"][1]["_lines"]  # the edited one
+
+
+# --- text leaves ---------------------------------------------------------------------
+
+
+def test_an_unchanged_line_keeps_its_markdown() -> None:
+    out = _diff(_cv2(_text("## Head\nchanged")), _cv2(_text("## Head\noriginal")))
+    lines = _lines_of(out)
+    assert lines[0] == {"op": "equal", "line": "## Head"}
+
+
+def test_an_inserted_line_is_marked_ins_and_keeps_its_text() -> None:
+    out = _diff(_cv2(_text("one\n- two")), _cv2(_text("one")))
+    assert _lines_of(out)[-1] == {"op": "ins", "line": "- two"}
+
+
+def test_a_deleted_line_is_marked_del() -> None:
+    out = _diff(_cv2(_text("one")), _cv2(_text("one\n- two")))
+    assert {"op": "del", "line": "- two"} in _lines_of(out)
+
+
+def test_a_replaced_block_is_word_diffed_over_raw_text() -> None:
+    out = _diff(
+        _cv2(_text("Nightfall is The Corrupted")),
+        _cv2(_text("Nightfall is The Arms Dealer")),
     )
-    assert 'class="cv2-container" style="border-left-color:#3498db"' in out
-    assert '<span class="md-h1">Reset</span>' in out
-    assert "<strong>bold</strong>" in out
+    runs = _lines_of(out)[0]["runs"]
+    assert runs[0] == {"op": "equal", "text": "Nightfall is The "}
+    assert {"op": "del", "text": "Arms Dealer"} in runs
+    assert {"op": "ins", "text": "Corrupted"} in runs
 
 
-def test_escapes_text_and_drops_non_http_link() -> None:
-    out = r.render_snapshot(
-        _cv2(_text("<script>alert(1)</script> [x](javascript:alert(1))")), "cv2"
+def test_word_runs_preserve_whitespace_exactly() -> None:
+    # Whitespace runs are their own tokens, so re-joining the run texts reproduces the
+    # original spacing — otherwise a diff would silently reflow the message.
+    runs = r._word_runs("a  b\nc", "a  b\nd")
+    assert "".join(run["text"] for run in runs if run["op"] != "del") == "a  b\nd"
+
+
+def test_identical_text_carries_no_line_annotation() -> None:
+    out = _diff(_cv2(_text("same"), _text("x")), _cv2(_text("same"), _text("y")))
+    assert out["components"][0].get("_lines") is None
+
+
+# --- section accessories -------------------------------------------------------------
+
+
+def _section(accessory=None) -> dict:
+    node = {"type": 9, "components": [_text("body")]}
+    if accessory is not None:
+        node["accessory"] = accessory
+    return node
+
+
+_THUMB_A = {"type": 11, "media": {"url": "https://ex.com/a.png"}}
+_THUMB_B = {"type": 11, "media": {"url": "https://ex.com/b.png"}}
+
+
+def test_accessory_gained() -> None:
+    out = _diff(_cv2(_section(_THUMB_A)), _cv2(_section()))
+    assert [a["_mark"] for a in out["components"][0]["accessory"]] == ["added"]
+
+
+def test_accessory_lost() -> None:
+    out = _diff(_cv2(_section()), _cv2(_section(_THUMB_A)))
+    assert [a["_mark"] for a in out["components"][0]["accessory"]] == ["removed"]
+
+
+def test_accessory_swapped_shows_both() -> None:
+    # The three-state case: neither "added" nor "removed" alone tells the story.
+    out = _diff(_cv2(_section(_THUMB_B)), _cv2(_section(_THUMB_A)))
+    assert [a["_mark"] for a in out["components"][0]["accessory"]] == [
+        "removed",
+        "added",
+    ]
+
+
+def test_an_unchanged_accessory_stays_a_plain_node() -> None:
+    out = _diff(
+        _cv2(_section(_THUMB_A), _text("x")), _cv2(_section(_THUMB_A), _text("y"))
     )
-    assert "<script>" not in out
-    assert "&lt;script&gt;" in out
-    # The non-http(s) masked link stays inert text — never an anchor with that scheme.
-    assert "<a " not in out
-    assert 'href="javascript:' not in out
+    assert out["components"][0]["accessory"] == _THUMB_A
 
 
-def test_custom_emoji_resolves_to_cdn_img() -> None:
-    static = r.render_snapshot(_cv2(_text("hi <:vex:123>")), "cv2")
-    assert (
-        '<img class="emoji" src="https://cdn.discordapp.com/emojis/123.png"' in static
+# --- the three ways a diff ends ------------------------------------------------------
+
+
+def test_no_changes_is_reported_rather_than_shown_blank() -> None:
+    out = _diff(_cv2(_text("same")), _cv2(_text("same")))
+    assert out["note"] == "No changes from the previous version."
+
+
+def test_a_changed_message_carries_no_note() -> None:
+    assert _diff(_cv2(_text("a")), _cv2(_text("b")))["note"] is None
+
+
+def test_a_format_change_falls_back_to_the_current_version() -> None:
+    out = r.diff_payload(
+        _cv2(_text("now cv2")), "cv2", {"content": "was classic"}, "classic"
     )
-    animated = r.render_snapshot(_cv2(_text("<a:spin:456>")), "cv2")
-    assert "https://cdn.discordapp.com/emojis/456.gif" in animated
+    assert out["mode"] == "snapshot"
+    assert "format changed" in out["note"]
 
 
-def test_section_thumbnail_and_masked_link() -> None:
-    out = r.render_snapshot(
-        _cv2(
-            {
-                "type": 9,
-                "components": [_text("body [go](https://ex.com)")],
-                "accessory": {"type": 11, "media": {"url": "https://cdn.ex/t.png"}},
-            }
-        ),
-        "cv2",
-    )
-    assert (
-        '<a href="https://ex.com" target="_blank" '
-        'rel="noopener noreferrer">go</a>' in out
-    )
-    assert '<img class="cv2-thumb" src="https://cdn.ex/t.png"' in out
+def test_a_truncated_side_cannot_be_diffed() -> None:
+    out = r.diff_payload(_cv2(_text("fine")), "cv2", {"truncated": True}, "cv2")
+    assert out["mode"] == "placeholder"
+    assert "truncated" in out["message"]
 
 
-def test_media_gallery_and_link_button_row() -> None:
-    out = r.render_snapshot(
-        _cv2(
-            {"type": 12, "items": [{"media": {"url": "https://cdn.ex/a.png"}}]},
-            {
-                "type": 1,
-                "components": [
-                    {"type": 2, "style": 5, "label": "Guide", "url": "https://g.ex"}
-                ],
-            },
-        ),
-        "cv2",
-    )
-    # A gallery tile is a clickable <a> (to the full image) wrapping the <img>.
-    assert '<div class="cv2-media n1">' in out
-    assert '<a class="cv2-media-item" href="https://cdn.ex/a.png"' in out
-    assert '<img src="https://cdn.ex/a.png"' in out
-    assert '<a class="cv2-button" href="https://g.ex"' in out and ">Guide</a>" in out
+# --- classic -------------------------------------------------------------------------
 
 
-def test_angle_bracket_masked_link_renders_as_link() -> None:
-    # Discord's [label](<url>) — angle brackets suppress the preview — still links, and
-    # the brackets aren't shown (this was rendering as raw text before).
-    out = r.render_snapshot(
-        _cv2(_text("[The Broken Deep](<https://kyber3000.com/x>)")), "cv2"
-    )
-    assert (
-        '<a href="https://kyber3000.com/x" target="_blank" '
-        'rel="noopener noreferrer">The Broken Deep</a>' in out
-    )
-    assert "&lt;https" not in out and "](" not in out
-
-
-def test_media_gallery_grid_layout_by_count() -> None:
-    def gallery(n):
-        items = [{"media": {"url": f"https://cdn.ex/{i}.png"}} for i in range(n)]
-        return r.render_snapshot(_cv2({"type": 12, "items": items}), "cv2")
-
-    assert 'class="cv2-media n2"' in gallery(2)
-    assert 'class="cv2-media n3"' in gallery(3)
-    assert 'class="cv2-media n4"' in gallery(4)
-    assert 'class="cv2-media many"' in gallery(6)  # 5+ → multi-column grid
-
-
-def test_urlless_button_dropped_and_unknown_node_degrades() -> None:
-    out = r.render_snapshot(
-        _cv2(
-            {"type": 2, "style": 2, "label": "NoUrl"},  # interactive/url-less → dropped
-            {"type": 13},  # file → labeled placeholder
-            {"type": 99},  # unknown → labeled placeholder
-        ),
-        "cv2",
-    )
-    assert "NoUrl" not in out
-    assert "File attachment" in out
-    assert "Unsupported component (type 99)" in out
-
-
-def test_separator_variants() -> None:
-    assert '<hr class="cv2-sep">' in r.render_snapshot(
-        _cv2({"type": 14, "divider": True}), "cv2"
-    )
-    assert 'class="cv2-spacer"' in r.render_snapshot(
-        _cv2({"type": 14, "divider": False}), "cv2"
-    )
-
-
-def test_truncated_and_empty_degrade() -> None:
-    assert "too large" in r.render_snapshot({"truncated": True}, "cv2")
-    assert "no renderable components" in r.render_snapshot(_cv2(), "cv2")
-
-
-def test_classic_render_with_embed() -> None:
-    out = r.render_snapshot(
-        {
-            "content": "Hello **world**",
-            "embeds": [{"title": "T", "description": "desc", "color": 0xFF0000}],
-        },
+def test_classic_content_is_line_diffed_and_embeds_marked() -> None:
+    out = r.diff_payload(
+        {"content": "hello there", "embeds": [{"title": "A"}, {"title": "B"}]},
+        "classic",
+        {"content": "hello world", "embeds": [{"title": "A"}]},
         "classic",
     )
-    assert "Classic message — text · 1 embed(s)" in out
-    assert "<strong>world</strong>" in out
-    assert '<div class="embed-title">T</div>' in out
-    assert 'style="border-left-color:#ff0000"' in out
+    assert out["kind"] == "classic"
+    assert out["content"]["_lines"]
+    assert [e.get("_mark") for e in out["embeds"]] == [None, "added"]
 
 
-# -- diff --------------------------------------------------------------------
-
-
-def test_word_diff_marks_added_and_removed() -> None:
-    old = _cv2(_text("The quick brown fox"))
-    new = _cv2(_text("The slow brown fox jumps"))
-    out = r.render_diff(new, "cv2", old, "cv2")
-    assert "<del>quick</del>" in out
-    assert "<ins>slow</ins>" in out
-    assert "<ins> jumps</ins>" in out or "<ins>jumps</ins>" in out
-    assert "brown fox" in out  # unchanged text preserved
-
-
-def test_diff_renders_full_structure_with_inline_marks() -> None:
-    # A changed line is word-diffed; unchanged lines keep their markdown rendering, and
-    # sibling structure (buttons) is still rendered — the message is shown, not a bare
-    # text blob.
-    old = _cv2(
-        {
-            "type": 17,
-            "components": [
-                _text("# Reset\nThe quick fox\nStable line"),
-                {
-                    "type": 1,
-                    "components": [
-                        {"type": 2, "style": 5, "label": "Guide", "url": "https://g.ex"}
-                    ],
-                },
-            ],
-        }
+def test_classic_with_no_text_either_side_has_no_content_block() -> None:
+    out = r.diff_payload(
+        {"content": "", "embeds": [{"title": "A"}]},
+        "classic",
+        {"content": "", "embeds": []},
+        "classic",
     )
-    new = _cv2(
-        {
-            "type": 17,
-            "components": [
-                _text("# Reset\nThe slow fox\nStable line"),
-                {
-                    "type": 1,
-                    "components": [
-                        {"type": 2, "style": 5, "label": "Guide", "url": "https://g.ex"}
-                    ],
-                },
-            ],
-        }
-    )
-    out = r.render_diff(new, "cv2", old, "cv2")
-    assert '<span class="md-h1">Reset</span>' in out  # unchanged heading still rendered
-    assert "<del>quick</del>" in out and "<ins>slow</ins>" in out  # changed line diffed
-    assert "Stable line" in out  # unchanged line kept
-    assert '<a class="cv2-button"' in out  # structure (button) still shown
-
-
-def test_diff_removed_component_wrapped_red() -> None:
-    old = _cv2(_text("kept"), _text("going away"))
-    new = _cv2(_text("kept"))
-    out = r.render_diff(new, "cv2", old, "cv2")
-    # A dropped component is wrapped whole as removed (red), not an inline <del>.
-    assert '<div class="cv2-removed">' in out
-    assert "going away" in out
-
-
-def test_diff_added_component_wrapped_green() -> None:
-    old = _cv2(_text("body"))
-    new = _cv2(
-        _text("body"),
-        {"type": 12, "items": [{"media": {"url": "https://cdn.ex/a.png"}}]},
-    )
-    out = r.render_diff(new, "cv2", old, "cv2")
-    assert '<div class="cv2-added">' in out  # the new media component highlighted green
-    assert "https://cdn.ex/a.png" in out
-
-
-def test_diff_changed_leaf_shows_removed_then_added() -> None:
-    # A button whose url/label changed: old removed (red) + new added (green).
-    old = _cv2({"type": 2, "style": 5, "label": "Old", "url": "https://old.ex"})
-    new = _cv2({"type": 2, "style": 5, "label": "New", "url": "https://new.ex"})
-    out = r.render_diff(new, "cv2", old, "cv2")
-    assert '<div class="cv2-removed">' in out and ">Old</a>" in out
-    assert '<div class="cv2-added">' in out and ">New</a>" in out
-
-
-def test_diff_no_changes_reports_none() -> None:
-    same = _cv2(_text("identical"))
-    out = r.render_diff(same, "cv2", same, "cv2")
-    assert "No changes from the previous version" in out
-
-
-def test_diff_truncated_side_degrades() -> None:
-    out = r.render_diff(_cv2(_text("x")), "cv2", {"truncated": True}, "cv2")
-    assert "Cannot diff" in out
+    assert out["content"] is None

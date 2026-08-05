@@ -37,7 +37,6 @@ code.
 import asyncio
 import dataclasses
 import datetime as dt
-import html
 import json
 import logging
 import re
@@ -53,7 +52,7 @@ from dd.hmessage import HMessage
 from ..common import cfg, schemas
 from ..common.bot import CachedFetchBot
 from ..common.components import footer_button_specs, link_button_row
-from ..common.utils import fetch_emoji_dict, re_user_side_emoji
+from ..common.utils import fetch_emoji_dict
 from . import utils
 from .extensions import bungie_api as api
 
@@ -223,212 +222,18 @@ def post_spec_nodes(spec: "PostSpec") -> list[dict[str, t.Any]]:
 # the whitelisted tags (strong / em / span / a / img) are emitted. The <pre> preview
 # keeps newlines.
 
-#: One inline-markdown token. Ordered so ``***`` beats ``**`` beats ``*`` and the
-#: ``<t:…>`` timestamp beats the emoji rule (both can start with ``<``). The emoji arm
-#: reuses ``re_user_side_emoji`` verbatim; its inner capture groups are ignored — the
-#: matched span is re-substituted through the emoji substituter (which uses that regex).
-_INLINE_MD = re.compile(
-    r"(?P<bi>\*\*\*(?P<bi_inner>.+?)\*\*\*)"
-    r"|(?P<b>\*\*(?P<b_inner>.+?)\*\*)"
-    r"|(?P<i>\*(?P<i_inner>.+?)\*)"
-    r"|(?P<code>`(?P<code_inner>[^`\n]+)`)"
-    r"|(?P<link>\[(?P<label>[^\]]+)\]\((?P<url>[^)\s]+)\))"
-    r"|(?P<ts><t:(?P<tsval>\d+):(?P<tsfmt>[A-Za-z])>)"
-    r"|(?P<emoji>" + re_user_side_emoji.pattern + r")"
-)
-
-
 def _format_reset_ts(unix: int) -> str:
     """Render a ``<t:UNIX:f>`` instant as Discord's ``:f`` long-date short-time, in UTC.
 
-    Discord shows ``:f`` in the *viewer's* local zone; the preview can't know that, so
-    it renders in UTC with an explicit ``(UTC)`` note (e.g. "Jul 14, 2026 5:00 PM").
+    Discord shows ``:f`` in the *viewer's* local zone; a producer building body text
+    can't know that, so it writes UTC with an explicit ``(UTC)`` note (e.g.
+    "Jul 14, 2026 5:00 PM"). This is body *content*, not rendering — the preview's own
+    ``<t:…>`` handling lives in the shared renderer now.
     """
     d = dt.datetime.fromtimestamp(unix, tz=dt.UTC)
     hour12 = d.hour % 12 or 12
     ampm = "AM" if d.hour < 12 else "PM"
     return f"{d.strftime('%b')} {d.day}, {d.year} {hour12}:{d.minute:02d} {ampm} (UTC)"
-
-
-def _relative_ts(seconds: int) -> str:
-    """A coarse ``:R`` relative string, largest whole unit (e.g. "in 3 days")."""
-    future = seconds >= 0
-    seconds = abs(seconds)
-    name, n = "second", seconds
-    for unit_name, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
-        if seconds >= size:
-            name, n = unit_name, seconds // size
-            break
-    label = f"{n} {name}" + ("s" if n != 1 else "")
-    return f"in {label}" if future else f"{label} ago"
-
-
-def _format_ts(unix: int, fmt: str, now: dt.datetime | None = None) -> str:
-    """Render a ``<t:UNIX:X>`` token per its format letter, in UTC.
-
-    ``R`` is Discord's *relative* time (a live countdown in Discord) — rendered here as
-    a coarse "in N units" / "N units ago" string from the render-time clock (``now``,
-    injectable for tests). ``t``/``T`` render the time-of-day, ``d``/``D`` the date;
-    ``f``/``F`` (and anything else) fall back to :func:`_format_reset_ts`'s long-date
-    short-time. Discord shows these in the viewer's local zone; the preview can't know
-    it, so times/dates carry an explicit ``(UTC)``.
-    """
-    if fmt == "R":
-        now = now or dt.datetime.now(tz=dt.UTC)
-        return _relative_ts(int(unix - now.timestamp()))
-    d = dt.datetime.fromtimestamp(unix, tz=dt.UTC)
-    hour12 = d.hour % 12 or 12
-    ampm = "AM" if d.hour < 12 else "PM"
-    if fmt in ("t", "T"):
-        secs = f":{d.second:02d}" if fmt == "T" else ""
-        return f"{hour12}:{d.minute:02d}{secs} {ampm} (UTC)"
-    if fmt == "d":
-        return f"{d.month:02d}/{d.day:02d}/{d.year}"
-    if fmt == "D":
-        return f"{d.strftime('%B')} {d.day}, {d.year}"
-    return _format_reset_ts(unix)
-
-
-def _html_emoji_substituter(
-    emoji_dict: dict[str, h.Emoji],
-) -> t.Callable[[t.Any], str]:
-    """An ``re_user_side_emoji`` substituter emitting <img>, for either token shape.
-
-    A preview surface sees two: content seeded from a live post carries a full
-    ``<:name:id>`` / ``<a:name:id>``, and content an author types carries a bare
-    ``:name:``. The **captured id wins** — it is the emoji the message actually shows,
-    which is not necessarily the one the guild answers to that name today — and only a
-    token with no id falls back to the guild dict. An unresolvable token renders as its
-    escaped text. Every attribute value is escaped.
-
-    ``cv2_model.js``'s ``_emojiHtml`` is the client copy of exactly this precedence.
-    """
-
-    def func(match: t.Any) -> str:
-        name = str(match.group(2))
-        prefix = match.group(1) or ""
-        id_group = match.group(4)  # e.g. "123456789>" or None
-        alt = html.escape(name, quote=True)
-        if id_group:
-            emoji_id = id_group.rstrip(">")
-            if emoji_id.isascii() and emoji_id.isdigit():
-                ext = "gif" if prefix == "<a" else "png"
-                src = html.escape(
-                    f"https://cdn.discordapp.com/emojis/{emoji_id}.{ext}", quote=True
-                )
-                return f'<img class="emoji" src="{src}" alt=":{alt}:">'
-        emoji = emoji_dict.get(name) or emoji_dict.get(name.lower())
-        if emoji is None:
-            return html.escape(match.group(0))
-        url = html.escape(str(getattr(emoji, "url", "")), quote=True)
-        return f'<img class="emoji" src="{url}" alt=":{alt}:">'
-
-    return func
-
-
-def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
-    """Render one line's inline markdown to safe HTML (escaping every text leaf)."""
-    out: list[str] = []
-    pos = 0
-    for m in _INLINE_MD.finditer(text):
-        if m.start() > pos:
-            out.append(html.escape(text[pos : m.start()]))
-        # Bold/italic recurse into their inner span so nested inline markup renders —
-        # notably a masked link inside bold, "**[Title](url)**" (Lost Sector titles).
-        if m.group("bi") is not None:
-            inner = _render_inline(m.group("bi_inner"), emoji_sub)
-            out.append(f"<strong><em>{inner}</em></strong>")
-        elif m.group("b") is not None:
-            inner = _render_inline(m.group("b_inner"), emoji_sub)
-            out.append(f"<strong>{inner}</strong>")
-        elif m.group("i") is not None:
-            out.append(f"<em>{_render_inline(m.group('i_inner'), emoji_sub)}</em>")
-        elif m.group("code") is not None:
-            # Code spans do NOT recurse — inside backticks, markdown is literal text.
-            out.append(f"<code>{html.escape(m.group('code_inner'))}</code>")
-        elif m.group("link") is not None:
-            url = m.group("url")
-            # Discord's ``[label](<url>)`` form wraps the URL in angle brackets to
-            # suppress its preview embed; the real URL is inside them.
-            if len(url) > 1 and url.startswith("<") and url.endswith(">"):
-                url = url[1:-1]
-            if url.startswith(("http://", "https://")):
-                href = html.escape(url, quote=True)
-                # The label may itself carry markdown (e.g. "[**View…**](url)").
-                label = _render_inline(m.group("label"), emoji_sub)
-                # target/rel match the button and media-tile anchors: a preview is an
-                # admin page you don't want a link to navigate away from, and an
-                # untrusted href must never get a handle on window.opener.
-                out.append(
-                    f'<a href="{href}" target="_blank" '
-                    f'rel="noopener noreferrer">{label}</a>'
-                )
-            else:  # non-http(s): not a real link — render the raw text, escaped.
-                out.append(html.escape(m.group("link")))
-        elif m.group("ts") is not None:
-            out.append(html.escape(_format_ts(int(m.group("tsval")), m.group("tsfmt"))))
-        else:  # emoji
-            out.append(re_user_side_emoji.sub(emoji_sub, m.group("emoji")))
-        pos = m.end()
-    if pos < len(text):
-        out.append(html.escape(text[pos:]))
-    return "".join(out)
-
-
-def _render_line(line: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
-    """Render one body line, handling the heading, small-text and bullet prefixes.
-
-    The heading (``# ``/``## ``/``### ``), small (``-# ``) and bullet (``- ``/``* ``)
-    prefixes render as spans (never ``<ul>``/``<li>``), so the emitted tags stay within
-    the ``{span, strong, em, code, a, img}`` whitelist the preview is trusted against.
-    Longer prefixes are tested first (``### `` before ``## `` before ``# ``; ``-# ``
-    before ``- ``) so the longest wins; the bullet marker is supplied by CSS
-    ``.md-bullet::before``.
-
-    Discord accepts ``* `` as a bullet as well as ``- ``; both are matched here.
-    """
-    if line.startswith("### "):
-        return f'<span class="md-h3">{_render_inline(line[4:], emoji_sub)}</span>'
-    if line.startswith("## "):
-        return f'<span class="md-h2">{_render_inline(line[3:], emoji_sub)}</span>'
-    if line.startswith("# "):
-        return f'<span class="md-h1">{_render_inline(line[2:], emoji_sub)}</span>'
-    if line.startswith("-# "):
-        return f'<span class="md-small">{_render_inline(line[3:], emoji_sub)}</span>'
-    if line.startswith(("- ", "* ")):
-        return f'<span class="md-bullet">{_render_inline(line[2:], emoji_sub)}</span>'
-    return _render_inline(line, emoji_sub)
-
-
-def _normalize_heading_spacing(lines: list[str]) -> list[str]:
-    """Rework blank lines around ``##``/``###`` headings to match Discord's spacing.
-
-    Discord gives a sub-heading margin *above* and renders the content right below it
-    tight — but a producer's ``build_body`` conventionally puts the blank line *after*
-    the heading (``["### Foo", ""]``). In the ``white-space: pre-wrap`` preview that
-    literal blank lands *below* the heading, so the preview reads differently from the
-    posted message. Normalise here (shared by every producer's preview, not per-post):
-    collapse to exactly one blank line *before* each ``##``/``###`` heading (none if
-    it's the first line) and drop any blank directly after it. ``#`` (the H1 title) is
-    left as-is — its body-authored trailing blank already matches Discord's title.
-    """
-
-    def is_sub(line: str) -> bool:
-        return line.startswith("## ") or line.startswith("### ")
-
-    out: list[str] = []
-    for line in lines:
-        if is_sub(line):
-            while out and out[-1] == "":  # collapse any blanks the body put above
-                out.pop()
-            if out:  # a gap above the heading, unless it's the very first line
-                out.append("")
-            out.append(line)
-        elif line == "" and out and is_sub(out[-1]):
-            continue  # drop a blank right below a sub-heading (Discord renders tight)
-        else:
-            out.append(line)
-    return out
 
 
 # ---------------------------------------------------------------------------

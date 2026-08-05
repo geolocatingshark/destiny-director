@@ -24,16 +24,13 @@ test_web_auth.py), so there are no session tests here.
 """
 
 import json
-import re
 import types
 import typing as t
 
 import aiohttp.web
-import hikari as h
 import pytest
 
 from dd.anchor import (
-    cv2_render,
     hybrid_post_core as hpc,
 )
 from dd.anchor.extensions import trials as tr
@@ -631,28 +628,20 @@ def test_no_autopost_route_handler_or_cron() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_preview_emits_h3_and_bullets_only_whitelisted_tags() -> None:
+def test_build_body_emits_the_markdown_the_renderer_needs() -> None:
+    """The producer's half of the preview: the constructs, in the body text.
+
+    How they *draw* is the shared renderer's business, pinned by the corpus in
+    ``dd/anchor/preview_fixtures``. What has to hold here is that build_body writes
+    them at all.
+    """
     ctx = tr.TrialsContext(
         reset_ts=SAMPLE_RESET,
         featured_maps=["Burnout"],
         focus_pool=[tr.WeaponRef("The Scholar", 123)],
     )
-    emoji: dict = {}
-    # The body's markdown, through the renderer the preview now uses. (The preview route
-    # itself hands back a node tree; this is the leaf layer inside its text block.)
-    out = cv2_render._render_markdown(
-        tr.build_body(ctx),
-        hpc._html_emoji_substituter(t.cast("dict[str, h.Emoji]", emoji)),
-    )
-    # H3 headers and bullets render as their spans; the title's inner *of* italicises.
-    assert '<span class="md-h3">' in out
-    assert '<span class="md-bullet">' in out
-    assert "<em>of</em>" in out
-    # The light.gg deep link is a real anchor.
-    assert (
-        '<a href="https://light.gg/db/items/123" target="_blank" '
-        'rel="noopener noreferrer">' in out
-    )
-    # ONLY the whitelisted tags are ever emitted (no <ul>/<li>/<script>).
-    tags = set(re.findall(r"</?([a-zA-Z]+)", out))
-    assert tags <= {"span", "strong", "em", "code", "a", "img"}, tags
+    body = tr.build_body(ctx)
+    assert "### " in body  # sub-headings
+    assert "\n- " in body  # bullets
+    assert "*of*" in body  # the italicised title
+    assert "[The Scholar](https://light.gg/db/items/123)" in body  # deep link

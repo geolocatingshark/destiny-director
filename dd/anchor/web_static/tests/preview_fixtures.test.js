@@ -50,6 +50,47 @@ function load(name) {
   return JSON.parse(raw);
 }
 
+// There is one renderer, and it is this one — so regenerating the corpus' expectations
+// is this side's job. Run the Python half FIRST (it writes the data fields rendered
+// from), then:
+//
+//   UPDATE_PREVIEW_FIXTURES=1 node --test dd/anchor/web_static/tests/preview_fixtures.test.js
+//
+// Read the diff. Regenerate only when you mean to change what a preview looks like.
+const UPDATE = !!process.env.UPDATE_PREVIEW_FIXTURES;
+
+/** Draw one case the way its `render` mode says to. */
+function renderCase(c, fileEmoji) {
+  const opts = { emoji: c.emoji || fileEmoji || {}, now: NOW_MS };
+  switch (c.render) {
+    case "markdown":
+      return M.renderMd(c.content, opts.emoji, opts.now);
+    case "snapshot":
+      return R.serialize(R.snapshotSpec(c.payload, c.kind), opts);
+    case "authored":
+      return R.serialize(R.nodesSpec(c.sanitized || []), opts);
+    case "post_spec":
+      return R.serialize(R.nodesSpec(c.nodes || []), opts);
+    case "diff":
+      return R.serialize(R.diffSpec(c.annotated), opts);
+    default:
+      throw new Error(`unknown render mode ${c.render} in ${c.name}`);
+  }
+}
+
+if (UPDATE) {
+  for (const name of fs.readdirSync(FIXTURE_DIR)) {
+    if (!name.endsWith(".json")) continue;
+    const data = load(name);
+    for (const c of data.cases) c.expected_html = renderCase(c, data.emoji);
+    fs.writeFileSync(
+      path.join(FIXTURE_DIR, name),
+      JSON.stringify(data, null, 2) + "\n",
+      "utf8",
+    );
+  }
+}
+
 test("the fixture directory is where both sides think it is", () => {
   // A silently-wrong path would make every loop below iterate zero cases and pass, so
   // the corpus has to prove it was actually read.

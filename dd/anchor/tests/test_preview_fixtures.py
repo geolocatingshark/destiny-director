@@ -13,51 +13,50 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""The shared golden corpus — what a preview renders to, frozen.
+"""The Python half of the shared preview corpus — the DATA, not the drawing.
 
-``dd/anchor/preview_fixtures/*.json`` holds render *inputs* plus the HTML today's Python
-renderer produces for each. This module asserts the Python side still matches; the JS
-side asserts the same corpus once the shared renderer lands
-(``plans/preview_renderer_unification.md``). Two implementations reading one corpus is
-what makes the port provably behaviour-preserving instead of hopefully so.
+There is one renderer now (``web_static/cv2_render.js``), so rendering is asserted on
+the JS side (``web_static/tests/preview_fixtures.test.js``). What is still Python's job
+is everything that decides *what* gets drawn, and this pins each of those against the
+fixtures:
 
-Regenerate expectations deliberately, never casually::
+- :func:`cv2_render.diff_payload` — the structural alignment, as annotations
+- :func:`cv2_nodes.sanitize_for_preview` — the builder's mid-construction downgrade
+- :func:`hybrid_post_core.post_spec_nodes` — a hybrid post's node tree
+
+Plus one thing neither side would otherwise own: :func:`test_no_fixture_expects_an
+_executable_sink` parses every recorded expectation and holds it to the tag / attribute
+/ URL whitelist. It audits the *frozen strings* rather than a live render, which is the
+point — the JS tests assert the renderer produces exactly those strings, so auditing
+them audits the renderer, and it keeps working with no renderer here at all.
+
+Regenerating is two steps, in this order, because the JS render reads the data fields
+this writes::
 
     UPDATE_PREVIEW_FIXTURES=1 uv run --env-file .env python -m pytest \\
         dd/anchor/tests/test_preview_fixtures.py
+    UPDATE_PREVIEW_FIXTURES=1 node --test \\
+        dd/anchor/web_static/tests/preview_fixtures.test.js
 
-and read the resulting diff — that diff is the entire value of the corpus.
-
-The XSS cases are not decoration. The mirror log renders *other people's* captured
-posts, so every probe in ``xss.json`` is attacker-controlled in production;
-:func:`test_no_fixture_emits_an_executable_sink` holds the whole corpus to that line at
-once, so a new fixture cannot quietly introduce an unescaped sink.
+Read the diff both times. That diff is the entire value of the corpus.
 """
 
-import datetime as dt
 import json
 import os
 import pathlib
 import re
-import types
 import typing as t
 from html.parser import HTMLParser
 
-import hikari as h
 import pytest
 
 from dd.anchor import cv2_nodes, cv2_render, hybrid_post_core
 
 FIXTURE_DIR = pathlib.Path(__file__).resolve().parent.parent / "preview_fixtures"
 
-#: The corpus' frozen clock. ``<t:…:R>`` renders a relative string off the render-time
-#: clock, so without pinning it every regeneration would churn. Absolute format letters
-#: need no freezing, but they share the substituter, so one patch covers both.
-NOW = dt.datetime(2026, 7, 30, 17, 0, 0, tzinfo=dt.UTC)
-
 UPDATE = bool(os.environ.get("UPDATE_PREVIEW_FIXTURES"))
 
-#: Every tag the renderers are trusted to emit. The leaf whitelist is
+#: Every tag the renderer is trusted to emit. The leaf whitelist is
 #: ``{span, strong, em, code, a, img}``; the rest are structural wrappers
 #: (``div``/``hr``) and the diff's change marks (``ins``/``del``).
 ALLOWED_TAGS = frozenset(
@@ -71,19 +70,9 @@ ALLOWED_ATTRS = frozenset(
     {"class", "style", "src", "alt", "href", "target", "rel", "loading"}
 )
 
-#: The only ``style`` the renderers write. Anything else means a colour reached the
+#: The only ``style`` the renderer writes. Anything else means a colour reached the
 #: attribute without being validated to an int first.
 _STYLE_OK = re.compile(r"^border-left-color:#[0-9a-f]{6}$")
-
-
-def _emoji(url: str) -> h.Emoji:
-    """A stand-in for :class:`hikari.Emoji`.
-
-    ``_html_emoji_substituter`` duck-types the object (``getattr(emoji, "url", "")``),
-    so a namespace is enough; the cast keeps call sites typed without building a real
-    hikari emoji. Same trick as ``test_cv2_html.py``.
-    """
-    return t.cast(h.Emoji, types.SimpleNamespace(url=url))
 
 
 def _load(path: pathlib.Path) -> dict[str, t.Any]:
@@ -94,125 +83,77 @@ def _fixture_files() -> list[pathlib.Path]:
     return sorted(FIXTURE_DIR.glob("*.json"))
 
 
-def _cases() -> list[tuple[pathlib.Path, dict[str, t.Any], dict[str, t.Any]]]:
-    """Every case in the corpus as ``(file, case, file-level defaults)``."""
-    out = []
-    for path in _fixture_files():
-        data = _load(path)
-        defaults = {"emoji": data.get("emoji") or {}}
-        for case in data["cases"]:
-            out.append((path, case, defaults))
-    return out
+def _cases() -> list[tuple[pathlib.Path, dict[str, t.Any]]]:
+    return [(p, c) for p in _fixture_files() for c in _load(p)["cases"]]
 
 
-def _render(case: dict[str, t.Any], defaults: dict[str, t.Any]) -> str:
-    """Render one case through the entry point its ``render`` field names."""
-    emoji_map = case.get("emoji", defaults["emoji"])
-    emoji_dict = {name: _emoji(url) for name, url in emoji_map.items()}
-    how = case["render"]
-
-    if how == "markdown":
-        # The narrowest cross-language seam: one text leaf, no wrappers.
-        # `cv2_model.js`'s renderMd asserts these same strings, which is what pins
-        # the two markdown implementations to a single output.
-        return cv2_render._render_markdown(
-            case["content"], hybrid_post_core._html_emoji_substituter(emoji_dict)
-        )
-    if how == "snapshot":
-        return cv2_render.render_snapshot(case["payload"], case["kind"])
-    if how == "authored":
-        # The builder's path: sanitize first, then render. `sanitize_for_preview` is a
-        # send-safety transform — it downgrades a mid-construction node to placeholder
-        # text — and it is the half that stays server-side, so the fixture records its
-        # output as `sanitized` for the JS side to render from.
-        safe = cv2_nodes.sanitize_for_preview(case["payload"].get("components") or [])
-        case["sanitized"] = safe
-        return cv2_render.render_snapshot(
-            {"components": safe},
-            "cv2",
-            emoji_sub=hybrid_post_core._html_emoji_substituter(emoji_dict),
-        )
-    if how == "diff":
-        # The alignment stays server-side; what the client gets is the annotated tree,
-        # recorded here so the JS side can render from it. `expected_html` is still what
-        # the *old* Python diff renderer produced, which is the point: the JS render of
-        # these annotations has to reproduce it exactly.
-        case["annotated"] = cv2_render.diff_payload(
-            case["payload"], case["kind"], case["old_payload"], case["old_kind"]
-        )
-        return cv2_render.render_diff(
-            case["payload"], case["kind"], case["old_payload"], case["old_kind"]
-        )
-    if how == "post_spec":
-        # The weekly-reset / trials / rotation previews. These used to render a flat
-        # `.post-*` approximation; they render the post's own node tree now, so the
-        # fixture records that tree for the JS side and renders it the same way a
-        # captured snapshot is rendered — because it is the same thing.
-        spec = case["spec"]
-        post = hybrid_post_core.PostSpec.cv2(
-            body=spec.get("body", ""),
-            image_url=spec.get("image_url"),
-            buttons=[tuple(b) for b in spec.get("buttons") or []],
-        )
-        nodes = hybrid_post_core.post_spec_nodes(post)
-        case["nodes"] = nodes
-        return cv2_render.render_snapshot(
-            {"components": nodes},
-            "cv2",
-            emoji_sub=hybrid_post_core._html_emoji_substituter(emoji_dict),
-        )
-    raise AssertionError(f"Unknown render mode {how!r} in fixture {case['name']!r}")
-
-
-@pytest.fixture(autouse=True)
-def _frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the relative-timestamp clock for the whole module.
-
-    ``_render_inline`` calls ``_format_ts`` without a ``now``, so ``<t:…:R>`` would read
-    the wall clock and make the corpus unreproducible. Binding the default here rather
-    than editing the renderer keeps this a *test* concern — and the JS renderer already
-    threads ``now`` as an explicit parameter, which is the shape the port keeps.
-    """
-    real = hybrid_post_core._format_ts
-
-    def frozen(unix: int, fmt: str, now: dt.datetime | None = None) -> str:
-        return real(unix, fmt, now or NOW)
-
-    monkeypatch.setattr(hybrid_post_core, "_format_ts", frozen)
-
-
-def _case_id(entry: tuple[pathlib.Path, dict[str, t.Any], dict[str, t.Any]]) -> str:
-    path, case, _ = entry
+def _case_id(entry: tuple[pathlib.Path, dict[str, t.Any]]) -> str:
+    path, case = entry
     return f"{path.stem}:{case['name']}"
 
 
+def _derive(case: dict[str, t.Any]) -> None:
+    """Fill in the data fields the JS side renders from, for one case."""
+    how = case["render"]
+    if how == "diff":
+        case["annotated"] = cv2_render.diff_payload(
+            case["payload"], case["kind"], case["old_payload"], case["old_kind"]
+        )
+    elif how == "authored":
+        case["sanitized"] = cv2_nodes.sanitize_for_preview(
+            case["payload"].get("components") or []
+        )
+    elif how == "post_spec":
+        spec = case["spec"]
+        case["nodes"] = hybrid_post_core.post_spec_nodes(
+            hybrid_post_core.PostSpec.cv2(
+                body=spec.get("body", ""),
+                image_url=spec.get("image_url"),
+                buttons=[tuple(b) for b in spec.get("buttons") or []],
+            )
+        )
+
+
 @pytest.mark.parametrize("entry", _cases(), ids=_case_id)
-def test_fixture_renders_to_its_frozen_html(
-    entry: tuple[pathlib.Path, dict[str, t.Any], dict[str, t.Any]],
+def test_fixture_data_is_what_the_producer_makes(
+    entry: tuple[pathlib.Path, dict[str, t.Any]],
 ) -> None:
-    _, case, defaults = entry
-    got = _render(case, defaults)
-    if UPDATE:
-        pytest.skip("regenerating expectations")
-    assert "expected_html" in case, (
-        f"{case['name']} has no expected_html — run with UPDATE_PREVIEW_FIXTURES=1"
-    )
-    assert got == case["expected_html"]
+    """The recorded data still matches what its producer emits.
+
+    Cases whose ``render`` produces no server-side data (``markdown``, ``snapshot``)
+    have nothing to check here — the payload in the fixture *is* the input, and drawing
+    it is the JS side's business.
+    """
+    _, case = entry
+    recorded = {k: case.get(k) for k in ("annotated", "sanitized", "nodes")}
+    fresh = dict(case)
+    _derive(fresh)
+
+    for key, was in recorded.items():
+        if was is None and fresh.get(key) is None:
+            continue
+        assert fresh.get(key) == was, f"{case['name']}: {key} drifted"
 
 
 def test_every_case_name_is_unique() -> None:
     """Names are the corpus' cross-language join key, so a collision is a real bug."""
-    names = [f"{p.stem}:{c['name']}" for p, c, _ in _cases()]
+    names = [f"{p.stem}:{c['name']}" for p, c in _cases()]
     assert len(names) == len(set(names)), "duplicate fixture case name"
 
 
-class _Auditor(HTMLParser):
-    """Collect every tag and attribute a render emitted.
+def test_every_case_has_a_frozen_expectation() -> None:
+    for path, case in _cases():
+        assert isinstance(case.get("expected_html"), str), (
+            f"{path.stem}:{case['name']} has no expected_html — regenerate it"
+        )
 
-    Parsing beats grepping here: an escaped ``&lt;img onerror=…&gt;`` arrives as *text*,
-    which a regex over the raw string cannot tell apart from a real attribute — and
-    that difference is exactly what the escaping is for. Anything the parser reports as
-    a tag genuinely is one.
+
+class _Auditor(HTMLParser):
+    """Collect every tag and attribute a recorded expectation contains.
+
+    Parsing beats grepping: an escaped ``&lt;img onerror=…&gt;`` is *text*, which a
+    regex over the raw string cannot tell apart from a real attribute — and that
+    difference is exactly what the escaping is for.
     """
 
     def __init__(self) -> None:
@@ -234,39 +175,37 @@ class _Auditor(HTMLParser):
                 self.problems.append(f"unexpected style={value!r} on <{tag}>")
 
 
-def test_no_fixture_emits_an_executable_sink() -> None:
-    """Every render stays inside the tag/attribute/URL whitelist.
+def test_no_fixture_expects_an_executable_sink() -> None:
+    """Every frozen expectation stays inside the tag/attribute/URL whitelist.
 
-    Run over the *whole* corpus, not just ``xss.json`` — a benign-looking fixture is
-    exactly where an escaping regression would hide. This is the property the port has
-    to preserve when the renderer moves to the client and starts drawing other people's
-    posts in the reader's browser.
+    Over the *whole* corpus, not just the injection probes — a benign-looking fixture is
+    exactly where an escaping regression would hide. This is the property that has to
+    hold now that the renderer draws other people's posts in the reader's browser.
     """
     offenders: list[str] = []
-    for path, case, defaults in _cases():
+    for path, case in _cases():
         auditor = _Auditor()
-        auditor.feed(_render(case, defaults))
+        auditor.feed(case.get("expected_html") or "")
         auditor.close()
         offenders += [f"{path.stem}:{case['name']}: {p}" for p in auditor.problems]
-    assert not offenders, "rendered output escaped its whitelist:\n" + "\n".join(
+    assert not offenders, "a frozen expectation escapes the whitelist:\n" + "\n".join(
         offenders
     )
 
 
-def test_update_mode_writes_expectations() -> None:
-    """Under ``UPDATE_PREVIEW_FIXTURES=1``, rewrite every file's expectations.
+def test_update_mode_writes_the_data_fields() -> None:
+    """Under ``UPDATE_PREVIEW_FIXTURES=1``, refresh what the server produces.
 
-    Kept as a test rather than a separate script so regeneration runs through the same
-    frozen clock and the same entry-point dispatch the assertions use — a generator that
-    drifted from the checker would defeat the corpus.
+    Kept as a test rather than a script so regeneration runs through the same producers
+    the assertions use — a generator that drifted from its checker would defeat the
+    corpus. ``expected_html`` is the JS side's to write; run it second.
     """
     if not UPDATE:
         pytest.skip("set UPDATE_PREVIEW_FIXTURES=1 to regenerate")
     for path in _fixture_files():
         data = _load(path)
-        defaults = {"emoji": data.get("emoji") or {}}
         for case in data["cases"]:
-            case["expected_html"] = _render(case, defaults)
+            _derive(case)
         path.write_text(
             json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )

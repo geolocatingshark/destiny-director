@@ -20,7 +20,6 @@ The rendering these used to assert moved to the shared golden corpus
 to one output rather than checking either alone."""
 
 import dataclasses
-import datetime as dt
 import typing as t
 
 import pytest
@@ -83,45 +82,6 @@ def test_postspec_from_payload_rejects_unknown_kind() -> None:
 
 
 
-def test_normalize_heading_spacing_matches_discord() -> None:
-    # Discord gives ##/### sub-headings a gap ABOVE and tight content below, but bodies
-    # author the blank AFTER the heading. Normalise to one blank before, none after — so
-    # the pre-wrap preview reads like the posted message. The # (H1) title keeps its own
-    # trailing blank.
-    body = [
-        "# Title",
-        "",
-        "Live until X",
-        "### Game Modes",
-        "",
-        "- Control",
-        "### Bonus Focus Pool",
-        "",
-        "weapon",
-    ]
-    assert hpc._normalize_heading_spacing(body) == [
-        "# Title",
-        "",  # H1 title keeps its body-authored gap below
-        "Live until X",
-        "",  # inserted gap ABOVE the sub-heading
-        "### Game Modes",
-        "- Control",  # tight below the heading (blank dropped)
-        "",  # inserted gap above the next sub-heading
-        "### Bonus Focus Pool",
-        "weapon",
-    ]
-
-
-def test_normalize_heading_spacing_leaves_leading_heading_and_collapses() -> None:
-    # A sub-heading at the very top gets no blank inserted above it; multiple
-    # body-authored blanks above a heading collapse to exactly one.
-    assert hpc._normalize_heading_spacing(["### Top", "x"]) == ["### Top", "x"]
-    assert hpc._normalize_heading_spacing(["a", "", "", "### H", "b"]) == [
-        "a",
-        "",
-        "### H",
-        "b",
-    ]
 
 
 def test_footer_button_specs() -> None:
@@ -140,23 +100,6 @@ def test_footer_button_specs() -> None:
 
 
 
-
-
-
-def test_format_ts_relative_and_per_letter() -> None:
-    now = dt.datetime(2026, 7, 14, 17, tzinfo=dt.UTC)
-    base = 1784048400  # == now
-    # ':R' relative countdown, from the render-time clock (largest whole unit).
-    assert hpc._format_ts(base + 3 * 86400, "R", now=now) == "in 3 days"
-    assert hpc._format_ts(base - 2 * 3600, "R", now=now) == "2 hours ago"
-    assert hpc._format_ts(base + 86400, "R", now=now) == "in 1 day"  # singular
-    # Other letters: time / date variants, all UTC-noted where relevant.
-    assert hpc._format_ts(base, "t", now=now) == "5:00 PM (UTC)"
-    assert hpc._format_ts(base, "T", now=now) == "5:00:00 PM (UTC)"
-    assert hpc._format_ts(base, "d", now=now) == "07/14/2026"
-    assert hpc._format_ts(base, "D", now=now) == "July 14, 2026"
-    # 'f' (and anything else) keep the long-date short-time (unchanged behaviour).
-    assert hpc._format_ts(base, "f", now=now) == "Jul 14, 2026 5:00 PM (UTC)"
 
 
 

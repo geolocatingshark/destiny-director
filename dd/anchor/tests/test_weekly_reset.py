@@ -31,7 +31,6 @@ import hikari as h
 import pytest
 
 from dd.anchor import (
-    cv2_render,
     hybrid_post_core as hpc,
 )
 from dd.anchor.extensions import weekly_reset as wr
@@ -741,48 +740,19 @@ class _StubEmoji:
         self.url = url
 
 
-def test_render_post_html_renders_markdown_and_emoji() -> None:
-    emoji = {"Bungie": _StubEmoji("https://cdn.discordapp.com/emojis/1.png")}
-    body = "\n".join(
-        [
-            "# Weekly Reset Overview",
-            "Resets: <t:1784048400:f>",
-            "**UPDATES & EVENTS**",
-            ":Bungie: ┊ [Patch <notes>](https://example.com/n)",
-            ":unknown: plain",
-            "***See you starside!*** \U0001f4ab",
-            "A < B & C",
-            "[bad](ftp://nope.example)",
-        ]
-    )
-    # The leaf layer the preview still runs on: the route hands the page a node
-    # tree, and this is the markdown inside its text block.
-    out = cv2_render._render_markdown(
-        body, hpc._html_emoji_substituter(t.cast("dict[str, h.Emoji]", emoji))
-    )
-    # H1 span + bold header, custom emoji as <img>, masked link with escaped label.
-    assert '<span class="md-h1">Weekly Reset Overview</span>' in out
-    assert "<strong>UPDATES &amp; EVENTS</strong>" in out
-    assert (
-        '<img class="emoji" src="https://cdn.discordapp.com/emojis/1.png" '
-        'alt=":Bungie:">' in out
-    )
-    assert (
-        '<a href="https://example.com/n" target="_blank" '
-        'rel="noopener noreferrer">Patch &lt;notes&gt;</a>' in out
-    )
-    # bold-italic sign-off, unicode emoji + separator pass through.
-    assert "<strong><em>See you starside!</em></strong> \U0001f4ab" in out
-    assert "┊" in out
-    # <t:…:f> -> formatted UTC date (Tuesday 17:00 UTC == 5:00 PM).
-    assert "Jul 14, 2026 5:00 PM (UTC)" in out
-    # A raw "<" in a text leaf is escaped (self-XSS-safe).
-    assert "A &lt; B &amp; C" in out
-    # Unknown emoji name -> escaped text, not an <img>.
-    assert ":unknown:" in out and 'alt=":unknown:"' not in out
-    # Non-http(s) link rejected: rendered as escaped text, never an <a>.
-    assert "[bad](ftp://nope.example)" in out
-    assert 'href="ftp' not in out
+def test_build_body_emits_the_markdown_the_renderer_needs() -> None:
+    """The producer's half: the constructs are in the body text.
+
+    Rendering them — emoji as <img>, escaping, link validation — belongs to the shared
+    renderer, and is pinned by ``dd/anchor/preview_fixtures``.
+    """
+    body = wr.build_body(_full_ctx())
+    assert body.startswith("# ")  # H1 title
+    assert "\n### " in body  # sub-headings
+    assert "**" in body  # bold
+    assert ":Bungie:" in body  # a guild emoji shortcode
+    assert "<t:" in body  # a Discord timestamp token
+    assert "](https://" in body  # at least one masked link
 
 
 def test_discord_error_note() -> None:
