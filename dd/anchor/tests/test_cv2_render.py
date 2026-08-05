@@ -79,7 +79,10 @@ def test_section_thumbnail_and_masked_link() -> None:
         ),
         "cv2",
     )
-    assert '<a href="https://ex.com">go</a>' in out
+    assert (
+        '<a href="https://ex.com" target="_blank" '
+        'rel="noopener noreferrer">go</a>' in out
+    )
     assert '<img class="cv2-thumb" src="https://cdn.ex/t.png"' in out
 
 
@@ -109,7 +112,10 @@ def test_angle_bracket_masked_link_renders_as_link() -> None:
     out = r.render_snapshot(
         _cv2(_text("[The Broken Deep](<https://kyber3000.com/x>)")), "cv2"
     )
-    assert '<a href="https://kyber3000.com/x">The Broken Deep</a>' in out
+    assert (
+        '<a href="https://kyber3000.com/x" target="_blank" '
+        'rel="noopener noreferrer">The Broken Deep</a>' in out
+    )
     assert "&lt;https" not in out and "](" not in out
 
 

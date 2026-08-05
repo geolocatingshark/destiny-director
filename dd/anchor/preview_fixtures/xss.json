@@ -44,7 +44,7 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><a href=\"https://example.com/&quot;onmouseover=&quot;alert(1\">label</a>)</div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><a href=\"https://example.com/&quot;onmouseover=&quot;alert(1\" target=\"_blank\" rel=\"noopener noreferrer\">label</a>)</div></div>"
     },
     {
       "name": "javascript_url_in_button",

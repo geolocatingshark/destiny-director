@@ -760,7 +760,10 @@ def test_render_post_html_renders_markdown_and_emoji() -> None:
         '<img class="emoji" src="https://cdn.discordapp.com/emojis/1.png" '
         'alt=":Bungie:">' in out
     )
-    assert '<a href="https://example.com/n">Patch &lt;notes&gt;</a>' in out
+    assert (
+        '<a href="https://example.com/n" target="_blank" '
+        'rel="noopener noreferrer">Patch &lt;notes&gt;</a>' in out
+    )
     # bold-italic sign-off, unicode emoji + separator pass through.
     assert "<strong><em>See you starside!</em></strong> \U0001f4ab" in out
     assert "┊" in out

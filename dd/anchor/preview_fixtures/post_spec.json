@@ -79,7 +79,7 @@
           ]
         ]
       },
-      "expected_html": "<span class=\"md-h1\">Title</span>\n\n<span class=\"md-h2\">Sub</span>\nBody with <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"> and Jul 30, 2026 5:00 PM (UTC) and <a href=\"https://example.com/l\">a link</a>.\n\n<img class=\"post-image\" src=\"https://example.com/hero.png\" alt=\"post image\">\n<div class=\"post-buttons\"><a class=\"post-button\" href=\"https://example.com/open\" target=\"_blank\" rel=\"noopener noreferrer\">Open</a></div>"
+      "expected_html": "<span class=\"md-h1\">Title</span>\n\n<span class=\"md-h2\">Sub</span>\nBody with <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"> and Jul 30, 2026 5:00 PM (UTC) and <a href=\"https://example.com/l\" target=\"_blank\" rel=\"noopener noreferrer\">a link</a>.\n\n<img class=\"post-image\" src=\"https://example.com/hero.png\" alt=\"post image\">\n<div class=\"post-buttons\"><a class=\"post-button\" href=\"https://example.com/open\" target=\"_blank\" rel=\"noopener noreferrer\">Open</a></div>"
     }
   ]
 }

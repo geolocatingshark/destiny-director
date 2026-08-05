@@ -483,11 +483,21 @@
   // Everything is escaped first and only http(s) links become anchors, so this holds the
   // same line the server does even though the author is rendering their own text.
 
+  // Matches Python's html.escape(s, quote=True) character for character, including the
+  // apostrophe as &#x27;. That is not cosmetic: the shared golden corpus
+  // (dd/anchor/preview_fixtures) is asserted byte-for-byte by BOTH the Python tests and
+  // the JS ones, so an escape the two spell differently would make the corpus unable to
+  // hold them to the same output.
+  const _ESC = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#x27;",
+  };
+
   function esc(s) {
-    return String(s).replace(
-      /[&<>"]/g,
-      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
-    );
+    return String(s).replace(/[&<>"']/g, (c) => _ESC[c]);
   }
 
   const EMOJI_CDN = "https://cdn.discordapp.com/emojis/";
@@ -639,11 +649,19 @@
       } else if (g.code !== undefined) {
         out += "<code>" + esc(g.codeInner) + "</code>";
       } else if (g.link !== undefined) {
-        out += /^https?:\/\//.test(g.url)
+        // Discord's `[label](<url>)` form wraps the URL in angle brackets to suppress
+        // its preview embed; the real URL is inside them.
+        let url = g.url;
+        if (url.length > 1 && url.startsWith("<") && url.endsWith(">")) {
+          url = url.slice(1, -1);
+        }
+        out += /^https?:\/\//.test(url)
           ? '<a href="' +
-            esc(g.url) +
+            esc(url) +
             '" target="_blank" rel="noopener noreferrer">' +
-            esc(g.label) +
+            // The label may itself carry markdown, e.g. "[**View…**](url)" — the shape
+            // every Lost Sector title uses. Recurse rather than escape it flat.
+            inlineMd(g.label, emoji, now) +
             "</a>"
           : esc(m[0]);
       } else if (g.ts !== undefined) {
@@ -668,16 +686,46 @@
     if (line.startsWith("# ")) {
       return '<span class="md-h1">' + inlineMd(line.slice(2), emoji, now) + "</span>";
     }
+    // Discord accepts both `- ` and `* `; hybrid_post_core._render_line matches the
+    // same pair, and the corpus holds the two implementations to it.
     if (/^[-*] /.test(line)) {
       return '<span class="md-bullet">' + inlineMd(line.slice(2), emoji, now) + "</span>";
     }
     return inlineMd(line, emoji, now);
   }
 
+  /**
+   * Rework blank lines around `##`/`###` headings to match Discord's spacing.
+   *
+   * Discord gives a sub-heading a margin *above* and renders the content right below it
+   * tight, but a body conventionally puts the blank line *after* the heading. Under
+   * `white-space: pre-wrap` that literal blank lands below the heading, so the preview
+   * reads differently from the posted message. Collapse to exactly one blank line
+   * before each `##`/`###` (none if it is the first line) and drop any blank directly
+   * after it. `#` (the H1 title) is left alone — its trailing blank already matches.
+   *
+   * The client mirror of hybrid_post_core._normalize_heading_spacing.
+   */
+  function normalizeHeadingSpacing(lines) {
+    const isSub = (line) => line.startsWith("## ") || line.startsWith("### ");
+    const out = [];
+    for (const line of lines) {
+      if (isSub(line)) {
+        while (out.length && out[out.length - 1] === "") out.pop();
+        if (out.length) out.push("");
+        out.push(line);
+      } else if (line === "" && out.length && isSub(out[out.length - 1])) {
+        continue;
+      } else {
+        out.push(line);
+      }
+    }
+    return out;
+  }
+
   /** Render a text leaf's content. Newlines survive via the .cv2-text pre-wrap. */
   function renderMd(content, emoji, now) {
-    return String(content)
-      .split("\n")
+    return normalizeHeadingSpacing(String(content).split("\n"))
       .map((line) => lineMd(line, emoji, now))
       .join("\n");
   }
@@ -968,6 +1016,7 @@
     inlineMd,
     lineMd,
     renderMd,
+    normalizeHeadingSpacing,
     // drop targeting geometry
     nearestRail,
     NEAREST_RAIL_MAX_PX,

@@ -58,10 +58,10 @@ NOW = dt.datetime(2026, 7, 30, 17, 0, 0, tzinfo=dt.UTC)
 UPDATE = bool(os.environ.get("UPDATE_PREVIEW_FIXTURES"))
 
 #: Every tag the renderers are trusted to emit. The leaf whitelist is
-#: ``{span, strong, em, a, img}``; the rest are structural wrappers (``div``/``hr``) and
-#: the diff's change marks (``ins``/``del``).
+#: ``{span, strong, em, code, a, img}``; the rest are structural wrappers
+#: (``div``/``hr``) and the diff's change marks (``ins``/``del``).
 ALLOWED_TAGS = frozenset(
-    {"div", "span", "strong", "em", "a", "img", "hr", "ins", "del"}
+    {"div", "span", "strong", "em", "code", "a", "img", "hr", "ins", "del"}
 )
 
 #: Every attribute those tags may carry. Notably absent: anything ``on*``, which is why
@@ -111,6 +111,13 @@ def _render(case: dict[str, t.Any], defaults: dict[str, t.Any]) -> str:
     emoji_dict = {name: _emoji(url) for name, url in emoji_map.items()}
     how = case["render"]
 
+    if how == "markdown":
+        # The narrowest cross-language seam: one text leaf, no wrappers.
+        # `cv2_model.js`'s renderMd asserts these same strings, which is what pins
+        # the two markdown implementations to a single output.
+        return cv2_render._render_markdown(
+            case["content"], hybrid_post_core._html_emoji_substituter(emoji_dict)
+        )
     if how == "snapshot":
         return cv2_render.render_snapshot(case["payload"], case["kind"])
     if how == "authored":

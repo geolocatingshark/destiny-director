@@ -1,0 +1,159 @@
+{
+  "comment": "The markdown leaf layer, asserted byte-for-byte by BOTH sides — Python's _normalize_heading_spacing + _render_line, and cv2_model.js's renderMd. This is the narrowest place the two implementations meet, so it is the first thing the port holds to a single output.",
+  "emoji": {
+    "kyber": "https://cdn.discordapp.com/emojis/1111111111.png",
+    "spin": "https://cdn.discordapp.com/emojis/2222222222.gif"
+  },
+  "cases": [
+    {
+      "name": "plain_text",
+      "render": "markdown",
+      "content": "just a line\nand another",
+      "expected_html": "just a line\nand another"
+    },
+    {
+      "name": "block_prefixes",
+      "render": "markdown",
+      "content": "# H1\n## H2\n### H3\n-# small\n- dash bullet\n* star bullet\nplain",
+      "expected_html": "<span class=\"md-h1\">H1</span>\n\n<span class=\"md-h2\">H2</span>\n\n<span class=\"md-h3\">H3</span>\n<span class=\"md-small\">small</span>\n<span class=\"md-bullet\">dash bullet</span>\n<span class=\"md-bullet\">star bullet</span>\nplain"
+    },
+    {
+      "name": "heading_spacing_collapses_blanks_above",
+      "render": "markdown",
+      "content": "intro\n\n\n\n## Heading\nbody",
+      "expected_html": "intro\n\n<span class=\"md-h2\">Heading</span>\nbody"
+    },
+    {
+      "name": "heading_spacing_drops_blank_below",
+      "render": "markdown",
+      "content": "## Heading\n\nbody",
+      "expected_html": "<span class=\"md-h2\">Heading</span>\nbody"
+    },
+    {
+      "name": "heading_spacing_leading_heading_gets_no_gap",
+      "render": "markdown",
+      "content": "## First thing\nbody",
+      "expected_html": "<span class=\"md-h2\">First thing</span>\nbody"
+    },
+    {
+      "name": "heading_spacing_leaves_h1_alone",
+      "render": "markdown",
+      "content": "# Title\n\nbody",
+      "expected_html": "<span class=\"md-h1\">Title</span>\n\nbody"
+    },
+    {
+      "name": "emphasis_nesting",
+      "render": "markdown",
+      "content": "***bold italic*** then **bold** then *italic*",
+      "expected_html": "<strong><em>bold italic</em></strong> then <strong>bold</strong> then <em>italic</em>"
+    },
+    {
+      "name": "code_span_is_literal",
+      "render": "markdown",
+      "content": "run `make check` and `**not bold**` and `<script>`",
+      "expected_html": "run <code>make check</code> and <code>**not bold**</code> and <code>&lt;script&gt;</code>"
+    },
+    {
+      "name": "masked_link",
+      "render": "markdown",
+      "content": "see [the docs](https://example.com/docs) now",
+      "expected_html": "see <a href=\"https://example.com/docs\" target=\"_blank\" rel=\"noopener noreferrer\">the docs</a> now"
+    },
+    {
+      "name": "masked_link_label_carries_markdown",
+      "render": "markdown",
+      "content": "[**View the sector**](https://example.com/ls)",
+      "expected_html": "<a href=\"https://example.com/ls\" target=\"_blank\" rel=\"noopener noreferrer\"><strong>View the sector</strong></a>"
+    },
+    {
+      "name": "masked_link_angle_bracket_form",
+      "render": "markdown",
+      "content": "no embed [here](<https://example.com/quiet>) please",
+      "expected_html": "no embed <a href=\"https://example.com/quiet\" target=\"_blank\" rel=\"noopener noreferrer\">here</a> please"
+    },
+    {
+      "name": "masked_link_non_http_stays_text",
+      "render": "markdown",
+      "content": "[nope](javascript:alert(1)) and [also nope](ftp://x/y)",
+      "expected_html": "[nope](javascript:alert(1)) and [also nope](ftp://x/y)"
+    },
+    {
+      "name": "bold_wrapping_a_link",
+      "render": "markdown",
+      "content": "**[Warden of Nothing](https://example.com/w)**",
+      "expected_html": "<strong><a href=\"https://example.com/w\" target=\"_blank\" rel=\"noopener noreferrer\">Warden of Nothing</a></strong>"
+    },
+    {
+      "name": "shortcode_emoji_from_dict",
+      "render": "markdown",
+      "content": "known :kyber: mixed case :Kyber: unknown :nosuch:",
+      "expected_html": "known <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1111111111.png\" alt=\":kyber:\"> mixed case <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1111111111.png\" alt=\":Kyber:\"> unknown :nosuch:"
+    },
+    {
+      "name": "captured_emoji_beats_the_dict",
+      "render": "markdown",
+      "content": "captured <:kyber:9999999999> vs typed :kyber:",
+      "expected_html": "captured <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/9999999999.png\" alt=\":kyber:\"> vs typed <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1111111111.png\" alt=\":kyber:\">"
+    },
+    {
+      "name": "captured_animated_emoji",
+      "render": "markdown",
+      "content": "<a:spin:8888888888> spinning",
+      "expected_html": "<img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/8888888888.gif\" alt=\":spin:\"> spinning"
+    },
+    {
+      "name": "emoji_id_must_be_numeric",
+      "render": "markdown",
+      "content": "<:evil:notanumber> stays text",
+      "expected_html": "&lt;:evil:notanumber&gt; stays text"
+    },
+    {
+      "name": "timestamp_beats_the_emoji_arm",
+      "render": "markdown",
+      "content": "at <t:1785430800:t> sharp",
+      "expected_html": "at 5:00 PM (UTC) sharp"
+    },
+    {
+      "name": "timestamp_formats",
+      "render": "markdown",
+      "content": "<t:1785430800:t>|<t:1785430800:T>|<t:1785430800:d>|<t:1785430800:D>|<t:1785430800:f>|<t:1785430800:F>",
+      "expected_html": "5:00 PM (UTC)|5:00:00 PM (UTC)|07/30/2026|July 30, 2026|Jul 30, 2026 5:00 PM (UTC)|Jul 30, 2026 5:00 PM (UTC)"
+    },
+    {
+      "name": "timestamp_relative",
+      "render": "markdown",
+      "content": "<t:1785690000:R>|<t:1785344400:R>|<t:1785434400:R>|<t:1785430800:R>",
+      "expected_html": "in 3 days|1 day ago|in 1 hour|in 0 seconds"
+    },
+    {
+      "name": "escapes_every_special_character",
+      "render": "markdown",
+      "content": "a & b < c > d \" e ' f",
+      "expected_html": "a &amp; b &lt; c &gt; d &quot; e &#x27; f"
+    },
+    {
+      "name": "script_tag_is_text",
+      "render": "markdown",
+      "content": "<script>alert('x')</script>",
+      "expected_html": "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;"
+    },
+    {
+      "name": "bullet_with_inline_markup",
+      "render": "markdown",
+      "content": "- **Nightfall**: [Warden](https://example.com/w) :kyber:",
+      "expected_html": "<span class=\"md-bullet\"><strong>Nightfall</strong>: <a href=\"https://example.com/w\" target=\"_blank\" rel=\"noopener noreferrer\">Warden</a> <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1111111111.png\" alt=\":kyber:\"></span>"
+    },
+    {
+      "name": "empty_content",
+      "render": "markdown",
+      "content": "",
+      "expected_html": ""
+    },
+    {
+      "name": "trailing_and_leading_blank_lines",
+      "render": "markdown",
+      "content": "\n\nbody\n\n",
+      "expected_html": "\n\nbody\n\n"
+    }
+  ]
+}

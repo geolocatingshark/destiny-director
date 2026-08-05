@@ -641,7 +641,10 @@ def test_preview_emits_h3_and_bullets_only_whitelisted_tags() -> None:
     assert '<span class="md-bullet">' in out
     assert "<em>of</em>" in out
     # The light.gg deep link is a real anchor.
-    assert '<a href="https://light.gg/db/items/123">' in out
+    assert (
+        '<a href="https://light.gg/db/items/123" target="_blank" '
+        'rel="noopener noreferrer">' in out
+    )
     # ONLY the whitelisted tags are ever emitted (no <ul>/<li>/<script>).
     tags = set(re.findall(r"</?([a-zA-Z]+)", out))
     assert tags <= {"span", "strong", "em", "a", "img"}, tags

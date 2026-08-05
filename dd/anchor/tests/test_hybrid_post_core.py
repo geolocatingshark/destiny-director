@@ -181,7 +181,10 @@ def test_render_post_html_angle_bracket_masked_link() -> None:
         "[The Broken Deep](<https://kyber3000.com/LS-TheBrokenDeep>)",
         t.cast("dict[str, h.Emoji]", {}),
     )
-    assert '<a href="https://kyber3000.com/LS-TheBrokenDeep">The Broken Deep</a>' in out
+    assert (
+        '<a href="https://kyber3000.com/LS-TheBrokenDeep" target="_blank" '
+        'rel="noopener noreferrer">The Broken Deep</a>' in out
+    )
     assert "&lt;https" not in out  # angle brackets consumed, not shown as text
 
 
@@ -193,8 +196,8 @@ def test_render_post_html_link_inside_bold() -> None:
         t.cast("dict[str, h.Emoji]", {}),
     )
     assert (
-        '<strong><a href="https://kyber3000.com/LS-ScavengersDen">'
-        "Scavenger&#x27;s Den (EDZ)</a></strong>" in out
+        '<strong><a href="https://kyber3000.com/LS-ScavengersDen" target="_blank" '
+        'rel="noopener noreferrer">Scavenger&#x27;s Den (EDZ)</a></strong>' in out
     )
     assert "](" not in out  # not left as raw markdown inside the bold
 
@@ -205,8 +208,8 @@ def test_render_post_spec_renders_h2_heading() -> None:
     spec = hpc.PostSpec.cv2("## [World Lost Sectors](https://kyber3000.com/LS)")
     out = hpc.render_post_spec(spec, t.cast("dict[str, h.Emoji]", {}))
     assert (
-        '<span class="md-h2"><a href="https://kyber3000.com/LS">World Lost Sectors</a>'
-        in out
+        '<span class="md-h2"><a href="https://kyber3000.com/LS" target="_blank" '
+        'rel="noopener noreferrer">World Lost Sectors</a>' in out
     )
     assert "## " not in out
 

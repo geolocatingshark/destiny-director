@@ -188,6 +188,7 @@ _INLINE_MD = re.compile(
     r"(?P<bi>\*\*\*(?P<bi_inner>.+?)\*\*\*)"
     r"|(?P<b>\*\*(?P<b_inner>.+?)\*\*)"
     r"|(?P<i>\*(?P<i_inner>.+?)\*)"
+    r"|(?P<code>`(?P<code_inner>[^`\n]+)`)"
     r"|(?P<link>\[(?P<label>[^\]]+)\]\((?P<url>[^)\s]+)\))"
     r"|(?P<ts><t:(?P<tsval>\d+):(?P<tsfmt>[A-Za-z])>)"
     r"|(?P<emoji>" + re_user_side_emoji.pattern + r")"
@@ -248,19 +249,35 @@ def _format_ts(unix: int, fmt: str, now: dt.datetime | None = None) -> str:
 def _html_emoji_substituter(
     emoji_dict: dict[str, h.Emoji],
 ) -> t.Callable[[t.Any], str]:
-    """An ``re_user_side_emoji`` substituter emitting <img> (modeled on the CV2 one).
+    """An ``re_user_side_emoji`` substituter emitting <img>, for either token shape.
 
-    Emits ``<img class="emoji" src="{emoji.url}" alt=":name:">`` for a known guild
-    emoji, else the escaped ``:name:`` text. Every attribute value is escaped.
+    A preview surface sees two: content seeded from a live post carries a full
+    ``<:name:id>`` / ``<a:name:id>``, and content an author types carries a bare
+    ``:name:``. The **captured id wins** — it is the emoji the message actually shows,
+    which is not necessarily the one the guild answers to that name today — and only a
+    token with no id falls back to the guild dict. An unresolvable token renders as its
+    escaped text. Every attribute value is escaped.
+
+    ``cv2_model.js``'s ``_emojiHtml`` is the client copy of exactly this precedence.
     """
 
     def func(match: t.Any) -> str:
         name = str(match.group(2))
+        prefix = match.group(1) or ""
+        id_group = match.group(4)  # e.g. "123456789>" or None
+        alt = html.escape(name, quote=True)
+        if id_group:
+            emoji_id = id_group.rstrip(">")
+            if emoji_id.isdigit():
+                ext = "gif" if prefix == "<a" else "png"
+                src = html.escape(
+                    f"https://cdn.discordapp.com/emojis/{emoji_id}.{ext}", quote=True
+                )
+                return f'<img class="emoji" src="{src}" alt=":{alt}:">'
         emoji = emoji_dict.get(name) or emoji_dict.get(name.lower())
         if emoji is None:
             return html.escape(match.group(0))
         url = html.escape(str(getattr(emoji, "url", "")), quote=True)
-        alt = html.escape(name, quote=True)
         return f'<img class="emoji" src="{url}" alt=":{alt}:">'
 
     return func
@@ -283,6 +300,9 @@ def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
             out.append(f"<strong>{inner}</strong>")
         elif m.group("i") is not None:
             out.append(f"<em>{_render_inline(m.group('i_inner'), emoji_sub)}</em>")
+        elif m.group("code") is not None:
+            # Code spans do NOT recurse — inside backticks, markdown is literal text.
+            out.append(f"<code>{html.escape(m.group('code_inner'))}</code>")
         elif m.group("link") is not None:
             url = m.group("url")
             # Discord's ``[label](<url>)`` form wraps the URL in angle brackets to
@@ -293,7 +313,13 @@ def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
                 href = html.escape(url, quote=True)
                 # The label may itself carry markdown (e.g. "[**View…**](url)").
                 label = _render_inline(m.group("label"), emoji_sub)
-                out.append(f'<a href="{href}">{label}</a>')
+                # target/rel match the button and media-tile anchors: a preview is an
+                # admin page you don't want a link to navigate away from, and an
+                # untrusted href must never get a handle on window.opener.
+                out.append(
+                    f'<a href="{href}" target="_blank" '
+                    f'rel="noopener noreferrer">{label}</a>'
+                )
             else:  # non-http(s): not a real link — render the raw text, escaped.
                 out.append(html.escape(m.group("link")))
         elif m.group("ts") is not None:
@@ -309,12 +335,14 @@ def _render_inline(text: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
 def _render_line(line: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
     """Render one body line, handling the heading, small-text and bullet prefixes.
 
-    The heading (``# ``/``## ``/``### ``), small (``-# ``) and bullet (``- ``) prefixes
-    render as spans (never ``<ul>``/``<li>``), so the emitted tags stay within the
-    ``{span, strong, em, a, img}`` whitelist the preview is trusted against. Longer
-    prefixes are tested first (``### `` before ``## `` before ``# ``; ``-# `` before
-    ``- ``) so the longest wins; the bullet marker is supplied by CSS
+    The heading (``# ``/``## ``/``### ``), small (``-# ``) and bullet (``- ``/``* ``)
+    prefixes render as spans (never ``<ul>``/``<li>``), so the emitted tags stay within
+    the ``{span, strong, em, code, a, img}`` whitelist the preview is trusted against.
+    Longer prefixes are tested first (``### `` before ``## `` before ``# ``; ``-# ``
+    before ``- ``) so the longest wins; the bullet marker is supplied by CSS
     ``.md-bullet::before``.
+
+    Discord accepts ``* `` as a bullet as well as ``- ``; both are matched here.
     """
     if line.startswith("### "):
         return f'<span class="md-h3">{_render_inline(line[4:], emoji_sub)}</span>'
@@ -324,7 +352,7 @@ def _render_line(line: str, emoji_sub: t.Callable[[t.Any], str]) -> str:
         return f'<span class="md-h1">{_render_inline(line[2:], emoji_sub)}</span>'
     if line.startswith("-# "):
         return f'<span class="md-small">{_render_inline(line[3:], emoji_sub)}</span>'
-    if line.startswith("- "):
+    if line.startswith(("- ", "* ")):
         return f'<span class="md-bullet">{_render_inline(line[2:], emoji_sub)}</span>'
     return _render_inline(line, emoji_sub)
 

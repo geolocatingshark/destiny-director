@@ -41,7 +41,7 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><strong><em>both</em></strong> and <strong>bold</strong> and <em>italic</em> and <a href=\"https://example.com/x\">a link</a> and `code`</div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><strong><em>both</em></strong> and <strong>bold</strong> and <em>italic</em> and <a href=\"https://example.com/x\" target=\"_blank\" rel=\"noopener noreferrer\">a link</a> and <code>code</code></div></div>"
     },
     {
       "name": "text_timestamps_absolute",
