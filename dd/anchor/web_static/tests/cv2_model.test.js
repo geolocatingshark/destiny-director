@@ -10,6 +10,11 @@
 // rules, path rebasing after a removal (two real bugs found while prototyping), the
 // validation paths the UI anchors errors to, and markdown escaping.
 
+// `<t:…>` tokens render in the VIEWER'S timezone now, so a test asserting one is only
+// reproducible with the zone pinned. Set before requiring anything that reads a clock —
+// Node picks TZ up on assignment, so this holds wherever the suite runs.
+process.env.TZ = "UTC";
+
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -331,14 +336,16 @@ test("emoji inside bold still resolves", () => {
   assert.match(out, /<img class="emoji"/);
 });
 
-test("a <t:...> timestamp renders like the server, not as raw text", () => {
-  // 1753894800 = 2025-07-30 17:00:00 UTC
+test("a <t:...> timestamp renders as a time, not as raw text", () => {
+  // 1753894800 = 2025-07-30 17:00:00 UTC, and TZ is pinned to UTC at the top of this
+  // file — these render in the VIEWER'S zone now, which is what Discord does, so
+  // without that pin the expectations would depend on where the suite ran.
   const at = 1753894800;
-  assert.match(M.renderMd(`Changes daily at <t:${at}:t> local time.`), /5:00 PM \(UTC\)/);
-  assert.match(M.renderMd(`<t:${at}:T>`), /5:00:00 PM \(UTC\)/);
+  assert.match(M.renderMd(`Changes daily at <t:${at}:t> local time.`), /5:00 PM/);
+  assert.match(M.renderMd(`<t:${at}:T>`), /5:00:00 PM/);
   assert.match(M.renderMd(`<t:${at}:d>`), /07\/30\/2025/);
   assert.match(M.renderMd(`<t:${at}:D>`), /July 30, 2025/);
-  assert.match(M.renderMd(`<t:${at}:f>`), /Jul 30, 2025 5:00 PM \(UTC\)/);
+  assert.match(M.renderMd(`<t:${at}:f>`), /Jul 30, 2025 5:00 PM/);
   // None of them should leak the raw token.
   assert.ok(!M.renderMd(`<t:${at}:t>`).includes("&lt;t:"));
 });

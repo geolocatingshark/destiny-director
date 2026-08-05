@@ -82,7 +82,6 @@ from ..hybrid_post_core import (
     WeaponRef,
     # Re-exported (used only via ``wr.<name>`` in the test suite, not in this module).
     _discord_error_note as _discord_error_note,
-    _format_reset_ts as _format_reset_ts,
     build_cv2,
     compute_rotator,
     current_reset_ts,
@@ -780,7 +779,8 @@ def validate_post(ctx: WeeklyResetContext) -> list[str]:
 # There is no preview renderer here any more. ``POST /weekly_reset/preview`` hands the
 # page the post's own CV2 node tree (``hybrid_post_core.post_spec_nodes``) and the
 # shared client renderer draws it — the same one the builder canvas and the mirror log
-# use. ``_format_reset_ts`` is still imported above, for the body text itself.
+# use. The body writes ``<t:…:f>`` tokens and lets the renderer localise them, which is
+# what Discord does with them in the posted message.
 
 
 # ---------------------------------------------------------------------------

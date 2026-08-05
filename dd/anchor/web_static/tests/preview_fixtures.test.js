@@ -30,6 +30,11 @@
 //             asserts the render from there — against the HTML the OLD Python diff
 //             renderer emitted, which is what makes the port checkable.
 
+// `<t:…>` tokens render in the VIEWER'S timezone now, so a test asserting one is only
+// reproducible with the zone pinned. Set before requiring anything that reads a clock —
+// Node picks TZ up on assignment, so this holds wherever the suite runs.
+process.env.TZ = "UTC";
+
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");

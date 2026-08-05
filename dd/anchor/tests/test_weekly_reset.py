@@ -792,9 +792,6 @@ def test_post_spec_nodes_places_the_image_and_rejects_bad_urls() -> None:
     assert kinds("ftp://nope.example/a.png") == [10]
 
 
-def test_format_reset_ts_is_utc_long_short() -> None:
-    assert wr._format_reset_ts(1784048400) == "Jul 14, 2026 5:00 PM (UTC)"
-
 
 # --- DraftMeta lifecycle state ----------------------------------------------------
 

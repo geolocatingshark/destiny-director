@@ -566,17 +566,20 @@
   }
 
   /**
-   * A `<t:UNIX:X>` token.
+   * A `<t:UNIX:X>` token, in the VIEWER'S timezone — which is what Discord does.
    *
-   * Rendered in UTC with an explicit "(UTC)" note. Discord shows these in the *viewer's*
-   * zone, which the Python renderer this replaced could not know — but a client renderer
-   * can, and making it do so is filed in plans/preview_renderer_unification.md.
+   * This used to render UTC with an explicit "(UTC)" note, because the renderer was a
+   * server and a server cannot know the reader's zone. A client renderer can, so the
+   * apology is gone and a preview now shows the same wall-clock time the post will.
+   *
+   * `now` is an injectable epoch-ms clock for the relative format; tests that need a
+   * fixed zone set `process.env.TZ` (see tests/preview_fixtures.test.js).
    */
   function _timestampText(unix, fmt, now) {
     const d = new Date(unix * 1000);
-    const hour24 = d.getUTCHours();
+    const hour24 = d.getHours();
     const h12 = hour24 % 12 || 12;
-    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
     const ampm = hour24 < 12 ? "AM" : "PM";
     if (fmt === "R") {
       const delta = unix - Math.floor((now === undefined ? Date.now() : now) / 1000);
@@ -595,35 +598,34 @@
       return future ? "in " + text : text + " ago";
     }
     if (fmt === "t" || fmt === "T") {
-      const ss = fmt === "T" ? ":" + String(d.getUTCSeconds()).padStart(2, "0") : "";
-      return h12 + ":" + mm + ss + " " + ampm + " (UTC)";
+      const ss = fmt === "T" ? ":" + String(d.getSeconds()).padStart(2, "0") : "";
+      return h12 + ":" + mm + ss + " " + ampm;
     }
     if (fmt === "d") {
       return (
-        String(d.getUTCMonth() + 1).padStart(2, "0") +
+        String(d.getMonth() + 1).padStart(2, "0") +
         "/" +
-        String(d.getUTCDate()).padStart(2, "0") +
+        String(d.getDate()).padStart(2, "0") +
         "/" +
-        d.getUTCFullYear()
+        d.getFullYear()
       );
     }
     if (fmt === "D") {
-      return MONTHS_LONG[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + d.getUTCFullYear();
+      return MONTHS_LONG[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear();
     }
     // f / F / anything else: Discord's long-date short-time.
     return (
-      MONTHS_SHORT[d.getUTCMonth()] +
+      MONTHS_SHORT[d.getMonth()] +
       " " +
-      d.getUTCDate() +
+      d.getDate() +
       ", " +
-      d.getUTCFullYear() +
+      d.getFullYear() +
       " " +
       h12 +
       ":" +
       mm +
       " " +
-      ampm +
-      " (UTC)"
+      ampm
     );
   }
 

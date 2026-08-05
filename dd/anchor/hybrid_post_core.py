@@ -219,20 +219,6 @@ def post_spec_nodes(spec: "PostSpec") -> list[dict[str, t.Any]]:
 # the shared client renderer's business (``web_static/cv2_render.js``). What lives here
 # is the formatting a producer does to build the string itself.
 
-def _format_reset_ts(unix: int) -> str:
-    """Render a ``<t:UNIX:f>`` instant as Discord's ``:f`` long-date short-time, in UTC.
-
-    Discord shows ``:f`` in the *viewer's* local zone; a producer building body text
-    can't know that, so it writes UTC with an explicit ``(UTC)`` note (e.g.
-    "Jul 14, 2026 5:00 PM"). This is body *content*, not rendering — the preview's own
-    ``<t:…>`` handling lives in the shared renderer now.
-    """
-    d = dt.datetime.fromtimestamp(unix, tz=dt.UTC)
-    hour12 = d.hour % 12 or 12
-    ampm = "AM" if d.hour < 12 else "PM"
-    return f"{d.strftime('%b')} {d.day}, {d.year} {hour12}:{d.minute:02d} {ampm} (UTC)"
-
-
 # ---------------------------------------------------------------------------
 # PostSpec — the format-tagged, serializable description a previewer renders
 # ---------------------------------------------------------------------------

@@ -55,7 +55,7 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">t=5:00 PM (UTC) T=5:00:00 PM (UTC) d=07/30/2026 D=July 30, 2026 f=Jul 30, 2026 5:00 PM (UTC) F=Jul 30, 2026 5:00 PM (UTC)</div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">t=5:00 PM T=5:00:00 PM d=07/30/2026 D=July 30, 2026 f=Jul 30, 2026 5:00 PM F=Jul 30, 2026 5:00 PM</div></div>"
     },
     {
       "name": "text_timestamp_relative",
