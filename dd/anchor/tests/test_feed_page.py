@@ -13,11 +13,12 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-# Per-feed actions page: the shell bootstraps the right feed, preview renders a built
-# post (and reports a build failure as data rather than a 500), and send guards its
-# preconditions — dormant feed, no announcer, one already in flight — and never posts
-# when the build fails. Exercised with fake requests (no live server); auth is the
-# web_auth middleware, covered in test_web_auth.py.
+# Per-feed actions page: the shell stays static (the CSP forbids inline script) and
+# /data describes the feed, preview returns the node tree the shared renderer draws (and
+# reports a build failure as data rather than a 500), and send guards its preconditions
+# — dormant feed, no announcer, one already in flight — and never posts when the build
+# fails. Exercised with fake requests (no live server); auth is the web_auth middleware,
+# covered in test_web_auth.py.
 
 import asyncio
 import json
