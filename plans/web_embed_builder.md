@@ -1,6 +1,19 @@
 # Web embed builder — reusable classic-embed authoring + safe-HTML preview
 
-## Status: ready to build (spun out of `plans/website_user_commands.md`, 2026-07-19)
+## Status: needs a rewrite before building (2026-08-05)
+
+**§2 is obsolete.** It targets `hybrid_post_core`'s `render_post_html` machinery and a
+`PostSpec` embed kind — all of which was deleted by
+`plans/preview_renderer_unification.md`. There is one renderer now
+(`dd/anchor/web_static/cv2_render.js`), it already draws classic embeds (`embed()`), and
+the corpus in `dd/anchor/preview_fixtures` pins that rendering from both languages.
+
+What survives: §1 (the shared `embed_from_stored_json` deserializer), §3 (extending the
+beacon type-3 runtime), and §4 (the web widget) — but the widget should emit an embed the
+shared renderer draws, and the preview route should return the embed *data* the way every
+other preview route now does, not server-rendered HTML.
+
+## Status (original): ready to build (spun out of `plans/website_user_commands.md`, 2026-07-19)
 
 ## Context — why this exists
 

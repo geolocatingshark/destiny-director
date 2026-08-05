@@ -1,10 +1,31 @@
 # Preview renderer unification — one shared CV2/classic renderer
 
-## Status: ready to build (2026-08-04)
+## Status: DONE (2026-08-05) — kept only for the record; delete when it stops earning it
 
-Seven phases, each shipping independently with `make check` green. Remove this file when
-all of them have landed; if it is only partly executed, prune the finished phases and say
-so here.
+All seven phases landed on `preview-renderer-unification`. There is one renderer,
+`dd/anchor/web_static/cv2_render.js`, and every preview surface draws through it.
+
+Where the durable knowledge went, since this file is not the place to look for it:
+
+- **`docs/architecture.md`** — "Rendering a message on the web", the seam and its two
+  consequences (untrusted content, the golden corpus).
+- **`dd/anchor/preview_fixtures/README.md`** — the corpus contract and how to regenerate.
+- **`dd/anchor/extensions/cv2_builder_page.py`** — the trust boundary, and what `/preview`
+  is *for* now that it returns a tree rather than markup.
+- **`dd/anchor/cv2_render.py`** — why the diff stayed in Python and what its annotations
+  mean.
+
+What the plan did not do, and why:
+
+- **A CSP header** (`script-src 'self'`) is still worth adding as the backstop for
+  client-rendered untrusted content. It needs the three `__BOOTSTRAP__` inline blocks
+  turned into `<script type="application/json">` and `autopost_settings.html`'s inline
+  handler extracted to a file — the second of which is an unrelated page, so it was left
+  as its own piece of work rather than folded in here.
+- **Viewer-local `<t:…>` timestamps.** Both implementations apologised in comments for
+  rendering UTC because a server cannot know the viewer's zone. A client renderer can,
+  and that is what Discord does. Deliberately deferred so it did not muddy the fidelity
+  comparison during the port; it is now a small, isolated change to `_timestampText`.
 
 ## Context
 
