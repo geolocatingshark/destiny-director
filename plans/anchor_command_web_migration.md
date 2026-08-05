@@ -78,7 +78,38 @@ actually use.
 
 `help_details.py` needed no change — none of its entries covered a Set A command.
 
-### Phase 1 — per-feed send + preview on web · the main build
+### Phase 1 — per-feed send + preview on web ✅ BUILT 2026-08-05, NOT YET VERIFIED
+
+Built in three commits (registry groundwork → page → removal). `make lint`,
+`make typecheck` and the full non-Discord suite (1209 passed) are green.
+
+**Outstanding: nobody has driven this against a real Discord channel.** The tests use
+fake requests and a stub bot, so they prove the guards and the wiring, not that a real
+post renders or lands. Verify on dev before prod. In particular exercise: a preview of a
+Bungie-backed feed (xur/eververse/ada/portal_ops — these hit the live API), a preview of
+Iron Banner while no event is scheduled (should render the constructor's error in the
+box, not 500), and one real Send with publish on.
+
+What differs from the plan as written:
+
+- **The page carries no toggle.** The plan had toggle + Preview + Send. Two surfaces
+  writing the same `AutoPostSettings` row is a needless second write path, and it would
+  have falsified `/autopost_settings`' "sole surface" docstring a second time — so the
+  feed page links there instead.
+- **Send returns before the post lands.** Awaiting the announcer inside an HTTP handler
+  would mean a request that can hang for hours: both announcers retry construction
+  forever, `send_message` retries too, and `api_to_discord_announcer` posts its
+  placeholder to the live channel *before* constructing, so its retries must not be
+  bounded from outside. The handler builds once up front (catching the common failure
+  without touching the channel), then hands off to a background task. A per-feed
+  in-flight slot stops a double-click double-posting.
+- **The snapshot serializer moved.** `render_snapshot` walks raw component dicts, but
+  constructors return `HMessage`; the bridge lived in `dd/beacon/mirror_worker.py`, and
+  anchor imports nothing from beacon. Hoisted the pure transform to
+  `dd.hmessage.snapshot`, beacon delegates. (The plan's "`show` renders through
+  `cv2_render`" skipped this step.)
+
+#### Original design notes
 
 Kills the 12 remaining autopost subcommands, which empties
 `make_autopost_control_commands` entirely — the factory and its `lb.Group` disappear, and
