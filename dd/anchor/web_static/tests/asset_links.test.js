@@ -224,18 +224,27 @@ test("a page driven by initPostForm has every element it dereferences", () => {
 // autopost_settings.js. shared.js's helpers are top-level functions (so plain globals),
 // so a bare call is fine — what must hold is that the helper is DEFINED somewhere and
 // that the page actually loads shared.js.
+//
+// The helper list is DERIVED from shared.js's `window.x =` exports, not hardcoded: a
+// hardcoded list leaves the next shared helper uncovered until someone remembers, which
+// is the very failure this exists to catch. The export is also the real contract —
+// deleting the `window.` lines would keep a `function say` assertion green while
+// breaking every page.
 test("page scripts only call shared helpers that shared.js defines", () => {
   const SHARED_JS = fs.readFileSync(path.join(STATIC_DIR, "shared.js"), "utf8");
-  const HELPERS = ["say", "busy", "api"];
+  const HELPERS = [...SHARED_JS.matchAll(/^window\.(\w+)\s*=/gm)]
+    .map((m) => m[1])
+    // Not a helper — the page's server-injected data, assigned to the same namespace.
+    .filter((n) => n !== "__BOOTSTRAP__");
   const offenders = [];
 
-  for (const helper of HELPERS) {
-    assert.match(
-      SHARED_JS,
-      new RegExp(`function\\s+${helper}\\b`),
-      `shared.js must define ${helper}() — pages call it`,
-    );
-  }
+  // The guard on the guard, matching the one above: an empty list finds no offenders.
+  assert.ok(
+    HELPERS.length >= 3,
+    `expected shared.js to export several helpers, found ${JSON.stringify(HELPERS)}`,
+  );
+
+  const HOSTS = pages();
 
   for (const name of fs.readdirSync(STATIC_DIR).filter((n) => n.endsWith(".js"))) {
     if (name === "shared.js") continue;
@@ -254,15 +263,12 @@ test("page scripts only call shared helpers that shared.js defines", () => {
     if (!used.length) continue;
 
     // Every page that loads this script must also load shared.js before it.
-    const hosts = fs
-      .readdirSync(STATIC_DIR)
-      .filter((n) => n.endsWith(".html"))
-      .map((n) => ({ n, t: fs.readFileSync(path.join(STATIC_DIR, n), "utf8") }))
-      .filter(({ t }) => t.includes(`/static/${name}`));
-    for (const { n, t } of hosts) {
-      const shared = t.indexOf("/static/shared.js");
-      if (shared === -1 || shared > t.indexOf(`/static/${name}`)) {
-        offenders.push(`${n}: loads ${name} (uses ${used.join(", ")}) without shared.js before it`);
+    for (const host of HOSTS.filter((p) => p.text.includes(`/static/${name}`))) {
+      const shared = host.text.indexOf("/static/shared.js");
+      if (shared === -1 || shared > host.text.indexOf(`/static/${name}`)) {
+        offenders.push(
+          `${host.name}: loads ${name} (uses ${used.join(", ")}) without shared.js before it`,
+        );
       }
     }
   }

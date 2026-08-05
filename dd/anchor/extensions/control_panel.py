@@ -93,25 +93,35 @@ async def _handle_panel(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.Response(text=_render_panel_html(), content_type="text/html")
 
 
-async def _channel_label(channel_id: int) -> tuple[str | None, str | None]:
-    """``(#channel-name, guild_id)`` for a configured followable.
+async def _channel_entry(feed: str, channel_id: int | None) -> dict[str, str | None]:
+    """The finished ``/bot/info`` row for one configured followable.
 
     A raw snowflake tells the reader nothing, and a name you cannot click is only
-    slightly better — the guild id is what turns it into a deep link. Resolution is
-    best-effort and per-channel: the bot may not be in the guild, the channel may be
-    deleted, or it may simply not be up yet, none of which should cost the whole panel
-    its config dump.
+    slightly better — the guild id is what turns it into a deep link, which is why this
+    returns the assembled row rather than the pieces. Resolution is best-effort and
+    per-channel: the bot may not be in the guild, the channel may be deleted, or it may
+    simply not be up yet, none of which should cost the whole panel its config dump.
     """
-    if _bot is None:
-        return None, None
+    row: dict[str, str | None] = {
+        "feed": feed,
+        "channelId": str(channel_id) if channel_id else None,
+        "channelName": None,
+        "url": None,
+    }
+    if not channel_id or _bot is None:
+        return row
     try:
         channel = await _bot.fetch_channel(channel_id)
     except Exception:
         logger.info("Could not resolve channel %s for /bot/info", channel_id)
-        return None, None
+        return row
     name = getattr(channel, "name", None)
     guild_id = getattr(channel, "guild_id", None)
-    return (f"#{name}" if name else None), (str(guild_id) if guild_id else None)
+    if name:
+        row["channelName"] = f"#{name}"
+    if guild_id:
+        row["url"] = f"https://discord.com/channels/{guild_id}/{channel_id}"
+    return row
 
 
 async def _handle_bot_info(request: aiohttp.web.Request) -> aiohttp.web.Response:
@@ -120,12 +130,6 @@ async def _handle_bot_info(request: aiohttp.web.Request) -> aiohttp.web.Response
     Anchor never had the mirror-status block (that is beacon's, gated on a
     ``mirror_check``), so this is the config dump and the configured channels.
     """
-    resolved = await asyncio.gather(
-        *(
-            _channel_label(channel_id) if channel_id else _none()
-            for channel_id in cfg.followables.values()
-        )
-    )
     return aiohttp.web.json_response(
         {
             "bot": "anchor",
@@ -133,30 +137,14 @@ async def _handle_bot_info(request: aiohttp.web.Request) -> aiohttp.web.Response
             # A tuple of guild ids, empty in prod — its emptiness is what marks an
             # environment as production, so it is worth showing verbatim.
             "testEnv": [str(guild_id) for guild_id in cfg.test_env],
-            "channels": [
-                {
-                    "feed": name,
-                    "channelId": str(channel_id) if channel_id else None,
-                    "channelName": label,
-                    # A deep link needs the guild too; without it the page shows the
-                    # name as plain text rather than a link that would 404.
-                    "url": (
-                        f"https://discord.com/channels/{guild_id}/{channel_id}"
-                        if guild_id and channel_id
-                        else None
-                    ),
-                }
-                for (name, channel_id), (label, guild_id) in zip(
-                    cfg.followables.items(), resolved, strict=True
+            "channels": await asyncio.gather(
+                *(
+                    _channel_entry(feed, channel_id)
+                    for feed, channel_id in cfg.followables.items()
                 )
-            ],
+            ),
         }
     )
-
-
-async def _none() -> tuple[None, None]:
-    """``(None, None)`` as an awaitable, so the gather stays one flat comprehension."""
-    return None, None
 
 
 async def _handle_bot_stop(request: aiohttp.web.Request) -> aiohttp.web.Response:

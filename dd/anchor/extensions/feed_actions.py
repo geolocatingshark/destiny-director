@@ -13,34 +13,24 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Per-feed actions page — the web replacement for ``/<feed> send`` and ``show``.
+"""Per-feed actions — the web replacement for ``/<feed> send`` and ``show``.
 
-One page per autopost feed, reached from that feed's row on ``/autopost_settings``. It
-carries **actions only**: preview the post the producer would build right now, and send
-it to the feed's channel.
+**Two endpoints and no page.** The actions live on each feed's row on
+``/autopost_settings``, and the rendered post appears in that page's modals: a feed has
+no state a page could show that the row does not, so a page was only ever a click in the
+way. What is deliberately not here is anything beyond the two actions — no toggle (it
+stays solely on ``/autopost_settings``, so one row has one write path) and no status or
+health, which is the deferred observability work in ``plans/anchor_web_ia.md`` §4.
 
-Deliberately *not* here:
-
-- **The enable/disable toggle.** It stays solely on ``/autopost_settings`` so one row
-  has one write path. This page links there instead.
-- **Status / health** — last-run chips, delivery counts, reach. That is the deferred
-  observability work (``plans/anchor_web_ia.md`` §4); a feed-hub carrying it was
-  explicitly rejected, and this page must not grow it back a panel at a time.
-
-Routes (all behind the shared Discord-OAuth middleware in ``web_auth``, which also
+Routes (both behind the shared Discord-OAuth middleware in ``web_auth``, which also
 Origin-checks the POST, so there is no auth code here):
 
-- ``GET  /feed/{name}``          the static page shell
-- ``GET  /feed/{name}/data``     which feed this is, and whether it can be sent
 - ``GET  /feed/{name}/preview``  build the post now, return its node tree
 - ``POST /feed/{name}/send``     publish it to the feed's channel
 
-The shell carries no server-injected bootstrap: ``script-src 'self'`` (see ``web.py``'s
-CSP) forbids inline script, so the page is static and fetches ``/data`` for itself —
-the same shape ``cv2_builder_page`` uses. ``/preview`` likewise returns the **payload**,
-not HTML, and the page draws it with the shared renderer in ``web_static/cv2_render.js``
-— matching ``/mirror-logs/render``'s contract, so both preview surfaces go through one
-renderer.
+``/preview`` returns the **payload**, not HTML, and the page draws it with the shared
+renderer in ``web_static/cv2_render.js`` — matching ``/mirror-logs/render``'s contract,
+so both preview surfaces go through one renderer.
 
 **Why send returns before the post lands.** Both announcers retry construction forever
 with backoff (``autopost.discord_announcer``, ``xur.api_to_discord_announcer``), and
@@ -190,39 +180,34 @@ async def _handle_send(request: aiohttp.web.Request) -> aiohttp.web.Response:
     # set, and both posted. Adding immediately after the `in` test is atomic, because
     # nothing between them yields to the loop.
     _sending.add(feed.name)
-    started = False
+
     try:
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}
-        publish = bool(payload.get("publish", True))
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    # A body that parses but isn't an object (`[1, 2]`) would make `.get` raise, and an
+    # exception here would strand the slot we just claimed.
+    publish = bool(payload.get("publish", True)) if isinstance(payload, dict) else True
 
-        # Build once here so a constructor failure (the common one) is reported in the
-        # response, before anything is posted. The announcer rebuilds — an extra API
-        # fetch on a rare manual action, in exchange for not posting a placeholder into
-        # the live channel only to have construction fail behind it.
-        try:
-            await _build(feed)
-        except Exception as e:
-            logger.exception("Manual send of %s aborted: build failed", feed.name)
-            return aiohttp.web.json_response(
-                {"error": f"Building the post failed, nothing was sent: {e}"},
-                status=502,
-            )
+    # Build once here so a constructor failure (the common one) is reported in the
+    # response, before anything is posted. The announcer rebuilds — an extra API fetch
+    # on a rare manual action, in exchange for not posting a placeholder into the live
+    # channel only to have construction fail behind it.
+    try:
+        await _build(feed)
+    except Exception as e:
+        _sending.discard(feed.name)
+        logger.exception("Manual send of %s aborted: build failed", feed.name)
+        return aiohttp.web.json_response(
+            {"error": f"Building the post failed, nothing was sent: {e}"}, status=502
+        )
 
-        task = asyncio.create_task(_run_send(feed, publish))
-        _send_tasks.add(task)
-        task.add_done_callback(_send_tasks.discard)
-        started = True
-        logger.info("Manual send of %s started (publish=%s)", feed.name, publish)
-        return aiohttp.web.json_response({"ok": True, "started": True})
-    finally:
-        # Once the task exists it owns the slot and releases it in `_run_send`. Every
-        # other exit from here — build failure, or anything unexpected — must not leave
-        # the feed permanently unsendable.
-        if not started:
-            _sending.discard(feed.name)
+    # From here the task owns the slot and releases it in `_run_send`.
+    task = asyncio.create_task(_run_send(feed, publish))
+    _send_tasks.add(task)
+    task.add_done_callback(_send_tasks.discard)
+    logger.info("Manual send of %s started (publish=%s)", feed.name, publish)
+    return aiohttp.web.json_response({"ok": True, "started": True})
 
 
 def register_feed_action_routes(app: aiohttp.web.Application) -> None:

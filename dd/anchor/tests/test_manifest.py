@@ -87,9 +87,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, *, current: str | None) -> list[st
     def session(*_a: t.Any, **_kw: t.Any) -> _FakeSession:
         if current is None:
             raise OSError("Bungie unreachable")
-        payload = {
-            "Response": {"mobileWorldContentPaths": {"en": _FRAGMENT + current}}
-        }
+        payload = {"Response": {"mobileWorldContentPaths": {"en": _FRAGMENT + current}}}
         return _FakeSession(calls, payload, _zip_containing(current))
 
     monkeypatch.setattr(m.aiohttp, "ClientSession", session)
@@ -132,15 +130,6 @@ async def test_a_newer_manifest_is_downloaded_rather_than_served_stale(
     assert not (manifest_dir / "world_v1.content").exists()
 
 
-async def test_falls_back_to_disk_when_bungie_cannot_be_reached(
-    manifest_dir, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    (manifest_dir / "world_v1.content").write_bytes(b"stale but usable")
-    _install(monkeypatch, current=None)
-
-    assert await m._get_latest_manifest("key") == "manifest/world_v1.content"
-
-
 async def test_raises_when_bungie_is_unreachable_and_nothing_is_on_disk(
     manifest_dir, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -150,10 +139,10 @@ async def test_raises_when_bungie_is_unreachable_and_nothing_is_on_disk(
         await m._get_latest_manifest("key")
 
 
-async def test_the_fallback_does_not_stick(
+async def test_falls_back_to_disk_when_bungie_cannot_be_reached_and_retries_after(
     manifest_dir, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A Bungie blip must not pin the stale copy — the next resolve re-checks."""
+    """The fallback answers, and does not stick — the next resolve re-checks."""
     (manifest_dir / "world_v1.content").write_bytes(b"stale but usable")
     _install(monkeypatch, current=None)
     assert await m._get_latest_manifest("key") == "manifest/world_v1.content"

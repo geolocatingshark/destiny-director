@@ -21,8 +21,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const stopConfirm = byId("stopConfirm");
   const botStatus = byId("botStatus");
 
-  // say comes from shared.js.
-  const { say } = window;
+  // say/busy/api are globals from shared.js (loaded first, deferred).
 
   /** A <dt>/<dd> pair. textContent throughout — ids come from config, not literals. */
   function row(list, label, value, href) {
@@ -96,7 +95,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   stopConfirm.addEventListener("click", async () => {
     stopConfirm.disabled = true;
-    say(stopStatus, "Stopping…", false);
+    busy(stopStatus, "Stopping…");
     try {
       const res = await window.api("/bot/stop", {});
       const data = await res.json().catch(() => ({}));

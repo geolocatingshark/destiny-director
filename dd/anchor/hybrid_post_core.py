@@ -506,15 +506,34 @@ def _bot_starting() -> aiohttp.web.Response:
     return aiohttp.web.json_response({"error": _STARTING_MSG}, status=503)
 
 
-async def post_still_exists(
-    meta: DraftMeta, channel_id: int, bot: CachedFetchBot | None
+def _retire_meta(meta: DraftMeta) -> None:
+    """Forget the tracked post, keeping the draft data so Create can re-post it.
+
+    The reset every "the post is gone" path performs — deletion from the form, and
+    :func:`reconcile_missing_post` finding it deleted in Discord.
+    """
+    meta.message_id = 0
+    meta.reset_ts = 0
+    meta.crossposted = False
+    meta.status = "draft"
+
+
+async def reconcile_missing_post(
+    spec: HybridPostSpec, meta: DraftMeta, bot: CachedFetchBot | None
 ) -> bool:
-    """Whether the tracked post is still in its channel.
+    """Whether the tracked post is still in its channel — **retiring it if not**.
 
     ``DraftMeta`` records what we posted; it cannot know what happened to it afterwards.
     Someone deleting the message in Discord used to leave the form offering **Edit** for
     a message that no longer exists — the edit then fails, and Create is nowhere to be
     found. Checked once per form load.
+
+    Persisting the answer is the point, not a side effect. Reporting it to the caller
+    alone would fix the render and nothing else: ``post_action`` re-derives
+    ``post_this_period`` from ``meta.is_current()`` on its own, so a form that had been
+    talked into offering Create would get a 409 telling it a post already exists — a
+    button the server refuses. Writing the record back keeps ``is_current()`` the single
+    source of truth, so no consumer needs a second predicate.
 
     Unknown counts as *present*: a REST blip or a bot that is still starting must not
     flip the form into offering a second post for the period. Only a definite "not
@@ -523,13 +542,20 @@ async def post_still_exists(
     if not meta.message_id or bot is None:
         return bool(meta.message_id)
     try:
-        await bot.fetch_message(channel_id, meta.message_id)
+        await bot.fetch_message(spec.channel_id, meta.message_id)
     except h.NotFoundError:
         logger.info(
-            "Tracked post %s is gone from channel %s; the form will offer Create",
+            "Tracked post %s is gone from channel %s; retiring the record",
             meta.message_id,
-            channel_id,
+            spec.channel_id,
         )
+        async with spec.draft_lock:
+            # Re-read under the lock: a create/edit/delete may have landed since.
+            current = await spec.load_meta()
+            if current.message_id == meta.message_id:
+                _retire_meta(current)
+                await spec.save_meta(current)
+        _retire_meta(meta)
         return False
     except Exception:
         # Anything else (rate limit, forbidden, transport) is not evidence of deletion.
@@ -552,9 +578,11 @@ async def form_get(
     # a user-overridable display field that must not decide staleness. A producer whose
     # post is optional (Trials) simply reports post_this_period False when none exists.
     # Both halves must hold: the record names THIS period, and the message is still
-    # there. Either failing means the form offers Create, not Edit.
+    # there. Either failing means the form offers Create, not Edit — and the second one
+    # failing also retires the record, so the create the form now offers is not refused
+    # by a `meta` that still thinks the post is live.
     post_this_period = meta.is_current(spec.current_reset_ts()) and (
-        await post_still_exists(meta, spec.channel_id, bot)
+        await reconcile_missing_post(spec, meta, bot)
     )
     draft = (await spec.load_draft() if post_this_period else None) or (
         await spec.build_context()
@@ -742,10 +770,7 @@ async def delete(
                 return aiohttp.web.json_response(
                     {"ok": False, "error": _discord_error_note(exc)}, status=502
                 )
-            meta.message_id = 0
-            meta.reset_ts = 0
-            meta.crossposted = False
-            meta.status = "draft"
+            _retire_meta(meta)
             await spec.save_meta(meta)
     return aiohttp.web.json_response({"ok": True})
 

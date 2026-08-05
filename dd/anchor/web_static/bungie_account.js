@@ -4,8 +4,7 @@
 
 (() => {
   const byId = (id) => document.getElementById(id);
-  // say/busy come from shared.js (loaded first, deferred — order is preserved).
-  const { say, busy } = window;
+  // say/busy/api are globals from shared.js (loaded first, deferred).
   const dot = byId("dot");
   const state = byId("state");
   const fetchBtn = byId("fetchBtn");

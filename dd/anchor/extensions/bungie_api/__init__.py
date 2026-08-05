@@ -110,16 +110,27 @@ loader = lb.Loader()
 # the manifest prewarm below.
 
 
+# Strong references to the background prewarm task: the event loop keeps only a weak ref
+# to a bare create_task(), so without this it can be garbage-collected — and cancelled —
+# mid-download. Same trap, same fix, as rotation_editor's `_warm_tasks`.
+_prewarm_tasks: set["asyncio.Task[None]"] = set()
+
+
 @loader.listener(h.StartedEvent)
 async def _prewarm_manifest_on_start(_event: h.StartedEvent) -> None:
     """Pull the manifest at boot so no request has to wear the download.
 
     Here rather than in a producer because the manifest is not any one feature's: xur,
     eververse, ada, portal_ops, the weekly-reset option pools and the item index all
-    resolve it. weekly_reset prewarms its *indexes* on start, but only when it is a
-    configured followable — an environment without it left the manifest entirely cold.
+    resolve it. It *was* already being pulled at boot — as a side effect of
+    ``rotation_editor``'s item-index warm — which is exactly the problem: nothing said
+    so, and the guarantee every other consumer now leans on rested on which extension
+    happened to be loaded. That warm still runs and coalesces onto this one rather than
+    downloading twice.
 
     Fire-and-forget: ``StartedEvent`` listeners run before the bot is fully up, and this
     can take minutes on a cold volume.
     """
-    asyncio.create_task(prewarm_manifest(schemas.BungieCredentials.api_key))
+    task = asyncio.create_task(prewarm_manifest(schemas.BungieCredentials.api_key))
+    _prewarm_tasks.add(task)
+    task.add_done_callback(_prewarm_tasks.discard)

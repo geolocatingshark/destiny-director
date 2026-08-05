@@ -1057,13 +1057,8 @@ def _clean_activity_name(name: str, category: str) -> str:
     return base
 
 
-async def _build_indexes() -> _Indexes:
-    # One row per named weapon/armour (deduped, newest hash wins). The weapon pool is
-    # generic and identical across producers, so it comes from the process-wide, cached
-    # get_weapon_pool() (shared with trials) rather than being re-scanned here; a
-    # manifest failure there yields [] so the strike/conquest index below still builds
-    # from this extension's own connection.
-    items = await get_weapon_pool()
+async def _scan_activities() -> tuple[set[str], dict[str, set[str]], bool]:
+    """The strike + conquest pools, from this extension's own manifest connection."""
     # Only GM strikes need manifest autocomplete now; raids/dungeons/pantheon/crucible
     # are bounded Choice selectors (see the *_CHOICES constants).
     strikes: set[str] = set()
@@ -1100,9 +1095,24 @@ async def _build_indexes() -> _Indexes:
                         strikes.add(cleaned)
     except Exception:
         logger.warning("weekly_reset: manifest index build failed", exc_info=True)
-        complete = False
-    else:
-        complete = True
+        return strikes, conquest_by_tier, False
+    return strikes, conquest_by_tier, True
+
+
+async def _build_indexes() -> _Indexes:
+    # The two halves share nothing but the manifest, so they run together rather than in
+    # sequence — the page now waits for this build, so it waits for their max, not their
+    # sum. Running them concurrently also means their two manifest resolves coalesce
+    # onto one (`manifest._inflight`); in sequence they were two Bungie round-trips,
+    # each opening a fresh session, on the cold path this build exists to keep short.
+    #
+    # The weapon pool is generic and identical across producers, so it comes from the
+    # process-wide, cached get_weapon_pool() (shared with trials) rather than being
+    # re-scanned here; a manifest failure there yields [] so the strike/conquest index
+    # still builds.
+    items, (strikes, conquest_by_tier, complete) = await asyncio.gather(
+        get_weapon_pool(), _scan_activities()
+    )
 
     result = _Indexes(
         items=items,

@@ -35,21 +35,21 @@ document.addEventListener("DOMContentLoaded", () => {
         settings[el.dataset.slug] = el.value;
       });
     btn.disabled = true;
-    status.textContent = "Saving…";
+    busy(status, "Saving…");
     try {
       const res = await window.api("/autopost_settings/save", { settings });
       if (res.ok) {
-        status.textContent = "Saved.";
+        say(status, "Saved.", false);
       } else {
         let msg = "Save failed.";
         try {
           const data = await res.json();
           if (data && data.error) msg = data.error;
         } catch (_) {}
-        status.textContent = msg;
+        say(status, msg, true);
       }
     } catch (_) {
-      status.textContent = "Network error — try again.";
+      say(status, "Network error — try again.", true);
     } finally {
       btn.disabled = false;
     }
@@ -85,8 +85,7 @@ document.addEventListener("DOMContentLoaded", () => {
     return name ? name.textContent.trim() : slug;
   }
 
-  // say/busy come from shared.js.
-  const { say, busy } = window;
+  // say/busy/api are globals from shared.js (loaded first, deferred).
 
   /** Abandon any in-flight preview draw, so a slow one cannot land after this. */
   function cancelDraw() {
@@ -178,9 +177,12 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         sendDialog.close();
-        status.textContent =
+        say(
+          status,
           "Send started — it continues even if you leave. Check Mirror logs for " +
-          "delivery.";
+            "delivery.",
+          false,
+        );
       } else {
         say(sendStatus, data.error || "Send failed.", true);
         sendConfirm.disabled = false;

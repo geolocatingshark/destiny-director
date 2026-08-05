@@ -42,13 +42,25 @@ _manifest_lock = asyncio.Lock()
 #: completes, so the next caller performs a fresh currency check.
 _inflight: "asyncio.Task[str] | None" = None
 
+#: Where the extracted manifest and its download live. Named rather than spelled out at
+#: each use because both deferred plans that touch this (a committed fallback manifest,
+#: and moving the cache onto a Railway volume — see plans/manifest_backup_in_git.md)
+#: turn on being able to point these somewhere else.
+_MANIFEST_DIR = "manifest"
+_MANIFEST_ZIP = "manifest.zip"
+
+
 def _downloaded_manifests() -> list[str]:
-    """Every extracted manifest on disk, newest first."""
+    """Every extracted manifest on disk, newest first.
+
+    Normally one — a download wipes the directory first — but ordered so ``[0]`` means
+    something if an interrupted extract ever leaves two behind.
+    """
     try:
-        names = os.listdir("manifest")
+        names = os.listdir(_MANIFEST_DIR)
     except FileNotFoundError:
         return []
-    paths = ["manifest/" + name for name in names]
+    paths = [os.path.join(_MANIFEST_DIR, name) for name in names]
     return sorted(
         (p for p in paths if os.path.isfile(p)),
         key=os.path.getmtime,
@@ -83,7 +95,17 @@ async def prewarm_manifest(api_key: str) -> None:
 
     Failures are logged and swallowed: a bot that cannot reach Bungie at boot must still
     start, and every consumer already resolves the manifest itself.
+
+    Note this is not the *only* thing that warms the manifest at boot — ``item_index``'s
+    own warm (``rotation_editor``) resolves it too, and coalesces onto this one rather
+    than downloading twice. What this adds is ownership: the warm now belongs to the
+    module that owns the manifest, instead of being a side effect of whichever consumer
+    happens to be loaded.
     """
+    if not api_key:
+        # Matches item_index.warm: no key is a configuration state, not a failure, and
+        # it must not log a warning on every boot of an environment that has none.
+        return
     try:
         path = await _get_latest_manifest(api_key)
     except Exception:
@@ -117,7 +139,7 @@ async def _get_latest_manifest(api_key: str) -> str:
 async def _resolve_manifest(api_key: str) -> str:
     async with _manifest_lock:
         # Prep the manifest directory
-        Path("manifest").mkdir(exist_ok=True)
+        Path(_MANIFEST_DIR).mkdir(exist_ok=True)
 
         # Ask Bungie which manifest is current — on every resolve, deliberately. This
         # round-trip IS the currency check, and it is what makes the extracted file on
@@ -153,10 +175,11 @@ async def _resolve_manifest(api_key: str) -> str:
             raise
 
         manifest_url_filename = manifest_url_fragment.split("/")[-1]
+        manifest_path = os.path.join(_MANIFEST_DIR, manifest_url_filename)
         # Check if the manifest is already downloaded (a concurrent caller that waited
         # on the lock finds the freshly-extracted file here and returns, no re-fetch)
-        if os.path.exists("manifest/" + manifest_url_filename):
-            return "manifest/" + manifest_url_filename
+        if os.path.exists(manifest_path):
+            return manifest_path
 
         manifest_url = BUNGIE_NET + manifest_url_fragment
 
@@ -166,21 +189,22 @@ async def _resolve_manifest(api_key: str) -> str:
         ):
             manifest_zip = await response.read()
 
-        async with aiofiles.open("manifest.zip", "wb") as file:
+        async with aiofiles.open(_MANIFEST_ZIP, "wb") as file:
             await file.write(manifest_zip)
 
         # Cleanup manifest directory
-        for file in os.listdir("manifest"):
-            os.remove("manifest/" + file)
+        for stale in _downloaded_manifests():
+            os.remove(stale)
 
         def _extract():
             # Extract the newly downloaded manifest
-            with zipfile.ZipFile("manifest.zip", "r") as zip_ref:
-                zip_ref.extractall("manifest")
+            with zipfile.ZipFile(_MANIFEST_ZIP, "r") as zip_ref:
+                zip_ref.extractall(_MANIFEST_DIR)
 
         await asyncio.get_event_loop().run_in_executor(None, _extract)
 
-        return "manifest/" + os.listdir("manifest")[0]
+        # The name Bungie just gave us, not whatever `listdir` happens to return first.
+        return manifest_path
 
 
 _MANIFEST_TABLE_NAMES = frozenset(manifest_table_names)
