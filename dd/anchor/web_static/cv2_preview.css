@@ -58,6 +58,19 @@
   content: "• ";
   color: var(--text-3);
 }
+/* An inline `code` span. This is one of the behaviours the JS renderer had and the
+   Python one did not, so it is NEWLY emitted markup here — and it arrived with no rule
+   at all, which made a code span visually identical to the plain text around it on
+   every surface, including the dialog that says "This is exactly how Discord will
+   render it." Discord draws it as a tinted monospace chip. */
+.cv2-preview code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.05em 0.3em;
+}
 .cv2-preview .emoji {
   width: 1.2em;
   height: 1.2em;
