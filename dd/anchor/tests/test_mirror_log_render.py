@@ -92,14 +92,23 @@ async def _capture(
     )
 
 
-async def test_render_route_returns_version_html() -> None:
+async def test_render_route_returns_the_captured_payload() -> None:
+    """The route hands over the snapshot; the page draws it.
+
+    Rendering moved to the shared client renderer, so what this has to get right is the
+    payload and the kind tag that selects the branch. The render itself is pinned by the
+    corpus in ``dd/anchor/preview_fixtures`` — which is also where the injection probes
+    live, because this route is the one untrusted sink in the app.
+    """
     await _capture(100, 1, "Weekly reset v1", guild=42)
 
     resp = await mirror_log._handle_render(_as_request({"src": "100", "v": "1"}))
 
     assert resp.status == 200
-    assert resp.content_type == "text/html"
-    assert "Weekly reset v1" in (resp.text or "")
+    body = json.loads(resp.text or "{}")
+    assert body["kind"] == "snapshot"
+    assert body["message_kind"] == "cv2"
+    assert "Weekly reset v1" in json.dumps(body["payload"])
 
 
 async def test_render_route_diff_marks_changes() -> None:
@@ -110,9 +119,12 @@ async def test_render_route_diff_marks_changes() -> None:
         _as_request({"src": "200", "v": "2", "diff": "1"})
     )
 
-    body = resp.text or ""
-    assert "<del>beta</del>" in body
-    assert "<ins>gamma</ins>" in body
+    # The diff is still server-rendered HTML — its structural alignment has yet to be
+    # reworked into the tree annotations the shared renderer can draw.
+    body = json.loads(resp.text or "{}")
+    assert body["kind"] == "html"
+    assert "<del>beta</del>" in body["html"]
+    assert "<ins>gamma</ins>" in body["html"]
 
 
 async def test_render_route_404_for_missing_version() -> None:

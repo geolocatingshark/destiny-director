@@ -29,9 +29,10 @@ Three routes, mirroring the ``/stats`` shell + JSON pattern:
 - ``GET /mirror-logs/data`` returns recent runs as JSON, read entirely from the shared
   DB (no Discord API calls). ``?src=<src_msg_id>`` returns that run's captured version
   list for the expandable detail view (the mirrored message itself).
-- ``GET /mirror-logs/render?src=<id>&v=<n>`` returns the safe rendered HTML of one
-  captured version (see :mod:`dd.anchor.cv2_render`); adding ``&diff=<m>`` returns a
-  word-level diff of version ``n`` against version ``m``. Pull/stateless.
+- ``GET /mirror-logs/render?src=<id>&v=<n>`` returns one captured version for the page
+  to draw with the shared renderer (``web_static/cv2_render.js``); adding ``&diff=<m>``
+  returns a word-level diff against version ``m``, which is still server-rendered HTML
+  (see :func:`_handle_render`). Pull/stateless.
 
 Discord snowflake ids exceed JavaScript's safe-integer range, so ids are emitted as
 strings; ledger timestamps are naive-UTC wall clocks, stamped UTC here so the browser
@@ -49,7 +50,7 @@ import lightbulb as lb
 from ...common import schemas
 from ...common.utils import followable_name
 from .. import web
-from ..cv2_render import render_diff, render_snapshot
+from ..cv2_render import render_diff
 
 logger = logging.getLogger(__name__)
 
@@ -192,12 +193,27 @@ def _int_param(request: aiohttp.web.Request, name: str) -> int:
 
 
 async def _handle_render(request: aiohttp.web.Request) -> aiohttp.web.Response:
-    """Return the safe rendered HTML for one captured version of a source message.
+    """One captured version of a source message, for the page to draw.
 
-    ``?src=<id>&v=<n>`` renders version ``n``; adding ``&diff=<m>`` returns a word-level
-    diff of version ``n`` against version ``m`` instead. Pull/stateless — no live
-    message, no lifecycle. The HTML is pre-escaped by the renderer, safe for the page's
-    ``innerHTML`` sink."""
+    ``?src=<id>&v=<n>`` returns version ``n``; adding ``&diff=<m>`` returns a word-level
+    diff against version ``m`` instead. Pull/stateless — no live message, no lifecycle.
+
+    Two shapes, because the two halves are at different stages of
+    ``plans/preview_renderer_unification.md``:
+
+    - ``{"kind": "snapshot", "payload": …, "message_kind": "cv2"|"classic"}`` — the
+      captured payload itself, drawn client-side by the shared renderer.
+    - ``{"kind": "html", "html": …}`` — the diff, still server-rendered until its
+      structural alignment is reworked into tree annotations (phase 6).
+
+    **This is the untrusted sink.** A payload here is whatever some other server's
+    message contained, so the renderer's guarantees are what stand between it and the
+    reader: text reaches the DOM through ``textContent``, a URL is ``http(s)``-validated
+    at the one place it becomes an attribute, and only markdown from ``renderMd`` —
+    which escapes by construction — reaches ``innerHTML``. The corpus in
+    ``dd/anchor/preview_fixtures`` holds that line from both languages, injection probes
+    included.
+    """
     src_msg_id = _int_param(request, "src")
     version = _int_param(request, "v")
     new = await schemas.MirrorMessageVersion.get_version(src_msg_id, version)
@@ -213,10 +229,21 @@ async def _handle_render(request: aiohttp.web.Request) -> aiohttp.web.Response:
             raise aiohttp.web.HTTPNotFound(
                 text="No snapshot for the diff-against version."
             )
-        body = render_diff(new["payload"], new["kind"], old["payload"], old["kind"])
-    else:
-        body = render_snapshot(new["payload"], new["kind"])
-    return aiohttp.web.Response(text=body, content_type="text/html")
+        return aiohttp.web.json_response(
+            {
+                "kind": "html",
+                "html": render_diff(
+                    new["payload"], new["kind"], old["payload"], old["kind"]
+                ),
+            }
+        )
+    return aiohttp.web.json_response(
+        {
+            "kind": "snapshot",
+            "payload": new["payload"],
+            "message_kind": new["kind"],
+        }
+    )
 
 
 def register_mirror_log_routes(app: aiohttp.web.Application) -> None:

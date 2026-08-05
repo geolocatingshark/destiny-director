@@ -42,6 +42,25 @@ test("a page that draws charts also loads the chart styles", () => {
   );
 });
 
+test("a page that styles a rendered post also loads the renderer", () => {
+  // The mirror image of the charts rule. cv2_preview.css styles what cv2_render.js
+  // emits; a page with the sheet and no renderer shows nothing, and a page with the
+  // renderer and no sheet shows an unstyled pile of divs that still reads as a message
+  // — plausible enough to ship by accident.
+  const mismatched = pages()
+    .filter(
+      (p) =>
+        p.text.includes("/static/cv2_preview.css") !==
+        p.text.includes("/static/cv2_render.js"),
+    )
+    .map((p) => p.name);
+  assert.deepEqual(
+    mismatched,
+    [],
+    "cv2_preview.css and cv2_render.js must be loaded together",
+  );
+});
+
 test("cv2_render.js is loaded after the model it consumes", () => {
   // Load order IS the dependency graph here — cv2_render.js reads window.CV2Model at
   // definition time, so a page that lists it first gets `undefined` and dies on the
