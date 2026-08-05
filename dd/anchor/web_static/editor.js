@@ -830,30 +830,30 @@ async function runPreview() {
       // A wall of real posts, each drawn from the node tree build_cv2 would send. The
       // .post-wall wrapper is what spaces the cards — the labelled-card layout stayed
       // behind when the post *rendering* moved to the shared renderer.
+      //
+      // Described in the renderer's own spec vocabulary rather than assembled by hand:
+      // the cards are chrome around a post, so they may as well go through the same
+      // one-pass draw, which also keeps each label in a `text` field (textContent).
       const R = window.CV2Render;
       const posts = data.posts || [];
-      if (!posts.length) {
-        const empty = document.createElement("p");
-        empty.className = "post-wall-empty";
-        empty.textContent = "No upcoming posts to show.";
-        box.replaceChildren(empty);
-      } else {
-        const wall = document.createElement("div");
-        wall.className = "post-wall";
-        for (const item of posts) {
-          const card = document.createElement("article");
-          card.className = "post-wall-item";
-          const label = document.createElement("h3");
-          label.className = "post-wall-label";
-          label.textContent = item.label;
-          const body = document.createElement("div");
-          body.className = "cv2-preview";
-          R.render(body, R.nodesSpec(item.nodes || []), { emoji: data.emoji || {} });
-          card.append(label, body);
-          wall.appendChild(card);
-        }
-        box.replaceChildren(wall);
-      }
+      R.render(
+        box,
+        posts.length
+          ? R.el("div", "post-wall", {
+              children: posts.map((item) =>
+                R.el("article", "post-wall-item", {
+                  children: [
+                    R.el("h3", "post-wall-label", { text: item.label }),
+                    R.el("div", "cv2-preview", {
+                      children: [R.nodesSpec(item.nodes || [])],
+                    }),
+                  ],
+                }),
+              ),
+            })
+          : R.el("p", "post-wall-empty", { text: "No upcoming posts to show." }),
+        { emoji: data.emoji || {} },
+      );
     }
     setStatus("Preview updated.", true);
   } catch (e) {

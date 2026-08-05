@@ -43,19 +43,15 @@ import json
 import re
 import typing as t
 
-# Discord component type ints (mirrors dd.anchor.cv2_nodes; duplicated so this renderer
-# stays a leaf module with no cfg/DB import weight).
+# Discord component type ints (mirrors dd.anchor.cv2_nodes; duplicated so this module
+# stays a leaf with no cfg/DB import weight). Only the kinds the alignment treats
+# specially are named — the rest are compared whole, by key, and never inspected.
 _ACTION_ROW = 1
 _BUTTON = 2
 _SECTION = 9
 _TEXT_DISPLAY = 10
 _THUMBNAIL = 11
-_MEDIA_GALLERY = 12
-_FILE = 13
-_SEPARATOR = 14
 _CONTAINER = 17
-
-EmojiSub = t.Callable[[t.Any], str]
 
 
 def _is_http_url(value: t.Any) -> bool:
@@ -165,7 +161,11 @@ def _diff_lines(old: str, new: str) -> list[dict[str, t.Any]]:
 
 
 def _accessory_renders(node: t.Any) -> bool:
-    """Whether an accessory would draw at all — ``_render_accessory``'s data half."""
+    """Whether an accessory would draw at all.
+
+    Mirrors what ``cv2_render.js``'s ``accessory`` refuses, because a diff must not mark
+    as "removed" something the renderer was never going to draw in the first place.
+    """
     if not isinstance(node, dict):
         return False
     if node.get("type") == _THUMBNAIL:

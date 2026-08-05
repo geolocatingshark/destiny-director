@@ -88,41 +88,30 @@ async def test_security_headers_reach_static_assets() -> None:
             assert resp.headers[name] == value
 
 
-def test_the_policy_forbids_inline_script() -> None:
-    """The one directive the whole change is for, asserted by meaning not by string.
-
-    ``script-src 'self'`` with no ``'unsafe-inline'`` is what caps an escaping bug
-    in the shared renderer at defacement rather than script execution in an owner
-    session.
-    ``style-src`` deliberately DOES carry ``'unsafe-inline'`` (charts and the mirror
-    log build ``style=`` attributes), so this checks the script directive
-    specifically rather than the policy as a whole.
-    """
-    directives = {
-        part.strip().split(" ", 1)[0]: part.strip()
-        for part in web.SECURITY_HEADERS["Content-Security-Policy"].split(";")
-    }
-    assert directives["script-src"] == "script-src \'self\'"
-    assert directives["default-src"] == "default-src \'none\'"
-    assert "unsafe" not in directives["script-src"]
-
-
-def test_the_full_policy_is_pinned() -> None:
+def test_the_security_headers_are_pinned() -> None:
     """One place the exact policy is spelled out — the change-review chokepoint.
 
     Pinned here and nowhere else, so loosening a directive shows up as a deliberate edit
-    to this string rather than as a quiet change nobody reads.
+    to this string rather than as a quiet change nobody reads. Two directives are worth
+    naming explicitly, since the rest of the suite depends on them holding:
+
+    - ``script-src 'self'`` with no ``'unsafe-inline'`` is what the whole change is for.
+      It caps an escaping bug in the shared renderer at defacement rather than script
+      execution in an owner session. ``asset_links.test.js`` enforces its precondition
+      (no page carries an executable inline script).
+    - ``style-src`` deliberately DOES carry ``'unsafe-inline'``: charts.js and
+      mirror_log.js build ``style=`` attributes into markup.
     """
     assert web.SECURITY_HEADERS == {
         "Content-Security-Policy": (
-            "default-src \'none\'; "
-            "script-src \'self\'; "
-            "style-src \'self\' \'unsafe-inline\'; "
-            "img-src \'self\' https:; "
-            "connect-src \'self\'; "
-            "base-uri \'none\'; "
-            "form-action \'self\'; "
-            "frame-ancestors \'none\'"
+            "default-src 'none'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' https:; "
+            "connect-src 'self'; "
+            "base-uri 'none'; "
+            "form-action 'self'; "
+            "frame-ancestors 'none'"
         ),
         "Referrer-Policy": "same-origin",
         "X-Content-Type-Options": "nosniff",

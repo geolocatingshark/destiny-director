@@ -225,7 +225,6 @@ async def test_preview_returns_the_sanitized_tree(stub_bot: _StubBot) -> None:
             ],
         }
     ]
-    assert payload["problems"], "an empty container is not publishable"
 
 
 async def test_preview_leaves_a_sound_tree_alone(stub_bot: _StubBot) -> None:
@@ -236,7 +235,6 @@ async def test_preview_leaves_a_sound_tree_alone(stub_bot: _StubBot) -> None:
     )
 
     assert payload["nodes"] == GOOD_NODES
-    assert payload["problems"] == []
 
 
 # --- publish --------------------------------------------------------------------
@@ -318,9 +316,7 @@ async def test_routes_are_registered() -> None:
     app = aiohttp.web.Application()
     page.register_cv2_builder_routes(app)
     paths = {
-        r.resource.canonical
-        for r in app.router.routes()
-        if r.resource is not None
+        r.resource.canonical for r in app.router.routes() if r.resource is not None
     }
     assert "/cv2-builder/{draft}" in paths
     assert "/cv2-builder/{draft}/publish" in paths
@@ -330,4 +326,3 @@ async def test_page_shell_is_servable() -> None:
     # A missing/renamed template would otherwise only fail in production.
     assert page._PAGE_HTML_PATH.exists()
     assert "cv2_builder_page.js" in page._PAGE_HTML_PATH.read_text()
-

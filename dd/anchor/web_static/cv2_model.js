@@ -824,23 +824,6 @@
   }
 
   /**
-   * Renderable HTML for a button's emoji object, or "" when there isn't one.
-   *
-   * A custom emoji resolves to its CDN image off the id; a unicode one is just its
-   * character. Used by the canvas, which previously drew button labels with no emoji at
-   * all — so setting one showed nothing and there was no way to tell it had not worked.
-   */
-  function buttonEmojiHtml(emojiObj) {
-    if (!emojiObj || typeof emojiObj !== "object") return "";
-    const name = String(emojiObj.name || "");
-    if (emojiObj.id && /^\d+$/.test(String(emojiObj.id))) {
-      const ext = emojiObj.animated ? ".gif" : ".png";
-      return _img(EMOJI_CDN + emojiObj.id + ext, name);
-    }
-    return name ? esc(name) + " " : "";
-  }
-
-  /**
    * The Discord emoji object for what an author typed in a button's Emoji field.
    *
    * A custom guild emoji MUST carry its id — `{"name": "kyber"}` is a valid shape only
@@ -1035,7 +1018,6 @@
     emojiEntry,
     emojiSegments,
     buttonEmojiFor,
-    buttonEmojiHtml,
     emojiSuggestions,
     shortcodeBefore,
   };

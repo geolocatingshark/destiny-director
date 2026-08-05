@@ -179,9 +179,13 @@
 
   function accessory(node) {
     if (!node || typeof node !== "object") return null;
-    const inner = node.type === THUMBNAIL ? thumbnail(node) : null;
-    const btn = node.type === BUTTON ? button(node) : null;
-    const child = inner || btn;
+    // Discord allows exactly these two as a section accessory.
+    const child =
+      node.type === THUMBNAIL
+        ? thumbnail(node)
+        : node.type === BUTTON
+          ? button(node)
+          : null;
     if (!child) return null;
     return marked(node, el("div", "cv2-accessory", { children: [child] }));
   }
@@ -278,6 +282,19 @@
     return el("div", "cv2-text", { children: parts });
   }
 
+  /**
+   * A text leaf, diff-annotated or not.
+   *
+   * Its own function because both entry points reach it: `draw` for a text display
+   * inside a tree, and `diffSpec` for a classic message's single content leaf, which
+   * has no tree around it.
+   */
+  function textLeaf(node) {
+    return node._lines
+      ? diffText(node._lines)
+      : textBlock(node.content === undefined ? "" : node.content);
+  }
+
   /** One CV2 node → its spec, degrading an unknown kind to a labelled placeholder. */
   function walk(node) {
     if (!node || typeof node !== "object") return null;
@@ -290,9 +307,7 @@
       case CONTAINER:
         return container(node);
       case TEXT_DISPLAY:
-        return node._lines
-          ? diffText(node._lines)
-          : textBlock(node.content === undefined ? "" : node.content);
+        return textLeaf(node);
       case SECTION:
         return section(node);
       case MEDIA_GALLERY:
@@ -428,28 +443,17 @@
       return [note, snapshotSpec(data.payload, data.kind)].filter(Boolean);
     }
 
+    // An annotated tree is still a tree: `walk` already handles `_mark`, and the text
+    // arm already handles `_lines`, so the cv2 branch is the ordinary render.
     if (data.kind === "cv2") {
-      const body = (data.components || []).map(walk).filter(Boolean);
-      const root = body.length
-        ? el("div", "cv2-root", { children: body })
-        : placeholder("This version captured no renderable components.");
-      return [note, root].filter(Boolean);
+      return [note, nodesSpec(data.components)].filter(Boolean);
     }
 
     // Classic: the diffed content leaf, then the embeds. No "Classic message — …"
     // summary here; the diff is about what moved, not what the message is made of.
     const parts = [];
-    if (data.content) {
-      parts.push(
-        data.content._lines
-          ? diffText(data.content._lines)
-          : textBlock(data.content.content || ""),
-      );
-    }
-    for (const e of data.embeds || []) {
-      const drawn = embed(e);
-      parts.push(e._mark ? el("div", "cv2-" + e._mark, { children: [drawn] }) : drawn);
-    }
+    if (data.content) parts.push(textLeaf(data.content));
+    for (const e of data.embeds || []) parts.push(marked(e, embed(e)));
     return [note, el("div", "cv2-root classic", { children: parts })].filter(Boolean);
   }
 
@@ -532,10 +536,8 @@
     }
     // A tagless spec is either escaped text or a bare markdown fragment — a diff's
     // unchanged lines sit directly in the text block, with no wrapper of their own.
-    if (!spec.tag) {
-      if (spec.line !== undefined) return M.lineMd(spec.line, opts.emoji, opts.now);
-      return M.esc(spec.text === undefined ? "" : spec.text);
-    }
+    // `inner` already dispatches on exactly those fields, so it does the job here too.
+    if (!spec.tag) return inner(spec, opts);
     const tag = tagOf(spec, opts);
     const open = "<" + tag + attrs(spec, opts) + ">";
     if (VOID[tag]) return open;
@@ -611,28 +613,26 @@
     host.replaceChildren(materialize(spec, opts, host.ownerDocument));
   }
 
+  // Only what something outside this file actually calls. `classic`/`embed` are
+  // reachable through snapshotSpec and diffSpec; the rest of the leaf walkers and spec
+  // helpers are internal, and exporting them would invite a caller to assemble a post
+  // out of parts rather than from a node tree.
   const CV2Render = {
     // walkers
     walk,
     nodesSpec,
     snapshotSpec,
     diffSpec,
-    classic,
-    embed,
     // back ends
     serialize,
     openTag,
     materialize,
     render,
-    // shared predicates, exported so the builder applies the same rules to its chrome
-    isHttpUrl,
-    mediaUrl,
+    // the pieces the builder needs to dress its own chrome as the real thing
     accentHex,
-    // spec helpers
+    emojiPrefix,
     el,
     text,
-    placeholder,
-    textBlock,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = CV2Render;

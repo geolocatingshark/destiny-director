@@ -67,9 +67,10 @@ function initPostPreview({
   accentColor = null,
   debounceMs = 400,
 } = {}) {
-  // Mirror the post's CV2 accent colour as the preview's left bar (see #previewBox CSS).
-  // Only --post-accent (preview bar + set-card selection) tracks the post; --accent (page
-  // chrome) stays fixed.
+  // Expose the post's CV2 accent colour as --post-accent, for the page chrome that
+  // tracks it (trials' set-card picker). The rendered post no longer needs it: it draws
+  // a real container node, which carries its own accent through the shared renderer.
+  // --accent (page chrome) stays fixed regardless.
   if (accentColor) {
     document.documentElement.style.setProperty("--post-accent", accentColor);
   }

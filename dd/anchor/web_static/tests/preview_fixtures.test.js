@@ -12,9 +12,10 @@
 // nothing. Two implementations held to one byte-exact expectation is what makes the
 // port checkable instead of hopeful.
 //
-// Two of the four render modes are asserted here:
+// Each case names the surface it stands for in its `render` field:
 //
 //   markdown  the leaf layer — cv2_model.renderMd
+//
 //   snapshot  the node walker — cv2_render.snapshotSpec + serialize
 //
 //   authored  the builder's publish confirmation — the server sanitizes, the client
@@ -97,139 +98,50 @@ if (UPDATE) {
 }
 
 test("the fixture directory is where both sides think it is", () => {
-  // A silently-wrong path would make every loop below iterate zero cases and pass, so
-  // the corpus has to prove it was actually read.
+  // A silently-wrong path would make the loop below iterate zero cases and pass, so the
+  // corpus has to prove it was actually read.
   assert.ok(fs.existsSync(FIXTURE_DIR), `missing fixture dir: ${FIXTURE_DIR}`);
   assert.ok(load("markdown.json").cases.length > 0, "markdown.json has no cases");
 });
 
-const markdown = load("markdown.json");
+// Every case in the corpus, through the same dispatch the regeneration above uses. One
+// loop rather than one per render mode: five near-identical loops had already drifted
+// (only some of them honoured a case's own `emoji` override), and a new mode would have
+// needed a sixth copy to be covered at all.
+const seen = {};
 
-for (const c of markdown.cases) {
-  test(`markdown:${c.name} renders to its frozen html`, () => {
-    assert.equal(
-      M.renderMd(c.content, markdown.emoji, NOW_MS),
-      c.expected_html,
-      `markdown:${c.name} diverged from the Python renderer`,
-    );
-  });
-}
-
-test("every markdown case carries an expectation", () => {
-  // Guards the loop above: a case with no `expected_html` would otherwise compare
-  // against undefined only if renderMd also returned undefined — which it never does,
-  // so it would fail loudly. This states the requirement outright instead.
-  for (const c of markdown.cases) {
-    assert.equal(
-      typeof c.expected_html,
-      "string",
-      `${c.name} has no expected_html — regenerate with UPDATE_PREVIEW_FIXTURES=1`,
-    );
-  }
-});
-
-// --- the node walker ------------------------------------------------------------------
-
-const WALKER_FILES = ["cv2_nodes.json", "classic.json", "xss.json"];
-
-let snapshotCases = 0;
-
-for (const file of WALKER_FILES) {
+for (const file of fs.readdirSync(FIXTURE_DIR).sort()) {
+  if (!file.endsWith(".json")) continue;
   const data = load(file);
-  const emoji = data.emoji || {};
+  const group = path.parse(file).name;
   for (const c of data.cases) {
-    if (c.render !== "snapshot") continue;
-    snapshotCases += 1;
-    test(`${path.parse(file).name}:${c.name} renders to its frozen html`, () => {
-      const spec = R.snapshotSpec(c.payload, c.kind);
+    seen[c.render] = (seen[c.render] || 0) + 1;
+    test(`${group}:${c.name} renders to its frozen html`, () => {
       assert.equal(
-        R.serialize(spec, { emoji, now: NOW_MS }),
+        typeof c.expected_html,
+        "string",
+        `${c.name} has no expected_html — regenerate with UPDATE_PREVIEW_FIXTURES=1`,
+      );
+      assert.equal(
+        renderCase(c, data.emoji),
         c.expected_html,
-        `${c.name} diverged from the Python renderer`,
+        `${c.name} diverged from the frozen expectation`,
       );
     });
   }
 }
 
-// The builder's confirmation: the server hands back a sanitized tree, the client draws
-// it. `sanitized` is what sanitize_for_preview produced, recorded by the Python side.
-const authored = load("authored.json");
-
-for (const c of authored.cases) {
-  test(`authored:${c.name} renders the sanitized tree`, () => {
-    assert.ok(Array.isArray(c.sanitized), `${c.name} has no sanitized tree`);
-    assert.equal(
-      R.serialize(R.nodesSpec(c.sanitized), {
-        emoji: authored.emoji || {},
-        now: NOW_MS,
-      }),
-      c.expected_html,
-      `${c.name} diverged from the Python renderer`,
-    );
-  });
-}
-
-// The hybrid-post form previews: the route hands over post_spec_nodes' tree, recorded
-// here as `nodes`, and this is the client drawing it.
-const postSpec = load("post_spec.json");
-
-for (const c of postSpec.cases) {
-  test(`post_spec:${c.name} renders the post's own tree`, () => {
-    assert.ok(Array.isArray(c.nodes), `${c.name} has no node tree`);
-    assert.equal(
-      R.serialize(R.nodesSpec(c.nodes), {
-        emoji: postSpec.emoji || {},
-        now: NOW_MS,
-      }),
-      c.expected_html,
-      `${c.name} diverged from the Python renderer`,
-    );
-  });
-}
-
-// The mirror-log diff, drawn from the tree Python aligned and annotated.
-const diffs = load("diff.json");
-
-for (const c of diffs.cases) {
-  test(`diff:${c.name} renders its annotated tree`, () => {
-    assert.ok(c.annotated, `${c.name} has no annotated tree`);
-    assert.equal(
-      R.serialize(R.diffSpec(c.annotated), {
-        emoji: diffs.emoji || {},
-        now: NOW_MS,
-      }),
-      c.expected_html,
-      `${c.name} diverged from the Python diff renderer`,
-    );
-  });
-}
-
-test("the walker corpus actually covered the node kinds", () => {
-  // The loops above skip any case whose `render` is not "snapshot". A typo in that
-  // field would silently drop coverage rather than fail, so assert the count is in the
-  // range the corpus is meant to have.
-  assert.ok(
-    snapshotCases > 30,
-    `only ${snapshotCases} snapshot cases ran — check the fixtures' render fields`,
+test("the corpus covered every render mode, in the depth it is meant to", () => {
+  // The loop above is driven by each case's `render` field. A typo there would produce a
+  // test that throws (renderCase has no default arm) — but a mode losing all its cases,
+  // or the snapshot corpus quietly shrinking, would not. Assert the shape outright.
+  assert.deepEqual(
+    Object.keys(seen).sort(),
+    ["authored", "diff", "markdown", "post_spec", "snapshot"],
+    `render modes present: ${JSON.stringify(seen)}`,
   );
-});
-
-test("serialize and materialize agree, given a DOM", (t) => {
-  // materialize() is the back end pages actually use, but it needs a document. Where
-  // there is none, this states the contract rather than skipping it silently: the two
-  // back ends must draw the same thing from one spec.
-  if (typeof document === "undefined") {
-    t.skip("no DOM under node --test; the browser lane covers materialize()");
-    return;
-  }
-  for (const file of WALKER_FILES) {
-    const data = load(file);
-    for (const c of data.cases) {
-      if (c.render !== "snapshot") continue;
-      const spec = R.snapshotSpec(c.payload, c.kind);
-      const host = document.createElement("div");
-      R.render(host, spec, { emoji: data.emoji || {}, now: NOW_MS });
-      assert.equal(host.innerHTML, c.expected_html, c.name);
-    }
-  }
+  assert.ok(
+    seen.snapshot > 30,
+    `only ${seen.snapshot} snapshot cases ran — check the fixtures' render fields`,
+  );
 });

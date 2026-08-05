@@ -171,13 +171,12 @@ def _legacy_posts(
     ``/<destination>`` command posts, capped to a few periods for a compact editor pane.
     """
     now = dt.datetime.now(dt.UTC)
-    posts = [
+    return [
         (label, hybrid_post_core.PostSpec.cv2(body, None))
         for label, body in iter_wall_posts(
             destination_key, rotation, now, count=_PREVIEW_DAYS
         )
     ]
-    return posts
 
 
 # --- per-type dispatch ------------------------------------------------------------

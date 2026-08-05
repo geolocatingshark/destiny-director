@@ -98,9 +98,9 @@
       defaultAccent: draft.default_accent,
       actionLabel: action.button,
       onSave: (nodes) => postJson("/save", { nodes: nodes }),
-      // Returns {nodes, problems} — the sanitized tree the server would post, which the
-      // widget renders itself. It used to return HTML, back when the server render was
-      // a second implementation worth confirming against; now one renderer draws every
+      // Returns {nodes} — the sanitized tree the server would post, which the widget
+      // renders itself. It used to return HTML, back when the server render was a
+      // second implementation worth confirming against; now one renderer draws every
       // surface and the authority here is the data.
       onPreview: async (nodes) =>
         await (await postJson("/preview", { nodes: nodes })).json(),

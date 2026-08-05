@@ -142,12 +142,24 @@ def test_post_spec_nodes_matches_build_cv2(
     assert _drop_defaults(live) == _drop_defaults(hpc.post_spec_nodes(spec)[0])
 
 
-def test_post_spec_nodes_drops_a_non_http_image() -> None:
-    # Matching the renderer, which refuses a non-http(s) media URL — better an absent
-    # image in the preview than one the post will not carry.
-    spec = hpc.PostSpec.cv2("body", "ftp://example.com/i.png")
-    kinds = [c["type"] for c in hpc.post_spec_nodes(spec)[0]["components"]]
-    assert kinds == [10]
+@pytest.mark.parametrize(
+    "image,kinds",
+    [
+        # Text, then the gallery — the order build_cv2 sends. Placement used to be the
+        # previewer's business; it is the post's now.
+        ("https://ex.com/a.png?x=1&y", [10, 12]),
+        (None, [10]),
+        # Matching the renderer, which refuses a non-http(s) media URL — better an
+        # absent image in the preview than one the post will not carry.
+        ("javascript:alert(1)", [10]),
+        ("ftp://example.com/i.png", [10]),
+    ],
+)
+def test_post_spec_nodes_places_the_image_and_rejects_bad_urls(
+    image: str | None, kinds: list[int]
+) -> None:
+    spec = hpc.PostSpec.cv2("# Title", image)
+    assert [c["type"] for c in hpc.post_spec_nodes(spec)[0]["components"]] == kinds
 
 
 # --- resolve_weapon -------------------------------------------------------------------

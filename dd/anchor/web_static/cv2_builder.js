@@ -130,7 +130,8 @@
    *   actionLabel   text for the publish button ("Post" / "Save" / "Send")
    *   onSave(nodes)          -> Promise, autosave
    *   onPublish(nodes)       -> Promise<{link}>, the real send/edit
-   *   onPreview(nodes)       -> Promise<string>, server-rendered HTML for confirmation
+   *   onPreview(nodes)       -> Promise<{nodes}>, the server's sanitized tree, drawn
+   *                             here with the same renderer as the canvas
    */
   function initCv2Builder(root, opts) {
     const options = opts || {};
@@ -441,6 +442,22 @@
       return '<div class="cv2-placeholder">' + esc(message) + "</div>";
     }
 
+    // The stand-in for a button the shared renderer refuses to draw. That refusal means
+    // "no url yet", which on the canvas means mid-edit rather than broken — so it still
+    // has to appear, with its emoji and label, or it vanishes while the validation list
+    // goes on demanding it be finished.
+    //
+    // Assembled out of the renderer's own button vocabulary rather than restated here:
+    // the two had already drifted (the emoji's trailing space), which on a surface whose
+    // entire job is showing what the post will look like is the whole failure mode.
+    function unfinishedButton(b) {
+      return R.serialize(
+        R.el("span", "cv2-button cv2b-acc-bad", {
+          children: R.emojiPrefix(b.emoji).concat([R.text(b.label || "(no label)")]),
+        }),
+      );
+    }
+
     function renderBody(path, node, k, bad) {
       switch (k) {
         case "container": {
@@ -480,7 +497,8 @@
         case "section": {
           // Same split as container: shared wrapper, canvas-owned children.
           return (
-            '<div class="cv2-section"><div class="cv2-section-body">' +
+            R.openTag(R.el("div", "cv2-section")) +
+            R.openTag(R.el("div", "cv2-section-body")) +
             renderScope(path, node.components || [], bad) +
             "</div>" +
             renderAccessory(path, node.accessory) +
@@ -489,8 +507,6 @@
         }
         case "media":
           return shared(node) || hint("Image gallery — add URLs on the right.");
-        case "separator":
-          return shared(node);
         case "link_button": {
           // Per button, not per row. A real render drops a button with no url — it
           // cannot be posted — but a row is usually *part* valid while one button is
@@ -499,17 +515,8 @@
           // through the shared renderer and stand in for the ones it refuses.
           const btns = node.type === M.ACTION_ROW ? node.components || [] : [node];
           return (
-            '<div class="cv2-buttons">' +
-            btns
-              .map(
-                (b) =>
-                  shared(b) ||
-                  '<span class="cv2-button cv2b-acc-bad">' +
-                    M.buttonEmojiHtml(b.emoji) +
-                    esc(b.label || "(no label)") +
-                    "</span>",
-              )
-              .join("") +
+            R.openTag(R.el("div", "cv2-buttons")) +
+            btns.map((b) => shared(b) || unfinishedButton(b)).join("") +
             "</div>"
           );
         }
@@ -543,9 +550,7 @@
         drawn ||
         (k === "thumbnail"
           ? '<div class="cv2b-acc-empty cv2b-acc-bad">image URL missing</div>'
-          : '<span class="cv2-button cv2b-acc-bad">' +
-            esc(M.buttonOf(acc).label || "(no label)") +
-            "</span>");
+          : unfinishedButton(M.buttonOf(acc)));
       return (
         '<div class="cv2b-blk cv2b-acc-filled' +
         sel +
@@ -668,9 +673,9 @@
       switch (k) {
         case "container": {
           const has = Number.isInteger(node.accent_color);
-          const hex = has
-            ? "#" + (node.accent_color & 0xffffff).toString(16).padStart(6, "0")
-            : "#ec42a5";
+          // The same int→hex the canvas paints with, so the swatch cannot disagree with
+          // the accent bar beside it.
+          const hex = has ? R.accentHex(node.accent_color) : "#ec42a5";
           return (
             '<div class="cv2b-field"><label>Accent colour</label><div class="cv2b-row">' +
             '<input type="color" data-prop="accent" value="' +
@@ -789,7 +794,7 @@
             // Show what it resolved to: a server emoji renders as its image, so a name
             // that matched is visibly different from one that did not.
             '<span class="cv2b-emoji-preview">' +
-            M.buttonEmojiHtml(b.emoji) +
+            R.serialize(R.emojiPrefix(b.emoji)) +
             "</span></div>" +
             '<span class="cv2b-help">A server emoji\u2019s name, or a plain ' +
             "emoji character.</span></div>";

@@ -30,9 +30,6 @@ import aiohttp.web
 import hikari as h
 import pytest
 
-from dd.anchor import (
-    hybrid_post_core as hpc,
-)
 from dd.anchor.extensions import weekly_reset as wr
 
 # The three real "Weekly Reset Overview" posts this feature was reverse-engineered from.
@@ -772,25 +769,6 @@ def test_discord_error_note() -> None:
     other = wr._discord_error_note(Exception("Some other Discord failure"))
     assert other.startswith("Discord rejected the post:")
     assert "Some other Discord failure" in other
-
-
-def test_post_spec_nodes_places_the_image_and_rejects_bad_urls() -> None:
-    """The image sits below the body, and only an http(s) one survives.
-
-    Placement used to be the previewer's business; it is the post's now — the media
-    gallery is a real node in the tree the form previews and publishes alike.
-    """
-
-    def kinds(image: str | None) -> list[int]:
-        spec = hpc.PostSpec.cv2("# Title", image)
-        return [c["type"] for c in hpc.post_spec_nodes(spec)[0]["components"]]
-
-    # Text, then the gallery — the order build_cv2 sends.
-    assert kinds("https://ex.com/a.png?x=1&y") == [10, 12]
-    assert kinds(None) == [10]
-    assert kinds("javascript:alert(1)") == [10]
-    assert kinds("ftp://nope.example/a.png") == [10]
-
 
 
 # --- DraftMeta lifecycle state ----------------------------------------------------

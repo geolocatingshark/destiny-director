@@ -579,18 +579,6 @@ test("empty input means no emoji", () => {
   assert.equal(M.buttonEmojiFor("   ", EMOJI_MAP), null);
 });
 
-test("buttonEmojiHtml draws a custom emoji as its CDN image", () => {
-  const html = M.buttonEmojiHtml({ id: "123", name: "kyber" });
-  assert.match(html, /emojis\/123\.png/);
-  assert.match(M.buttonEmojiHtml({ id: "456", name: "spin", animated: true }), /\.gif/);
-});
-
-test("buttonEmojiHtml draws a unicode emoji as text, and nothing for none", () => {
-  assert.match(M.buttonEmojiHtml({ name: "🙂" }), /🙂/);
-  assert.equal(M.buttonEmojiHtml(null), "");
-  assert.equal(M.buttonEmojiHtml(undefined), "");
-});
-
 test("the emoji map still accepts the plain {name: url} shape", () => {
   // Rendering-only callers pass the simpler map; both shapes must keep working.
   assert.equal(M.emojiEntry({ x: "https://e.invalid/x.png" }, "x").url,

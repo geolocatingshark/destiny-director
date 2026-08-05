@@ -209,16 +209,13 @@ async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
     same module it draws the canvas with; the authority here is the *data*, not markup.
 
     No emoji dict: the page already holds one from ``/data`` and resolves shortcodes
-    itself, so a preview no longer costs a Discord round-trip.
+    itself, so a preview no longer costs a Discord round-trip. No problem list either:
+    the client blocks the button on its own copy of the rules, and the rules that
+    actually matter are re-run in :func:`_handle_publish`.
     """
     await _load_draft(request)  # 404s a draft that isn't the caller's
     nodes = await _nodes_from_body(request)
-    return aiohttp.web.json_response(
-        {
-            "nodes": cv2_nodes.sanitize_for_preview(nodes),
-            "problems": cv2_nodes.validate(nodes),
-        }
-    )
+    return aiohttp.web.json_response({"nodes": cv2_nodes.sanitize_for_preview(nodes)})
 
 
 async def _handle_publish(request: aiohttp.web.Request) -> aiohttp.web.Response:

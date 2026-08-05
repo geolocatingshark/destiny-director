@@ -41,6 +41,7 @@ this writes::
 Read the diff both times. That diff is the entire value of the corpus.
 """
 
+import functools
 import json
 import os
 import pathlib
@@ -83,7 +84,9 @@ def _fixture_files() -> list[pathlib.Path]:
     return sorted(FIXTURE_DIR.glob("*.json"))
 
 
+@functools.cache
 def _cases() -> list[tuple[pathlib.Path, dict[str, t.Any]]]:
+    """Every case in the corpus. Cached — four tests and a parametrize read it."""
     return [(p, c) for p in _fixture_files() for c in _load(p)["cases"]]
 
 
@@ -125,14 +128,12 @@ def test_fixture_data_is_what_the_producer_makes(
     it is the JS side's business.
     """
     _, case = entry
-    recorded = {k: case.get(k) for k in ("annotated", "sanitized", "nodes")}
+    # _derive only ever *sets* the derived keys, so re-deriving into a copy and
+    # comparing whole dicts says "nothing drifted" in one assertion — and covers a key
+    # that stopped being emitted, which a per-key loop over them would not.
     fresh = dict(case)
     _derive(fresh)
-
-    for key, was in recorded.items():
-        if was is None and fresh.get(key) is None:
-            continue
-        assert fresh.get(key) == was, f"{case['name']}: {key} drifted"
+    assert fresh == case, f"{case['name']}: recorded data drifted from its producer"
 
 
 def test_every_case_name_is_unique() -> None:

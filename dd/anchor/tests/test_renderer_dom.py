@@ -125,8 +125,8 @@ def page() -> t.Iterator[t.Any]:
     """One page with the renderer loaded, per module.
 
     Deliberately NOT session-scoped — see the same warning in ``test_builder_drag.py``:
-    holding ``sync_playwright()`` open across the session breaks pytest-asyncio for every
-    async test that follows.
+    holding ``sync_playwright()`` open across the session breaks pytest-asyncio for
+    every async test that follows.
     """
     with playwright_api.sync_playwright() as p:
         try:
@@ -154,8 +154,9 @@ def test_the_dom_back_end_matches_the_frozen_corpus(page: t.Any) -> None:
     for name, case in _cases():
         drawn = page.evaluate(_COMPARE, [case, NOW_MS])
         if drawn:
-            mismatches.append(f"{name}\n  drawn:    {drawn}\n  expected: "
-                              f"{case['expected_html']}")
+            mismatches.append(
+                f"{name}\n  drawn:    {drawn}\n  expected: {case['expected_html']}"
+            )
     assert not mismatches, "materialize() drew something else:\n" + "\n".join(
         mismatches[:5]
     )

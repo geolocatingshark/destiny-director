@@ -44,19 +44,11 @@
     return res.json();
   }
 
-  function esc(s) {
-    return String(s ?? "").replace(
-      /[&<>"']/g,
-      (c) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[c],
-    );
-  }
+  // The shared escaper — this page loads cv2_model.js for the renderer anyway, and its
+  // own copy had already drifted to a different spelling of the apostrophe. Nullish
+  // collapses to "" here rather than to the string "null", which the optional fields
+  // below rely on.
+  const esc = (s) => window.CV2Model.esc(s ?? "");
 
   function statusOf(run) {
     if (run.pending > 0) return { cls: "progress", label: "In progress" };
