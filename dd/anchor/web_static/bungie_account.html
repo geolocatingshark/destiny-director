@@ -31,7 +31,6 @@
              background: var(--muted); }
       .dot.ok { background: #3fb950; }
       .dot.bad { background: var(--danger, #d9534f); }
-      .expiry { color: var(--muted); font-size: .85rem; margin-top: .3rem; }
       /* Account numbers, in a monospace block that is easy to copy out. */
       #numbers:empty { display: none; }
       #numbers {
@@ -61,8 +60,10 @@
     <main class="bungie">
       <div class="panel">
         <h2>Link status</h2>
+        <!-- No expiry date on the page: it is not actionable, and the sentence below
+             already says what to do. The raw timestamp stays in GET /bungie/data (and
+             in this line's hover title) for when someone is actually troubleshooting. -->
         <div class="state"><span class="dot" id="dot"></span><span id="state">Checking…</span></div>
-        <div class="expiry" id="expiry"></div>
         <div class="actions" style="margin-top: .8rem">
           <!-- A plain link, not fetch(): the browser must follow the redirect to
                Bungie's consent screen, and come back via /oauth/callback. -->

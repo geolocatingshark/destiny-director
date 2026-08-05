@@ -6,7 +6,6 @@
   const byId = (id) => document.getElementById(id);
   const dot = byId("dot");
   const state = byId("state");
-  const expiry = byId("expiry");
   const fetchBtn = byId("fetchBtn");
   const numbersStatus = byId("numbersStatus");
   const numbers = byId("numbers");
@@ -27,11 +26,10 @@
         dot.className = "dot ok";
         state.textContent = "Linked.";
       }
-      // The stored expiry already carries the 20% safety factor, so it is when the bot
-      // gives up on the token, not when Bungie would.
-      expiry.textContent = data.expires
-        ? (data.expired ? "Expired at " : "Valid until ") + data.expires
-        : "";
+      // Deliberately not rendered: an expiry date is not something anyone should have
+      // to read or reason about. It hides in the hover title for troubleshooting, and
+      // lives in /bungie/data for anyone poking at the API.
+      state.title = data.expires ? "Token expiry on record: " + data.expires : "";
     } catch (_) {
       dot.className = "dot bad";
       state.textContent = "Could not read link status.";

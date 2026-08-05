@@ -79,6 +79,12 @@ async def _handle_page(request: aiohttp.web.Request) -> aiohttp.web.Response:
 async def _handle_data(request: aiohttp.web.Request) -> aiohttp.web.Response:
     """Whether the bot's Bungie link is healthy, and until when.
 
+    ``expires`` is **not rendered on the page** — a date nobody can act on is noise, and
+    the status sentence already says what to do. It is served here (and hidden in the
+    status line's hover title) for troubleshooting only. See
+    ``plans/bungie_token_auto_refresh.md`` for removing the expiry as a concern
+    altogether.
+
     ``refresh_token_expires`` is stored with a 20% safety factor already applied (see
     ``BungieCredentials.set_refresh_token``), so it is the moment the bot treats the
     link as dead — not Bungie's own expiry. Reporting the stored value is the honest
