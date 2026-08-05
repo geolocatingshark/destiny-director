@@ -207,9 +207,13 @@
   }
 
   function separator(node) {
+    // Discord's `spacing` is 1 (small) or 2 (large), and it applies to both forms. It
+    // rides as a class rather than an inline style so cv2_preview.css stays the one
+    // place the rendered post's appearance is described.
+    const large = node.spacing === 2 ? " cv2-lg" : "";
     return node.divider === false
-      ? el("div", "cv2-spacer", { children: [] })
-      : el("hr", "cv2-sep");
+      ? el("div", "cv2-spacer" + large, { children: [] })
+      : el("hr", "cv2-sep" + large);
   }
 
   function actionRow(node) {
@@ -352,9 +356,22 @@
   // corpus compares the two byte for byte.
   const VOID = { img: true, hr: true };
 
+  /**
+   * The tag a spec actually renders as.
+   *
+   * Under `inert`, an anchor becomes a span. The builder canvas needs that: the canvas
+   * IS the editing surface, so clicking a link button or a gallery tile has to select
+   * the block, not navigate away from the draft. Everywhere else — the mirror log, the
+   * publish confirmation — the links are real, because there the post is something you
+   * read rather than something you are holding.
+   */
+  function tagOf(spec, opts) {
+    return opts.inert && spec.tag === "a" ? "span" : spec.tag;
+  }
+
   // Attribute order is fixed so the two renderers' output is comparable as text, not
   // just as a DOM.
-  function attrs(spec) {
+  function attrs(spec, opts) {
     const out = [];
     const push = (name, value) => out.push(" " + name + '="' + M.esc(value) + '"');
     if (spec.cls) push("class", spec.cls);
@@ -363,9 +380,11 @@
     // becomes an attribute, so it is the only place the check has to hold.
     if (spec.url && isHttpUrl(spec.url)) {
       if (spec.tag === "a") {
-        push("href", spec.url);
-        push("target", "_blank");
-        push("rel", "noopener noreferrer");
+        if (!opts.inert) {
+          push("href", spec.url);
+          push("target", "_blank");
+          push("rel", "noopener noreferrer");
+        }
       } else {
         push("src", spec.url);
       }
@@ -385,6 +404,19 @@
     return "";
   }
 
+  /**
+   * Just the opening tag of a spec, for a host that supplies its own children.
+   *
+   * The builder canvas needs this for containers and sections: it takes the wrapper —
+   * classes, validated accent — from here so the card looks like the real post, but it
+   * has to interleave insert rails between the children and wrap each one in its own
+   * selectable block, which is editor chrome the shared renderer knows nothing about.
+   */
+  function openTag(spec, opts) {
+    opts = opts || {};
+    return "<" + tagOf(spec, opts) + attrs(spec, opts) + ">";
+  }
+
   /** A spec (or list of specs) → an HTML string. Pure — no DOM required. */
   function serialize(spec, opts) {
     opts = opts || {};
@@ -393,9 +425,10 @@
       return spec.map((s) => serialize(s, opts)).join("");
     }
     if (!spec.tag) return M.esc(spec.text === undefined ? "" : spec.text);
-    const open = "<" + spec.tag + attrs(spec) + ">";
-    if (VOID[spec.tag]) return open;
-    return open + inner(spec, opts) + "</" + spec.tag + ">";
+    const tag = tagOf(spec, opts);
+    const open = "<" + tag + attrs(spec, opts) + ">";
+    if (VOID[tag]) return open;
+    return open + inner(spec, opts) + "</" + tag + ">";
   }
 
   // --- back end: real DOM --------------------------------------------------------------
@@ -421,14 +454,16 @@
       return doc.createTextNode(spec.text === undefined ? "" : spec.text);
     }
 
-    const node = doc.createElement(spec.tag);
+    const node = doc.createElement(tagOf(spec, opts));
     if (spec.cls) node.className = spec.cls;
     if (spec.accent) node.style.borderLeftColor = spec.accent;
     if (spec.url && isHttpUrl(spec.url)) {
       if (spec.tag === "a") {
-        node.setAttribute("href", spec.url);
-        node.setAttribute("target", "_blank");
-        node.setAttribute("rel", "noopener noreferrer");
+        if (!opts.inert) {
+          node.setAttribute("href", spec.url);
+          node.setAttribute("target", "_blank");
+          node.setAttribute("rel", "noopener noreferrer");
+        }
       } else {
         node.setAttribute("src", spec.url);
       }
@@ -464,6 +499,7 @@
     embed,
     // back ends
     serialize,
+    openTag,
     materialize,
     render,
     // shared predicates, exported so the builder applies the same rules to its chrome

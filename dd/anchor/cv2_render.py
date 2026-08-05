@@ -228,11 +228,15 @@ def _render_media(node: t.Any) -> str:
 
 
 def _render_separator(node: t.Any) -> str:
-    return (
-        '<hr class="cv2-sep">'
-        if node.get("divider", True)
-        else '<div class="cv2-spacer"></div>'
-    )
+    """A divider rule or a bare gap, at Discord's small (1) or large (2) spacing.
+
+    The size rides as a class, not an inline style, so ``cv2_preview.css`` stays the one
+    place the rendered post's appearance is described.
+    """
+    large = " cv2-lg" if node.get("spacing") == 2 else ""
+    if node.get("divider", True):
+        return f'<hr class="cv2-sep{large}">'
+    return f'<div class="cv2-spacer{large}"></div>'
 
 
 def _render_action_row(node: t.Any) -> str:

@@ -431,7 +431,7 @@
           }
         ]
       },
-      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">above</div><hr class=\"cv2-sep\"><div class=\"cv2-text\">below</div></div>"
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">above</div><hr class=\"cv2-sep cv2-lg\"><div class=\"cv2-text\">below</div></div>"
     },
     {
       "name": "separator_spacer_only",

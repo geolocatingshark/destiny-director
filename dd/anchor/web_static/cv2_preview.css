@@ -176,6 +176,13 @@
 .cv2-preview .cv2-spacer {
   height: 0.5rem;
 }
+/* Discord's separator `spacing: 2` — the large variant of either form. */
+.cv2-preview .cv2-sep.cv2-lg {
+  margin: 0.5rem 0;
+}
+.cv2-preview .cv2-spacer.cv2-lg {
+  height: 1rem;
+}
 .cv2-preview .cv2-buttons {
   display: flex;
   flex-wrap: wrap;
