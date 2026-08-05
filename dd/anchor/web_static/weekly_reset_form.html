@@ -207,6 +207,21 @@
     </main>
 
     <!--
+      Action buttons. Only one of the two groups shows at a time (weekly_reset_form.js
+      toggles them from `post_this_period`): the Create pair when there's no post for the
+      current reset week, the Edit/Delete group once a post exists. "Edit &amp; publish"
+      additionally hides once the post is crossposted (nothing left to publish).
+    -->
+    <div class="toolbar">
+      <button id="createBtn" type="button" hidden>➕ Create post</button>
+      <button id="createPublishBtn" class="secondary" type="button" hidden>📣 Create post &amp; publish</button>
+      <button id="editBtn" type="button" hidden>✏️ Edit last post</button>
+      <button id="editPublishBtn" class="secondary" type="button" hidden>📣 Edit &amp; publish</button>
+      <button id="deleteBtn" class="danger" type="button" hidden>🗑 Delete last post</button>
+      <span class="grow"></span>
+      <span id="status"></span>
+    </div>
+    <!--
       The server injects this page's data by .replace()-ing the placeholder below. It
       MUST stay in the document (the page is templated per request), so it can't live in
       the statically-served page script.

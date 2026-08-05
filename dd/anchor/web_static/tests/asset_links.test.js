@@ -168,3 +168,32 @@ test("no page carries an executable inline script", () => {
     "inline scripts are blocked by script-src 'self' — move them to /static/",
   );
 });
+
+test("a page driven by initPostForm has every element it dereferences", () => {
+  // shared.js reaches for these by id and assigns straight through
+  // (`_byId("createBtn").hidden = …`), so a missing one is a TypeError on page load,
+  // not a degraded form. That is exactly what happened while editing these templates:
+  // an over-greedy edit removed weekly_reset_form.html's whole toolbar, and nothing
+  // failed — the JS tests don't load pages and the Python tests don't read them.
+  //
+  // The ids are shared.js's contract with both hybrid-post forms, which its own header
+  // comment describes as "the SAME element ids". Deriving them from the source keeps
+  // this honest if that contract grows.
+  const sharedJs = fs.readFileSync(path.join(STATIC_DIR, "shared.js"), "utf8");
+  const required = [
+    ...new Set(
+      [...sharedJs.matchAll(/_byId\("([a-zA-Z]+)"\)/g)].map((m) => m[1]),
+    ),
+  ];
+  assert.ok(required.length > 5, "expected shared.js to dereference several ids");
+
+  const missing = [];
+  for (const page of pages()) {
+    // Only the pages that actually drive the form lifecycle.
+    if (!page.text.includes("initPostForm")) continue;
+    for (const id of required) {
+      if (!page.text.includes(`id="${id}"`)) missing.push(`${page.name}: #${id}`);
+    }
+  }
+  assert.deepEqual(missing, [], "shared.js will throw on these pages");
+});
