@@ -12,9 +12,18 @@
 // nothing. Two implementations held to one byte-exact expectation is what makes the
 // port checkable instead of hopeful.
 //
-// Today this covers the markdown leaf layer — the narrowest place the two meet. The
-// node walker joins it when cv2_render.js lands, at which point the remaining fixture
-// files switch on here too.
+// Two of the four render modes are asserted here:
+//
+//   markdown  the leaf layer — cv2_model.renderMd
+//   snapshot  the node walker — cv2_render.snapshotSpec + serialize
+//
+// The other two stay Python-only for now, on purpose:
+//
+//   authored  runs cv2_nodes.sanitize_for_preview first, which is a send-safety
+//             transform with no client mirror and is not getting one — the server sends
+//             an already-sanitized tree (plan phase 3).
+//   diff      needs the annotation layer that does not exist yet (plan phase 6).
+//   post_spec renders the .post-* vocabulary that plan phase 4 retires outright.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -22,6 +31,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const M = require("../cv2_model.js");
+const R = require("../cv2_render.js");
 
 const FIXTURE_DIR = path.join(__dirname, "..", "..", "preview_fixtures");
 
@@ -64,5 +74,58 @@ test("every markdown case carries an expectation", () => {
       "string",
       `${c.name} has no expected_html — regenerate with UPDATE_PREVIEW_FIXTURES=1`,
     );
+  }
+});
+
+// --- the node walker ------------------------------------------------------------------
+
+const WALKER_FILES = ["cv2_nodes.json", "classic.json", "xss.json"];
+
+let snapshotCases = 0;
+
+for (const file of WALKER_FILES) {
+  const data = load(file);
+  const emoji = data.emoji || {};
+  for (const c of data.cases) {
+    if (c.render !== "snapshot") continue;
+    snapshotCases += 1;
+    test(`${path.parse(file).name}:${c.name} renders to its frozen html`, () => {
+      const spec = R.snapshotSpec(c.payload, c.kind);
+      assert.equal(
+        R.serialize(spec, { emoji, now: NOW_MS }),
+        c.expected_html,
+        `${c.name} diverged from the Python renderer`,
+      );
+    });
+  }
+}
+
+test("the walker corpus actually covered the node kinds", () => {
+  // The loops above skip any case whose `render` is not "snapshot". A typo in that
+  // field would silently drop coverage rather than fail, so assert the count is in the
+  // range the corpus is meant to have.
+  assert.ok(
+    snapshotCases > 30,
+    `only ${snapshotCases} snapshot cases ran — check the fixtures' render fields`,
+  );
+});
+
+test("serialize and materialize agree, given a DOM", (t) => {
+  // materialize() is the back end pages actually use, but it needs a document. Where
+  // there is none, this states the contract rather than skipping it silently: the two
+  // back ends must draw the same thing from one spec.
+  if (typeof document === "undefined") {
+    t.skip("no DOM under node --test; the browser lane covers materialize()");
+    return;
+  }
+  for (const file of WALKER_FILES) {
+    const data = load(file);
+    for (const c of data.cases) {
+      if (c.render !== "snapshot") continue;
+      const spec = R.snapshotSpec(c.payload, c.kind);
+      const host = document.createElement("div");
+      R.render(host, spec, { emoji: data.emoji || {}, now: NOW_MS });
+      assert.equal(host.innerHTML, c.expected_html, c.name);
+    }
   }
 });

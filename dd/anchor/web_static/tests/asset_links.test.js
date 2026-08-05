@@ -42,6 +42,25 @@ test("a page that draws charts also loads the chart styles", () => {
   );
 });
 
+test("cv2_render.js is loaded after the model it consumes", () => {
+  // Load order IS the dependency graph here — cv2_render.js reads window.CV2Model at
+  // definition time, so a page that lists it first gets `undefined` and dies on the
+  // first render with a message that points nowhere near the real mistake. Two shared
+  // files were manageable by convention; four are not.
+  const wrong = pages()
+    .filter((p) => p.text.includes("/static/cv2_render.js"))
+    .filter((p) => {
+      const model = p.text.indexOf("/static/cv2_model.js");
+      return model === -1 || model > p.text.indexOf("/static/cv2_render.js");
+    })
+    .map((p) => p.name);
+  assert.deepEqual(
+    wrong,
+    [],
+    "these pages load cv2_render.js without cv2_model.js before it",
+  );
+});
+
 test("charts.css is not loaded by pages that draw no charts", () => {
   // The reverse direction, so the sheet does not quietly become a second shared.css.
   const pointless = pages()

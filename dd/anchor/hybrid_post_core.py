@@ -268,7 +268,7 @@ def _html_emoji_substituter(
         alt = html.escape(name, quote=True)
         if id_group:
             emoji_id = id_group.rstrip(">")
-            if emoji_id.isdigit():
+            if emoji_id.isascii() and emoji_id.isdigit():
                 ext = "gif" if prefix == "<a" else "png"
                 src = html.escape(
                     f"https://cdn.discordapp.com/emojis/{emoji_id}.{ext}", quote=True

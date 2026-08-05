@@ -77,7 +77,10 @@ def _cdn_emoji_substituter(match: t.Any) -> str:
     id_group = match.group(4)  # e.g. "123456789>" or None
     if id_group:
         emoji_id = id_group.rstrip(">")
-        if emoji_id.isdigit():
+        # ASCII digits only: str.isdigit() also accepts superscripts and other unicode
+        # digit forms, which would be concatenated straight into a CDN URL. The client
+        # mirror tests /^\d+$/, so the narrow reading is also the one both sides share.
+        if emoji_id.isascii() and emoji_id.isdigit():
             ext = "gif" if prefix == "<a" else "png"
             src = html.escape(
                 f"https://cdn.discordapp.com/emojis/{emoji_id}.{ext}", quote=True
@@ -130,7 +133,8 @@ def _emoji_prefix_html(emoji: t.Any) -> str:
         return ""
     emoji_id = emoji.get("id")
     name = str(emoji.get("name") or "")
-    if emoji_id and str(emoji_id).isdigit():
+    emoji_id = str(emoji_id) if emoji_id else ""
+    if emoji_id and emoji_id.isascii() and emoji_id.isdigit():
         ext = "gif" if emoji.get("animated") else "png"
         src = html.escape(
             f"https://cdn.discordapp.com/emojis/{emoji_id}.{ext}", quote=True
