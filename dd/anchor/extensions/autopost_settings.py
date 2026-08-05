@@ -40,6 +40,7 @@ import lightbulb as lb
 
 from ...common import schemas
 from .. import web
+from ..autopost import registered_feeds
 
 logger = logging.getLogger(__name__)
 
@@ -138,9 +139,17 @@ def _render_row(setting: _Setting, state: bool | str | None) -> str:
     what the client save script and ``_handle_save`` read back.
     """
     base_class = "row sub" if setting.sub else "row"
+    # A top-level slug that names a registered feed links to that feed's actions page
+    # (preview / send now) — the replacement for the old `/<feed> show` and `send`
+    # commands. Sub-settings and settings with no producer (none today) render plain.
+    feed_link = (
+        f' <a class="feedlink" href="/feed/{html.escape(setting.slug)}">actions ▸</a>'
+        if not setting.sub and setting.slug in registered_feeds()
+        else ""
+    )
     label_block = (
         '<div class="text">'
-        f'<div class="name">{html.escape(setting.label)}</div>'
+        f'<div class="name">{html.escape(setting.label)}{feed_link}</div>'
         f'<div class="desc">{html.escape(setting.desc)}</div>'
         "</div>"
     )

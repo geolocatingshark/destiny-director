@@ -1,0 +1,177 @@
+<!doctype html>
+<!--
+  Anchor per-feed actions page — preview the post the producer would build right now,
+  and send it to the feed's channel. Served by dd.anchor.extensions.feed_page; the GET
+  handler substitutes the __BOOTSTRAP__ placeholder below with the feed's JSON
+  (name/title/dormant/channelId). Actions only: the enable/disable toggle lives on
+  /autopost_settings so one setting has one write path, and status/health deliberately
+  lives nowhere yet (see plans/anchor_web_ia.md §4). Auth is the shared OAuth
+  middleware (web_auth), same as every other page.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Feed — Destiny Director</title>
+    <link rel="stylesheet" href="/static/shared.css" />
+    <link rel="stylesheet" href="/static/cv2_preview.css" />
+    <style>
+      /* Base/reset/theme lives in shared.css; only this page's own styles are here. */
+      main.feed { margin: 1rem 0; display: flex; flex-direction: column; gap: 1rem; }
+      .panel {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-3); padding: .9rem;
+      }
+      .panel h2 { margin: 0 0 .35rem; font-size: 1rem; }
+      .panel p.hint { margin: 0 0 .7rem; color: var(--muted); font-size: .88rem; }
+      .actions { display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; }
+      .actions label { display: flex; align-items: center; gap: .4rem; font-size: .9rem; }
+      .status { color: var(--muted); font-size: .88rem; }
+      .status.err { color: var(--danger, #d9534f); }
+      .dormant {
+        border-left: 3px solid var(--warning, #d9a441); padding-left: .7rem;
+        color: var(--muted); font-size: .9rem;
+      }
+      #previewBox:empty { display: none; }
+      #previewBox { margin-top: .8rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <p class="nav">
+        <a href="/" class="backlink">← Control panel</a> ·
+        <a href="/autopost_settings" class="backlink">Autopost settings</a>
+      </p>
+      <h1 id="heading">Feed</h1>
+    </header>
+
+    <main class="feed">
+      <div class="panel" id="dormantPanel" hidden>
+        <div class="dormant" id="dormantNote"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Preview</h2>
+        <p class="hint">
+          Builds the post exactly as the producer would right now — nothing is sent.
+          The data comes from the live API, so this can take a few seconds.
+        </p>
+        <div class="actions">
+          <button id="previewBtn" type="button">Preview post</button>
+          <span class="status" id="previewStatus"></span>
+        </div>
+        <div id="previewBox"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Send now</h2>
+        <p class="hint">
+          Posts to this feed's channel immediately. Publishing crossposts it, so beacon
+          mirrors it to every following server.
+        </p>
+        <div class="actions">
+          <button id="sendBtn" type="button">Send now</button>
+          <label><input type="checkbox" id="publish" checked /> Publish (crosspost)</label>
+          <span class="status" id="sendStatus"></span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Settings</h2>
+        <p class="hint">
+          Whether this feed posts automatically is set on the autopost settings page.
+        </p>
+        <a href="/autopost_settings">Open autopost settings ▸</a>
+      </div>
+    </main>
+
+    <!-- shared.js is deferred, so window.api is not defined while the inline script
+         below runs. That is fine: api() is only ever dereferenced inside a click
+         handler, which cannot fire before the deferred script has executed. The inline
+         script sits at the end of <body>, so every element it looks up already exists. -->
+    <script src="/static/shared.js" defer></script>
+    <script>
+      const FEED = /*__BOOTSTRAP__*/ null;
+
+      const heading = document.getElementById("heading");
+      const previewBtn = document.getElementById("previewBtn");
+      const previewStatus = document.getElementById("previewStatus");
+      const previewBox = document.getElementById("previewBox");
+      const sendBtn = document.getElementById("sendBtn");
+      const publish = document.getElementById("publish");
+      const sendStatus = document.getElementById("sendStatus");
+
+      heading.textContent = FEED.title;
+      document.title = FEED.title + " — Destiny Director";
+
+      // A dormant feed has no configured followable channel: it can still be previewed
+      // (construction needs no channel), but there is nowhere to send it.
+      if (FEED.dormant) {
+        const panel = document.getElementById("dormantPanel");
+        panel.hidden = false;
+        document.getElementById("dormantNote").textContent =
+          "Dormant — no '" + FEED.name + "' entry in FOLLOWABLES, so there is no " +
+          "channel to post to. Preview still works. Add the followable channel id " +
+          "to enable sending.";
+        sendBtn.disabled = true;
+        publish.disabled = true;
+      }
+
+      previewBtn.addEventListener("click", async () => {
+        previewBtn.disabled = true;
+        previewStatus.classList.remove("err");
+        previewStatus.textContent = "Building…";
+        try {
+          const res = await fetch("/feed/" + encodeURIComponent(FEED.name) + "/preview");
+          const data = await res.json();
+          if (data.error) {
+            previewBox.innerHTML = "";
+            previewStatus.classList.add("err");
+            previewStatus.textContent = data.error;
+          } else {
+            // Server-rendered, pre-escaped HTML from cv2_render — the same trusted
+            // sink the mirror-log viewer uses.
+            previewBox.innerHTML = data.html;
+            previewStatus.textContent = "";
+          }
+        } catch (_) {
+          previewStatus.classList.add("err");
+          previewStatus.textContent = "Network error — try again.";
+        } finally {
+          previewBtn.disabled = false;
+        }
+      });
+
+      sendBtn.addEventListener("click", async () => {
+        const where = FEED.channelId ? "#" + FEED.channelId : "its channel";
+        const what = publish.checked
+          ? "post it to " + where + " and crosspost it to every following server"
+          : "post it to " + where + " without crossposting";
+        if (!window.confirm("Send the " + FEED.title + " post now? This will " + what + ".")) {
+          return;
+        }
+        sendBtn.disabled = true;
+        sendStatus.classList.remove("err");
+        sendStatus.textContent = "Building…";
+        try {
+          const res = await window.api("/feed/" + encodeURIComponent(FEED.name) + "/send", {
+            publish: publish.checked,
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) {
+            sendStatus.textContent = "Send started — check Mirror logs for delivery.";
+          } else {
+            sendStatus.classList.add("err");
+            sendStatus.textContent = data.error || "Send failed.";
+          }
+        } catch (_) {
+          sendStatus.classList.add("err");
+          sendStatus.textContent = "Network error — try again.";
+        } finally {
+          sendBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

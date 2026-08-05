@@ -39,6 +39,10 @@
       .row.sub .name { font-size: .88rem; }
       .row .text { min-width: 0; }
       .row .name { font-size: .95rem; }
+      /* Per-feed actions page (preview / send now) — quiet until hovered, so the page
+         still reads as a list of toggles rather than a list of links. */
+      .feedlink { font-size: .8rem; color: var(--muted); text-decoration: none; }
+      .feedlink:hover { color: var(--accent); text-decoration: underline; }
       .row .desc { color: var(--text-faint); font-size: .8rem; margin-top: .15rem; }
       /* A URL setting stacks its full-width text input below the label instead of
          placing a switch on the right. */

@@ -1,0 +1,238 @@
+# Copyright © 2019-present gsfernandes81
+
+# This file is part of "dd" henceforth referred to as "destiny-director".
+
+# destiny-director is free software: you can redistribute it and/or modify it under the
+# terms of the GNU Affero General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later version.
+
+# "destiny-director" is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+# You should have received a copy of the GNU Affero General Public License along with
+# destiny-director. If not, see <https://www.gnu.org/licenses/>.
+
+"""Per-feed actions page — the web replacement for ``/<feed> send`` and ``show``.
+
+One page per autopost feed, reached from that feed's row on ``/autopost_settings``. It
+carries **actions only**: preview the post the producer would build right now, and send
+it to the feed's channel.
+
+Deliberately *not* here:
+
+- **The enable/disable toggle.** It stays solely on ``/autopost_settings`` so one row
+  has one write path. This page links there instead.
+- **Status / health** — last-run chips, delivery counts, reach. That is the deferred
+  observability work (``plans/anchor_web_ia.md`` §4); a feed-hub carrying it was
+  explicitly rejected, and this page must not grow it back a panel at a time.
+
+Routes (all behind the shared Discord-OAuth middleware in ``web_auth``, which also
+Origin-checks the POST, so there is no auth code here):
+
+- ``GET  /feed/{name}``          the page shell
+- ``GET  /feed/{name}/preview``  build the post now, return it as safe HTML
+- ``POST /feed/{name}/send``     publish it to the feed's channel
+
+**Why send returns before the post lands.** Both announcers retry construction forever
+with backoff (``autopost.discord_announcer``, ``xur.api_to_discord_announcer``), and
+``utils.send_message`` retries too — deliberately, so a transient Bungie/Discord blip
+never drops a post. Awaiting that inside an HTTP handler would mean a request that can
+hang for hours, and ``api_to_discord_announcer`` posts its placeholder to the live
+channel *before* constructing, so its retries must not be bounded from outside (see the
+"once we've committed to posting, we always finish" invariant in ``xur.py``). So the
+handler builds the post once up front — that catches the common failure, a constructor
+error, synchronously and without touching the channel — then hands the announcer to a
+background task and returns. Delivery is observable in the mirror log.
+"""
+
+import asyncio
+import json
+import logging
+import typing as t
+from pathlib import Path
+
+import aiohttp.web
+import hikari as h
+import lightbulb as lb
+
+from dd.hmessage import HMessage
+from dd.hmessage.snapshot import cv2_payload
+
+from ...common.bot import CachedFetchBot
+from .. import web
+from ..autopost import Feed, registered_feeds
+from ..cv2_render import render_snapshot
+
+logger = logging.getLogger(__name__)
+
+loader = lb.Loader()
+
+_PAGE_HTML_PATH = (
+    Path(__file__).resolve().parent.parent / "web_static" / "feed_page.html"
+)
+#: Replaced with the feed's JSON bootstrap (the ``rotation_editor`` / ``cv2_builder``
+#: idiom), so the shell knows which feed it is and whether Send is available.
+_BOOTSTRAP_PLACEHOLDER = "/*__BOOTSTRAP__*/ null"
+
+# The live bot, stashed at StartedEvent so the routes can reach the REST client (the
+# pattern weekly_reset / rotation_editor / cv2_builder_page already use).
+_bot: CachedFetchBot | None = None
+
+# Feeds with a send in flight, so a double-click or a second tab can't fire two posts.
+# `send_message`'s own dedupe only guards retry-races within one send — it does not stop
+# two deliberate sends.
+_sending: set[str] = set()
+# Strong refs to the in-flight send tasks, so they are not garbage collected mid-flight.
+_send_tasks: set[asyncio.Task] = set()
+
+
+@loader.listener(h.StartedEvent)
+async def _on_started(_event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED):
+    global _bot
+    _bot = bot
+
+
+def _require_bot() -> CachedFetchBot:
+    if _bot is None:
+        raise aiohttp.web.HTTPServiceUnavailable(
+            text="Bot is still starting — try again in a moment."
+        )
+    return _bot
+
+
+def _feed_or_404(request: aiohttp.web.Request) -> Feed:
+    """The registered feed named in the path, or a 404."""
+    feed = registered_feeds().get(request.match_info.get("name", ""))
+    if feed is None:
+        raise aiohttp.web.HTTPNotFound(text="No such feed.")
+    return feed
+
+
+def _title(name: str) -> str:
+    """``lost_sector`` → ``Lost Sector`` — display copy for a followable name."""
+    return name.replace("_", " ").title()
+
+
+async def _build(feed: Feed) -> HMessage:
+    """Build the feed's post once, as the producer would right now."""
+    return await feed.message_constructor_coro(bot=_require_bot())
+
+
+async def _handle_page(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    feed = _feed_or_404(request)
+    bootstrap = json.dumps(
+        {
+            "name": feed.name,
+            "title": _title(feed.name),
+            # A dormant feed (no configured followable) still previews — construction
+            # needs no channel — but has nowhere to send.
+            "dormant": feed.channel_id is None,
+            "channelId": str(feed.channel_id) if feed.channel_id else None,
+        }
+    ).replace("<", "\\u003c")  # never let a value close the <script> block
+    body = _PAGE_HTML_PATH.read_text(encoding="utf-8").replace(
+        _BOOTSTRAP_PLACEHOLDER, bootstrap
+    )
+    return aiohttp.web.Response(text=body, content_type="text/html")
+
+
+async def _handle_preview(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Render what the producer would post right now.
+
+    Fetched on click, not on page load: the Bungie-backed constructors (xur, eververse,
+    ada, portal_ops) hit the live API and can take seconds or fail outright. A build
+    failure is a legitimate answer here — Iron Banner between events raises, and the
+    Discord ``show`` reported that the same way — so it renders as a message in the
+    preview box rather than a 500.
+    """
+    feed = _feed_or_404(request)
+    try:
+        hmsg = await _build(feed)
+    except Exception as e:
+        logger.exception("feed preview failed for %s", feed.name)
+        return aiohttp.web.json_response({"error": str(e) or e.__class__.__name__})
+    return aiohttp.web.json_response(
+        {"html": render_snapshot(cv2_payload(hmsg), "cv2")}
+    )
+
+
+def _announce(feed: Feed, publish: bool) -> t.Awaitable[t.Any]:
+    """The announcer call for this feed, as an un-awaited awaitable."""
+    assert feed.message_announcer_coro is not None  # guarded by the caller
+    return feed.message_announcer_coro(
+        bot=_require_bot(),
+        channel_id=feed.channel_id,
+        check_enabled=False,
+        construct_message_coro=feed.message_constructor_coro,
+        publish_message=publish,
+        cv2=feed.cv2,
+    )
+
+
+async def _run_send(feed: Feed, publish: bool) -> None:
+    """Await the announcer, then release the feed's in-flight slot."""
+    try:
+        await _announce(feed, publish)
+        logger.info("Manual send of %s finished", feed.name)
+    except Exception:
+        logger.exception("Manual send of %s failed", feed.name)
+    finally:
+        _sending.discard(feed.name)
+
+
+async def _handle_send(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Publish the feed's post to its channel.
+
+    Auth + Origin (CSRF) are already enforced by the middleware. Returns as soon as the
+    post builds cleanly and the announcer is running — see the module docstring.
+    """
+    feed = _feed_or_404(request)
+    if feed.channel_id is None:
+        return aiohttp.web.json_response(
+            {"error": f"{_title(feed.name)} is dormant — no channel configured."},
+            status=409,
+        )
+    if feed.message_announcer_coro is None:
+        return aiohttp.web.json_response(
+            {"error": "No announcer is configured for this feed."}, status=409
+        )
+    if feed.name in _sending:
+        return aiohttp.web.json_response(
+            {"error": "A send is already in flight for this feed."}, status=409
+        )
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    publish = bool(payload.get("publish", True))
+
+    # Build once here so a constructor failure (the common one) is reported in the
+    # response, before anything is posted. The announcer rebuilds — an extra API fetch
+    # on a rare manual action, in exchange for not posting a placeholder into the live
+    # channel only to have construction fail behind it.
+    try:
+        await _build(feed)
+    except Exception as e:
+        logger.exception("Manual send of %s aborted: build failed", feed.name)
+        return aiohttp.web.json_response(
+            {"error": f"Building the post failed, nothing was sent: {e}"}, status=502
+        )
+
+    _sending.add(feed.name)
+    task = asyncio.create_task(_run_send(feed, publish))
+    _send_tasks.add(task)
+    task.add_done_callback(_send_tasks.discard)
+    logger.info("Manual send of %s started (publish=%s)", feed.name, publish)
+    return aiohttp.web.json_response({"ok": True, "started": True})
+
+
+def register_feed_page_routes(app: aiohttp.web.Application) -> None:
+    """Add the feed-page routes to the shared persistent app."""
+    app.router.add_get("/feed/{name}", _handle_page)
+    app.router.add_get("/feed/{name}/preview", _handle_preview)
+    app.router.add_post("/feed/{name}/send", _handle_send)
+
+
+web.register_routes(register_feed_page_routes)
