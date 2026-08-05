@@ -1,5 +1,5 @@
-// Per-feed actions page — preview the post the producer would build right now, and
-// send it to the feed's channel. Served by dd.anchor.extensions.feed_page.
+// Per-feed actions page — the post this feed would produce, and the three things you
+// can do with it. Served by dd.anchor.extensions.feed_page.
 //
 // The shell is static (the CSP is script-src 'self', so no inline bootstrap): the feed
 // name comes from the URL, and everything else from GET /feed/<name>/data.
@@ -15,17 +15,20 @@
   const byId = (id) => document.getElementById(id);
   const heading = byId("heading");
   const previewBtn = byId("previewBtn");
-  const previewStatus = byId("previewStatus");
-  const previewBox = byId("previewBox");
   const sendBtn = byId("sendBtn");
+  const status = byId("status");
+  const previewBox = byId("previewBox");
+  const dialog = byId("sendDialog");
+  const dialogBody = byId("dialogBody");
   const publish = byId("publish");
-  const sendStatus = byId("sendStatus");
+  const confirmSend = byId("confirmSend");
+  const cancelSend = byId("cancelSend");
 
   let feed = null;
 
-  function fail(el, message) {
-    el.classList.add("err");
-    el.textContent = message;
+  function say(message, isError) {
+    status.classList.toggle("err", !!isError);
+    status.textContent = message;
   }
 
   async function loadFeed() {
@@ -39,13 +42,13 @@
     // A dormant feed has no configured followable channel: it still previews
     // (construction needs no channel), but there is nowhere to send it.
     if (feed.dormant) {
-      byId("dormantPanel").hidden = false;
-      byId("dormantNote").textContent =
+      const note = byId("dormantNote");
+      note.hidden = false;
+      note.textContent =
         "Dormant — no '" + feed.name + "' entry in FOLLOWABLES, so there is no " +
         "channel to post to. Preview still works. Add the followable channel id " +
         "to enable sending.";
-      sendBtn.disabled = true;
-      publish.disabled = true;
+      sendBtn.title = "This feed is dormant — no channel is configured to post to.";
     } else {
       sendBtn.disabled = false;
     }
@@ -54,8 +57,7 @@
 
   previewBtn.addEventListener("click", async () => {
     previewBtn.disabled = true;
-    previewStatus.classList.remove("err");
-    previewStatus.textContent = "Building…";
+    say("Building…", false);
     try {
       const res = await fetch("/feed/" + encodeURIComponent(NAME) + "/preview");
       const data = await res.json();
@@ -63,49 +65,54 @@
         // A build failure is a legitimate answer — Iron Banner between events raises,
         // and the Discord `show` reported it the same way.
         previewBox.replaceChildren();
-        fail(previewStatus, data.error);
+        say(data.error, true);
       } else {
         window.CV2Render.render(
           previewBox,
           window.CV2Render.snapshotSpec(data.payload, data.message_kind),
           {},
         );
-        previewStatus.textContent = "";
+        say("", false);
       }
     } catch (e) {
-      fail(previewStatus, "Render error: " + e);
+      say("Render error: " + e, true);
     } finally {
       previewBtn.disabled = false;
     }
   });
 
-  sendBtn.addEventListener("click", async () => {
+  sendBtn.addEventListener("click", () => {
     const where = feed.channelId ? "#" + feed.channelId : "its channel";
-    const what = publish.checked
-      ? "post it to " + where + " and crosspost it to every following server"
-      : "post it to " + where + " without crossposting";
-    if (!window.confirm("Send the " + feed.title + " post now? This will " + what + ".")) {
-      return;
-    }
+    dialogBody.textContent =
+      "This posts the " + feed.title + " post to " + where + " straight away. " +
+      "It cannot be recalled, only edited or deleted afterwards.";
+    publish.checked = true;
+    dialog.showModal();
+  });
+
+  cancelSend.addEventListener("click", () => dialog.close());
+
+  confirmSend.addEventListener("click", async () => {
+    const wantPublish = publish.checked;
+    dialog.close();
     sendBtn.disabled = true;
-    sendStatus.classList.remove("err");
-    sendStatus.textContent = "Building…";
+    say("Building…", false);
     try {
       const res = await window.api("/feed/" + encodeURIComponent(NAME) + "/send", {
-        publish: publish.checked,
+        publish: wantPublish,
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        sendStatus.textContent = "Send started — check Mirror logs for delivery.";
+        say("Send started — check Mirror logs for delivery.", false);
       } else {
-        fail(sendStatus, data.error || "Send failed.");
+        say(data.error || "Send failed.", true);
       }
     } catch (_) {
-      fail(sendStatus, "Network error — try again.");
+      say("Network error — try again.", true);
     } finally {
-      sendBtn.disabled = false;
+      sendBtn.disabled = !!(feed && feed.dormant);
     }
   });
 
-  loadFeed().catch((e) => fail(previewStatus, String(e)));
+  loadFeed().catch((e) => say(String(e), true));
 })();

@@ -1,9 +1,9 @@
 <!doctype html>
 <!--
-  Anchor per-feed actions page — preview the post the producer would build right now,
-  and send it to the feed's channel. Served by dd.anchor.extensions.feed_page; the GET
-  handler substitutes the __BOOTSTRAP__ placeholder below with the feed's JSON
-  (name/title/dormant/channelId). Actions only: the enable/disable toggle lives on
+  Anchor per-feed actions page — the post this feed would produce right now, and the
+  three things you can do with it. Served by dd.anchor.extensions.feed_page; the shell
+  is static (the CSP is script-src 'self') and feed_page.js fetches /feed/<name>/data
+  for the feed's identity. Actions only: the enable/disable toggle lives on
   /autopost_settings so one setting has one write path, and status/health deliberately
   lives nowhere yet (see plans/anchor_web_ia.md §4). Auth is the shared OAuth
   middleware (web_auth), same as every other page.
@@ -19,22 +19,59 @@
     <style>
       /* Base/reset/theme lives in shared.css; only this page's own styles are here. */
       main.feed { margin: 1rem 0; display: flex; flex-direction: column; gap: 1rem; }
-      .panel {
+
+      /* The post. Placeholder text until Preview is pressed — the Bungie-backed
+         constructors hit the live API, so nothing is built on page load. */
+      #previewBox {
         border: 1px solid var(--border); border-radius: var(--radius);
-        background: var(--surface-3); padding: .9rem;
+        background: var(--surface-3); padding: .9rem; min-height: 3rem;
       }
-      .panel h2 { margin: 0 0 .35rem; font-size: 1rem; }
-      .panel p.hint { margin: 0 0 .7rem; color: var(--muted); font-size: .88rem; }
-      .actions { display: flex; align-items: center; gap: .7rem; flex-wrap: wrap; }
-      .actions label { display: flex; align-items: center; gap: .4rem; font-size: .9rem; }
+      .placeholder { color: var(--muted); font-size: .9rem; margin: 0; }
+
+      /* The three actions, in one horizontal line that wraps rather than squashing.
+         shared.css has no base `button` rule (only .form-page does), so a UA-default
+         button and a styled <a> do not share a box — they sat 8px apart. Both are
+         given identical metrics here so the row reads as three of the same control. */
+      .actionbar { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+      .actionbar .status { flex-basis: 100%; }
       .status { color: var(--muted); font-size: .88rem; }
       .status.err { color: var(--danger, #d9534f); }
+      .actionbar > button,
+      .actionbar > a.action {
+        display: inline-block; box-sizing: border-box; text-decoration: none;
+        color: var(--text-1); border: 1px solid var(--border);
+        border-radius: var(--radius); padding: .45rem .9rem;
+        background: var(--surface-2); font: inherit; font-size: .92rem;
+        line-height: 1.4; cursor: pointer;
+      }
+      .actionbar > button:hover:not(:disabled),
+      .actionbar > a.action:hover { border-color: var(--border-hover); }
+      .actionbar > button:disabled { opacity: .55; cursor: default; }
+
       .dormant {
         border-left: 3px solid var(--warning, #d9a441); padding-left: .7rem;
         color: var(--muted); font-size: .9rem;
       }
-      #previewBox:empty { display: none; }
-      #previewBox { margin-top: .8rem; }
+
+      /* Send confirmation. A native <dialog>, so Escape and the backdrop come free. */
+      dialog#sendDialog {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-3); color: var(--text-1); padding: 1.1rem;
+        max-width: 30rem; width: calc(100% - 2rem);
+      }
+      dialog#sendDialog::backdrop { background: rgba(0, 0, 0, .55); }
+      dialog#sendDialog h2 { margin: 0 0 .5rem; font-size: 1.05rem; }
+      dialog#sendDialog p { margin: 0 0 .8rem; font-size: .92rem; color: var(--muted); }
+      dialog#sendDialog label {
+        display: flex; align-items: center; gap: .45rem; font-size: .92rem;
+        margin-bottom: 1rem;
+      }
+      .dialog-actions { display: flex; justify-content: flex-end; gap: .6rem; }
+      #confirmSend {
+        border: 1px solid var(--accent-strong); border-radius: var(--radius);
+        padding: .45rem 1rem; background: var(--accent-strong); color: #fff;
+        font-size: .92rem; cursor: pointer;
+      }
     </style>
   </head>
   <body>
@@ -47,52 +84,46 @@
     </header>
 
     <main class="feed">
-      <div class="panel" id="dormantPanel" hidden>
-        <div class="dormant" id="dormantNote"></div>
+      <div id="dormantNote" class="dormant" hidden></div>
+
+      <!-- The post. `cv2-preview` opts it into the shared CV2 render styling: every
+           rule in cv2_preview.css is scoped under it, so without the class the renderer
+           draws the right DOM with none of its appearance. -->
+      <div id="previewBox" class="cv2-preview">
+        <p class="placeholder">Press <strong>Preview</strong> to build this feed's post.</p>
       </div>
 
-      <div class="panel">
-        <h2>Preview</h2>
-        <p class="hint">
-          Builds the post exactly as the producer would right now — nothing is sent.
-          The data comes from the live API, so this can take a few seconds.
-        </p>
-        <div class="actions">
-          <!-- Both actions start disabled; feed_page.js enables them once /data says
-               which feed this is and whether it can be sent. -->
-          <button id="previewBtn" type="button" disabled>Preview post</button>
-          <span class="status" id="previewStatus"></span>
-        </div>
-        <!-- `cv2-preview` opts this box into the shared CV2 render styling: every rule
-             in cv2_preview.css is scoped under it, so without the class the renderer
-             draws the right DOM with none of its appearance. -->
-        <div id="previewBox" class="cv2-preview"></div>
-      </div>
-
-      <div class="panel">
-        <h2>Send now</h2>
-        <p class="hint">
-          Posts to this feed's channel immediately. Publishing crossposts it, so beacon
-          mirrors it to every following server.
-        </p>
-        <div class="actions">
-          <button id="sendBtn" type="button" disabled>Send now</button>
-          <label><input type="checkbox" id="publish" checked /> Publish (crosspost)</label>
-          <span class="status" id="sendStatus"></span>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h2>Settings</h2>
-        <p class="hint">
-          Whether this feed posts automatically is set on the autopost settings page.
-        </p>
-        <a href="/autopost_settings">Open autopost settings ▸</a>
+      <!-- Explanations live in the title attributes rather than on the page: three
+           labelled buttons do not need three paragraphs. -->
+      <div class="actionbar">
+        <button id="previewBtn" type="button" disabled
+                title="Builds the post exactly as the producer would right now. Nothing is sent. The data comes from the live API, so this can take a few seconds.">
+          Preview
+        </button>
+        <button id="sendBtn" type="button" disabled
+                title="Posts to this feed's channel immediately, and (if publishing) crossposts it so beacon mirrors it to every following server.">
+          Send now
+        </button>
+        <a class="action" href="/autopost_settings"
+           title="Whether this feed posts automatically is a global setting, edited on the autopost settings page.">
+          Autopost settings
+        </a>
+        <span class="status" id="status"></span>
       </div>
     </main>
 
-    <!-- defer preserves order: cv2_model → cv2_render → shared (window.api) →
-         this page. The renderer draws the preview, exactly as the mirror log does.
+    <dialog id="sendDialog">
+      <h2 id="dialogTitle">Send this post?</h2>
+      <p id="dialogBody"></p>
+      <label><input type="checkbox" id="publish" checked /> Publish (crosspost to followers)</label>
+      <div class="dialog-actions">
+        <button id="cancelSend" type="button">Cancel</button>
+        <button id="confirmSend" type="button">Send now</button>
+      </div>
+    </dialog>
+
+    <!-- defer preserves order: cv2_model → cv2_render → shared (window.api) → this
+         page. The renderer draws the preview, exactly as the mirror log does.
          No inline script: the CSP is script-src 'self' (see web.py). -->
     <script src="/static/cv2_model.js" defer></script>
     <script src="/static/cv2_render.js" defer></script>

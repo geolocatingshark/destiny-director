@@ -116,6 +116,32 @@ async def test_page_shell_carries_no_inline_script() -> None:
     assert "<script>" not in body
 
 
+async def test_actions_are_three_controls_with_hover_cards() -> None:
+    # Three actions on one line, explained by title attributes rather than paragraphs.
+    # Pinning the shape here because the alternative — a <button> next to a styled <a> —
+    # silently rendered them 8px out of line: shared.css has no base `button` rule, so
+    # the two do not share a box unless this page gives them one.
+    _register("lost_sector", channel_id=987)
+    body = _text(await feed_page._handle_page(_as_request(_FakeRequest("lost_sector"))))
+    for element_id in ('id="previewBtn"', 'id="sendBtn"'):
+        assert element_id in body
+    assert 'class="action" href="/autopost_settings"' in body
+    assert body.count("title=") >= 3
+    assert ".actionbar > button," in body
+
+
+async def test_send_is_behind_a_dialog_carrying_the_publish_choice() -> None:
+    # Send publishes to a real channel, so it is never one click: the publish checkbox
+    # lives in the confirmation, not on the page, so the choice is made deliberately at
+    # the moment of confirming rather than set and forgotten.
+    _register("lost_sector", channel_id=987)
+    body = _text(await feed_page._handle_page(_as_request(_FakeRequest("lost_sector"))))
+    assert '<dialog id="sendDialog">' in body
+    assert 'id="publish"' in body
+    assert 'id="confirmSend"' in body
+    assert 'id="cancelSend"' in body
+
+
 async def test_preview_host_opts_into_the_shared_preview_styling() -> None:
     # Every rule in cv2_preview.css is scoped under `.cv2-preview`. Without the class
     # the renderer still builds correct DOM — right element counts, right structure —
