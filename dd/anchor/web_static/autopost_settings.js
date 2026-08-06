@@ -66,6 +66,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const sendTitle = byId("sendTitle");
   const sendBody = byId("sendBody");
   const sendPreview = byId("sendPreview");
+  const sendPreviewStatus = byId("sendPreviewStatus");
   const sendStatus = byId("sendStatus");
   const sendConfirm = byId("sendConfirm");
   const publish = byId("publish");
@@ -153,8 +154,11 @@ document.addEventListener("DOMContentLoaded", () => {
         "close this page once it starts.";
       publish.checked = true;
       sendConfirm.disabled = false;
+      // Clear the previous open's send error. The preview's busy() used to do this
+      // incidentally, back when both wrote the same line.
+      say(sendStatus, "", false);
       sendDialog.showModal();
-      await drawPreview(slug, sendPreview, sendStatus);
+      await drawPreview(slug, sendPreview, sendPreviewStatus);
     });
   });
 

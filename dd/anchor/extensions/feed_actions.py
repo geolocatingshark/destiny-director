@@ -160,7 +160,9 @@ async def _handle_send(request: aiohttp.web.Request) -> aiohttp.web.Response:
     post builds cleanly and the announcer is running — see the module docstring.
     """
     feed = _feed_or_404(request)
-    if feed.channel_id is None:
+    # Falsy, not `is None`: `register_feed` normalises 0 to None, and this is the guard
+    # standing between a dormant feed and a post announced into channel 0.
+    if not feed.channel_id:
         return aiohttp.web.json_response(
             {"error": f"{_title(feed.name)} is dormant — no channel configured."},
             status=409,

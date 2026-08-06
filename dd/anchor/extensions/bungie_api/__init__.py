@@ -30,12 +30,7 @@ from .constants import (
     XUR_VENDOR_HASH,
     likely_emoji_name,
 )
-from .manifest import (
-    _build_manifest_dict,
-    _get_latest_manifest,
-    invalidate_manifest_cache,
-    prewarm_manifest,
-)
+from .manifest import _build_manifest_dict, _get_latest_manifest, prewarm_manifest
 from .models import (
     APIOffline,
     DestinyArmor,
@@ -72,7 +67,6 @@ __all__ = [
     "likely_emoji_name",
     "_build_manifest_dict",
     "_get_latest_manifest",
-    "invalidate_manifest_cache",
     "prewarm_manifest",
     "APIOffline",
     "APIOfflineException",

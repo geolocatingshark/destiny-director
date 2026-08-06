@@ -94,6 +94,11 @@ def _install(monkeypatch: pytest.MonkeyPatch, *, current: str | None) -> list[st
     return calls
 
 
+def _downloaded(manifest_dir) -> list[str]:
+    """Extracted manifests actually on disk, by name."""
+    return sorted(p.name for p in manifest_dir.iterdir() if p.is_file())
+
+
 @pytest.fixture
 def manifest_dir(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """A tmp cwd — the resolver works against the relative `manifest/` directory."""
@@ -151,17 +156,33 @@ async def test_falls_back_to_disk_when_bungie_cannot_be_reached_and_retries_afte
     assert await m._get_latest_manifest("key") == "manifest/world_v2.content"
 
 
-async def test_invalidate_forces_a_redownload(
+async def test_a_failed_extract_leaves_nothing_the_next_resolve_would_trust(
     manifest_dir, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The case the filename check cannot see: the current manifest, but corrupt.
-    (manifest_dir / "world_v1.content").write_bytes(b"truncated garbage")
-    await m.invalidate_manifest_cache()
-    assert not (manifest_dir / "world_v1.content").exists()
+    """The one corruption the currency check cannot see, so it must not be left behind.
 
-    _install(monkeypatch, current="world_v1.content")
+    An extract that dies part-way (running out of disk inside ~340MB is the realistic
+    cause) leaves a file with exactly the name Bungie just gave us. Nothing downstream
+    can tell it apart from a good copy — the next resolve finds the name, believes it,
+    and hands every consumer a truncated sqlite for the life of the process.
+    """
+    calls = _install(monkeypatch, current="world_v1.content")
+
+    real_extractall = zipfile.ZipFile.extractall
+
+    def _die_after_writing(self, path, *a, **kw):
+        real_extractall(self, path, *a, **kw)  # the partial file now exists
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(zipfile.ZipFile, "extractall", _die_after_writing)
+    with pytest.raises(OSError):
+        await m._get_latest_manifest("key")
+    assert _downloaded(manifest_dir) == []
+
+    # And the next resolve genuinely re-downloads rather than reusing the wreckage.
+    monkeypatch.setattr(zipfile.ZipFile, "extractall", real_extractall)
     assert await m._get_latest_manifest("key") == "manifest/world_v1.content"
-    assert (manifest_dir / "world_v1.content").read_bytes() != b"truncated garbage"
+    assert len(calls) == 4  # two metadata checks + two downloads, nothing reused
 
 
 async def test_concurrent_callers_share_one_resolve(

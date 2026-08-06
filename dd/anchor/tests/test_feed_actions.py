@@ -178,18 +178,29 @@ async def test_send_honours_publish_false() -> None:
     assert seen["publish_message"] is False
 
 
-async def test_send_refuses_a_dormant_feed() -> None:
+@pytest.mark.parametrize("dormant_channel", [None, 0])
+async def test_send_refuses_a_dormant_feed(dormant_channel: int | None) -> None:
+    # 0 is the shape production actually produces: an unset followable ships as
+    # `"portal_ops": 0` in FOLLOWABLES, so `cfg.followables.get(...)` returns 0, not
+    # None. A guard written as `is None` let Send answer "started" and announce into
+    # channel 0 — failing where only the log could see it. register_feed normalises the
+    # two, and this covers both spellings arriving at the handler.
     called = False
 
     async def _announcer(**_kwargs: t.Any) -> None:
         nonlocal called
         called = True
 
-    _register(channel_id=None, announcer=_announcer)
+    _register(channel_id=dormant_channel, announcer=_announcer)
     res = await feed_actions._handle_send(_as_request(_FakeRequest("xur", {})))
     assert res.status == 409
     assert "dormant" in json.loads(_text(res))["error"]
     assert not called
+
+
+async def test_register_feed_normalises_an_unset_channel_to_none() -> None:
+    _register(channel_id=0)
+    assert autopost.registered_feeds()["xur"].channel_id is None
 
 
 async def test_send_refuses_without_an_announcer() -> None:

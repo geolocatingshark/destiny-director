@@ -33,8 +33,9 @@ _MANIFEST_DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=600)
 # same file, one wipes ``manifest/`` while the other is extracting, and both
 # ``extractall`` concurrently — corrupting the sqlite ("database disk image is
 # malformed"). The first caller downloads; the rest wait and hit the cached path below.
-# Kept as the last line of defence even though `_inflight` normally means there is only
-# ever one resolve running: `invalidate_manifest_cache` deletes files under it too.
+# `_inflight` now means there is normally only one resolve running at all; this is kept
+# as the last line of defence, since nothing stops a caller reaching `_resolve_manifest`
+# by another route in future.
 _manifest_lock = asyncio.Lock()
 
 #: The resolve currently running, if any, so a burst of callers shares one rather than
@@ -66,22 +67,6 @@ def _downloaded_manifests() -> list[str]:
         key=os.path.getmtime,
         reverse=True,
     )
-
-
-async def invalidate_manifest_cache() -> None:
-    """Delete the extracted manifest, so the next resolve downloads a fresh copy.
-
-    Not needed for ordinary staleness — a new manifest arrives under a new filename and
-    :func:`_get_latest_manifest` picks it up on its next currency check. This is the
-    escape hatch for the case that check cannot see: a copy on disk that is *current but
-    broken* (a truncated download, an extract interrupted mid-write — "database disk
-    image is malformed"), where the filename says we already have what Bungie is
-    serving. Takes the same lock as the download, so it cannot delete out from under an
-    in-flight extract.
-    """
-    async with _manifest_lock:
-        for path in _downloaded_manifests():
-            os.remove(path)
 
 
 async def prewarm_manifest(api_key: str) -> None:
@@ -201,7 +186,19 @@ async def _resolve_manifest(api_key: str) -> str:
             with zipfile.ZipFile(_MANIFEST_ZIP, "r") as zip_ref:
                 zip_ref.extractall(_MANIFEST_DIR)
 
-        await asyncio.get_event_loop().run_in_executor(None, _extract)
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _extract)
+        except Exception:
+            # A partial extract is the one failure the currency check above cannot see:
+            # it leaves a file with exactly the name Bungie just gave us, so the next
+            # resolve finds it, believes it, and hands every consumer a truncated sqlite
+            # ("database disk image is malformed") for the rest of the process's life.
+            # The realistic cause is running out of disk part-way through ~340MB. Clean
+            # up what we wrote so the next resolve downloads again instead.
+            logger.warning("Manifest extract failed; discarding the partial copy")
+            for partial in _downloaded_manifests():
+                os.remove(partial)
+            raise
 
         # The name Bungie just gave us, not whatever `listdir` happens to return first.
         return manifest_path
