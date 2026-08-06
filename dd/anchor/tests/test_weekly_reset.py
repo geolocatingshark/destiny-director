@@ -23,7 +23,6 @@ Components V2 builder.
 
 import datetime as dt
 import json
-import re
 import types
 import typing as t
 
@@ -728,7 +727,7 @@ async def test_create_publish_returns_problems_for_invalid_draft(monkeypatch) ->
     assert json.loads(resp.text or "")["problems"]
 
 
-# --- rich HTML preview (render_post_html) -----------------------------------------
+# --- post body markdown ------------------------------------------------------------
 
 
 class _StubEmoji:
@@ -738,41 +737,19 @@ class _StubEmoji:
         self.url = url
 
 
-def test_render_post_html_renders_markdown_and_emoji() -> None:
-    emoji = {"Bungie": _StubEmoji("https://cdn.discordapp.com/emojis/1.png")}
-    body = "\n".join(
-        [
-            "# Weekly Reset Overview",
-            "Resets: <t:1784048400:f>",
-            "**UPDATES & EVENTS**",
-            ":Bungie: ┊ [Patch <notes>](https://example.com/n)",
-            ":unknown: plain",
-            "***See you starside!*** \U0001f4ab",
-            "A < B & C",
-            "[bad](ftp://nope.example)",
-        ]
-    )
-    out = wr.render_post_html(body, t.cast("dict[str, h.Emoji]", emoji))
-    # H1 span + bold header, custom emoji as <img>, masked link with escaped label.
-    assert '<span class="md-h1">Weekly Reset Overview</span>' in out
-    assert "<strong>UPDATES &amp; EVENTS</strong>" in out
-    assert (
-        '<img class="emoji" src="https://cdn.discordapp.com/emojis/1.png" '
-        'alt=":Bungie:">' in out
-    )
-    assert '<a href="https://example.com/n">Patch &lt;notes&gt;</a>' in out
-    # bold-italic sign-off, unicode emoji + separator pass through.
-    assert "<strong><em>See you starside!</em></strong> \U0001f4ab" in out
-    assert "┊" in out
-    # <t:…:f> -> formatted UTC date (Tuesday 17:00 UTC == 5:00 PM).
-    assert "Jul 14, 2026 5:00 PM (UTC)" in out
-    # A raw "<" in a text leaf is escaped (self-XSS-safe).
-    assert "A &lt; B &amp; C" in out
-    # Unknown emoji name -> escaped text, not an <img>.
-    assert ":unknown:" in out and 'alt=":unknown:"' not in out
-    # Non-http(s) link rejected: rendered as escaped text, never an <a>.
-    assert "[bad](ftp://nope.example)" in out
-    assert 'href="ftp' not in out
+def test_build_body_emits_the_markdown_the_renderer_needs() -> None:
+    """The producer's half: the constructs are in the body text.
+
+    Rendering them — emoji as <img>, escaping, link validation — belongs to the shared
+    renderer, and is pinned by ``dd/anchor/preview_fixtures``.
+    """
+    body = wr.build_body(_full_ctx())
+    assert body.startswith("# ")  # H1 title
+    assert "\n### " in body  # sub-headings
+    assert "**" in body  # bold
+    assert ":Bungie:" in body  # a guild emoji shortcode
+    assert "<t:" in body  # a Discord timestamp token
+    assert "](https://" in body  # at least one masked link
 
 
 def test_discord_error_note() -> None:
@@ -792,33 +769,6 @@ def test_discord_error_note() -> None:
     other = wr._discord_error_note(Exception("Some other Discord failure"))
     assert other.startswith("Discord rejected the post:")
     assert "Some other Discord failure" in other
-
-
-def test_render_post_html_bottom_image() -> None:
-    emoji: dict = {}
-    out = wr.render_post_html(
-        "# Title", t.cast("dict[str, h.Emoji]", emoji), "https://ex.com/a.png?x=1&y"
-    )
-    # Image rendered at the bottom, with the src escaped.
-    assert '<img class="post-image" src="https://ex.com/a.png?x=1&amp;y"' in out
-    # The old "via Destiny Director (Kyber)" credit line is gone (buttons replaced it).
-    assert "md-small" not in out
-    assert "via Destiny Director" not in out
-    # No image URL -> no <img>.
-    assert "post-image" not in wr.render_post_html(
-        "# Title", t.cast("dict[str, h.Emoji]", emoji), None
-    )
-    # Non-http(s) image URL rejected.
-    assert "post-image" not in wr.render_post_html(
-        "# Title", t.cast("dict[str, h.Emoji]", emoji), "javascript:alert(1)"
-    )
-    # ONLY the whitelisted tags are ever emitted.
-    tags = set(re.findall(r"</?([a-zA-Z]+)", out))
-    assert tags <= {"span", "strong", "em", "a", "img"}, tags
-
-
-def test_format_reset_ts_is_utc_long_short() -> None:
-    assert wr._format_reset_ts(1784048400) == "Jul 14, 2026 5:00 PM (UTC)"
 
 
 # --- DraftMeta lifecycle state ----------------------------------------------------

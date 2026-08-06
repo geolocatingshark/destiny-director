@@ -57,6 +57,19 @@ DB layer, or building a message/embed, read it.** Quick orientation:
   import time**, so a missing var fails fast with `ValueError`.
 - Deploy via `make deploy-beacon-dev` / `deploy-anchor-prod` etc. (Railway) or via
   Railway's plugin.
+- **Never call the Railway connector's agent** (`mcp__Railway__railway-agent`). Use the
+  direct tools only — `get-status`, `list-deployments`, `get-logs`, `get-service-config`,
+  `list-variables`, `redeploy`, `update-service`. The agent takes its own actions to
+  reach a goal, and they are not always the ones asked for: told to *remove* a running
+  deployment it *restarted* the service instead, bouncing a live bot nobody asked to
+  bounce. An agent that improvises is the wrong tool against infrastructure.
+- Consequence, so it isn't rediscovered: **deploying a specific commit is then not
+  reachable from here.** `redeploy` rebuilds the *previous snapshot*, not the branch tip
+  — it reported SUCCESS while running day-old code, and only a missing extension in the
+  logs gave it away. Pushing to the watched branch does not reliably auto-trigger either.
+  So deploys are the owner's to drive; the agent's commit-SHA deploy is not a substitute.
+  Always verify **which commit** a deployment built (`list-deployments` reports
+  `commitHash`) rather than trusting its status.
 - **Never deploy to prod on your own initiative.** The ONLY condition under which you may
   deploy to prod is when you have **explicitly asked the user whether to deploy and they
   confirmed** in that exchange. Pushing to `shark/main` triggers a Railway auto-deploy to

@@ -18,6 +18,7 @@
 # Authentication is handled centrally by the web_auth middleware (covered in
 # test_web_auth.py), so the handler assumes an already-authenticated request.
 
+import json
 import typing as t
 
 import aiohttp.web
@@ -27,6 +28,16 @@ from dd.anchor import web
 from dd.anchor.extensions import control_panel
 
 pytestmark = pytest.mark.asyncio
+
+
+def _text(resp: aiohttp.web.Response) -> str:
+    """Response.text is typed ``str | None``; every handler here sets it."""
+    assert resp.text is not None
+    return resp.text
+
+
+def _as_request(req: "_FakeRequest") -> aiohttp.web.Request:
+    return t.cast(aiohttp.web.Request, req)
 
 
 @pytest.fixture
@@ -103,3 +114,114 @@ async def test_handle_panel_returns_html_response(clean_cards: None) -> None:
     assert resp.content_type == "text/html"
     assert resp.text is not None
     assert 'href="/rotation"' in resp.text
+
+
+# --- bot administration --------------------------------------------------------------
+#
+# The web replacement for /anchor info and /anchor stop. On the panel itself rather than
+# a page of its own: two actions and a read-only dump, on the bot's front door.
+
+
+async def test_bot_info_reports_configured_channels() -> None:
+    resp = await control_panel._handle_bot_info(_as_request(_FakeRequest()))
+    payload = json.loads(_text(resp))
+
+    assert payload["bot"] == "anchor"
+    # Snowflakes exceed JS's safe-integer range, so ids travel as strings.
+    assert isinstance(payload["controlServerId"], str)
+    assert isinstance(payload["testEnv"], list)
+    feeds = {c["feed"] for c in payload["channels"]}
+    assert "lost_sector" in feeds
+
+
+async def test_bot_info_resolves_channel_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A raw snowflake tells the reader nothing; the point of the panel is the name.
+    class _Channel:
+        name = "lost-sector"
+
+    class _Bot:
+        async def fetch_channel(self, _channel_id: int) -> _Channel:
+            return _Channel()
+
+    monkeypatch.setattr(control_panel, "_bot", _Bot())
+    payload = json.loads(
+        _text(await control_panel._handle_bot_info(_as_request(_FakeRequest())))
+    )
+    named = [c for c in payload["channels"] if c["channelName"]]
+    assert named and all(c["channelName"] == "#lost-sector" for c in named)
+
+
+async def test_bot_info_survives_an_unresolvable_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Not in the guild, channel deleted, bot still starting — none of which should cost
+    # the panel its whole config dump.
+    class _Bot:
+        async def fetch_channel(self, _channel_id: int) -> object:
+            raise RuntimeError("not found")
+
+    monkeypatch.setattr(control_panel, "_bot", _Bot())
+    payload = json.loads(
+        _text(await control_panel._handle_bot_info(_as_request(_FakeRequest())))
+    )
+    assert payload["channels"]
+    assert all(c["channelName"] is None for c in payload["channels"])
+    # The id is still there, so the row degrades to a snowflake rather than vanishing.
+    assert any(c["channelId"] for c in payload["channels"])
+
+
+async def test_bot_stop_503s_before_the_bot_is_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Routes are live from web.start(); _bot is only set on StartedEvent, so a request
+    # in that window must not blow up.
+    monkeypatch.setattr(control_panel, "_bot", None)
+    resp = await control_panel._handle_bot_stop(_as_request(_FakeRequest()))
+    assert resp.status == 503
+
+
+async def test_bot_stop_schedules_a_clean_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exit 0, so Railway's ON_FAILURE policy leaves it down — a non-zero exit would be
+    # read as a crash and restarted. And *scheduled*, not awaited: the panel is served
+    # by the process being stopped, so the response has to be written first.
+    seen: dict[str, object] = {}
+
+    async def _request_shutdown(bot: object, exit_code: int) -> None:
+        seen["bot"] = bot
+        seen["exit_code"] = exit_code
+
+    sentinel = object()
+    monkeypatch.setattr(control_panel, "_bot", sentinel)
+    monkeypatch.setattr(
+        control_panel.lifecycle, "request_shutdown", _request_shutdown
+    )
+
+    resp = await control_panel._handle_bot_stop(_as_request(_FakeRequest()))
+    assert json.loads(_text(resp)) == {"ok": True, "stopping": True}
+    assert seen["bot"] is sentinel
+    assert seen["exit_code"] == control_panel.lifecycle.STOP_EXIT_CODE
+
+
+async def test_panel_hosts_the_bot_actions_and_modals(clean_cards: None) -> None:
+    body = _text(await control_panel._handle_panel(_as_request(_FakeRequest())))
+
+    assert 'id="infoBtn"' in body
+    assert 'id="stopBtn"' in body
+    # `danger` on the dialog is what makes the shutdown modal read as a warning rather
+    # than another form — the copy below is only half of it.
+    assert '<dialog class="panelmodal danger" id="stopDialog">' in body
+    # Shutting down takes the panel with it; the dialog must say so.
+    assert "panel runs inside the bot" in body
+    assert "/static/control_panel.js" in body
+    assert "<script>" not in body  # CSP is script-src 'self'
+
+
+async def test_bot_routes_registered() -> None:
+    app = aiohttp.web.Application()
+    control_panel.register_panel_routes(app)
+    paths = {getattr(r.resource, "canonical", None) for r in app.router.routes()}
+    assert {"/", "/bot/info", "/bot/stop"} <= paths

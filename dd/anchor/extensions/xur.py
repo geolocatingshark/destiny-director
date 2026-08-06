@@ -34,17 +34,14 @@ from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
 from ...common.components import (
     build_container,
-    cv2_notice,
-    cv2_success,
     finalize_cv2_post,
     footer_buttons_row,
-    respond_cv2,
     url_media_gallery,
 )
 from ...common.utils import accumulate, fetch_emoji_dict
 from ...sector_accounting import xur as xur_support_data
 from .. import utils
-from ..autopost import make_autopost_control_commands
+from ..autopost import Feed, register_feed
 from . import bungie_api as api
 
 logger = logging.getLogger(__name__)
@@ -449,7 +446,9 @@ XUR_FOOTER = "\n\nHave a great weekend! :gscheer:"
 
 #: Post-specific footer guide button(s); Support is appended by
 #: ``footer_button_specs``. The "View More" page that was a markdown link in the footer.
-XUR_GUIDES: tuple[tuple[str, str], ...] = (("Xûr Guide", "https://kyber3000.com/D2-Xur"),)
+XUR_GUIDES: tuple[tuple[str, str], ...] = (
+    ("Xûr Guide", "https://kyber3000.com/D2-Xur"),
+)
 
 
 async def format_xur_vendor(
@@ -693,60 +692,14 @@ async def on_start_schedule_autoposts(
         )
 
 
-class ControlXurDefaultImage(
-    lb.SlashCommand,
-    name="default_image",
-    description="Control whether the default xur image is added to the embed",
-):
-    option = lb.string(
-        "option",
-        "Enable or disable",
-        choices=[lb.Choice("Enable", "Enable"), lb.Choice("Disable", "Disable")],
+
+
+# Contribute this feed's producer wiring to the web feed page (Preview / Send now).
+register_feed(
+    Feed(
+        name="xur",
+        channel_id=cfg.followables["xur"],
+        message_constructor_coro=xur_message_constructor,
+        message_announcer_coro=api_to_discord_announcer,
     )
-
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context):
-        """Control whether the default xur image is added to the embed"""
-
-        desired_setting: bool = self.option.lower() == "enable"
-        current_setting = await schemas.AutoPostSettings.get_xur_default_image_enabled()
-
-        if desired_setting == current_setting:
-            await respond_cv2(
-                ctx,
-                cv2_notice(
-                    f"Xur's default image is already "
-                    f"{'enabled' if desired_setting else 'disabled'}."
-                ),
-            )
-            return
-
-        await schemas.AutoPostSettings.set_xur_default_image_enabled(
-            enabled=desired_setting
-        )
-        await respond_cv2(
-            ctx,
-            cv2_success(
-                f"Xur's default image is now "
-                f"{'enabled' if desired_setting else 'disabled'}."
-            ),
-        )
-
-
-async def _get_xur_enabled() -> bool:
-    return bool(await schemas.AutoPostSettings.get_xur_enabled())
-
-
-_xur_autopost_group = make_autopost_control_commands(
-    autopost_name="xur",
-    enabled_getter=_get_xur_enabled,
-    enabled_setter=schemas.AutoPostSettings.set_xur,
-    channel_id=cfg.followables["xur"],
-    message_constructor_coro=xur_message_constructor,
-    message_announcer_coro=api_to_discord_announcer,
-    cv2=True,
 )
-
-_xur_autopost_group.register(ControlXurDefaultImage)
-
-loader.command(_xur_autopost_group)

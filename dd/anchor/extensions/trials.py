@@ -50,11 +50,8 @@ from dd.hmessage import HMessage
 from ...common import cfg, rotation_schema, schemas
 from ...common.bot import CachedFetchBot
 from ...common.components import (
-    cv2_error,
-    cv2_notice,
     finalize_cv2_post,
     footer_button_specs,
-    respond_cv2,
 )
 from ...common.utils import fetch_emoji_dict
 from .. import hybrid_post_core, web
@@ -709,42 +706,8 @@ web.register_card(
 
 
 # ---------------------------------------------------------------------------
-# Slash command + startup
+# Startup
 # ---------------------------------------------------------------------------
-
-
-trials_group = lb.Group("trials", "Trials of Osiris post (owner only)")
-
-
-@trials_group.register
-class Create(
-    lb.SlashCommand,
-    name="create",
-    description="Open the owner-only Trials web form",
-):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context) -> None:
-        if not cfg.public_base_url:
-            await respond_cv2(
-                ctx,
-                cv2_error(
-                    "No editor link available",
-                    "No public base URL is configured (set PUBLIC_BASE_URL or run on "
-                    "Railway), so I can't mint a reachable edit link.",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        url = f"{cfg.public_base_url}/trials"
-        container = cv2_notice(
-            "Open the Trials form with the button below — you'll sign in with Discord "
-            "the first time. Edit, preview, save and publish all from that page."
-        )
-        row = h.impl.MessageActionRowBuilder()
-        row.add_component(h.impl.LinkButtonBuilder(url=url, label="Open Trials form"))
-        container.add_component(row)
-        await respond_cv2(ctx, container, ephemeral=True)
 
 
 @loader.listener(h.StartedEvent)
@@ -765,9 +728,7 @@ async def _on_started(
     asyncio.create_task(_prewarm_weapon_emoji(bot))
 
 
-# The web form's routes are always registered (above); the slash command that links to
-# the form is gated on the publish target (the trials followable) — the same gate that
-# guards the StartedEvent listener. There is no reset-weekend cron: the post is created
-# and published entirely from the web form's Create/Publish buttons.
-if cfg.followables.get("trials"):
-    loader.command(trials_group)
+# The web form's routes are always registered (above) and the form is reached from the
+# control-panel card grid, which replaced the former `/trials create` command. There is
+# no reset-weekend cron: the post is created and published entirely from the web form's
+# Create/Publish buttons.

@@ -20,8 +20,8 @@ Kyber's design the Discord post is deliberately simple — it highlights the dat
 mode(s) and the current **Bonus Focus Pool** (with light.gg deep links + weapon-type
 emoji) and then links out to the full guide with a button; the guide covers everything
 else. So unlike Trials there is **no web form and no manual publish**: this is the fully
-automatic :mod:`dd.anchor.autopost` producer pattern (cron + ``AutoPostSettings`` toggle
-+ ``make_autopost_control_commands``).
+automatic :mod:`dd.anchor.autopost` producer pattern: a cron, the ``AutoPostSettings``
+toggle, and the web feed page for a manual preview/send.
 
 The schedule and pools are **date-anchored** and edited in the rotation editor (the
 ``iron_banner`` type — see :mod:`dd.common.rotation_schema`). A daily 17:00 UTC cron
@@ -52,7 +52,7 @@ from ...common import (
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
 from .. import hybrid_post_core
-from ..autopost import discord_announcer, make_autopost_control_commands
+from ..autopost import Feed, discord_announcer, register_feed
 
 logger = logging.getLogger(__name__)
 loader = lb.Loader()
@@ -127,10 +127,6 @@ async def _save_last_posted_reset(period: int) -> None:
     await schemas.RotationData.set_data(META_SLUG, {"last_posted_reset": int(period)})
 
 
-async def _get_iron_banner_enabled() -> bool:
-    return bool(await schemas.AutoPostSettings.get_iron_banner_enabled())
-
-
 # ---------------------------------------------------------------------------
 # Schedule + startup
 # ---------------------------------------------------------------------------
@@ -180,16 +176,15 @@ async def _schedule_iron_banner(
         await _save_last_posted_reset(period)
 
 
-# The owner control group (/iron_banner auto|send|show) — the enable/disable toggle plus
-# manual send/preview. Gated on the followable being configured, like the cron above.
-if _CHANNEL_ID:
-    _iron_banner_autopost_group = make_autopost_control_commands(
-        "iron_banner",
-        _get_iron_banner_enabled,
-        schemas.AutoPostSettings.set_iron_banner,
-        _CHANNEL_ID,
-        format_post,
+# Contribute this feed's producer wiring to the web feed page (Preview / Send now).
+# Registered unconditionally, unlike the command group above: with no configured
+# followable the feed is *dormant*, and its page says so rather than 404-ing behind a
+# link /autopost_settings shows either way. Preview still works — it needs no channel.
+register_feed(
+    Feed(
+        name="iron_banner",
+        channel_id=_CHANNEL_ID,
+        message_constructor_coro=format_post,
         message_announcer_coro=discord_announcer,
-        cv2=True,
     )
-    loader.command(_iron_banner_autopost_group)
+)

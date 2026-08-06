@@ -35,6 +35,7 @@
     <main id="mount"></main>
 
     <script src="../cv2_model.js"></script>
+    <script src="../cv2_render.js"></script>
     <script src="../cv2_builder.js"></script>
     <script>
       // A tree deliberately shaped for the drag tests: a container with children (so
@@ -46,6 +47,13 @@
       // No network. The thumbnail is a 1x1 data: URI rather than a real URL so the
       // fixture renders identically with no egress — a test that quietly depends on
       // reaching example.com fails for reasons that have nothing to do with the code.
+      //
+      // Since the canvas moved onto the shared renderer it DRAWS this as "image URL
+      // missing", because media URLs must be http(s) — the rule the server render has
+      // always applied, and the right one: a data: URI is not something Discord can be
+      // sent. That is deliberate, and the accessory slot it occupies is what the drag
+      // tests target, so they are unaffected. It also reads better than what it
+      // replaced, which was an invisible one-pixel image.
       const PIXEL =
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ" +
         "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
@@ -86,7 +94,10 @@
         defaultAccent: 0xec42a5,
         actionLabel: "Post",
         onSave: async () => ({ ok: true }),
-        onPreview: async () => "<p class='cv2b-help'>(harness preview)</p>",
+        // Stands in for POST /preview, which returns the sanitized tree the server
+        // would post. Echoing the nodes back unchanged is the no-op sanitize — enough
+        // for the dialog to render something real.
+        onPreview: async (nodes) => ({ nodes: nodes, problems: [] }),
         onPublish: async () => ({ ok: true, message_link: "https://example.com/msg" }),
       });
     </script>

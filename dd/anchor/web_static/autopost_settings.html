@@ -16,6 +16,10 @@
     <meta name="robots" content="noindex, nofollow" />
     <title>Autopost Settings — Destiny Director</title>
     <link rel="stylesheet" href="/static/shared.css" />
+    <!-- cv2_preview.css styles what cv2_render.js draws; the pair must be loaded
+         together (asset_links.test.js enforces it). Both are here for the post
+         preview shown inside this page's modals. -->
+    <link rel="stylesheet" href="/static/cv2_preview.css" />
     <style>
       /* Base/reset/theme lives in shared.css (linked above); only this page's own
          styles are inlined here. Palette mirrors control_panel.html. */
@@ -39,6 +43,37 @@
       .row.sub .name { font-size: .88rem; }
       .row .text { min-width: 0; }
       .row .name { font-size: .95rem; }
+      /* Per-feed actions, inline on the row: one horizontal pair that wraps rather
+         than squashing. Sits between the label and the toggle, so the switch stays
+         where the eye expects it down the right edge. Explanations are hover cards —
+         two labelled buttons do not need two paragraphs. */
+      .rowactions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .5rem; }
+      /* The row's text column holds the actions now, so it must be allowed to grow. */
+      .row .text { flex: 1; }
+
+
+      /* Modals. Native <dialog>, so Escape and the backdrop come free. */
+      dialog.feedmodal {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-3); color: var(--text-1); padding: 1.1rem;
+        max-width: 40rem; width: calc(100% - 2rem);
+      }
+      dialog.feedmodal::backdrop { background: rgba(0, 0, 0, .55); }
+      dialog.feedmodal h2 { margin: 0 0 .5rem; font-size: 1.05rem; }
+      dialog.feedmodal p.lede { margin: 0 0 .8rem; font-size: .92rem; color: var(--muted); }
+      dialog.feedmodal label.publish {
+        display: flex; align-items: center; gap: .45rem; font-size: .92rem;
+        margin: .9rem 0 1rem;
+      }
+      .modal-actions { display: flex; justify-content: flex-end; gap: .6rem; }
+      /* The rendered post inside a modal — bounded so a long post scrolls rather than
+         pushing the confirm buttons off-screen. */
+      .modalpreview { max-height: 50vh; overflow-y: auto; }
+      .modalstatus { color: var(--text-faint); font-size: .85rem; }
+      .modalstatus.err { color: var(--danger, #d9534f); }
+      /* The send dialog carries two of these (preview build, send outcome) and usually
+         only one is saying anything; an empty one must not hold open a gap. */
+      .modalstatus:empty { display: none; }
       .row .desc { color: var(--text-faint); font-size: .8rem; margin-top: .15rem; }
       /* A URL setting stacks its full-width text input below the label instead of
          placing a switch on the right. */
@@ -78,11 +113,6 @@
       .actions {
         display: flex; align-items: center; gap: .8rem; margin-top: 1rem;
       }
-      button#save {
-        border: 1px solid var(--accent-strong); border-radius: var(--radius); padding: .5rem 1.1rem;
-        background: var(--accent-strong); color: #fff; font-size: .95rem; cursor: pointer;
-      }
-      button#save:disabled { opacity: .6; cursor: default; }
       #status { color: var(--text-faint); font-size: .85rem; }
     </style>
   </head>
@@ -101,49 +131,49 @@
         <!--__TOGGLES__-->
       </form>
       <div class="actions">
-        <button type="button" id="save">Save</button>
+        <button type="button" class="primary" id="save">Save</button>
         <span id="status"></span>
       </div>
     </main>
-    <!-- shared.js (deferred) defines window.api before DOMContentLoaded fires below. -->
+    <dialog class="feedmodal" id="previewDialog">
+      <h2 id="previewTitle">Preview</h2>
+      <div class="modalpreview cv2-preview" id="previewBox"></div>
+      <p class="modalstatus" id="previewStatus"></p>
+      <div class="modal-actions">
+        <button type="button" id="previewClose">Close</button>
+      </div>
+    </dialog>
+
+    <dialog class="feedmodal" id="sendDialog">
+      <h2 id="sendTitle">Send this post?</h2>
+      <p class="lede" id="sendBody"></p>
+      <!-- The post being sent, so the confirmation shows WHAT is going out, not just
+           where. This is the preview; the row deliberately stays a list of toggles. -->
+      <div class="modalpreview cv2-preview" id="sendPreview"></div>
+      <!-- Two status lines, not one. The preview build and the send are deliberately
+           independent — send stays available while the preview builds and even if it
+           fails — so they must not share a slot: a preview resolving after a failed
+           send used to clear the error, leaving a blank line and an armed button. Both
+           can also be true at once ("Iron Banner is not running" AND "Send failed"),
+           and both are worth reading. -->
+      <p class="modalstatus" id="sendPreviewStatus"></p>
+      <p class="modalstatus" id="sendStatus"></p>
+      <label class="publish"
+        ><input type="checkbox" id="publish" checked /> Publish (crosspost to
+        followers)</label
+      >
+      <div class="modal-actions">
+        <button type="button" id="sendCancel">Cancel</button>
+        <button type="button" class="primary" id="sendConfirm">Send now</button>
+      </div>
+    </dialog>
+
+    <!-- shared.js (deferred) defines window.api; defer preserves order, so it is
+         ready before autopost_settings.js runs. cv2_model must precede cv2_render,
+         which draws the post preview inside the modals above. -->
+    <script src="/static/cv2_model.js" defer></script>
+    <script src="/static/cv2_render.js" defer></script>
     <script src="/static/shared.js" defer></script>
-    <script>
-      document.addEventListener("DOMContentLoaded", () => {
-        const btn = document.getElementById("save");
-        const status = document.getElementById("status");
-        btn.addEventListener("click", async () => {
-          const settings = {};
-          document
-            .querySelectorAll("input[type=checkbox][data-slug]")
-            .forEach((el) => {
-              settings[el.dataset.slug] = el.checked;
-            });
-          document
-            .querySelectorAll("input.urlfield[data-slug]")
-            .forEach((el) => {
-              settings[el.dataset.slug] = el.value;
-            });
-          btn.disabled = true;
-          status.textContent = "Saving…";
-          try {
-            const res = await window.api("/autopost_settings/save", { settings });
-            if (res.ok) {
-              status.textContent = "Saved.";
-            } else {
-              let msg = "Save failed.";
-              try {
-                const data = await res.json();
-                if (data && data.error) msg = data.error;
-              } catch (_) {}
-              status.textContent = msg;
-            }
-          } catch (_) {
-            status.textContent = "Network error — try again.";
-          } finally {
-            btn.disabled = false;
-          }
-        });
-      });
-    </script>
+    <script src="/static/autopost_settings.js" defer></script>
   </body>
 </html>

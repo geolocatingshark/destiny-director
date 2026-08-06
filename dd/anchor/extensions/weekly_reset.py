@@ -60,11 +60,8 @@ from dd.hmessage import HMessage
 from ...common import cfg, schemas
 from ...common.bot import CachedFetchBot
 from ...common.components import (
-    cv2_error,
-    cv2_notice,
     finalize_cv2_post,
     footer_button_specs,
-    respond_cv2,
 )
 from ...common.utils import fetch_emoji_dict
 
@@ -82,13 +79,11 @@ from ..hybrid_post_core import (
     WeaponRef,
     # Re-exported (used only via ``wr.<name>`` in the test suite, not in this module).
     _discord_error_note as _discord_error_note,
-    _format_reset_ts as _format_reset_ts,
     build_cv2,
     compute_rotator,
     current_reset_ts,
     get_weapon_pool,
     next_reset_ts,
-    render_post_html as render_post_html,
     resolve_weapon,
 )
 from . import (
@@ -775,12 +770,14 @@ def validate_post(ctx: WeeklyResetContext) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Rich HTML preview (web form)
+# Rich preview (web form)
 # ---------------------------------------------------------------------------
 #
-# The safe markdown->HTML preview renderer (``render_post_html`` + its ``_INLINE_MD`` /
-# ``_render_line`` / emoji-substituter internals) is generic and lives in
-# ``hybrid_post_core``; ``render_post_html`` + ``_format_reset_ts`` are imported above.
+# There is no preview renderer here any more. ``POST /weekly_reset/preview`` hands the
+# page the post's own CV2 node tree (``hybrid_post_core.post_spec_nodes``) and the
+# shared client renderer draws it — the same one the builder canvas and the mirror log
+# use. The body writes ``<t:…:f>`` tokens and lets the renderer localise them, which is
+# what Discord does with them in the posted message.
 
 
 # ---------------------------------------------------------------------------
@@ -974,6 +971,9 @@ class _Indexes:
     activities: dict[str, list[str]]
     #: Conquests pool: post tier ("Expert"/"Master"/"GM"/"Ultimate") -> sorted names.
     conquests: dict[str, list[str]]
+    #: False when the manifest could not be read, so the activity/conquest pools are
+    #: empty rather than genuinely so. Such a build is NOT cached — see get_indexes.
+    complete: bool = True
 
 
 _indexes: _Indexes | None = None
@@ -1057,13 +1057,8 @@ def _clean_activity_name(name: str, category: str) -> str:
     return base
 
 
-async def _build_indexes() -> _Indexes:
-    # One row per named weapon/armour (deduped, newest hash wins). The weapon pool is
-    # generic and identical across producers, so it comes from the process-wide, cached
-    # get_weapon_pool() (shared with trials) rather than being re-scanned here; a
-    # manifest failure there yields [] so the strike/conquest index below still builds
-    # from this extension's own connection.
-    items = await get_weapon_pool()
+async def _scan_activities() -> tuple[set[str], dict[str, set[str]], bool]:
+    """The strike + conquest pools, from this extension's own manifest connection."""
     # Only GM strikes need manifest autocomplete now; raids/dungeons/pantheon/crucible
     # are bounded Choice selectors (see the *_CHOICES constants).
     strikes: set[str] = set()
@@ -1100,11 +1095,32 @@ async def _build_indexes() -> _Indexes:
                         strikes.add(cleaned)
     except Exception:
         logger.warning("weekly_reset: manifest index build failed", exc_info=True)
+        return strikes, conquest_by_tier, False
+    return strikes, conquest_by_tier, True
+
+
+async def _build_indexes() -> _Indexes:
+    # The two halves share nothing but the manifest, so they run together rather than in
+    # sequence — the page now waits for this build, so it waits for their max, not their
+    # sum. Running them concurrently also means their two manifest resolves coalesce
+    # onto one (`manifest._inflight`); in sequence they were two Bungie round-trips,
+    # each opening a fresh session, on the cold path this build exists to keep short.
+    #
+    # The weapon pool is generic and identical across producers, so it comes from the
+    # process-wide, cached get_weapon_pool() (shared with trials) rather than being
+    # re-scanned here; a manifest failure there yields [] so the strike/conquest index
+    # still builds.
+    items, (strikes, conquest_by_tier, complete) = await asyncio.gather(
+        get_weapon_pool(), _scan_activities()
+    )
 
     result = _Indexes(
         items=items,
         activities={"strike": sorted(strikes)},
         conquests={tier: sorted(names) for tier, names in conquest_by_tier.items()},
+        # The item pool comes from get_weapon_pool, which returns [] uncached on its own
+        # failure; an empty pool means that failed too, and is equally not cacheable.
+        complete=complete and bool(items),
     )
     logger.info(
         "weekly_reset indexes: %d items; strikes=%d; conquests=%d",
@@ -1116,13 +1132,22 @@ async def _build_indexes() -> _Indexes:
 
 
 async def get_indexes() -> _Indexes:
-    """Build (once) and cache the manifest-backed autocomplete indexes."""
+    """Build (once) and cache the manifest-backed autocomplete indexes.
+
+    A build that could not read the manifest is returned but **not cached**, mirroring
+    :func:`hybrid_post_core.get_weapon_pool`. Caching one used to be permanent: a single
+    transient manifest failure at startup left the form with empty strike/conquest
+    pickers for the life of the process, with nothing to indicate why.
+    """
     global _indexes
     if _indexes is not None:
         return _indexes
     async with _indexes_lock:
         if _indexes is None:
-            _indexes = await _build_indexes()
+            built = await _build_indexes()
+            if not built.complete:
+                return built
+            _indexes = built
         return _indexes
 
 
@@ -1269,9 +1294,24 @@ def _pair(raw: t.Any) -> tuple[str, str]:
 
 
 async def _build_options() -> dict[str, t.Any]:
-    """Option pools shipped in the page bootstrap and filtered client-side."""
+    """Option pools shipped in the page bootstrap and filtered client-side.
+
+    **Waits for the manifest rather than rendering without it.** A bounded wait was
+    tried, and traded the wrong thing away: it turned a slow page into a page with empty
+    weapon / GM strike / Conquest pickers and a banner nobody has to read, on the one
+    form where those pools *are* the content. The reason the wait was there is now
+    handled upstream — the manifest is prewarmed at ``StartedEvent``
+    (``bungie_api.prewarm_manifest``) so it is on disk before anyone opens this, and
+    concurrent resolves are coalesced onto one, so two pages opened together do not
+    queue behind two downloads.
+
+    ``ready`` survives for the case no amount of waiting fixes: the manifest could not
+    be read at all, so the pools are genuinely empty and the page says so.
+    """
     indexes = await get_indexes()
     return {
+        # False when the manifest could not be read at all.
+        "ready": indexes.complete,
         "items": [
             {"name": name, "hash": hash_, "type": type_name, "rarity": rarity}
             for (name, hash_, type_name, _item_type, rarity) in indexes.items
@@ -1466,50 +1506,6 @@ web.register_card(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slash command — the sole remaining weekly_reset Discord surface
-# ---------------------------------------------------------------------------
-
-
-weekly_reset_group = lb.Group("weekly_reset", "Weekly Reset Overview (owner only)")
-
-
-@weekly_reset_group.register
-class Create(
-    lb.SlashCommand,
-    name="create",
-    description="Open the owner-only weekly-reset web form",
-):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context) -> None:
-        if not cfg.public_base_url:
-            await respond_cv2(
-                ctx,
-                cv2_error(
-                    "No editor link available",
-                    "No public base URL is configured (set PUBLIC_BASE_URL or run on "
-                    "Railway), so I can't mint a reachable edit link.",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        url = f"{cfg.public_base_url}/weekly_reset"
-        # Ephemeral (owner-private) response with a link button. The form itself is
-        # gated by Discord OAuth (web_auth.py) — you sign in with Discord on first open.
-        container = cv2_notice(
-            "Open the weekly-reset form with the button below — you'll sign in with "
-            "Discord the first time. Edit, preview, save and publish all from that "
-            "page."
-        )
-        row = h.impl.MessageActionRowBuilder()
-        row.add_component(
-            h.impl.LinkButtonBuilder(url=url, label="Open weekly-reset form")
-        )
-        container.add_component(row)
-        await respond_cv2(ctx, container, ephemeral=True)
-
-
 @loader.listener(h.StartedEvent)
 async def _on_started(
     event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED
@@ -1525,9 +1521,7 @@ async def _on_started(
     asyncio.create_task(get_indexes())
 
 
-# The web form's routes are always registered (above); the slash command that mints the
-# link is gated on the publish target (the weekly_reset followable) — the same gate that
-# guards the StartedEvent listener. There is no reset-day cron: the post is created and
-# published entirely from the web form's Create/Publish buttons.
-if cfg.followables.get("weekly_reset"):
-    loader.command(weekly_reset_group)
+# The web form's routes are always registered (above) and the form is reached from the
+# control-panel card grid, which replaced the former `/weekly_reset create` command.
+# There is no reset-day cron: the post is created and published entirely from the web
+# form's Create/Publish buttons.

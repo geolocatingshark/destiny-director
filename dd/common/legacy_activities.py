@@ -492,10 +492,11 @@ def iter_wall_posts(
 
     Mirrors the beacon read command's per-mode paging (single / week-daily / navigator)
     but returns raw-``:emoji:`` markdown bodies (each post's sections joined with a
-    blank line) for :func:`dd.anchor.hybrid_post_core.render_post_spec`. The renderers
-    are called with an EMPTY ``emoji_dict`` on purpose so ``:name:`` tokens survive for
-    the HTML previewer to turn into ``<img>`` (``construct_emoji_substituter`` leaves
-    names it doesn't know untouched). Single-mode destinations yield ONE entry (current
+    blank line) for the preview wall to wrap in a :class:`PostSpec`. The renderers are
+    called with an EMPTY ``emoji_dict`` on purpose so ``:name:`` tokens survive into the
+    body for the *client* renderer to turn into ``<img>``
+    (``construct_emoji_substituter`` leaves names it doesn't know untouched).
+    Single-mode destinations yield ONE entry (current
     + upcoming); navigator / week-daily yield the forward window of per-period posts,
     capped at ``count`` when given (e.g. the rotation editor's compact preview).
     """

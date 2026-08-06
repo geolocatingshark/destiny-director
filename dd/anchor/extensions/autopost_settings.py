@@ -18,9 +18,9 @@
 A single owner-only page (linked from the control-panel homepage via
 :func:`web.register_card`) that shows every **global** autopost produce toggle and lets
 the owner flip them in one place. Each toggle maps to one ``name`` row in
-:class:`~dd.common.schemas.AutoPostSettings` — the same rows the scattered ``/<feed>
-auto`` anchor slash commands write. This page does not replace those; it is an
-additional, consolidated surface over the same rows.
+:class:`~dd.common.schemas.AutoPostSettings`. This page is the **sole** surface for
+those rows: the scattered ``/<feed> auto`` slash commands (plus ``/ls details`` and
+``/xur default_image``) duplicated it and were removed 2026-08-04.
 
 Scope is settings only — no "send now" / preview and no per-guild follow management
 (that is end-user ``/autopost <feed>`` territory, stored as ``MirroredChannel`` rows). A
@@ -40,6 +40,7 @@ import lightbulb as lb
 
 from ...common import schemas
 from .. import web
+from ..autopost import registered_feeds
 
 logger = logging.getLogger(__name__)
 
@@ -138,17 +139,42 @@ def _render_row(setting: _Setting, state: bool | str | None) -> str:
     what the client save script and ``_handle_save`` read back.
     """
     base_class = "row sub" if setting.sub else "row"
-    label_block = (
-        '<div class="text">'
-        f'<div class="name">{html.escape(setting.label)}</div>'
-        f'<div class="desc">{html.escape(setting.desc)}</div>'
+
+    def _label_block(actions_html: str = "") -> str:
+        return (
+            '<div class="text">'
+            f'<div class="name">{html.escape(setting.label)}</div>'
+            f'<div class="desc">{html.escape(setting.desc)}</div>'
+            f"{actions_html}"
+            "</div>"
+        )
+    # A top-level slug that names a registered feed gets its two actions inline — the
+    # replacement for the old `/<feed> show` and `send` commands. They live here rather
+    # than on a per-feed page: a feed has no state a page could show that this row does
+    # not already, so a page would be a click in the way. The rendered post appears in
+    # this page's modals (see autopost_settings.js), not in the row.
+    actions = (
+        '<div class="rowactions">'
+        f'<button type="button" class="feedaction small" data-action="preview"'
+        f' data-slug="{html.escape(setting.slug)}"'
+        ' title="Builds the post exactly as the producer would right now, and shows it.'
+        ' Nothing is sent. The data comes from the live API, so this can take a few'
+        ' seconds.">Preview</button>'
+        f'<button type="button" class="feedaction small" data-action="send"'
+        f' data-slug="{html.escape(setting.slug)}"'
+        ' title="Posts to this feed&#39;s channel immediately, and (if publishing)'
+        ' crossposts it so beacon mirrors it to every following server.">Send now'
+        "</button>"
         "</div>"
     )
+    if setting.sub or setting.slug not in registered_feeds():
+        actions = ""
+    label_block = _label_block(actions)
     if setting.kind == "url":
         value = html.escape(state or "") if isinstance(state, str) else ""
         return (
             f'<div class="{base_class} urlrow">'
-            f"{label_block}"
+            f"{_label_block()}"
             '<input type="url" class="urlfield" '
             f'data-slug="{html.escape(setting.slug)}"'
             f' value="{value}" placeholder="https://example.com/banner.png" />'

@@ -13,13 +13,13 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Beacon's bot-administration commands: ``/beacon restart | stop | info``.
+"""Beacon's bot-administration commands: ``/beacon stop | info``.
 
 Thin wrapper over the shared factory in :mod:`dd.common.controller`. Beacon's client
 has no client-wide owner gate, so the per-subcommand ``owner_only`` the factory applies
 restricts these to the bot team; this wrapper scopes registration to the control guild
-(plus the test guild(s) in a test environment). It passes a ``mirror_check`` so
-stop/restart warn + require a DANGER override while mirror operations are in progress.
+(plus the test guild(s) in a test environment). It passes a ``mirror_check`` so ``stop``
+warns + requires a DANGER override while mirror operations are in progress.
 
 Note: ``/beacon stop`` exits cleanly. Prod beacon's Railway restart policy was set to
 ``ON_FAILURE`` on 2026-06-25 (all services uniform), so it stops cleanly everywhere."""

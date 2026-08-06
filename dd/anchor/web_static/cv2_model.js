@@ -475,19 +475,30 @@
     return problems;
   }
 
-  // --- markdown (a client mirror of hybrid_post_core._render_line) -------------------
-  // Renders the *canvas*, which is the live editing surface, so it cannot be a server
-  // round-trip. cv2_html.render_cv2_nodes_html stays the authoritative render (shown in
-  // the publish confirmation) and the server re-sanitizes on publish regardless.
+  // --- markdown --------------------------------------------------------------------
+  // The leaf layer of THE renderer — every preview surface's text goes through here
+  // (see cv2_render.js). It used to mirror a Python twin, hybrid_post_core._render_line;
+  // that twin is gone, and the drift between them is what motivated the unification.
   //
-  // Everything is escaped first and only http(s) links become anchors, so this holds the
-  // same line the server does even though the author is rendering their own text.
+  // Everything is escaped first and only http(s) links become anchors. That is not a
+  // formality: the mirror log draws captured posts from other servers, so this runs on
+  // untrusted input.
+
+  // Matches Python's html.escape(s, quote=True) character for character, including the
+  // apostrophe as &#x27;. That is not cosmetic: the shared golden corpus
+  // (dd/anchor/preview_fixtures) is asserted byte-for-byte by BOTH the Python tests and
+  // the JS ones, so an escape the two spell differently would make the corpus unable to
+  // hold them to the same output.
+  const _ESC = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#x27;",
+  };
 
   function esc(s) {
-    return String(s).replace(
-      /[&<>"]/g,
-      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
-    );
+    return String(s).replace(/[&<>"']/g, (c) => _ESC[c]);
   }
 
   const EMOJI_CDN = "https://cdn.discordapp.com/emojis/";
@@ -512,9 +523,8 @@
     "August September October November December"
   ).split(" ");
 
-  // One inline-markdown token, mirroring hybrid_post_core._INLINE_MD — same alternation
-  // in the same ORDER, so *** beats ** beats *, and a <t:…> timestamp beats the emoji arm
-  // (both can start with "<").
+  // One inline-markdown token. The ORDER is the contract: *** beats ** beats *, and a
+  // <t:…> timestamp beats the emoji arm (both can start with "<").
   //
   // A single ordered pass is not a stylistic choice: a chain of .replace() calls
   // substitutes into HTML the earlier passes already emitted. That is what mangled real
@@ -555,12 +565,27 @@
     return entry && entry.url ? _img(entry.url, name) : esc(whole);
   }
 
-  /** A `<t:UNIX:X>` token, mirroring hybrid_post_core._format_ts (UTC, like the server). */
+  /**
+   * A `<t:UNIX:X>` token, in the VIEWER'S timezone — which is what Discord does.
+   *
+   * This used to render UTC with an explicit "(UTC)" note, because the renderer was a
+   * server and a server cannot know the reader's zone. A client renderer can, so the
+   * apology is gone and a preview now shows the same wall-clock time the post will.
+   *
+   * `now` is an injectable epoch-ms clock for the relative format; tests that need a
+   * fixed zone set `process.env.TZ` (see tests/preview_fixtures.test.js).
+   *
+   * Returns null for a unix value `Date` cannot represent — the caller then leaves the
+   * token as literal text. The token regex accepts unbounded `\d+`, so a mirrored post
+   * can carry one, and every getter on an Invalid Date returns NaN: without this the
+   * reader saw the words "undefined" and "NaN" laid out as if they were a date.
+   */
   function _timestampText(unix, fmt, now) {
     const d = new Date(unix * 1000);
-    const hour24 = d.getUTCHours();
+    if (Number.isNaN(d.getTime())) return null;
+    const hour24 = d.getHours();
     const h12 = hour24 % 12 || 12;
-    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
     const ampm = hour24 < 12 ? "AM" : "PM";
     if (fmt === "R") {
       const delta = unix - Math.floor((now === undefined ? Date.now() : now) / 1000);
@@ -579,35 +604,34 @@
       return future ? "in " + text : text + " ago";
     }
     if (fmt === "t" || fmt === "T") {
-      const ss = fmt === "T" ? ":" + String(d.getUTCSeconds()).padStart(2, "0") : "";
-      return h12 + ":" + mm + ss + " " + ampm + " (UTC)";
+      const ss = fmt === "T" ? ":" + String(d.getSeconds()).padStart(2, "0") : "";
+      return h12 + ":" + mm + ss + " " + ampm;
     }
     if (fmt === "d") {
       return (
-        String(d.getUTCMonth() + 1).padStart(2, "0") +
+        String(d.getMonth() + 1).padStart(2, "0") +
         "/" +
-        String(d.getUTCDate()).padStart(2, "0") +
+        String(d.getDate()).padStart(2, "0") +
         "/" +
-        d.getUTCFullYear()
+        d.getFullYear()
       );
     }
     if (fmt === "D") {
-      return MONTHS_LONG[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + d.getUTCFullYear();
+      return MONTHS_LONG[d.getMonth()] + " " + d.getDate() + ", " + d.getFullYear();
     }
     // f / F / anything else: Discord's long-date short-time.
     return (
-      MONTHS_SHORT[d.getUTCMonth()] +
+      MONTHS_SHORT[d.getMonth()] +
       " " +
-      d.getUTCDate() +
+      d.getDate() +
       ", " +
-      d.getUTCFullYear() +
+      d.getFullYear() +
       " " +
       h12 +
       ":" +
       mm +
       " " +
-      ampm +
-      " (UTC)"
+      ampm
     );
   }
 
@@ -639,15 +663,26 @@
       } else if (g.code !== undefined) {
         out += "<code>" + esc(g.codeInner) + "</code>";
       } else if (g.link !== undefined) {
-        out += /^https?:\/\//.test(g.url)
+        // Discord's `[label](<url>)` form wraps the URL in angle brackets to suppress
+        // its preview embed; the real URL is inside them.
+        let url = g.url;
+        if (url.length > 1 && url.startsWith("<") && url.endsWith(">")) {
+          url = url.slice(1, -1);
+        }
+        out += /^https?:\/\//.test(url)
           ? '<a href="' +
-            esc(g.url) +
+            esc(url) +
             '" target="_blank" rel="noopener noreferrer">' +
-            esc(g.label) +
+            // The label may itself carry markdown, e.g. "[**View…**](url)" — the shape
+            // every Lost Sector title uses. Recurse rather than escape it flat.
+            inlineMd(g.label, emoji, now) +
             "</a>"
           : esc(m[0]);
       } else if (g.ts !== undefined) {
-        out += esc(_timestampText(Number(g.tsval), g.tsfmt, now));
+        // An unrepresentable unix value stays the literal token — the honest degrade,
+        // and what a Discord client shows for one it cannot render either.
+        const when = _timestampText(Number(g.tsval), g.tsfmt, now);
+        out += esc(when === null ? m[0] : when);
       } else {
         out += _emojiHtml(m[0], g.eprefix, g.ename, g.eid, emoji);
       }
@@ -668,16 +703,48 @@
     if (line.startsWith("# ")) {
       return '<span class="md-h1">' + inlineMd(line.slice(2), emoji, now) + "</span>";
     }
+    // Discord accepts both `- ` and `* `. The Python renderer this replaced took only
+    // `- `, which is how a star bullet came to render differently on the builder canvas
+    // than in the confirmation claiming to show the same post.
     if (/^[-*] /.test(line)) {
       return '<span class="md-bullet">' + inlineMd(line.slice(2), emoji, now) + "</span>";
     }
     return inlineMd(line, emoji, now);
   }
 
+  /**
+   * Rework blank lines around `##`/`###` headings to match Discord's spacing.
+   *
+   * Discord gives a sub-heading a margin *above* and renders the content right below it
+   * tight, but a body conventionally puts the blank line *after* the heading. Under
+   * `white-space: pre-wrap` that literal blank lands below the heading, so the preview
+   * reads differently from the posted message. Collapse to exactly one blank line
+   * before each `##`/`###` (none if it is the first line) and drop any blank directly
+   * after it. `#` (the H1 title) is left alone — its trailing blank already matches.
+   *
+   * Ported from the Python renderer this replaced, which applied it and whose
+   * absence here was the first measured drift between the two.
+   */
+  function normalizeHeadingSpacing(lines) {
+    const isSub = (line) => line.startsWith("## ") || line.startsWith("### ");
+    const out = [];
+    for (const line of lines) {
+      if (isSub(line)) {
+        while (out.length && out[out.length - 1] === "") out.pop();
+        if (out.length) out.push("");
+        out.push(line);
+      } else if (line === "" && out.length && isSub(out[out.length - 1])) {
+        continue;
+      } else {
+        out.push(line);
+      }
+    }
+    return out;
+  }
+
   /** Render a text leaf's content. Newlines survive via the .cv2-text pre-wrap. */
   function renderMd(content, emoji, now) {
-    return String(content)
-      .split("\n")
+    return normalizeHeadingSpacing(String(content).split("\n"))
       .map((line) => lineMd(line, emoji, now))
       .join("\n");
   }
@@ -763,23 +830,6 @@
       url: (emojiEntry(emoji, name) || {}).url,
       token: ":" + name + ":",
     }));
-  }
-
-  /**
-   * Renderable HTML for a button's emoji object, or "" when there isn't one.
-   *
-   * A custom emoji resolves to its CDN image off the id; a unicode one is just its
-   * character. Used by the canvas, which previously drew button labels with no emoji at
-   * all — so setting one showed nothing and there was no way to tell it had not worked.
-   */
-  function buttonEmojiHtml(emojiObj) {
-    if (!emojiObj || typeof emojiObj !== "object") return "";
-    const name = String(emojiObj.name || "");
-    if (emojiObj.id && /^\d+$/.test(String(emojiObj.id))) {
-      const ext = emojiObj.animated ? ".gif" : ".png";
-      return _img(EMOJI_CDN + emojiObj.id + ext, name);
-    }
-    return name ? esc(name) + " " : "";
   }
 
   /**
@@ -968,6 +1018,7 @@
     inlineMd,
     lineMd,
     renderMd,
+    normalizeHeadingSpacing,
     // drop targeting geometry
     nearestRail,
     NEAREST_RAIL_MAX_PX,
@@ -976,7 +1027,6 @@
     emojiEntry,
     emojiSegments,
     buttonEmojiFor,
-    buttonEmojiHtml,
     emojiSuggestions,
     shortcodeBefore,
   };

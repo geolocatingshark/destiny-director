@@ -49,7 +49,7 @@ from dd.hmessage import HMessage
 from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
-from ..autopost import make_autopost_control_commands
+from ..autopost import Feed, register_feed
 from . import (
     bungie_api as api,
     xur,
@@ -481,15 +481,11 @@ def _next_daily_reset_unix() -> int:
 _PORTAL_OPS_CHANNEL = cfg.followables.get("portal_ops")
 
 
-async def _get_portal_ops_enabled() -> bool:
-    return bool(await schemas.AutoPostSettings.get_portal_ops_enabled())
-
-
 if not _PORTAL_OPS_CHANNEL:
     # The followable channel id is not configured in this environment's FOLLOWABLES
     # (absent, or the 0 placeholder). Load cleanly and stay dormant rather than
-    # KeyError-ing at import — the autopost + control commands are simply not
-    # registered until a real channel id is set.
+    # KeyError-ing at import — the autopost cron is simply not scheduled until a real
+    # channel id is set. The feed page still lists it, marked dormant.
     logger.info(
         "Portal Ops autopost is dormant: no 'portal_ops' entry in FOLLOWABLES. "
         "Add the followable channel id to enable it."
@@ -517,14 +513,14 @@ else:
                 cv2=True,
             )
 
-    _portal_ops_autopost_group = make_autopost_control_commands(
-        autopost_name="portal_ops",
-        enabled_getter=_get_portal_ops_enabled,
-        enabled_setter=schemas.AutoPostSettings.set_portal_ops,
-        channel_id=_portal_ops_channel,
+# Contribute this feed's producer wiring to the web feed page (Preview / Send now).
+# Registered unconditionally, outside the dormancy gate above — see the same note in
+# iron_banner.py: a dormant feed still gets a page that explains itself, and previews.
+register_feed(
+    Feed(
+        name="portal_ops",
+        channel_id=_PORTAL_OPS_CHANNEL,
         message_constructor_coro=portal_ops_message_constructor,
         message_announcer_coro=xur.api_to_discord_announcer,
-        cv2=True,
     )
-
-    loader.command(_portal_ops_autopost_group)
+)

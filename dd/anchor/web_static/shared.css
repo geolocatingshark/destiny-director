@@ -67,6 +67,10 @@
   --dur-fast: 80ms;
   --dur: 140ms;
   --dur-slow: 240ms;
+  /* One spinner rotation. Deliberately NOT one of the --dur* transition tokens: those
+     are 80-240ms (right for a state flip, absurd for a rotation) and the reduced-motion
+     block zeroes them, which would spin at strobe speed rather than stopping. */
+  --dur-spin: 700ms;
   --ease-out: cubic-bezier(.2, 0, 0, 1);
 }
 
@@ -83,9 +87,27 @@
     --dur-fast: 0.01ms;
     --dur: 0.01ms;
     --dur-slow: 0.01ms;
+    /* Slowed, not zeroed: a spinner's job is to say "still working", so it has to keep
+       moving. Zeroing it would strobe. */
+    --dur-spin: 2400ms;
   }
 }
 * { box-sizing: border-box; }
+/* `hidden` is only a UA style (`display: none`), so ANY author `display` on the element
+   beats it. Adding one to the base button rule below silently disabled every `hidden`
+   button on the post toolbars, showing Create and Edit at once. Stated here, once, for
+   the whole sheet — the same trap is set by `.spinner`, `.post-wall` and the form-page
+   layout rules, and a per-selector patch only holds until the next `display:` lands.
+   `!important` because an author rule of equal specificity would otherwise win on
+   source order. Attribute only: the `.hidden` CLASS some pages define is separate, and
+   `#problems.hidden` animates its display, which this must not freeze. */
+[hidden] { display: none !important; }
+
+/* A wide table scrolls INSIDE its container rather than widening the document. Here
+   rather than in a page sheet because it is layout chrome, not a page's own look: the
+   first two users (stats' leaderboards) will not be the last, and the alternative is
+   the copy-paste that already happened to the `.hidden` utility. */
+.table-scroll { overflow-x: auto; }
 body {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   margin: 0; padding: 0 1.2rem 1.2rem; max-width: 880px; margin-inline: auto;
@@ -150,53 +172,7 @@ h1 { font-size: 1.3rem; margin: 0 0 .2rem; }
 .backlink:hover { text-decoration: underline; }
 p.nav { margin: 0 0 .4rem; }
 
-/* ---------------------------------------------------------------------------
-   Post preview markup (render_post_spec output)
-   ---------------------------------------------------------------------------
-   The rendered-post appearance, shared by EVERY preview surface — the web-form live
-   previews (`<pre id="previewBox" class="post-preview">`) and the read-only preview wall
-   (`.post-preview` cards). render_post_spec emits only a small whitelist of tags (span
-   headings/footer/bullets, strong/em, a, img.emoji, img.post-image); style them here so
-   one class renders any post consistently. Page-specific layout (the form's sticky
-   preview column, the wall's scroll) stays with each page. */
-.post-preview {
-  white-space: pre-wrap; word-break: break-word;
-  background: var(--surface-0); border: 1px solid var(--border);
-  /* Mirror the CV2 container's left accent bar (--post-accent is set per post by the form
-     JS; the wall leaves it at the default --accent). */
-  border-left: 4px solid var(--post-accent);
-  border-radius: var(--radius); padding: 1rem; font: inherit;
-}
-.post-preview .emoji {
-  /* Fixed square box so every custom emoji renders at a uniform size regardless of the
-     source image's aspect ratio (Discord emoji aren't all square); object-fit keeps
-     non-square art centered and undistorted rather than stretched. */
-  height: 1.2em; width: 1.2em; vertical-align: middle;
-  margin: 0 .05em; object-fit: contain;
-}
-.post-preview .md-h1 { font-weight: 700; font-size: 1.3em; }
-.post-preview .md-h2 { font-weight: 700; font-size: 1.15em; }
-.post-preview .md-h3 { font-weight: 700; font-size: 1.05em; }
-.post-preview .md-small { color: var(--text-muted); font-size: .82em; }
-.post-preview .md-bullet::before { content: "• "; color: var(--text-muted); }
-.post-preview a { color: var(--link); }
-.post-preview .post-image {
-  display: block; max-width: 100%; height: auto;
-  border-radius: var(--radius); margin: .5rem 0;
-}
-/* The footer link-button row (render_post_html) — mirrors the CV2 post's LinkButton row.
-   white-space:normal escapes the .post-preview pre-wrap so the flex row lays out cleanly. */
-.post-preview .post-buttons {
-  white-space: normal; display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .8rem;
-}
-.post-preview .post-button {
-  display: inline-block; padding: .35rem .7rem; border-radius: var(--radius);
-  background: var(--surface-2, var(--surface-1)); border: 1px solid var(--border);
-  color: var(--text); text-decoration: none; font-size: .9em; font-weight: 600;
-}
-.post-preview .post-button:hover { border-color: var(--post-accent); }
-
-/* A stacked, labelled wall of post previews (render_post_wall) — the rotation editor's
+/* A stacked, labelled wall of post previews (built by editor.js) — the rotation editor's
    live preview shows the next few posts a rotation will publish. */
 .post-wall { display: flex; flex-direction: column; gap: 1rem; }
 .post-wall-item { display: flex; flex-direction: column; gap: .35rem; }
@@ -286,19 +262,66 @@ p.nav { margin: 0 0 .4rem; }
   padding: .7rem 0; margin-top: 1rem;
   background: var(--surface-1); border-top: 1px solid var(--border);
 }
-.form-page button {
-  padding: .5rem .9rem; font: inherit; cursor: pointer;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--accent-strong); color: #fff;
-}
+/* `.secondary` predates the base rule below, where quiet is already the default; kept
+   as a no-op alias so the existing markup does not all have to change at once. */
 .form-page button.secondary { background: var(--surface-3); color: var(--text-1); }
-.form-page button.danger {
-  background: var(--danger-surface); color: var(--danger-text);
-  border-color: var(--danger-border);
-}
-.form-page button.danger:disabled { opacity: .5; cursor: not-allowed; }
-.form-page button.tiny { padding: .25rem .6rem; font-size: .8rem; }
 .form-page .grow { flex: 1; }
 
 .form-page #status.ok { color: var(--ok); }
 .form-page #status.err { color: var(--err); white-space: pre-wrap; }
+
+/* --- buttons, one definition for every page ---------------------------------------
+   There was no base `button` rule, only `.form-page button`, so every page that grew a
+   button reinvented one — and they drifted: different radii, different padding, and a
+   UA-default button sitting 8px out of line beside a styled <a>. Everything below is
+   the former .form-page style promoted, with the fill made opt-in.
+
+   Default is the QUIET one. `.primary` is the action a page wants pressed; `.danger`
+   is the one that destroys something. A page having two primaries means it has not
+   decided what it is for. */
+button,
+a.button {
+  display: inline-block; box-sizing: border-box;
+  padding: .5rem .9rem; font: inherit; cursor: pointer; text-decoration: none;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-3); color: var(--text-1);
+}
+button:hover:not(:disabled),
+a.button:hover { border-color: var(--border-hover); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+button.primary,
+a.button.primary {
+  background: var(--accent-strong); color: #fff; border-color: var(--accent-strong);
+}
+button.danger {
+  background: var(--danger-surface); color: var(--danger-text);
+  border-color: var(--danger-border);
+}
+button.tiny { padding: .25rem .6rem; font-size: .8rem; }
+button.small { padding: .35rem .75rem; font-size: .85rem; }
+
+/* --- spinner ----------------------------------------------------------------------
+   For waits measured in seconds — a live Bungie fetch, a post going out. Shared because
+   more than one page needs one, and two hand-rolled spinners drift. */
+.spinner {
+  display: inline-block; width: .85em; height: .85em; vertical-align: -.1em;
+  margin-right: .4em; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin var(--dur-spin) linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- shared confirmation dialog ----------------------------------------------------
+   Used by the hybrid post forms for publish and delete (shared.js confirmInPage). */
+dialog.confirmmodal {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-3); color: var(--text-1); padding: 1.1rem;
+  max-width: 32rem; width: calc(100% - 2rem);
+}
+dialog.confirmmodal::backdrop { background: rgba(0, 0, 0, .55); }
+dialog.confirmmodal h2 { margin: 0 0 .6rem; font-size: 1.05rem; }
+dialog.confirmmodal p { margin: 0 0 1rem; font-size: .92rem; color: var(--muted); }
+dialog.confirmmodal .modal-actions {
+  display: flex; justify-content: flex-end; gap: .6rem;
+}

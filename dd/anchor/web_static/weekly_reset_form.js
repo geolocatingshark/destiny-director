@@ -21,6 +21,20 @@
 
 const BOOT = window.__BOOTSTRAP__;
 const { draft, options, conquest_tiers } = BOOT;
+
+// The manifest-backed pools (weapons, GM strikes, conquests) are large and cold on a
+// fresh process, so the page waits for it rather than rendering half a form. `ready`
+// false is the case waiting cannot fix — the manifest could not be read at all — where
+// those pickers are genuinely empty and saying so beats looking broken.
+if (options.ready === false) {
+  const warning = document.createElement("p");
+  warning.className = "options-warning";
+  warning.textContent =
+    "Weapon, GM strike and Conquest options could not be read from the Destiny " +
+    "manifest. Reload to retry — everything else on this form works now, and anything " +
+    "already picked is kept.";
+  document.querySelector("header").appendChild(warning);
+}
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}, kids = []) => {
   const n = Object.assign(document.createElement(tag), props);

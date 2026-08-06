@@ -9,11 +9,13 @@ manifest helpers, constants) so importers keep using
 ``dd.anchor.extensions.bungie_api.<symbol>`` unchanged.
 """
 
-import aiohttp
+import asyncio
+
+import hikari as h
 import lightbulb as lb
 
 from dd.anchor import web
-from dd.common.components import cv2_error, cv2_notice, cv2_success, respond_cv2
+from dd.common import schemas
 
 from . import client
 from .constants import (
@@ -28,7 +30,7 @@ from .constants import (
     XUR_VENDOR_HASH,
     likely_emoji_name,
 )
-from .manifest import _build_manifest_dict, _get_latest_manifest
+from .manifest import _build_manifest_dict, _get_latest_manifest, prewarm_manifest
 from .models import (
     APIOffline,
     DestinyArmor,
@@ -65,6 +67,7 @@ __all__ = [
     "likely_emoji_name",
     "_build_manifest_dict",
     "_get_latest_manifest",
+    "prewarm_manifest",
     "APIOffline",
     "APIOfflineException",
     "DestinyArmor",
@@ -83,7 +86,6 @@ __all__ = [
     "register_oauth_routes",
     "webserver_runner_preparation",
     "loader",
-    "bungie",
 ]
 
 # Serve the Bungie OAuth callback from the anchor's persistent web app (replaces the
@@ -94,76 +96,35 @@ web.register_routes(register_oauth_routes)
 
 loader = lb.Loader()
 
-bungie = lb.Group("bungie", "Bungie API related commands")
+# No commands live here any more: `/bungie login` and `/bungie account_numbers` moved to
+# the web control panel (dd/anchor/extensions/bungie_account.py, `/bungie`). Login in
+# particular was a poor fit for Discord — it printed a URL and then blocked for up to 15
+# minutes polling for the token, where on the web the redirect back IS the completion
+# signal. The loader stays because load_extensions_strict requires one — and, now, for
+# the manifest prewarm below.
 
 
-@bungie.register
-class Login(
-    lb.SlashCommand,
-    name="login",
-    description="Log in to the app with a Bungie account",
-):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context):
-        initial = await respond_cv2(
-            ctx, cv2_notice(f"Please log in at {oauth_url()}"), ephemeral=True
-        )
-        try:
-            await refresh_api_tokens(runner=get_webserver_runner(), with_login=True)
-        except TimeoutError:
-            await ctx.edit_response(
-                initial,
-                components=[
-                    cv2_error(
-                        "Login timed out",
-                        "Timed out after 15 minutes. Run `/bungie login` again.",
-                    )
-                ],
-            )
-            return
-        await ctx.edit_response(
-            initial, components=[cv2_success("Successfully logged in")]
-        )
+# Strong references to the background prewarm task: the event loop keeps only a weak ref
+# to a bare create_task(), so without this it can be garbage-collected — and cancelled —
+# mid-download. Same trap, same fix, as rotation_editor's `_warm_tasks`.
+_prewarm_tasks: set["asyncio.Task[None]"] = set()
 
 
-@bungie.register
-class AccountNumbers(
-    lb.SlashCommand,
-    name="account_numbers",
-    description="Get the character id, destiny membership id and membership type",
-):
-    @lb.invoke
-    async def invoke(self, ctx: lb.Context):
-        # Ack within Discord's 3s window with a placeholder, then edit in the result;
-        # the token refresh + Bungie round-trips below take longer than 3s.
-        initial = await respond_cv2(
-            ctx, cv2_notice("Fetching account numbers…"), ephemeral=True
-        )
-        access_token = await refresh_api_tokens(runner=get_webserver_runner())
+@loader.listener(h.StartedEvent)
+async def _prewarm_manifest_on_start(_event: h.StartedEvent) -> None:
+    """Pull the manifest at boot so no request has to wear the download.
 
-        async with aiohttp.ClientSession() as session:
-            destiny_membership = await DestinyMembership.from_api(session, access_token)
-            character_id = await destiny_membership.get_character_id(
-                session, access_token
-            )
+    Here rather than in a producer because the manifest is not any one feature's: xur,
+    eververse, ada, portal_ops, the weekly-reset option pools and the item index all
+    resolve it. It *was* already being pulled at boot — as a side effect of
+    ``rotation_editor``'s item-index warm — which is exactly the problem: nothing said
+    so, and the guarantee every other consumer now leans on rested on which extension
+    happened to be loaded. That warm still runs and coalesces onto this one rather than
+    downloading twice.
 
-        # Note: the OAuth access token is intentionally not included here. It is a
-        # live credential and must never be surfaced in a Discord message, even an
-        # ephemeral one.
-        await ctx.edit_response(
-            initial,
-            components=[
-                cv2_notice(
-                    "```\n"
-                    f"Destiny Character ID: {character_id}\n"
-                    f"Destiny Membership ID: {destiny_membership.membership_id}\n"
-                    f"Destiny Membership Type: {destiny_membership.membership_type}"
-                    "\n```"
-                )
-            ],
-        )
-
-
-# No guilds= → inherits the client's default_enabled_guilds (control + test_env); the
-# client-level owner hook gates these Bungie-credential commands to bot owners.
-loader.command(bungie)
+    Fire-and-forget: ``StartedEvent`` listeners run before the bot is fully up, and this
+    can take minutes on a cold volume.
+    """
+    task = asyncio.create_task(prewarm_manifest(schemas.BungieCredentials.api_key))
+    _prewarm_tasks.add(task)
+    task.add_done_callback(_prewarm_tasks.discard)

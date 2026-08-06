@@ -37,7 +37,7 @@ from dd.hmessage import HMessage
 from ...common import cfg, components, schemas
 from ...common.bot import CachedFetchBot
 from ...common.utils import fetch_emoji_dict
-from ..autopost import make_autopost_control_commands
+from ..autopost import Feed, register_feed
 from . import (
     bungie_api as api,
     xur,
@@ -53,7 +53,9 @@ ADA_TITLE = "# [Ada-1's Weekly Shaders](https://kyber3000.com/Ada)"
 
 #: Post-specific footer guide button(s); Support is appended by
 #: ``components.footer_button_specs`` (the ADA_FOOTER note stays as body text).
-ADA_GUIDES: tuple[tuple[str, str], ...] = (("Ada-1 Guide", "https://kyber3000.com/Ada"),)
+ADA_GUIDES: tuple[tuple[str, str], ...] = (
+    ("Ada-1 Guide", "https://kyber3000.com/Ada"),
+)
 
 # Ada rotates at the weekly reset: Tuesday 17:00 UTC.
 ADA_RESET_WEEKDAY = 1  # Monday=0 … Tuesday=1
@@ -171,18 +173,14 @@ async def on_start_schedule_autoposts(
         )
 
 
-async def _get_ada_enabled() -> bool:
-    return bool(await schemas.AutoPostSettings.get_ada_enabled())
 
 
-_ada_autopost_group = make_autopost_control_commands(
-    autopost_name="ada",
-    enabled_getter=_get_ada_enabled,
-    enabled_setter=schemas.AutoPostSettings.set_ada,
-    channel_id=cfg.followables["ada"],
-    message_constructor_coro=ada_message_constructor,
-    message_announcer_coro=xur.api_to_discord_announcer,
-    cv2=True,
+# Contribute this feed's producer wiring to the web feed page (Preview / Send now).
+register_feed(
+    Feed(
+        name="ada",
+        channel_id=cfg.followables["ada"],
+        message_constructor_coro=ada_message_constructor,
+        message_announcer_coro=xur.api_to_discord_announcer,
+    )
 )
-
-loader.command(_ada_autopost_group)

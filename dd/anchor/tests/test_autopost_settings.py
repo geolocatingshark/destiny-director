@@ -20,15 +20,17 @@
 
 import asyncio
 import html
+import re
 import typing as t
 
 import aiohttp.web
 import pytest
 from sqlalchemy import delete
 
-from dd.anchor import web
+from dd.anchor import autopost, web
 from dd.anchor.extensions import autopost_settings as aps
 from dd.common import schemas
+from dd.hmessage import HMessage
 
 pytestmark = pytest.mark.asyncio
 
@@ -47,6 +49,11 @@ def _clean_settings() -> t.Iterator[None]:
 
     asyncio.run(_clear())
     yield
+
+
+async def _noop(**_kwargs: object) -> HMessage:
+    """Stand-in constructor; the render path never calls it."""
+    raise AssertionError("the settings page must not build a post to render a row")
 
 
 class _FakeRequest:
@@ -95,9 +102,11 @@ async def test_render_reflects_db_state() -> None:
 @pytest.mark.integration
 async def test_render_missing_row_is_unchecked() -> None:
     # No rows seeded → every toggle renders unchecked (producers treat None as off).
+    # Matched against the toggles specifically: the send modal's publish checkbox is
+    # also `checked` by default, and it is not a setting.
     html_out = await aps._render_html()
 
-    assert " checked" not in html_out
+    assert not re.search(r'data-slug="[^"]+" checked', html_out)
 
 
 @pytest.mark.integration
@@ -108,6 +117,80 @@ async def test_handle_get_returns_html_response() -> None:
     assert resp.content_type == "text/html"
     assert resp.text is not None
     assert 'data-slug="lost_sector"' in resp.text
+
+
+# --- per-feed actions ---------------------------------------------------------------
+#
+# Preview and Send now replaced the `/<feed> show` and `send` commands. They render on
+# the row itself rather than a per-feed page, and the rendered post shows in a modal —
+# so the list stays a list of toggles.
+
+
+@pytest.fixture
+def _registered_feed(monkeypatch: pytest.MonkeyPatch) -> t.Iterator[None]:
+    """Register one feed, so the row actions render.
+
+    The real registry is filled by the producer modules at import time; a test that
+    relied on some other test having imported them would pass or fail by ordering.
+    """
+    monkeypatch.setattr(
+        autopost,
+        "_feeds",
+        {
+            "lost_sector": autopost.Feed(
+                name="lost_sector", channel_id=7, message_constructor_coro=_noop
+            )
+        },
+    )
+    yield
+
+
+@pytest.mark.integration
+async def test_feed_rows_carry_both_actions_with_hover_cards(
+    _registered_feed: None,
+) -> None:
+    html_out = await aps._render_html()
+
+    for action in ("preview", "send"):
+        assert (
+            f'data-action="{action}" data-slug="lost_sector"' in html_out
+        ), f"the {action} action is missing from the lost_sector row"
+    # Explanations are hover cards, not paragraphs — two labelled buttons do not need
+    # two blocks of copy on a page that is otherwise a dense list.
+    assert html_out.count("title=") >= 2
+
+
+@pytest.mark.integration
+async def test_sub_settings_and_url_rows_get_no_actions(
+    _registered_feed: None,
+) -> None:
+    # `lost_sector_details` refines its parent and has no producer of its own, and the
+    # eververse image URL is a value, not a feed — neither can be previewed or sent.
+    html_out = await aps._render_html()
+
+    assert 'data-slug="lost_sector_details"' in html_out  # the row still renders
+    for slug in ("lost_sector_details", "xur_default_image", "eververse_image_url"):
+        assert f'data-action="preview" data-slug="{slug}"' not in html_out
+
+
+@pytest.mark.integration
+async def test_page_hosts_the_preview_and_send_modals() -> None:
+    # The post is drawn in a modal by the shared renderer, so the page must load it and
+    # its stylesheet, and the publish choice belongs in the send confirmation rather
+    # than sitting pre-set on the page.
+    resp = await aps._handle_get(_as_request(_FakeRequest(None)))
+    assert resp.text is not None
+    body = resp.text
+
+    assert '<dialog class="feedmodal" id="previewDialog">' in body
+    assert '<dialog class="feedmodal" id="sendDialog">' in body
+    assert 'id="sendPreview"' in body
+    assert 'id="publish"' in body
+    assert "/static/cv2_render.js" in body
+    assert "/static/cv2_preview.css" in body
+    # Both preview hosts must opt into the shared styling, or the renderer draws
+    # correct DOM with none of its appearance.
+    assert body.count('class="modalpreview cv2-preview"') == 2
 
 
 # --- saving -----------------------------------------------------------------------

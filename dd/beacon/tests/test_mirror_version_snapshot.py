@@ -46,7 +46,9 @@ def _stub_bot(serialize_embed: t.Any = None) -> CachedFetchBot:
     # the bot type, matching the repo's test convention (t.cast over inline ignores).
     return t.cast(
         CachedFetchBot,
-        SimpleNamespace(entity_factory=SimpleNamespace(serialize_embed=serialize_embed)),
+        SimpleNamespace(
+            entity_factory=SimpleNamespace(serialize_embed=serialize_embed)
+        ),
     )
 
 
@@ -112,3 +114,36 @@ def test_first_text_line_walks_nested_tree_and_skips_media() -> None:
 
 def test_first_text_line_none_when_no_text() -> None:
     assert mw._first_text_line([{"type": 14}, {"type": 12, "items": []}]) is None
+
+
+def test_a_snapshot_cannot_carry_the_diff_renderer_s_annotations() -> None:
+    """The invariant the mirror log's diff schema rests on, asserted where it holds.
+
+    ``dd.anchor.cv2_render`` annotates a tree *in band*, in Discord's own key namespace
+    (``_mark`` on a node, ``_lines`` on a text leaf), and the web renderer draws an
+    annotated tree with the very same walker it draws a plain captured one with. So a
+    payload that arrived carrying those keys would make an unmodified snapshot render as
+    a diff that never happened.
+
+    Nothing in the renderer prevents that. What prevents it is here: every CV2 snapshot
+    is re-serialized through hikari's builders (``build()[0]``), which emit only the
+    fields Discord defines and cannot carry an unknown key. That was true but untested —
+    an invariant enforced in one bot and depended on by another, two modules away.
+    """
+    hostile = "attacker text"
+    payload, kind, _ = mw._snapshot_payload(_cv2(hostile), bot=_stub_bot())
+    assert kind == "cv2"
+
+    def keys(node: t.Any) -> t.Iterator[str]:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                yield key
+                yield from keys(value)
+        elif isinstance(node, list):
+            for item in node:
+                yield from keys(item)
+
+    annotations = {"_mark", "_lines"}
+    assert not annotations & set(keys(payload)), payload
+    # And the text really did survive, so this is not passing on an empty payload.
+    assert hostile in str(payload)

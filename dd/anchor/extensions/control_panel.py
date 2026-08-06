@@ -21,8 +21,23 @@ are contributed via :func:`web.register_routes`), so a new page appears here wit
 editing this module. Authentication is handled centrally by the Discord-OAuth middleware
 in ``web_auth.py`` — it protects every non-allowlisted route by default, so ``/`` is
 gated with no extra code here. ``/control_panel`` gives the owner a button to the panel.
+
+The page also carries **bot administration** — the web replacement for ``/anchor info``
+and ``/anchor stop``. It lives on the panel itself rather than a page of its own: it is
+two actions and a read-only dump, and the panel is already the bot's front door.
+
+- ``GET  /bot/info``  configuration state + the configured channels, by name
+- ``POST /bot/stop``  shut the process down
+
+**Stop is one-way from here.** The aiohttp app runs *inside* this process, so stopping
+the bot stops the panel too — there is no web route back up, and recovery is a Railway
+redeploy. That is the tradeoff the owner accepted when ``/anchor stop`` moved off
+Discord (see ``plans/anchor_command_web_migration.md`` Phase 3). ``lifecycle.
+request_shutdown`` only *schedules* ``bot.close()``, so the response is written before
+the gateway unwinds and the browser gets a confirmation rather than a dropped socket.
 """
 
+import asyncio
 import html
 import logging
 from pathlib import Path
@@ -31,7 +46,8 @@ import aiohttp.web
 import hikari as h
 import lightbulb as lb
 
-from ...common import cfg
+from ...common import cfg, lifecycle
+from ...common.bot import CachedFetchBot
 from ...common.components import cv2_error, cv2_notice, respond_cv2
 from .. import web
 
@@ -43,6 +59,16 @@ _PANEL_HTML_PATH = (
     Path(__file__).resolve().parent.parent / "web_static" / "control_panel.html"
 )
 _CARDS_PLACEHOLDER = "<!--__CARDS__-->"
+
+# The live bot, stashed at StartedEvent so /bot/stop can reach it (the pattern every
+# other route-owning extension here uses).
+_bot: CachedFetchBot | None = None
+
+
+@loader.listener(h.StartedEvent)
+async def _on_started(_event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECTED):
+    global _bot
+    _bot = bot
 
 
 def _render_panel_html() -> str:
@@ -67,9 +93,81 @@ async def _handle_panel(request: aiohttp.web.Request) -> aiohttp.web.Response:
     return aiohttp.web.Response(text=_render_panel_html(), content_type="text/html")
 
 
+async def _channel_entry(feed: str, channel_id: int | None) -> dict[str, str | None]:
+    """The finished ``/bot/info`` row for one configured followable.
+
+    A raw snowflake tells the reader nothing, and a name you cannot click is only
+    slightly better — the guild id is what turns it into a deep link, which is why this
+    returns the assembled row rather than the pieces. Resolution is best-effort and
+    per-channel: the bot may not be in the guild, the channel may be deleted, or it may
+    simply not be up yet, none of which should cost the whole panel its config dump.
+    """
+    row: dict[str, str | None] = {
+        "feed": feed,
+        "channelId": str(channel_id) if channel_id else None,
+        "channelName": None,
+        "url": None,
+    }
+    if not channel_id or _bot is None:
+        return row
+    try:
+        channel = await _bot.fetch_channel(channel_id)
+    except Exception:
+        logger.info("Could not resolve channel %s for /bot/info", channel_id)
+        return row
+    name = getattr(channel, "name", None)
+    guild_id = getattr(channel, "guild_id", None)
+    if name:
+        row["channelName"] = f"#{name}"
+    if guild_id:
+        row["url"] = f"https://discord.com/channels/{guild_id}/{channel_id}"
+    return row
+
+
+async def _handle_bot_info(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Configuration state — what ``/anchor info`` printed, plus channel names.
+
+    Anchor never had the mirror-status block (that is beacon's, gated on a
+    ``mirror_check``), so this is the config dump and the configured channels.
+    """
+    return aiohttp.web.json_response(
+        {
+            "bot": "anchor",
+            "controlServerId": str(cfg.control_discord_server_id),
+            # A tuple of guild ids, empty in prod — its emptiness is what marks an
+            # environment as production, so it is worth showing verbatim.
+            "testEnv": [str(guild_id) for guild_id in cfg.test_env],
+            "channels": await asyncio.gather(
+                *(
+                    _channel_entry(feed, channel_id)
+                    for feed, channel_id in cfg.followables.items()
+                )
+            ),
+        }
+    )
+
+
+async def _handle_bot_stop(request: aiohttp.web.Request) -> aiohttp.web.Response:
+    """Shut the bot down cleanly (exit 0, so Railway leaves it down).
+
+    Auth + Origin (CSRF) are already enforced by the middleware. The shutdown is
+    scheduled rather than awaited, so this response reaches the browser first — see the
+    module docstring.
+    """
+    if _bot is None:
+        return aiohttp.web.json_response(
+            {"error": "Bot is still starting — try again in a moment."}, status=503
+        )
+    logger.warning("Shutdown requested from the web control panel")
+    await lifecycle.request_shutdown(_bot, lifecycle.STOP_EXIT_CODE)
+    return aiohttp.web.json_response({"ok": True, "stopping": True})
+
+
 def register_panel_routes(app: aiohttp.web.Application) -> None:
-    """Add the control-panel route to the shared persistent app."""
+    """Add the control-panel routes to the shared persistent app."""
     app.router.add_get("/", _handle_panel)
+    app.router.add_get("/bot/info", _handle_bot_info)
+    app.router.add_post("/bot/stop", _handle_bot_stop)
 
 
 web.register_routes(register_panel_routes)

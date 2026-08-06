@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-"""Process lifecycle (stop / restart) shared by both bots.
+"""Process lifecycle (stop) shared by both bots.
 
 Termination must work identically from a command invoke **and** a component (button)
 callback. hikari runs interaction callbacks as fire-and-forget tasks whose wrapper
@@ -23,7 +23,9 @@ so the interaction reply lands first), let ``bot.run()`` return, and exit on the
 thread via :func:`consume_exit_code` at the end of each ``__main__``.
 
 Railway contract: a clean ``exit 0`` stays down (under an ON_FAILURE restart policy);
-a non-zero exit is restarted.
+a non-zero exit is restarted, and counts against the service's max-retry ceiling. Only
+the clean exit is used deliberately — the ``/restart`` command that exited non-zero on
+purpose was removed 2026-08-04 (see :mod:`dd.common.controller`).
 """
 
 import asyncio
@@ -31,7 +33,6 @@ import asyncio
 import hikari as h
 
 STOP_EXIT_CODE = 0
-RESTART_EXIT_CODE = 1
 
 _desired_exit_code: int | None = None
 # Hold a reference to the scheduled close task so it isn't garbage collected mid-flight.

@@ -1,0 +1,254 @@
+{
+  "comment": "The web builder's authored path — sanitize_for_preview first, then :name: shortcodes resolved against the guild emoji dict (cv2_html.render_cv2_nodes_html).",
+  "emoji": {
+    "kyber": "https://cdn.discordapp.com/emojis/1234567890.png",
+    "spin": "https://cdn.discordapp.com/emojis/9876543210.gif"
+  },
+  "cases": [
+    {
+      "name": "typed_shortcodes_resolve",
+      "render": "authored",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": "known :kyber: and :Kyber: and unknown :nosuch: and captured <:kyber:1234567890>"
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\">known <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"> and <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":Kyber:\"> and unknown :nosuch: and captured <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"></div></div>",
+      "sanitized": [
+        {
+          "type": 10,
+          "content": "known :kyber: and :Kyber: and unknown :nosuch: and captured <:kyber:1234567890>"
+        }
+      ]
+    },
+    {
+      "name": "sanitize_empty_container",
+      "render": "authored",
+      "payload": {
+        "components": [
+          {
+            "type": 17,
+            "components": []
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\"><div class=\"cv2-text\"><span class=\"md-small\">⚠️ empty container — open it to add blocks</span></div></div></div>",
+      "sanitized": [
+        {
+          "type": 17,
+          "components": [
+            {
+              "type": 10,
+              "content": "-# ⚠️ empty container — open it to add blocks"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sanitize_section_without_accessory",
+      "render": "authored",
+      "payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "has text, no accessory"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-small\">⚠️ section — add 1–3 text blocks and an accessory</span></div></div>",
+      "sanitized": [
+        {
+          "type": 10,
+          "content": "-# ⚠️ section — add 1–3 text blocks and an accessory"
+        }
+      ]
+    },
+    {
+      "name": "sanitize_section_without_text",
+      "render": "authored",
+      "payload": {
+        "components": [
+          {
+            "type": 9,
+            "components": [
+              {
+                "type": 10,
+                "content": "   "
+              }
+            ],
+            "accessory": {
+              "type": 11,
+              "media": {
+                "url": "https://example.com/t.png"
+              }
+            }
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-small\">⚠️ section — add some text</span></div></div>",
+      "sanitized": [
+        {
+          "type": 10,
+          "content": "-# ⚠️ section — add some text"
+        }
+      ]
+    },
+    {
+      "name": "sanitize_empty_text",
+      "render": "authored",
+      "payload": {
+        "components": [
+          {
+            "type": 10,
+            "content": ""
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-small\">⚠️ empty text block</span></div></div>",
+      "sanitized": [
+        {
+          "type": 10,
+          "content": "-# ⚠️ empty text block"
+        }
+      ]
+    },
+    {
+      "name": "sanitize_empty_media_gallery",
+      "render": "authored",
+      "payload": {
+        "components": [
+          {
+            "type": 12,
+            "items": []
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-small\">⚠️ empty media gallery</span></div></div>",
+      "sanitized": [
+        {
+          "type": 10,
+          "content": "-# ⚠️ empty media gallery"
+        }
+      ]
+    },
+    {
+      "name": "sanitize_incomplete_link_button",
+      "render": "authored",
+      "payload": {
+        "components": [
+          {
+            "type": 1,
+            "components": [
+              {
+                "type": 2,
+                "style": 5,
+                "label": "No url yet"
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-text\"><span class=\"md-small\">⚠️ incomplete link button</span></div></div>",
+      "sanitized": [
+        {
+          "type": 10,
+          "content": "-# ⚠️ incomplete link button"
+        }
+      ]
+    },
+    {
+      "name": "authored_full_post",
+      "render": "authored",
+      "payload": {
+        "components": [
+          {
+            "type": 17,
+            "accent_color": 15483557,
+            "components": [
+              {
+                "type": 10,
+                "content": "## This week :kyber:"
+              },
+              {
+                "type": 12,
+                "items": [
+                  {
+                    "media": {
+                      "url": "https://example.com/banner.png"
+                    },
+                    "description": "the banner"
+                  }
+                ]
+              },
+              {
+                "type": 14,
+                "divider": true,
+                "spacing": 1
+              },
+              {
+                "type": 1,
+                "components": [
+                  {
+                    "type": 2,
+                    "style": 5,
+                    "label": "Read more",
+                    "url": "https://example.com/more"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "expected_html": "<div class=\"cv2-root\"><div class=\"cv2-container\" style=\"border-left-color:#ec42a5\"><div class=\"cv2-text\"><span class=\"md-h2\">This week <img class=\"emoji\" src=\"https://cdn.discordapp.com/emojis/1234567890.png\" alt=\":kyber:\"></span></div><div class=\"cv2-media n1\"><a class=\"cv2-media-item\" href=\"https://example.com/banner.png\" target=\"_blank\" rel=\"noopener noreferrer\"><img src=\"https://example.com/banner.png\" alt=\"the banner\" loading=\"lazy\"></a></div><hr class=\"cv2-sep\"><div class=\"cv2-buttons\"><a class=\"cv2-button\" href=\"https://example.com/more\" target=\"_blank\" rel=\"noopener noreferrer\">Read more</a></div></div></div>",
+      "sanitized": [
+        {
+          "type": 17,
+          "accent_color": 15483557,
+          "components": [
+            {
+              "type": 10,
+              "content": "## This week :kyber:"
+            },
+            {
+              "type": 12,
+              "items": [
+                {
+                  "media": {
+                    "url": "https://example.com/banner.png"
+                  },
+                  "description": "the banner"
+                }
+              ]
+            },
+            {
+              "type": 14,
+              "divider": true,
+              "spacing": 1
+            },
+            {
+              "type": 1,
+              "components": [
+                {
+                  "type": 2,
+                  "style": 5,
+                  "label": "Read more",
+                  "url": "https://example.com/more"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

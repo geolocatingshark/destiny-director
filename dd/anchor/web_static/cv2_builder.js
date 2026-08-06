@@ -47,16 +47,23 @@
 // rather than hidden — a section's accessory is a visible slot, and an illegal drag says
 // why instead of silently omitting the option.
 //
-// Rendering: the canvas is rendered client-side (cv2_model.renderMd) because it is the
-// live editing surface — a server round-trip per keystroke is not an option. The
-// authoritative render is cv2_html.render_cv2_nodes_html, shown in the publish
-// confirmation, and the server re-sanitizes and re-validates on publish regardless. See
-// the module docstring in dd/anchor/cv2_html.py.
+// Rendering: the canvas draws each block's CONTENT through cv2_render.js — the one
+// renderer, shared with the mirror log and the publish confirmation — and keeps only
+// the editor chrome around it. It has to be client-side because this is the live
+// editing surface and a round-trip per keystroke is not an option; that constraint is
+// why the shared renderer is the JavaScript one. The publish confirmation draws the
+// tree the SERVER hands back (sanitized), and /publish re-validates regardless of what
+// this tab believed. See docs/architecture.md, "Rendering a message on the web".
 
 (function () {
   "use strict";
 
   const M = window.CV2Model;
+  // The shared renderer (cv2_render.js). The canvas draws its blocks' CONTENT through
+  // it — the same walker the mirror log and the publish confirmation use — and keeps
+  // only the editor chrome around them: the selectable block wrapper, drag grips,
+  // insert rails, the accessory slot and the in-place text editor.
+  const R = window.CV2Render;
 
   // Palette entries. Accessory kinds are deliberately absent: they are reachable only
   // from a section's own slot, which is where the rule is legible.
@@ -123,7 +130,8 @@
    *   actionLabel   text for the publish button ("Post" / "Save" / "Send")
    *   onSave(nodes)          -> Promise, autosave
    *   onPublish(nodes)       -> Promise<{link}>, the real send/edit
-   *   onPreview(nodes)       -> Promise<string>, server-rendered HTML for confirmation
+   *   onPreview(nodes)       -> Promise<{nodes}>, the server's sanitized tree, drawn
+   *                             here with the same renderer as the canvas
    */
   function initCv2Builder(root, opts) {
     const options = opts || {};
@@ -311,7 +319,14 @@
     function paintCanvas() {
       state.problems = M.validate(state.nodes);
       el.canvas.innerHTML = state.nodes.length
-        ? renderScope([], state.nodes, problemPaths())
+        ? // `.cv2-root` is what cv2_preview.css keys the rendered post's typography off,
+          // and the canvas never had it — so the message read at a different size here
+          // than in the publish confirmation claiming to show the same thing. The
+          // wrapper goes inside the canvas rather than onto it because that rule is a
+          // descendant selector, and nothing keys off the canvas's direct children.
+          '<div class="cv2-root">' +
+          renderScope([], state.nodes, problemPaths()) +
+          "</div>"
         : // The first thing an author with a blank draft sees, so it has to name a
           // gesture they actually have: there is no palette rail and no right-click on
           // a phone. Both phrasings ship and the media query picks one.
@@ -411,19 +426,51 @@
       );
     }
 
+    // Draw a node through the SHARED renderer (cv2_render.js) — the same walker the
+    // mirror log and the publish confirmation use, so what the canvas shows is what the
+    // post is. `inert` turns its anchors into spans: on the canvas a link button or a
+    // gallery tile has to select the block, not navigate away from the draft.
+    function shared(node) {
+      return R.serialize(R.walk(node), { emoji: emoji, inert: true });
+    }
+
+    // The authoring placeholders the shared renderer has no business knowing about. It
+    // degrades an unrenderable node to "what this was"; a builder has to say "what to do
+    // about it", and it says it for states — an empty gallery, a half-typed button —
+    // that only exist because someone is mid-edit.
+    function hint(message) {
+      return '<div class="cv2-placeholder">' + esc(message) + "</div>";
+    }
+
+    // The stand-in for a button the shared renderer refuses to draw. That refusal means
+    // "no url yet", which on the canvas means mid-edit rather than broken — so it still
+    // has to appear, with its emoji and label, or it vanishes while the validation list
+    // goes on demanding it be finished.
+    //
+    // Assembled out of the renderer's own button vocabulary rather than restated here:
+    // the two had already drifted (the emoji's trailing space), which on a surface whose
+    // entire job is showing what the post will look like is the whole failure mode.
+    function unfinishedButton(b) {
+      return R.serialize(
+        R.el("span", "cv2-button cv2b-acc-bad", {
+          children: R.emojiPrefix(b.emoji).concat([R.text(b.label || "(no label)")]),
+        }),
+      );
+    }
+
     function renderBody(path, node, k, bad) {
       switch (k) {
         case "container": {
-          const accent = Number.isInteger(node.accent_color)
-            ? ' style="border-left-color:#' +
-              (node.accent_color & 0xffffff).toString(16).padStart(6, "0") +
-              '"'
-            : "";
+          // The shell comes from the shared renderer (including its validated accent),
+          // but the children cannot: the canvas has to interleave insert rails between
+          // them and wrap each in its own selectable block.
+          const shell = R.el("div", "cv2-container", {
+            accent: R.accentHex(node.accent_color),
+          });
           const inner = (node.components || []).length
             ? renderScope(path, node.components, bad)
-            : '<div class="cv2-placeholder">Empty container — drop blocks in.</div>' +
-              rail(path, 0);
-          return '<div class="cv2-container"' + accent + ">" + inner + "</div>";
+            : hint("Empty container — drop blocks in.") + rail(path, 0);
+          return R.openTag(shell) + inner + "</div>";
         }
         case "text": {
           if (M.samePath(path, state.editing)) {
@@ -438,78 +485,45 @@
               '<span class="cv2b-edit-hint">markdown · type : for emoji · Esc to finish</span>'
             );
           }
-          const body = String(node.content || "").trim()
-            ? M.renderMd(node.content, emoji)
-            : '<span class="cv2-placeholder">Empty text — click to write.</span>';
-          return '<div class="cv2-text">' + body + "</div>";
+          if (!String(node.content || "").trim()) {
+            return (
+              '<div class="cv2-text">' +
+              '<span class="cv2-placeholder">Empty text — click to write.</span>' +
+              "</div>"
+            );
+          }
+          return shared(node);
         }
-        case "section":
+        case "section": {
+          // Same split as container: shared wrapper, canvas-owned children.
           return (
-            '<div class="cv2-section"><div class="cv2-section-body">' +
+            R.openTag(R.el("div", "cv2-section")) +
+            R.openTag(R.el("div", "cv2-section-body")) +
             renderScope(path, node.components || [], bad) +
             "</div>" +
             renderAccessory(path, node.accessory) +
             "</div>"
           );
-        case "media": {
-          const shown = (node.items || []).filter((i) => (i.media || {}).url);
-          if (!shown.length) {
-            return '<div class="cv2-placeholder">Image gallery — add URLs on the right.</div>';
-          }
-          const layout = { 1: "n1", 2: "n2", 3: "n3", 4: "n4" }[shown.length] || "many";
-          return (
-            '<div class="cv2-media ' +
-            layout +
-            '">' +
-            shown
-              .map(
-                (it) =>
-                  '<span class="cv2-media-item' +
-                  (it.spoiler ? " cv2-spoiler" : "") +
-                  '"><img src="' +
-                  esc(it.media.url) +
-                  '" alt="' +
-                  esc(it.description || "") +
-                  '" loading="lazy"></span>',
-              )
-              .join("") +
-            "</div>"
-          );
         }
-        case "separator":
-          return node.divider === false
-            ? '<div class="cv2-spacer"></div>'
-            : '<hr class="cv2-sep"' +
-                (node.spacing === 2 ? ' style="margin:.5rem 0"' : "") +
-                ">";
+        case "media":
+          return shared(node) || hint("Image gallery — add URLs on the right.");
         case "link_button": {
+          // Per button, not per row. A real render drops a button with no url — it
+          // cannot be posted — but a row is usually *part* valid while one button is
+          // still being typed, and dropping only that one makes it vanish from the
+          // canvas while the validation list still demands it be finished. So draw each
+          // through the shared renderer and stand in for the ones it refuses.
           const btns = node.type === M.ACTION_ROW ? node.components || [] : [node];
           return (
-            '<div class="cv2-buttons">' +
-            btns
-              .map(
-                (b) =>
-                  '<span class="cv2-button">' +
-                  M.buttonEmojiHtml(b.emoji) +
-                  esc(b.label || "(no label)") +
-                  "</span>",
-              )
-              .join("") +
+            R.openTag(R.el("div", "cv2-buttons")) +
+            btns.map((b) => shared(b) || unfinishedButton(b)).join("") +
             "</div>"
           );
         }
-        case "thumbnail": {
-          const url = (node.media || {}).url;
-          return url
-            ? '<img class="cv2-thumb" src="' + esc(url) + '" alt="">'
-            : '<div class="cv2b-acc-empty">no image URL</div>';
-        }
+        case "thumbnail":
+          return shared(node) || '<div class="cv2b-acc-empty">no image URL</div>';
         default:
-          return (
-            '<div class="cv2-placeholder">Unsupported component (type ' +
-            esc(node.type) +
-            ")</div>"
-          );
+          return shared(node);
       }
     }
 
@@ -527,14 +541,16 @@
       }
       const k = M.kind(acc);
       const sel = M.samePath(path, state.sel) ? " cv2b-sel" : "";
+      // Through the shared renderer, so an accessory thumbnail carries its alt text and
+      // spoiler blur and an accessory button draws its emoji — none of which the
+      // canvas's own copy used to do. A node it refuses to draw is mid-edit, so name
+      // what is missing instead.
+      const drawn = shared(acc);
       const body =
-        k === "thumbnail"
-          ? (acc.media || {}).url
-            ? '<img class="cv2-thumb" src="' + esc(acc.media.url) + '" alt="">'
-            : '<div class="cv2b-acc-empty cv2b-acc-bad">image URL missing</div>'
-          : '<span class="cv2-button">' +
-            esc(M.buttonOf(acc).label || "(no label)") +
-            "</span>";
+        drawn ||
+        (k === "thumbnail"
+          ? '<div class="cv2b-acc-empty cv2b-acc-bad">image URL missing</div>'
+          : unfinishedButton(M.buttonOf(acc)));
       return (
         '<div class="cv2b-blk cv2b-acc-filled' +
         sel +
@@ -657,9 +673,9 @@
       switch (k) {
         case "container": {
           const has = Number.isInteger(node.accent_color);
-          const hex = has
-            ? "#" + (node.accent_color & 0xffffff).toString(16).padStart(6, "0")
-            : "#ec42a5";
+          // The same int→hex the canvas paints with, so the swatch cannot disagree with
+          // the accent bar beside it.
+          const hex = has ? R.accentHex(node.accent_color) : "#ec42a5";
           return (
             '<div class="cv2b-field"><label>Accent colour</label><div class="cv2b-row">' +
             '<input type="color" data-prop="accent" value="' +
@@ -778,7 +794,7 @@
             // Show what it resolved to: a server emoji renders as its image, so a name
             // that matched is visibly different from one that did not.
             '<span class="cv2b-emoji-preview">' +
-            M.buttonEmojiHtml(b.emoji) +
+            R.serialize(R.emojiPrefix(b.emoji)) +
             "</span></div>" +
             '<span class="cv2b-help">A server emoji\u2019s name, or a plain ' +
             "emoji character.</span></div>";
@@ -2191,13 +2207,20 @@
         return;
       }
       await flush();
-      // The server render is the authoritative one — confirm against it, not against
-      // the client's approximation of the markdown.
+      // Confirm against the tree the SERVER would post, not the one in this tab. The
+      // renderer is shared now, so the dialog is no longer a second opinion on the
+      // markup — but the data still is: what comes back has been through
+      // sanitize_for_preview, so a half-built block shows here as the placeholder it
+      // will actually post as. Links are live (unlike the canvas, which is inert): this
+      // is the post as a reader meets it, and they open in a new tab.
       if (options.onPreview) {
         el.confirmBody.innerHTML = '<p class="cv2b-help">Rendering…</p>';
         el.dialog.showModal();
         try {
-          swapConfirmBody(await options.onPreview(clone(state.nodes)));
+          const reply = await options.onPreview(clone(state.nodes));
+          swapConfirmBody(
+            R.serialize(R.nodesSpec(reply.nodes || []), { emoji: emoji }),
+          );
         } catch (err) {
           swapConfirmBody(
             '<p class="cv2b-err">Could not render a preview. You can still post.</p>',

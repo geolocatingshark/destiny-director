@@ -12,10 +12,12 @@ Everything lives under `dd/`:
   (`mirror_worker.py` + `mirror_core.py`, see below), `nav.py` (paged-message system),
   `utils.py`, `help_details.py`, and **`extensions/`** (the command modules).
 - `dd.anchor` — the "secondary" bot, but substantial: `__main__.py`, an aiohttp **web UI**
-  (`web.py` + `web_static/`) for rotation editing, the **Components V2** ("CV2") post
-  layer — node rules, rendering and raw-payload handling (`cv2_nodes.py`,
-  `cv2_render.py`, `cv2_html.py`, `cv2_raw.py`), `embeds.py`, `search_json.py`, and
-  `extensions/` — including the **`bungie_api/`** subpackage (Bungie OAuth + API client).
+  (`web.py` + `web_static/`) for rotation editing and post authoring, the
+  **Components V2** model (`cv2_nodes.py`, `cv2_raw.py`) and its structural diff
+  (`cv2_render.py`), `embeds.py`, `search_json.py`, and `extensions/` — including the
+  **`bungie_api/`** subpackage (Bungie OAuth + API client).
+  > The `cv2_*` modules are Discord **Components V2**, not OpenCV — an easy misread, and
+  > one this doc used to make.
 - `dd.common` — shared infrastructure (far more than schemas): `cfg.py`, `bot.py`,
   `auth.py`, `components.py`, `discord_logging.py`, `extension_loader.py`, `lifecycle.py`,
   `schemas.py`, `utils.py`, plus domain helpers (`rotation_schema.py`, `lost_sector.py`).
@@ -112,6 +114,37 @@ msg = (
 ```
 
 For **Components V2** posts, use `build_container()` from `dd/common/components.py`.
+
+## Rendering a message on the web — one renderer
+
+Every web surface that shows what a Discord message will look like — the CV2 builder's
+canvas and its publish confirmation, the mirror log's snapshot and diff panes, the
+weekly-reset / trials / rotation form previews, and the per-feed page's post preview —
+draws through **one** renderer:
+`dd/anchor/web_static/cv2_render.js`. It walks a CV2 node tree (or a classic
+content+embeds payload) into a plain-data *spec*, which two back ends turn into
+something: `serialize()` for an HTML string (pure, so `node --test` can assert it) and
+`materialize()` for real DOM (what pages use).
+
+The server sends **data, not markup**. Routes hand over the node tree — sanitized for
+the builder's confirmation, aligned-and-annotated for the mirror log's diff — and the
+page renders it. Rendering had to end up client-side because the builder canvas repaints
+per keystroke and cannot round-trip; having it live in exactly one place is what stops
+the two drifting, which they had.
+
+Two consequences worth knowing before touching any of it:
+
+- **The mirror log renders untrusted content** — other servers' captured posts. Safety
+  is structural rather than remembered: text reaches the DOM via `textContent`, a URL is
+  `http(s)`-validated at the single place it becomes an attribute, a colour is assigned
+  as a style *property*, and only `cv2_model.renderMd` output ever reaches `innerHTML`.
+- **`dd/anchor/preview_fixtures/`** is the golden corpus. Python asserts the data it
+  produces, JavaScript asserts the drawing, and every expectation is audited against the
+  tag/attribute/URL whitelist. Change a render and you regenerate it — deliberately, and
+  reading the diff. See that directory's README.
+
+The structural diff stays in Python (`cv2_render.py`) because it needs `difflib`; what
+ships is its verdict, as annotations the shared renderer draws.
 
 ## Paged messages — `dd/beacon/nav.py`
 

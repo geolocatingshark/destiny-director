@@ -14,6 +14,27 @@
 // route prefix, a couple of delete-confirm strings, and their per-form widgets +
 // readForm() payload shape — so everything except those stays here.
 
+// The page's server-injected data, from its <script type="application/json"> block.
+//
+// It used to be an inline executable script assigning the global directly. It is a JSON
+// block now so `script-src 'self'` can forbid inline scripts outright (SECURITY_HEADERS
+// in dd/anchor/web.py) — CSP treats a non-executable script type as data. Parsed here
+// rather than per page because all three bootstrap pages already load this file first.
+//
+// A parse failure means the template was served with its placeholder unsubstituted —
+// i.e. someone opened /static/editor.html directly rather than the real route. `null` is
+// what the old inline placeholder evaluated to in that case, so the behaviour is
+// unchanged; a page reading a null bootstrap already handles it.
+window.__BOOTSTRAP__ = (() => {
+  const el = document.getElementById("bootstrap");
+  if (!el) return null;
+  try {
+    return JSON.parse(el.textContent);
+  } catch (e) {
+    return null;
+  }
+})();
+
 // Same-origin JSON POST. Auth is the session cookie, which a same-origin fetch sends
 // automatically, so nothing is embedded in the page. Returns the raw Response so callers
 // can branch on res.ok and read res.text() themselves — the editors surface the server's
@@ -27,6 +48,29 @@ async function api(path, body) {
   });
 }
 window.api = api;
+
+// --- status lines -------------------------------------------------------------------
+// Several pages show "working…" then a result in the same little element. Shared because
+// three of them wanted it and the copies had already started to drift — one page called
+// a spinner helper that only existed in another file, which threw on click and left its
+// button disabled forever.
+
+/** Plain status text. `isError` switches it to the error colour. */
+function say(el, message, isError) {
+  el.classList.toggle("err", !!isError);
+  el.textContent = message;
+}
+
+/** Status text with a spinner in front — for waits measured in seconds. */
+function busy(el, message) {
+  el.classList.remove("err");
+  el.replaceChildren(
+    Object.assign(document.createElement("span"), { className: "spinner" }),
+    document.createTextNode(message),
+  );
+}
+window.say = say;
+window.busy = busy;
 
 // Internal DOM helpers (each page's own script keeps its own copies for widget building).
 const _byId = (id) => document.getElementById(id);
@@ -46,9 +90,10 @@ function initPostPreview({
   accentColor = null,
   debounceMs = 400,
 } = {}) {
-  // Mirror the post's CV2 accent colour as the preview's left bar (see #previewBox CSS).
-  // Only --post-accent (preview bar + set-card selection) tracks the post; --accent (page
-  // chrome) stays fixed.
+  // Expose the post's CV2 accent colour as --post-accent, for the page chrome that
+  // tracks it (trials' set-card picker). The rendered post no longer needs it: it draws
+  // a real container node, which carries its own accent through the shared renderer.
+  // --accent (page chrome) stays fixed regardless.
   if (accentColor) {
     document.documentElement.style.setProperty("--post-accent", accentColor);
   }
@@ -56,14 +101,19 @@ function initPostPreview({
   async function render() {
     try {
       const res = await api(`/${routePrefix}/preview`, readForm());
-      const body = await res.text();
-      // On ok the server returns SAFE HTML (render_post_html: escaped leaves, whitelisted
-      // tags, http(s)-validated URLs) — innerHTML renders emoji/markdown. On failure the
-      // body is an untrusted error string, so use textContent to keep it escaped.
+      // On ok the server returns the post's own CV2 node tree plus the emoji map to
+      // resolve shortcodes against, and the shared renderer draws it into real DOM —
+      // the same renderer, from the same tree, that the builder canvas and the mirror
+      // log use. It used to return HTML in a second markup vocabulary that only
+      // approximated the container a post actually is.
       if (res.ok) {
-        box.innerHTML = body;
+        const data = await res.json();
+        window.CV2Render.render(box, window.CV2Render.nodesSpec(data.nodes || []), {
+          emoji: data.emoji || {},
+        });
       } else {
-        box.textContent = "Preview failed:\n" + body;
+        // A failure body is an untrusted error string — textContent keeps it escaped.
+        box.textContent = "Preview failed:\n" + (await res.text());
       }
     } catch (e) {
       box.textContent = "Preview error: " + e;
@@ -108,6 +158,45 @@ function initPostForm({
   function setStatus(msg, ok) {
     statusEl.textContent = msg;
     statusEl.className = ok ? "ok" : "err";
+  }
+  /** Status with a spinner: creating, publishing and deleting all hit Discord. */
+  function setBusy(msg) {
+    statusEl.className = "ok";
+    statusEl.replaceChildren(
+      Object.assign(document.createElement("span"), { className: "spinner" }),
+      document.createTextNode(msg),
+    );
+  }
+
+  /**
+   * An in-page confirmation, replacing window.confirm.
+   *
+   * The browser dialog is unstyled, unplaceable, and on some platforms suppressible —
+   * a poor last gate in front of "publish to every follower". Resolves true/false.
+   */
+  function confirmInPage(title, body, confirmLabel, danger) {
+    return new Promise((resolve) => {
+      const dialog = _byId("confirmDialog");
+      _byId("confirmTitle").textContent = title;
+      _byId("confirmBody").textContent = body;
+      const go = _byId("confirmGo");
+      go.textContent = confirmLabel;
+      go.className = danger ? "danger" : "primary";
+
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        dialog.close();
+        resolve(value);
+      };
+      go.onclick = () => finish(true);
+      _byId("confirmCancel").onclick = () => finish(false);
+      // Escape and the backdrop close the dialog without touching a button; treat both
+      // as a cancel rather than leaving the promise dangling forever.
+      dialog.addEventListener("close", () => finish(false), { once: true });
+      dialog.showModal();
+    });
   }
   function showProblems(problems) {
     problemsEl.replaceChildren(
@@ -172,8 +261,18 @@ function initPostForm({
   // A button handler wrapping postAction with a confirm (publish only) + status framing.
   function wirePost(id, path, publish, framing, okMsg, confirmMsg) {
     _byId(id).addEventListener("click", async () => {
-      if (confirmMsg && !confirm(confirmMsg)) return;
-      setStatus(framing, true);
+      if (
+        confirmMsg &&
+        !(await confirmInPage(
+          "Publish to every follower?",
+          confirmMsg,
+          "Publish",
+          false,
+        ))
+      ) {
+        return;
+      }
+      setBusy(framing);
       try {
         await postAction(path, publish, okMsg);
       } catch (e) {
@@ -189,15 +288,16 @@ function initPostForm({
   wirePost("editBtn", "edit", false, "Editing post…", "Post edited ✓");
   wirePost(
     "editPublishBtn", "edit", true, "Editing & publishing…", "Published ✓",
-    "Edit the post AND publish it to every follower?",
+    "This edits the live post and crossposts it, so beacon mirrors the change to every "
+      + "server following this feed.",
   );
 
   // --- delete post ------------------------------------------------------
   _byId("deleteBtn").addEventListener("click", async () => {
     if (!postThisPeriod) return;
     const msg = crossposted ? labels.deletePublished : labels.deleteDraft;
-    if (!confirm(msg)) return;
-    setStatus("Deleting…", true);
+    if (!(await confirmInPage("Delete this post?", msg, "Delete", true))) return;
+    setBusy("Deleting…");
     try {
       const res = await api(`/${routePrefix}/delete`, {});
       const data = await res.json();
