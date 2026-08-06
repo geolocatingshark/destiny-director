@@ -294,3 +294,15 @@ async def test_routes_registered_without_a_page_or_card() -> None:
     paths = {getattr(r.resource, "canonical", None) for r in app.router.routes()}
     assert "/feed/{name}/preview" in paths
     assert "/feed/{name}/send" in paths
+
+
+async def test_preview_before_the_bot_is_up_says_what_to_do(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The message must survive to the page. An HTTPServiceUnavailable here stringified
+    # to "Service Unavailable" — technically true, useless to read — because both call
+    # sites report str(e) rather than letting it propagate as a response.
+    monkeypatch.setattr(feed_actions, "_bot", None)
+    _register()
+    res = await feed_actions._handle_preview(_as_request(_FakeRequest("xur")))
+    assert "still starting" in json.loads(_text(res))["error"]

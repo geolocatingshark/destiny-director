@@ -81,11 +81,18 @@ async def _on_started(_event: h.StartedEvent, bot: CachedFetchBot = lb.di.INJECT
     _bot = bot
 
 
+class BotNotReady(RuntimeError):
+    """Raised when a route needs the bot before ``StartedEvent`` has stashed it."""
+
+
 def _require_bot() -> CachedFetchBot:
+    # A plain exception, not HTTPServiceUnavailable. Both call sites are inside a
+    # `except Exception` that reports `str(e)` to the page, so nothing ever propagated
+    # this as an HTTP response — it just arrived on screen as "Service Unavailable",
+    # aiohttp's stringification of the class, with the sentence explaining what to do
+    # dropped on the floor. That sentence is the whole value of the error.
     if _bot is None:
-        raise aiohttp.web.HTTPServiceUnavailable(
-            text="Bot is still starting — try again in a moment."
-        )
+        raise BotNotReady("The bot is still starting — try again in a moment.")
     return _bot
 
 
