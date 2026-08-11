@@ -1,29 +1,47 @@
 """A name → item index over the Destiny manifest, for the rotation editor.
 
-Powers weapon/armor name autocomplete and light.gg link resolution. Built once from the
-cached manifest SQLite (weapon + armor items only) and held in memory; consumers read it
-synchronously. Everything degrades gracefully when the index isn't warm yet or no Bungie
-API key is configured — autocomplete returns nothing and link resolution returns
-``None`` rather than blocking a request on the (large, slow) manifest download.
+Powers weapon/armor name autocomplete and light.gg link resolution. Both are now SQL
+queries against the manifest projection (:mod:`.manifest_db`) rather than reads of an
+in-memory dict: there is no index to build, no ``warm`` to call, and no window after a
+boot in which autocomplete silently returns nothing.
+
+What the in-memory index cost was not the dict — it was building it. Every process that
+wanted a name lookup had to download the manifest and parse the whole ~39k-row item
+table to get one, which was anchor's memory peak and the reason this module had a
+background warm task and a "not ready yet" state at all. The ingest does that walk now,
+in a process that exits.
+
+Everything still degrades gracefully: before the first ingest there is no current
+version, so autocomplete returns nothing and link resolution returns ``None`` rather
+than raising.
 """
 
-import asyncio
-import json
 import logging
-import sqlite3
 import typing as t
 
+from sqlalchemy import case, select
+
+from dd.common import schemas
+
 from .constants import DESTINY_ITEM_TYPE_ARMOR, DESTINY_ITEM_TYPE_WEAPON
-from .manifest import _get_latest_manifest
+from .manifest_db import LIKE_ESCAPE, current_version_id, like_escape
 
 logger = logging.getLogger(__name__)
 
 LIGHT_GG_URL = "https://www.light.gg/db/items/{}/"
 
-# Built index: name.lower() -> list of entries. Only the latest manifest is kept.
-_index: dict[str, list[dict[str, t.Any]]] | None = None
-_index_path: str | None = None
-_build_lock = asyncio.Lock()
+#: Rows fetched per requested autocomplete result before deduplication. The query
+#: orders exactly as the returned list does, so this is a window on an already-correct
+#: ranking rather than a filter — but it *is* a cap, so: it bounds what a single
+#: keystroke pulls out of the database, and only matters if some name/type pair has more
+#: than this many manifest reissues sharing the ranking, which no real item comes close
+#: to (the worst are a handful).
+_SEARCH_OVERFETCH = 20
+
+_KIND_ITEM_TYPES = {
+    "weapon": DESTINY_ITEM_TYPE_WEAPON,
+    "armor": DESTINY_ITEM_TYPE_ARMOR,
+}
 
 
 def _plain_name(value: str) -> str:
@@ -31,174 +49,171 @@ def _plain_name(value: str) -> str:
     return value.split(" (")[0].strip()
 
 
-def _season_numbers(con: sqlite3.Connection) -> dict[int, int]:
-    """``seasonHash → seasonNumber`` from the manifest, or ``{}`` if unavailable.
-
-    ``seasonNumber`` is monotonic across releases (unlike item hashes, which aren't
-    assigned in release order), so it's the authoritative "which of two same-named
-    weapons is newer" key. The season table isn't in every manifest/older cache, so a
-    missing table degrades to no season data — the resolver then falls back to the
-    collectible + hash tiebreak."""
-    try:
-        rows = con.execute("SELECT json FROM DestinySeasonDefinition")
-    except sqlite3.Error:
-        return {}
-    seasons: dict[int, int] = {}
-    for (raw,) in rows:
-        try:
-            season = json.loads(raw)
-        except (ValueError, TypeError):
-            continue
-        season_hash = season.get("hash")
-        number = season.get("seasonNumber")
-        if season_hash is not None and number is not None:
-            seasons[season_hash] = number
-    return seasons
+def _entry(row: t.Any) -> dict[str, t.Any]:
+    """One candidate, in the shape the scorers and the JSON response both want."""
+    return {
+        "name": row.name,
+        "hash": int(row.hash),
+        "type": row.item_type_display_name or "",
+        "item_type": int(row.item_type),
+        "icon": row.icon or "",
+        "collectible": bool(row.collectible_hash),
+        # -1 sorts below any real season, so items without one fall back to the hash
+        # tiebreak — exactly the prior behaviour for them.
+        "season": -1 if row.season_number is None else int(row.season_number),
+    }
 
 
-def _build_sync(path: str) -> dict[str, list[dict[str, t.Any]]]:
-    """Parse the manifest item table into a name index (runs in a worker thread)."""
-    index: dict[str, list[dict[str, t.Any]]] = {}
-    con = sqlite3.connect(path)
-    try:
-        seasons = _season_numbers(con)
-        rows = con.execute("SELECT json FROM DestinyInventoryItemDefinition")
-        for (raw,) in rows:
-            # Skip an individually-malformed row rather than aborting the whole build:
-            # one bad/truncated JSON blob or a row missing "hash" must not take the
-            # entire index down (autocomplete + link baking dead until a restart).
-            try:
-                item = json.loads(raw)
-            except (ValueError, TypeError):
-                continue
-            item_type = item.get("itemType")
-            if item_type not in (DESTINY_ITEM_TYPE_WEAPON, DESTINY_ITEM_TYPE_ARMOR):
-                continue
-            item_hash = item.get("hash")
-            if item_hash is None:
-                continue
-            display = item.get("displayProperties") or {}
-            name = (display.get("name") or "").strip()
-            if not name:
-                continue
-            index.setdefault(name.lower(), []).append(
-                {
-                    "name": name,
-                    "hash": item_hash,
-                    "type": item.get("itemTypeDisplayName", ""),
-                    "item_type": item_type,
-                    "icon": display.get("icon", ""),
-                    "collectible": bool(item.get("collectibleHash")),
-                    # -1 sorts below any real season, so items without a season fall
-                    # back to the hash tiebreak (exactly the prior behaviour for them).
-                    "season": seasons.get(item.get("seasonHash"), -1),
-                }
-            )
-    finally:
-        con.close()
-    return index
+_COLUMNS = (
+    schemas.ManifestItem.name,
+    schemas.ManifestItem.hash,
+    schemas.ManifestItem.item_type_display_name,
+    schemas.ManifestItem.item_type,
+    schemas.ManifestItem.icon,
+    schemas.ManifestItem.collectible_hash,
+    schemas.ManifestItem.season_number,
+)
+
+#: Only weapons and armour are offered; the item table holds everything else too.
+_SEARCHABLE = schemas.ManifestItem.item_type.in_(
+    [DESTINY_ITEM_TYPE_WEAPON, DESTINY_ITEM_TYPE_ARMOR]
+)
 
 
-async def warm(api_key: str) -> None:
-    """Build (or rebuild on a manifest update) the index. Safe to call repeatedly.
+async def ready(version_id: int | None = None) -> bool:
+    """Whether there is a manifest to read at all.
 
-    Downloads/caches the manifest if needed (slow, once) then parses it in a thread. A
-    no-op without an API key. Call from a background task so requests never block on it.
+    Kept (async now) because callers use it to say so — the backfill script reports
+    "no manifest" rather than silently writing a document with no links.
     """
-    global _index, _index_path
-    if not api_key:
-        return
-    async with _build_lock:
-        try:
-            path = await _get_latest_manifest(api_key)
-        except Exception:
-            logger.exception("item_index: could not fetch the manifest")
-            return
-        if path == _index_path and _index is not None:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-            index = await loop.run_in_executor(None, _build_sync, path)
-        except Exception:
-            # Never let a manifest-parse failure kill the warm task uncaught — that
-            # surfaces only as a stray "Task exception was never retrieved" log and
-            # leaves any previously-built index in place. Log and bail; a later manifest
-            # update (or restart) re-attempts the build.
-            logger.exception("item_index: could not build the index from the manifest")
-            return
-        _index, _index_path = index, path
-        logger.info("item_index: built (%d names)", len(index))
+    return (version_id or await current_version_id()) is not None
 
 
-def ready() -> bool:
-    return _index is not None
+def _score(entry: dict[str, t.Any], type_hint: str) -> tuple:
+    entry_type = (entry["type"] or "").lower()
+    return (
+        entry["item_type"] == DESTINY_ITEM_TYPE_WEAPON,
+        bool(entry_type) and type_hint.startswith(entry_type),
+        entry["collectible"],
+        # seasonNumber is the authoritative recency key (item hashes aren't
+        # chronological); hash is only the final fallback when seasons tie / are -1.
+        entry["season"],
+        entry["hash"],
+    )
 
 
-def resolve_light_gg_url(value: str) -> str | None:
+async def resolve_light_gg_urls(
+    values: t.Iterable[str], version_id: int | None = None
+) -> dict[str, str]:
+    """Best-effort light.gg URLs for weapon values (``Name (Type)``), keyed by value.
+
+    Every value is answered from **one** query. The single-value entry point below is
+    written in terms of this one because the caller that matters — baking a whole
+    rotation document's links on save — has a dozen values and used to walk an
+    in-memory dict for each; a query per value would have turned a free operation into
+    a dozen round-trips.
+
+    A value with no match is simply absent from the result.
+    """
+    wanted = list(dict.fromkeys(values))
+    if not wanted:
+        return {}
+    version_id = version_id or await current_version_id()
+    if version_id is None:
+        return {}
+
+    names = {_plain_name(value).lower() for value in wanted}
+    async with schemas.db_session() as session:
+        rows = (
+            await session.execute(
+                select(*_COLUMNS).where(
+                    schemas.ManifestItem.version_id == version_id,
+                    schemas.ManifestItem.name_lower.in_(sorted(names)),
+                )
+            )
+        ).all()
+
+    by_name: dict[str, list[dict[str, t.Any]]] = {}
+    for row in rows:
+        by_name.setdefault(row.name.lower(), []).append(_entry(row))
+
+    resolved: dict[str, str] = {}
+    for value in wanted:
+        name = _plain_name(value)
+        entries = by_name.get(name.lower())
+        if not entries:
+            continue
+        type_hint = value[len(name) :].strip(" ()").lower()
+        best = max(entries, key=lambda entry: _score(entry, type_hint))
+        resolved[value] = LIGHT_GG_URL.format(best["hash"])
+    return resolved
+
+
+async def resolve_light_gg_url(value: str, version_id: int | None = None) -> str | None:
     """Best-effort light.gg URL for a weapon value (``Name (Type)``), or ``None``.
 
     Prefers a weapon whose type matches the ``(Type)`` hint and that is collectible
     (in-game obtainable), then the newest reissue by season number (falling back to the
     highest hash when season data is unavailable)."""
-    if _index is None:
-        return None
-    name = _plain_name(value)
-    entries = _index.get(name.lower())
-    if not entries:
-        return None
-    type_hint = value[len(name) :].strip(" ()").lower()
-
-    def score(entry: dict[str, t.Any]) -> tuple:
-        entry_type = (entry["type"] or "").lower()
-        return (
-            entry["item_type"] == DESTINY_ITEM_TYPE_WEAPON,
-            bool(entry_type) and type_hint.startswith(entry_type),
-            entry["collectible"],
-            # seasonNumber is the authoritative recency key (item hashes aren't
-            # chronological); hash is only the final fallback when seasons tie / are -1.
-            entry.get("season", -1),
-            entry["hash"],
-        )
-
-    return LIGHT_GG_URL.format(max(entries, key=score)["hash"])
+    return (await resolve_light_gg_urls([value], version_id)).get(value)
 
 
-def search(
-    query: str, kind: str | None = None, limit: int = 20
+async def search(
+    query: str,
+    kind: str | None = None,
+    limit: int = 20,
+    version_id: int | None = None,
 ) -> list[dict[str, t.Any]]:
     """Name-substring search for autocomplete. ``kind`` filters to ``weapon``/``armor``.
 
     Returns ``{name, type, hash, url, icon}`` dicts, prefix matches and collectibles
     first, deduped by (name, type)."""
-    if _index is None:
-        return []
     q = query.lower().strip()
     if not q:
         return []
-    want = {"weapon": DESTINY_ITEM_TYPE_WEAPON, "armor": DESTINY_ITEM_TYPE_ARMOR}.get(
-        kind
-    )
+    version_id = version_id or await current_version_id()
+    if version_id is None:
+        return []
 
-    matches: list[dict[str, t.Any]] = []
-    for name_lower, entries in _index.items():
-        if q not in name_lower:
-            continue
-        for entry in entries:
-            if want is not None and entry["item_type"] != want:
-                continue
-            matches.append(entry)
+    pattern = like_escape(q)
+    conditions = [
+        schemas.ManifestItem.version_id == version_id,
+        _SEARCHABLE,
+        schemas.ManifestItem.name_lower.like(f"%{pattern}%", escape=LIKE_ESCAPE),
+    ]
+    want = _KIND_ITEM_TYPES.get(kind)
+    if want is not None:
+        conditions.append(schemas.ManifestItem.item_type == want)
 
-    matches.sort(
-        key=lambda e: (
-            not e["name"].lower().startswith(q),
-            not e["collectible"],
-            e["name"],
-        )
-    )
+    async with schemas.db_session() as session:
+        rows = (
+            await session.execute(
+                select(*_COLUMNS)
+                .where(*conditions)
+                # The same three keys the in-memory sort used, as CASE expressions so
+                # the "0 sorts first" reading is identical on both backends rather than
+                # resting on how each renders a boolean under DESC.
+                .order_by(
+                    case(
+                        (
+                            schemas.ManifestItem.name_lower.like(
+                                f"{pattern}%", escape=LIKE_ESCAPE
+                            ),
+                            0,
+                        ),
+                        else_=1,
+                    ),
+                    case((schemas.ManifestItem.collectible_hash.is_(None), 1), else_=0),
+                    schemas.ManifestItem.name,
+                )
+                .limit(limit * _SEARCH_OVERFETCH)
+            )
+        ).all()
 
     seen: set[tuple[str, str]] = set()
     results: list[dict[str, t.Any]] = []
-    for entry in matches:
+    for row in rows:
+        entry = _entry(row)
         key = (entry["name"], entry["type"])
         if key in seen:
             continue

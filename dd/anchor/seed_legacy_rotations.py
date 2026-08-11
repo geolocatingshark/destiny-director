@@ -47,17 +47,16 @@ from ..common.legacy_activities import (
     weapon_values,
 )
 from ..sector_accounting.legacy_activities import LegacyRotation
-from .extensions.bungie_api import item_index
+from .extensions.bungie_api import item_index, manifest_db
 
 
-def _bake_links(doc: dict[str, t.Any]) -> int:
-    """Resolve the doc's weapon values to light.gg URLs in place; returns the count."""
+async def _bake_links(doc: dict[str, t.Any], version_id: int | None = None) -> int:
+    """Resolve the doc's weapon values to light.gg URLs in place; returns the count.
+
+    ``version_id`` pins one manifest version across a whole run, so a set of seed files
+    baked together can never straddle an ingest and end up citing two seasons."""
     doc.pop("item_links", None)
-    links = {
-        value: url
-        for value in weapon_values(doc)
-        if (url := item_index.resolve_light_gg_url(value))
-    }
+    links = await item_index.resolve_light_gg_urls(weapon_values(doc), version_id)
     if links:
         doc["item_links"] = links
     return len(links)
@@ -84,13 +83,9 @@ def _unlinked_weapons(doc: dict[str, t.Any]) -> list[str]:
 
 
 async def seed(*, force: bool, only: str | None = None, links: bool = False) -> None:
-    if links:
-        print("warming the manifest item index… (first run downloads the manifest)")
-        await item_index.warm(schemas.BungieCredentials.api_key)
-        if not item_index.ready():
-            print(
-                "WARNING: item index not ready (no API key / manifest); links skipped"
-            )
+    version_id = await manifest_db.current_version_id() if links else None
+    if links and version_id is None:
+        print("WARNING: no manifest has been ingested yet; links skipped")
 
     for key in rotation_schema.LEGACY_DESTINATIONS:
         if only is not None and key != only:
@@ -107,11 +102,11 @@ async def seed(*, force: bool, only: str | None = None, links: bool = False) -> 
             print(f"skip  {slug} (already present; use --force to overwrite)")
             continue
 
-        link_count = _bake_links(doc) if links else 0
+        link_count = await _bake_links(doc, version_id) if links else 0
         await schemas.RotationData.set_data(slug, doc)
         suffix = f", {link_count} links" if links else ""
         print(f"seed  {slug} ({_value_count(doc)} values{suffix})")
-        if links and item_index.ready():
+        if links and version_id is not None:
             for entry in _unlinked_weapons(doc):
                 print(f"  WARN  {slug}: no light.gg link for {entry}")
 
@@ -119,14 +114,14 @@ async def seed(*, force: bool, only: str | None = None, links: bool = False) -> 
 async def bake_files(only: str | None = None) -> None:
     """Refresh the committed seed files' ``item_links`` from the current manifest.
 
-    A dev-time step: warms the manifest, re-resolves each doc's weapon light.gg links
-    and writes the files back (pretty-printed). Commit the diff so auto-seed ships fresh
-    links. Warns on any weapon-slot value left unlinked (bad ``(Type)`` / bad name).
+    A dev-time step: re-resolves each doc's weapon light.gg links against the ingested
+    manifest and writes the files back (pretty-printed). Commit the diff so auto-seed
+    ships fresh links. Warns on any weapon-slot value left unlinked (bad ``(Type)`` /
+    bad name).
     """
-    print("warming the manifest item index… (first run downloads the manifest)")
-    await item_index.warm(schemas.BungieCredentials.api_key)
-    if not item_index.ready():
-        print("ERROR: item index not ready (no API key / manifest); aborting")
+    version_id = await manifest_db.current_version_id()
+    if version_id is None:
+        print("ERROR: no manifest has been ingested yet; aborting")
         return
 
     for key in rotation_schema.LEGACY_DESTINATIONS:
@@ -134,7 +129,7 @@ async def bake_files(only: str | None = None) -> None:
             continue
         path = _SEED_DIR / f"{key}.json"
         doc = json.loads(path.read_text(encoding="utf-8"))
-        count = _bake_links(doc)
+        count = await _bake_links(doc, version_id)
         path.write_text(
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )

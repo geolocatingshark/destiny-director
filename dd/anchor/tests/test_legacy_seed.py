@@ -144,19 +144,18 @@ def test_home_page_lists_legacy_slugs():
     assert "world_activity_kepler" in html
 
 
-def test_bake_item_links_resolves_weapons(monkeypatch):
+@pytest.mark.asyncio
+async def test_bake_item_links_resolves_weapons(monkeypatch):
     from dd.anchor.extensions.bungie_api import item_index
 
-    monkeypatch.setattr(item_index, "ready", lambda: True)
-    monkeypatch.setattr(
-        item_index,
-        "resolve_light_gg_url",
-        lambda v: (
-            f"https://lg/{v.split(' (')[0]}"
+    async def resolve(values, version_id=None):
+        return {
+            v: f"https://lg/{v.split(' (')[0]}"
+            for v in values
             if ("Rifle" in v or "Cannon" in v)
-            else None
-        ),
-    )
+        }
+
+    monkeypatch.setattr(item_index, "resolve_light_gg_urls", resolve)
     doc = {
         "activities": [
             {
@@ -175,18 +174,22 @@ def test_bake_item_links_resolves_weapons(monkeypatch):
             }
         ],
     }
-    editor._bake_item_links(doc)
+    await editor._bake_item_links(doc)
     assert doc["item_links"] == {
         "Chroma Rush (Auto Rifle)": "https://lg/Chroma Rush",
         "Vulpecula (Hand Cannon)": "https://lg/Vulpecula",
     }
 
 
-def test_bake_item_links_noop_when_index_cold(monkeypatch):
+@pytest.mark.asyncio
+async def test_bake_item_links_noop_without_a_manifest(monkeypatch):
     from dd.anchor.extensions.bungie_api import item_index
 
-    monkeypatch.setattr(item_index, "ready", lambda: False)
+    async def nothing(values, version_id=None):
+        return {}
+
+    monkeypatch.setattr(item_index, "resolve_light_gg_urls", nothing)
     doc = {"item_links": {"stale": "x"}, "activities": []}
-    editor._bake_item_links(doc)
-    # Server owns item_links: cleared and only recomputed when the index is warm.
+    await editor._bake_item_links(doc)
+    # Server owns item_links: cleared, and only rewritten when something resolved.
     assert "item_links" not in doc

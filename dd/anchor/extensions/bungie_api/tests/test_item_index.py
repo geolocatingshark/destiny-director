@@ -13,189 +13,211 @@
 # You should have received a copy of the GNU Affero General Public License along with
 # destiny-director. If not, see <https://www.gnu.org/licenses/>.
 
-# Pure search/resolution logic over an injected in-memory index (no manifest download).
+"""Autocomplete and light.gg resolution, against the manifest projection.
 
-import json
-import sqlite3
+These used to inject a hand-built dict into a module global; the index is SQL now, so
+they insert rows and query them. Same behaviours asserted either way — the collectible
+and season preferences, the kind filter, the (name, type) dedupe, and degrading to
+nothing when no manifest has been ingested.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import typing as t
 
 import pytest
+import pytest_asyncio
+from sqlalchemy import delete, insert
 
 from dd.anchor.extensions.bungie_api import item_index
+from dd.common import schemas
+
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-@pytest.fixture
-def index():
-    item_index._index = {
-        "chroma rush": [
-            {
-                "name": "Chroma Rush",
-                "hash": 100,
-                "type": "Auto Rifle",
-                "item_type": 3,
-                "icon": "i",
-                "collectible": True,
-            },
-            {
-                "name": "Chroma Rush",
-                "hash": 50,
-                "type": "Auto Rifle",
-                "item_type": 3,
-                "icon": "i",
-                "collectible": False,
-            },
-        ],
-        "wild hunt vest": [
-            {
-                "name": "Wild Hunt Vest",
-                "hash": 200,
-                "type": "Hunter Armor",
-                "item_type": 2,
-                "icon": "i",
-                "collectible": True,
-            },
-        ],
+def _item(hash_: int, name: str, **overrides: t.Any) -> dict[str, t.Any]:
+    row = {
+        "hash": hash_,
+        "name": name,
+        "name_lower": name.lower(),
+        "icon": "i",
+        "description": "",
+        "item_type": 3,
+        "item_type_display_name": "Auto Rifle",
+        "tier_type_name": "Legendary",
+        "class_type": 3,
+        "bucket_type_hash": None,
+        "collectible_hash": None,
+        "season_number": None,
+        "trait_ids": [],
+        "redacted": False,
+        "raw": None,
     }
-    item_index._index_path = "test"
-    yield
-    item_index._index = None
-    item_index._index_path = None
+    return row | overrides
 
 
-def test_resolve_prefers_collectible_type_match(index):
+@pytest_asyncio.fixture
+async def projection() -> t.AsyncIterator[t.Callable[..., t.Awaitable[int]]]:
+    """Hand out a current manifest version populated with the given items."""
+    async with schemas.db_session() as session:
+        await session.execute(delete(schemas.ManifestItem))
+        await session.execute(delete(schemas.ManifestVersion))
+        await session.commit()
+
+    async def populate(*items: dict[str, t.Any]) -> int:
+        async with schemas.db_session() as session:
+            version_id = int(
+                (
+                    await session.execute(
+                        insert(schemas.ManifestVersion)
+                        .values(
+                            version="test",
+                            ingested_at=dt.datetime.now(),
+                            is_current=True,
+                        )
+                        .returning(schemas.ManifestVersion.id)
+                    )
+                ).scalar_one()
+            )
+            for item in items:
+                session.add(schemas.ManifestItem(version_id=version_id, **item))
+            await session.commit()
+            return version_id
+
+    yield populate
+
+    async with schemas.db_session() as session:
+        await session.execute(delete(schemas.ManifestItem))
+        await session.execute(delete(schemas.ManifestVersion))
+        await session.commit()
+
+
+@pytest_asyncio.fixture
+async def index(projection) -> None:
+    await projection(
+        _item(100, "Chroma Rush", collectible_hash=1),
+        _item(50, "Chroma Rush"),
+        _item(
+            200,
+            "Wild Hunt Vest",
+            item_type=2,
+            item_type_display_name="Hunter Armor",
+            collectible_hash=2,
+        ),
+    )
+
+
+async def test_resolve_prefers_collectible_type_match(index) -> None:
     # Two "Chroma Rush" entries; the collectible reissue (hash 100) wins.
     assert (
-        item_index.resolve_light_gg_url("Chroma Rush (Auto Rifle)")
+        await item_index.resolve_light_gg_url("Chroma Rush (Auto Rifle)")
         == "https://www.light.gg/db/items/100/"
     )
 
 
-def test_resolve_unknown_name_is_none(index):
-    assert item_index.resolve_light_gg_url("Nonexistent (Shotgun)") is None
+async def test_resolve_unknown_name_is_none(index) -> None:
+    assert await item_index.resolve_light_gg_url("Nonexistent (Shotgun)") is None
 
 
-def test_resolve_prefers_newer_season_over_hash():
+async def test_resolve_prefers_newer_season_over_hash(projection) -> None:
     # Two collectible, type-matching "Recluse" copies: the reissue is a NEWER season but
-    # a LOWER hash. Season number must win over the hash tiebreak (review finding #10).
-    common = {"name": "Recluse", "type": "Submachine Gun", "item_type": 3, "icon": "i"}
-    item_index._index = {
-        "recluse": [
-            {**common, "hash": 900, "collectible": True, "season": 6},  # original
-            {**common, "hash": 100, "collectible": True, "season": 23},  # reissue
-        ],
+    # a LOWER hash. Season number must win over the hash tiebreak.
+    common = {"item_type_display_name": "Submachine Gun", "collectible_hash": 1}
+    await projection(
+        _item(900, "Recluse", season_number=6, **common),  # original
+        _item(100, "Recluse", season_number=23, **common),  # reissue
+    )
+    assert (
+        await item_index.resolve_light_gg_url("Recluse (Submachine Gun)")
+        == "https://www.light.gg/db/items/100/"
+    )
+
+
+async def test_resolve_many_answers_every_value_in_one_query(index) -> None:
+    """The save path bakes a whole document's links, so it is one query, not N."""
+    resolved = await item_index.resolve_light_gg_urls(
+        ["Chroma Rush (Auto Rifle)", "Wild Hunt Vest (Hunter Armor)", "Nope (Bow)"]
+    )
+    assert resolved == {
+        "Chroma Rush (Auto Rifle)": "https://www.light.gg/db/items/100/",
+        "Wild Hunt Vest (Hunter Armor)": "https://www.light.gg/db/items/200/",
     }
-    item_index._index_path = "test"
-    try:
-        assert (
-            item_index.resolve_light_gg_url("Recluse (Submachine Gun)")
-            == "https://www.light.gg/db/items/100/"
-        )
-    finally:
-        item_index._index = None
-        item_index._index_path = None
 
 
-def test_search_weapon_kind(index):
-    res = item_index.search("chroma", kind="weapon")
+async def test_search_weapon_kind(index) -> None:
+    res = await item_index.search("chroma", kind="weapon")
     assert res and res[0]["name"] == "Chroma Rush"
     assert res[0]["url"] == "https://www.light.gg/db/items/100/"
     # deduped by (name, type): only one Chroma Rush entry.
     assert len(res) == 1
 
 
-def test_search_kind_filter(index):
-    assert item_index.search("chroma", kind="armor") == []
-    assert item_index.search("wild", kind="armor")[0]["name"] == "Wild Hunt Vest"
+async def test_search_kind_filter(index) -> None:
+    assert await item_index.search("chroma", kind="armor") == []
+    assert (await item_index.search("wild", kind="armor"))[0][
+        "name"
+    ] == "Wild Hunt Vest"
 
 
-def test_cold_index_degrades_gracefully():
-    item_index._index = None
-    assert not item_index.ready()
-    assert item_index.search("anything") == []
-    assert item_index.resolve_light_gg_url("Chroma Rush (Auto Rifle)") is None
-
-
-def _make_manifest(tmp_path, rows: list[str], seasons: list[str] | None = None) -> str:
-    """A throwaway manifest SQLite whose item (and optional season) table hold the given
-    raw json blobs."""
-    path = str(tmp_path / "manifest.sqlite")
-    con = sqlite3.connect(path)
-    con.execute("CREATE TABLE DestinyInventoryItemDefinition (json TEXT)")
-    con.executemany(
-        "INSERT INTO DestinyInventoryItemDefinition (json) VALUES (?)",
-        [(r,) for r in rows],
+async def test_search_prefers_prefix_matches(projection) -> None:
+    await projection(
+        _item(1, "Rush Job"),  # prefix match
+        _item(2, "Chroma Rush"),  # substring match only
     )
-    if seasons is not None:
-        con.execute("CREATE TABLE DestinySeasonDefinition (json TEXT)")
-        con.executemany(
-            "INSERT INTO DestinySeasonDefinition (json) VALUES (?)",
-            [(s,) for s in seasons],
+    assert [r["name"] for r in await item_index.search("rush")] == [
+        "Rush Job",
+        "Chroma Rush",
+    ]
+
+
+async def test_search_only_offers_weapons_and_armour(projection) -> None:
+    """The item table holds currencies and cosmetics too; autocomplete must not."""
+    await projection(
+        _item(1, "Bright Dust", item_type=0, item_type_display_name=""),
+        _item(2, "Bright Chroma"),
+    )
+    assert [r["name"] for r in await item_index.search("bright")] == ["Bright Chroma"]
+
+
+async def test_search_treats_the_query_as_a_literal(projection) -> None:
+    """``LIKE`` metacharacters must not leak out of the query string.
+
+    The in-memory index used Python's ``in``, which has no pattern language; an
+    unescaped ``%`` would turn an autocomplete keystroke into "match everything".
+    """
+    await projection(_item(1, "Chroma Rush"), _item(2, "100% Delicious"))
+
+    # Unescaped, `%` is "match anything" and this returns both rows. Escaped, it is a
+    # per cent sign, and only the item that actually contains one comes back.
+    assert [r["name"] for r in await item_index.search("%")] == ["100% Delicious"]
+    assert [r["name"] for r in await item_index.search("100%")] == ["100% Delicious"]
+    # `_` is LIKE's single-character wildcard; it must not match the space here.
+    assert await item_index.search("chroma_rush") == []
+
+
+async def test_no_ingested_manifest_degrades_gracefully(projection) -> None:
+    assert not await item_index.ready()
+    assert await item_index.search("anything") == []
+    assert await item_index.resolve_light_gg_url("Chroma Rush (Auto Rifle)") is None
+    assert await item_index.resolve_light_gg_urls(["Chroma Rush (Auto Rifle)"]) == {}
+
+
+async def test_a_superseded_version_is_not_read(projection) -> None:
+    """Readers pin the current version; rows from an older one must stay invisible."""
+    await projection(_item(100, "Chroma Rush"))
+    async with schemas.db_session() as session:
+        old_id = (
+            await session.execute(
+                insert(schemas.ManifestVersion)
+                .values(version="old", ingested_at=dt.datetime.now(), is_current=False)
+                .returning(schemas.ManifestVersion.id)
+            )
+        ).scalar_one()
+        session.add(
+            schemas.ManifestItem(version_id=old_id, **_item(999, "Gjallarhorn"))
         )
-    con.commit()
-    con.close()
-    return path
+        await session.commit()
 
-
-def test_build_sync_joins_season_numbers(tmp_path):
-    # An item's seasonHash resolves to the season's seasonNumber (review finding #10);
-    # an item with no seasonHash falls back to -1.
-    weapon = json.dumps(
-        {
-            "hash": 100,
-            "seasonHash": 555,
-            "itemType": 3,
-            "itemTypeDisplayName": "Hand Cannon",
-            "displayProperties": {"name": "Fatebringer", "icon": "i"},
-        }
-    )
-    seasonless = json.dumps(
-        {
-            "hash": 200,
-            "itemType": 3,
-            "itemTypeDisplayName": "Scout Rifle",
-            "displayProperties": {"name": "Jade Rabbit", "icon": "i"},
-        }
-    )
-    season = json.dumps({"hash": 555, "seasonNumber": 15})
-    path = _make_manifest(tmp_path, [weapon, seasonless], seasons=[season])
-
-    index = item_index._build_sync(path)
-
-    assert index["fatebringer"][0]["season"] == 15
-    assert index["jade rabbit"][0]["season"] == -1  # no seasonHash → sentinel
-
-
-def test_build_sync_skips_malformed_rows(tmp_path):
-    # One good weapon, then a truncated-JSON row and a row missing "hash": the bad rows
-    # must be skipped, not abort the whole build (review finding #9).
-    good = json.dumps(
-        {
-            "hash": 100,
-            "itemType": 3,
-            "itemTypeDisplayName": "Auto Rifle",
-            "displayProperties": {"name": "Chroma Rush", "icon": "i"},
-            "collectibleHash": 1,
-        }
-    )
-    missing_hash = json.dumps(
-        {
-            "itemType": 3,
-            "displayProperties": {"name": "No Hash"},
-        }
-    )
-    also_good = json.dumps(
-        {
-            "hash": 200,
-            "itemType": 2,
-            "itemTypeDisplayName": "Hunter Armor",
-            "displayProperties": {"name": "Wild Hunt Vest", "icon": "i"},
-        }
-    )
-    path = _make_manifest(
-        tmp_path, [good, "{ this is not json", missing_hash, also_good]
-    )
-
-    index = item_index._build_sync(path)
-
-    assert index["chroma rush"][0]["hash"] == 100
-    assert index["wild hunt vest"][0]["hash"] == 200
-    assert "no hash" not in index  # the hash-less row was skipped, not indexed
+    assert await item_index.search("gjallarhorn") == []
+    assert [r["name"] for r in await item_index.search("chroma")] == ["Chroma Rush"]

@@ -229,10 +229,8 @@ async def test_reset_rejects_non_world_activity():
 async def test_search_endpoint_returns_matches(monkeypatch):
     from dd.anchor.extensions.bungie_api import item_index
 
-    monkeypatch.setattr(
-        item_index,
-        "search",
-        lambda q, kind=None: [
+    async def search(q, kind=None):
+        return [
             {
                 "name": "Chroma Rush",
                 "type": "Auto Rifle",
@@ -240,8 +238,9 @@ async def test_search_endpoint_returns_matches(monkeypatch):
                 "url": "u",
                 "icon": "i",
             }
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(item_index, "search", search)
     resp = await editor._handle_search(_req(query={"q": "chroma", "kind": "weapon"}))
     assert resp.status == 200
     assert json.loads(resp.text or "[]")[0]["name"] == "Chroma Rush"

@@ -27,7 +27,6 @@ Discord-OAuth middleware in ``web_auth.py`` (this module carries no auth code of
 own).
 """
 
-import asyncio
 import datetime as dt
 import html
 import json
@@ -440,26 +439,23 @@ async def _handle_edit_post(request: aiohttp.web.Request) -> aiohttp.web.Respons
         return aiohttp.web.Response(status=400, text=f"Document is unusable:\n{e}")
 
     if rotation_schema.is_world_activity(post_type):
-        _bake_item_links(data)
+        await _bake_item_links(data)
 
     await schemas.RotationData.set_data(post_type, data)
     logger.info("Rotation data for %s saved via web editor", post_type)
     return aiohttp.web.Response(text="Saved")
 
 
-def _bake_item_links(data: dict[str, t.Any]) -> None:
+async def _bake_item_links(data: dict[str, t.Any]) -> None:
     """Resolve a legacy doc's weapon values to light.gg URLs, in place (``item_links``).
 
-    Server-owned: recomputed on every save. If the manifest index isn't warm yet the doc
-    just saves without links — they appear on a later save (or the backfill script)."""
+    Server-owned: recomputed on every save. If nothing has been ingested yet the doc
+    just saves without links — they appear on a later save (or the backfill script).
+
+    One query for the whole document, not one per value: a rotation carries a dozen or
+    so weapon values, and this runs on the save path."""
     data.pop("item_links", None)
-    if not item_index.ready():
-        return
-    links: dict[str, str] = {}
-    for value in weapon_values(data):
-        url = item_index.resolve_light_gg_url(value)
-        if url:
-            links[value] = url
+    links = await item_index.resolve_light_gg_urls(weapon_values(data))
     if links:
         data["item_links"] = links
 
@@ -510,7 +506,7 @@ async def _handle_search(request: aiohttp.web.Request) -> aiohttp.web.Response:
     """Autocomplete for the editor: manifest weapon/armor items matching ``?q=``."""
     query = request.query.get("q", "")
     kind = request.query.get("kind") or None
-    return aiohttp.web.json_response(item_index.search(query, kind=kind))
+    return aiohttp.web.json_response(await item_index.search(query, kind=kind))
 
 
 def register_rotation_routes(app: aiohttp.web.Application) -> None:
@@ -526,19 +522,11 @@ def register_rotation_routes(app: aiohttp.web.Application) -> None:
 web.register_routes(register_rotation_routes)
 
 
-# Hold a strong reference to the background warm task: the event loop keeps only a weak
-# ref to a bare create_task(), so without this the task can be garbage-collected —
-# and cancelled — mid-download, leaving the index cold for the whole process.
-_warm_tasks: set[asyncio.Task[None]] = set()
-
-
-@loader.listener(h.StartedEvent)
-async def _warm_item_index(_event: h.StartedEvent) -> None:
-    """Build the manifest weapon/armor index in the background (for autocomplete + link
-    baking), so requests never block on the (large) manifest download."""
-    task = asyncio.create_task(item_index.warm(schemas.BungieCredentials.api_key))
-    _warm_tasks.add(task)
-    task.add_done_callback(_warm_tasks.discard)
+# There is no item-index warm here any more. It used to be a StartedEvent listener
+# holding a strong reference to a background task, because building the index meant
+# downloading and parsing the whole manifest and no request could be made to wait for
+# it. The index is now SQL against a projection some other process maintains, so there
+# is nothing to build, nothing to keep a reference to, and no cold window after boot.
 
 
 # A row per subject, not one row for the editor. The four rotations an admin actually
