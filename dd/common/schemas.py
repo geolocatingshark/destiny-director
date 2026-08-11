@@ -26,7 +26,17 @@ import typing as t
 from dataclasses import dataclass
 from typing import Self
 
-from sqlalchemy import Index, bindparam, case, exists, literal, or_, tuple_
+from sqlalchemy import (
+    ForeignKey,
+    Index,
+    bindparam,
+    case,
+    exists,
+    literal,
+    or_,
+    tuple_,
+)
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import OperationalError
@@ -40,6 +50,7 @@ from sqlalchemy.orm import (
     Mapped,
     aliased,
     declarative_base,
+    declared_attr,
     mapped_column,
     validates,
 )
@@ -3463,6 +3474,323 @@ class Cv2Draft(Base):
         )
         result = await session.execute(delete(cls).where(cls.created_at < cutoff))
         return int(result.rowcount or 0)
+
+
+# --- the Destiny manifest projection --------------------------------------------------
+#
+# A typed, version-pinned projection of the Bungie manifest, written by the out-of-band
+# ``dd.manifest_ingest`` cron and read by anchor. It replaces the in-process pipeline
+# (download the ~340 MB zip, extract a sqlite, walk it) that used to run inside the
+# serving process: the parse spike now lives in a process that exits, and a serving
+# process does indexed reads against tables that are already here.
+#
+# Three properties the shape is chosen for:
+#
+#   * **Exactly one current version, flipped in one transaction.** Readers resolve
+#     ``is_current`` once per operation (one post, one HTTP request) and pin that
+#     ``version_id`` for every query in it, so a mid-operation flip can never mix two
+#     seasons inside one post. That is why every table is keyed ``(version_id, hash)``
+#     rather than by hash alone.
+#   * **The DB is the fallback.** The last good ingest survives deploys and Bungie
+#     outages, which is what makes the old on-disk cache (and the committed-manifest
+#     plan that was going to back it up) unnecessary.
+#   * **Hashes are stored unsigned.** The old ``_to_signed_id`` wrap was an artifact of
+#     how Bungie's sqlite stores its primary key; nothing outside that file wanted it.
+#
+# Column sets are the audited read surface and nothing speculative — if a consumer does
+# not read a field today it is not a column, and ``ManifestItem.raw`` is the escape
+# hatch for prototyping one before it earns a migration.
+
+#: ``jsonb`` on Postgres (the deployed dialect), plain ``JSON`` on the SQLite the test
+#: suite runs against. One shared instance: SQLAlchemy type objects are immutable and
+#: are routinely shared across columns.
+_JSONB = JSON().with_variant(postgresql.JSONB(), "postgresql")
+
+
+class ManifestVersion(Base):
+    """One ingested Bungie manifest version; at most one is current.
+
+    ``version`` is Bungie's own version string, which is what the hourly currency check
+    compares against — equal means the ingest exits without downloading anything.
+
+    Retention is **two** versions (the current one and the one it superseded), so a bad
+    ingest rolls back by flipping ``is_current`` rather than by re-downloading. Every
+    projection table cascades from here, so dropping a version is one DELETE.
+    """
+
+    __tablename__ = "manifest_version"
+    __mapper_args__ = {"eager_defaults": True}
+
+    id = Column("id", Integer, primary_key=True, autoincrement=True)
+    version = Column("version", VARCHAR(128), nullable=False, unique=True)
+    ingested_at = Column("ingested_at", DateTime, nullable=False)
+    is_current = Column("is_current", Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        # Partial unique index: any number of superseded rows, at most one current. The
+        # constraint is in the database rather than only in the flip logic because the
+        # "exactly one current" invariant is what every reader's version pinning rests
+        # on — a second current row would make which season a post shows a coin toss.
+        Index(
+            "ix_manifest_version_current",
+            "is_current",
+            unique=True,
+            postgresql_where=text("is_current"),
+            sqlite_where=text("is_current"),
+        ),
+    )
+
+    @classmethod
+    @ensure_session(db_session)
+    async def current(cls, session: AsyncSession = _UNSET) -> Self | None:
+        """The current version row, or ``None`` before the first successful ingest."""
+        return (
+            await session.execute(select(cls).where(cls.is_current))
+        ).scalar_one_or_none()
+
+    @classmethod
+    @ensure_session(db_session)
+    async def current_id(cls, session: AsyncSession = _UNSET) -> int | None:
+        """Just the id of the current version — what readers pin for an operation."""
+        return (
+            await session.execute(select(cls.id).where(cls.is_current))
+        ).scalar_one_or_none()
+
+
+class _ManifestDefinition:
+    """Mixin for the per-definition projection tables.
+
+    They all share the same key — ``(version_id, hash)``, cascading from
+    :class:`ManifestVersion` — and all but one carry a display name, so the shape lives
+    here instead of eleven times over. Declared as a plain mixin rather than a second
+    ``Base`` subclass so SQLAlchemy maps each table on its own (no joined inheritance).
+    """
+
+    @declared_attr
+    def version_id(cls) -> Mapped[int]:
+        return Column(
+            "version_id",
+            Integer,
+            ForeignKey("manifest_version.id", ondelete="CASCADE"),
+            primary_key=True,
+        )
+
+    @declared_attr
+    def hash(cls) -> Mapped[int]:
+        # Unsigned 32-bit in Bungie's data, so BigInteger — Integer would overflow every
+        # hash at or above 2**31, which is roughly half of them.
+        return Column("hash", BigInteger, primary_key=True)
+
+    @declared_attr
+    def name(cls) -> Mapped[str]:
+        return Column("name", Text, nullable=False, default="")
+
+    @classmethod
+    @ensure_session(db_session)
+    async def by_hashes(
+        cls, version_id: int, hashes: t.Iterable[int], session: AsyncSession = _UNSET
+    ) -> dict[int, t.Any]:
+        """``{hash: row}`` for the given hashes in one round-trip.
+
+        Missing hashes are simply absent from the mapping — a Bungie hotfix that ships
+        an item mid-week is a miss, not an error, and every caller degrades on ``None``.
+        """
+        wanted = list({int(h) for h in hashes})
+        if not wanted:
+            return {}
+        rows = (
+            await session.execute(
+                select(cls).where(
+                    and_(cls.version_id == version_id, cls.hash.in_(wanted))
+                )
+            )
+        ).scalars()
+        return {int(row.hash): row for row in rows}
+
+
+class ManifestItem(_ManifestDefinition, Base):
+    """``DestinyInventoryItemDefinition`` — every item, not just weapons and armour.
+
+    The wide row set is load-bearing: the Eververse post prices its cosmetics against
+    currency items (Bright Dust, Silver), reads ``traitIds``/``description`` off
+    ornaments, and groups by ``itemTypeDisplayName`` — none of which are weapons or
+    armour. Restricting the table to weapons + armour would have broken those silently,
+    at a saving of a few MB of small columns.
+
+    ``raw`` is the exception, and *is* restricted to weapons/armour: it is the whole
+    manifest JSON for a row, so it dominates the table's disk. Nothing reads it today —
+    it exists so a new field can be prototyped as a jsonb read before it earns a column.
+    """
+
+    __tablename__ = "manifest_item"
+    __mapper_args__ = {"eager_defaults": True}
+
+    #: ``name`` casefolded once at ingest, so autocomplete and light.gg resolution match
+    #: on an indexed column instead of wrapping every row in ``lower()``.
+    name_lower = Column("name_lower", Text, nullable=False, default="")
+    icon = Column("icon", Text, nullable=False, default="")
+    description = Column("description", Text, nullable=False, default="")
+    item_type = Column("item_type", Integer, nullable=False, default=0)
+    item_type_display_name = Column(
+        "item_type_display_name", Text, nullable=False, default=""
+    )
+    tier_type_name = Column("tier_type_name", Text, nullable=False, default="")
+    class_type = Column("class_type", Integer, nullable=False, default=0)
+    bucket_type_hash = Column("bucket_type_hash", BigInteger, nullable=True)
+    collectible_hash = Column("collectible_hash", BigInteger, nullable=True)
+    #: Resolved through ``seasonHash`` at ingest. ``seasonNumber`` is monotonic across
+    #: releases (item hashes are not), so it is the authoritative "which of two
+    #: same-named weapons is the newer reissue" key. ``NULL`` for items without one.
+    season_number = Column("season_number", Integer, nullable=True)
+    trait_ids = Column("trait_ids", _JSONB, nullable=False, default=list)
+    redacted = Column("redacted", Boolean, nullable=False, default=False)
+    raw = Column("raw", _JSONB, nullable=True)
+
+    __table_args__ = (
+        Index("ix_manifest_item_name", "version_id", "name_lower"),
+        Index("ix_manifest_item_type", "version_id", "item_type"),
+    )
+
+
+class ManifestPerk(_ManifestDefinition, Base):
+    """``DestinySandboxPerkDefinition`` — perk hash → name, for vendor item perks."""
+
+    __tablename__ = "manifest_perk"
+    __mapper_args__ = {"eager_defaults": True}
+
+    icon = Column("icon", Text, nullable=False, default="")
+
+
+class ManifestStat(_ManifestDefinition, Base):
+    """``DestinyStatDefinition`` — stat hash → name, for vendor item stat blocks."""
+
+    __tablename__ = "manifest_stat"
+    __mapper_args__ = {"eager_defaults": True}
+
+
+class ManifestEquipmentSlot(_ManifestDefinition, Base):
+    """``DestinyEquipmentSlotDefinition`` — an item's bucket ("Helmet", "Kinetic")."""
+
+    __tablename__ = "manifest_equipment_slot"
+    __mapper_args__ = {"eager_defaults": True}
+
+
+class ManifestDestination(_ManifestDefinition, Base):
+    """``DestinyDestinationDefinition`` — where a vendor's location resolves to."""
+
+    __tablename__ = "manifest_destination"
+    __mapper_args__ = {"eager_defaults": True}
+
+
+class ManifestPresentationNode(_ManifestDefinition, Base):
+    """``DestinyPresentationNodeDefinition`` — a collectible's parent (armour set)."""
+
+    __tablename__ = "manifest_presentation_node"
+    __mapper_args__ = {"eager_defaults": True}
+
+
+class ManifestCollectible(_ManifestDefinition, Base):
+    """``DestinyCollectibleDefinition`` — the set an armour piece belongs to.
+
+    Read one way only: item → ``collectible_hash`` → ``parent_node_hashes[0]`` → the
+    presentation node's name. The parent hashes are a JSON array rather than an edge
+    table because that is the only traversal anything performs, and it is always the
+    whole (short) list at once.
+    """
+
+    __tablename__ = "manifest_collectible"
+    __mapper_args__ = {"eager_defaults": True}
+
+    description = Column("description", Text, nullable=False, default="")
+    item_hash = Column("item_hash", BigInteger, nullable=True)
+    parent_node_hashes = Column(
+        "parent_node_hashes", _JSONB, nullable=False, default=list
+    )
+
+
+class ManifestVendor(_ManifestDefinition, Base):
+    """``DestinyVendorDefinition`` — Xûr, Ada-1, and the Eververse daily rotators.
+
+    ``vendor_identifier`` is what the Eververse post discovers rotators by (an
+    ``EVERVERSE_BRIGHT_DUST_ROTATOR*`` / ``EVERVERSE_SILVER_ROTATOR*`` prefix match).
+    ``locations`` keeps Bungie's list shape because the vendor API answers with an
+    *index into it*, so the ordering is the meaning.
+    """
+
+    __tablename__ = "manifest_vendor"
+    __mapper_args__ = {"eager_defaults": True}
+
+    vendor_identifier = Column("vendor_identifier", Text, nullable=False, default="")
+    locations = Column("locations", _JSONB, nullable=False, default=list)
+
+    @classmethod
+    @ensure_session(db_session)
+    async def hashes_by_identifier_prefix(
+        cls, version_id: int, prefix: str, session: AsyncSession = _UNSET
+    ) -> list[int]:
+        """Vendor hashes whose ``vendor_identifier`` starts with ``prefix``, in order.
+
+        ``startswith``, not SQL ``LIKE``: the identifiers matched on are full of
+        underscores (``EVERVERSE_BRIGHT_DUST_ROTATOR``) and ``_`` is a ``LIKE``
+        wildcard, so a pattern match would quietly over-match. ``substr(...) = ?`` is
+        the exact, case-sensitive, wildcard-free compare Python's ``str.startswith``
+        performs — the same reasoning the sqlite implementation this replaces carried.
+        """
+        rows = (
+            await session.execute(
+                select(cls.hash)
+                .where(
+                    and_(
+                        cls.version_id == version_id,
+                        func.substr(cls.vendor_identifier, 1, len(prefix)) == prefix,
+                    )
+                )
+                .order_by(cls.hash)
+            )
+        ).scalars()
+        return [int(h) for h in rows]
+
+
+class ManifestActivityType(_ManifestDefinition, Base):
+    """``DestinyActivityTypeDefinition`` — the authoritative raid/dungeon/strike
+    name an activity classifies by."""
+
+    __tablename__ = "manifest_activity_type"
+    __mapper_args__ = {"eager_defaults": True}
+
+
+class ManifestActivity(_ManifestDefinition, Base):
+    """``DestinyActivityDefinition`` — the GM strike and Conquest autocomplete pools.
+
+    The classification itself (which activity counts as a strike, which name is a
+    Conquest) stays in the weekly-reset extension that renders it; this table only
+    carries the fields that decision reads, so the ingest holds no display logic.
+    """
+
+    __tablename__ = "manifest_activity"
+    __mapper_args__ = {"eager_defaults": True}
+
+    activity_type_hash = Column("activity_type_hash", BigInteger, nullable=True)
+    mode_types = Column("mode_types", _JSONB, nullable=False, default=list)
+    direct_mode_type = Column("direct_mode_type", Integer, nullable=True)
+    max_party = Column("max_party", Integer, nullable=True)
+
+
+#: Every projection table, in the order the ingest writes them (parents first, so a
+#: partially-visible transaction could never show a child without its version row —
+#: belt and braces; the whole write is one transaction anyway).
+MANIFEST_PROJECTION_TABLES: tuple[type[Base], ...] = (
+    ManifestItem,
+    ManifestPerk,
+    ManifestStat,
+    ManifestEquipmentSlot,
+    ManifestDestination,
+    ManifestPresentationNode,
+    ManifestCollectible,
+    ManifestVendor,
+    ManifestActivityType,
+    ManifestActivity,
+)
 
 
 _LOCAL_DB_HOSTS = frozenset({None, "", "localhost", "127.0.0.1", "::1"})

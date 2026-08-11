@@ -79,13 +79,32 @@ RAILWAY_RUN = railway run $(TARGET_ENV_FLAG) --service $(RAILWAY_SERVICE) -- \
 #     `make deploy-ancor` now says "No rule to make target", with no guard to write.
 BOTS := beacon anchor
 
-$(addprefix deploy-,$(BOTS)): deploy-%:
+# Everything deployable from this repo. `manifest_ingest` is not a bot: it is a Railway
+# **cron** service running dd/manifest_ingest/ hourly, which checks whether the Destiny
+# manifest moved and rebuilds the projection in Postgres when it has. It shares this
+# image and this repo, and differs only in how Railway is configured to start it:
+#
+#   * Custom Start Command: `python -OO -m dd.manifest_ingest` — this REPLACES the
+#     image's supervisord CMD, which is why supervisord.conf has no program block for
+#     it (and must not grow one: a cron job that exits in seconds looks like a failed
+#     start to supervisord's startsecs window).
+#   * Cron Schedule: `0 * * * *` (UTC). Railway skips an overlapping run rather than
+#     stacking it; the ingest also takes a pg advisory lock of its own.
+#   * No volume, no domain, no serverless toggle. Its extra variable is the optional
+#     MANIFEST_INGEST_ALERT_WEBHOOK (see .env-example).
+#
+# The underscore in the service name is deliberate: RAILWAY_SERVICE_NAME is what
+# supervisord interpolates into `python -m dd.<name>`, so if the start-command override
+# is ever lost the fallback is still a valid module path rather than a syntax error.
+SERVICES := $(BOTS) manifest_ingest
+
+$(addprefix deploy-,$(SERVICES)): deploy-%:
 	railway up $(TARGET_ENV_FLAG) --detach --service $*
 
 # Removes the most recent deployment of a service. Explicit about both service and
 # environment — it used to be a bare `railway down`, which acted on whatever the CLI
 # happened to be linked to at the time.
-$(addprefix remove-last-deploy-,$(BOTS)): remove-last-deploy-%:
+$(addprefix remove-last-deploy-,$(SERVICES)): remove-last-deploy-%:
 	railway down $(TARGET_ENV_FLAG) --service $*
 
 # Remote Pi dev container (docker-compose.dev.yml). dev-up builds the image with
@@ -551,11 +570,12 @@ check: lint format-check typecheck test test-js
 # real file and is the guard that fails when it is missing. Without this a stray file
 # named `check` or `test` in the repo root would silently make those targets no-ops.
 #
-# The per-bot targets are expanded from $(BOTS) rather than written out: `%` is literal
+# The per-service targets are expanded from $(SERVICES) rather than written out: `%` is literal
 # in .PHONY, so a `.PHONY: deploy-%` declares a target called "deploy-%" and leaves the
 # real ones unprotected. They are static pattern rules for the same reason — see the
 # note on the deploy block for why a *plain* pattern rule cannot be made phony at all.
-.PHONY: prod $(addprefix deploy-,$(BOTS)) $(addprefix remove-last-deploy-,$(BOTS)) \
+.PHONY: prod $(addprefix deploy-,$(SERVICES)) \
+	$(addprefix remove-last-deploy-,$(SERVICES)) \
 	dev dev-up dev-login dev-down \
 	dev-down-volumes run-beacon-local run-anchor-local _require-mem-cap \
 	run-beacon-devbot run-anchor-devbot devbot-up devbot-down devbot-logs \

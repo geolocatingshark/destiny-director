@@ -23,6 +23,10 @@ Everything lives under `dd/`:
   `schemas.py`, `utils.py`, plus domain helpers (`rotation_schema.py`, `lost_sector.py`).
 - `dd.hmessage` — the `HMessage` message representation (see below).
 - `dd.sector_accounting` — Destiny sector/rotation domain data.
+- `dd.manifest_ingest` — **not a bot.** A Railway cron service (`python -m
+  dd.manifest_ingest`, hourly) that checks whether the Destiny manifest moved and, when
+  it has, rebuilds the typed projection in Postgres that anchor reads. See
+  *The Destiny manifest* below.
 
 **Implicit namespace packages.** There is intentionally no `dd/__init__.py`,
 `dd/common/__init__.py`, or `dd/anchor/__init__.py`. Only `beacon`, `hmessage`,
@@ -97,6 +101,32 @@ Schemas are defined in `dd/common/schemas.py`, which also serves as Alembic's ta
 metadata (autogenerate diffs the live database against it — see `migrations/env.py`) and
 a management CLI (`--create-all` / `--destroy-all`). `--destroy-all` refuses a non-local
 DB unless `ALLOW_REMOTE_SCHEMA_DESTROY=1` — never bypass this guard.
+
+## The Destiny manifest
+
+Bungie's manifest is a ~340 MB sqlite behind a versioned zip. It used to be downloaded,
+extracted and walked **inside anchor's own process**, which is where anchor's memory peak
+came from. It now lives in Postgres as a typed projection:
+
+- **`dd/manifest_ingest/`** — the writer. A cron service, deliberately bot-free (no
+  lightbulb, no extensions, no gateway). Each hourly tick asks Bungie for the current
+  version string and compares it with the stored one; equal means exit, which is almost
+  every tick. When it moved, it downloads to a temp dir, streams the walk, and writes
+  **one transaction**: new version row → all projection rows → `is_current` flip →
+  retention delete. A failure anywhere leaves the previous version serving.
+- **`schemas.Manifest*`** — the tables. Every row is keyed `(version_id, hash)`, and
+  **at most one version is current** (a partial unique index enforces it).
+- **Readers pin a version.** Resolve `ManifestVersion.current_id()` **once per
+  operation** (one post, one HTTP request) and use that id for every query in it. A
+  mid-operation flip then cannot mix two seasons inside one post, and no cache
+  invalidation protocol is needed.
+
+Two consequences worth knowing before touching it:
+
+- Hashes are stored **unsigned**. The signed wrap was a storage artifact of Bungie's
+  sqlite and does not exist here.
+- A missing hash is **`None`**, not an error — Bungie ships hotfixes mid-week and the
+  hourly cron bounds that window to an hour. Every consumer already degrades on it.
 
 ## Building messages — `HMessage`
 

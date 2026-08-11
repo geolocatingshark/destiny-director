@@ -355,6 +355,12 @@ bungie_api_key = _getenv("BUNGIE_API_KEY", "")
 bungie_client_id = _getenv("BUNGIE_CLIENT_ID", "")
 bungie_client_secret = _getenv("BUNGIE_CLIENT_SECRET", "")
 
+# Where the manifest ingest cron (dd/manifest_ingest/) reports a failed run. A plain
+# Discord webhook URL, not a bot token: that service's whole reason to hold a credential
+# is to be able to say "the ingest failed", and a webhook is the smallest thing that
+# does it. Optional — unset means failures are logged and nothing is posted.
+manifest_ingest_alert_webhook = _getenv("MANIFEST_INGEST_ALERT_WEBHOOK", "")
+
 # Discord OAuth for the anchor web UI (see dd/anchor/extensions/web_auth.py). All these
 # default to "" and are intentionally NOT part of import-time required-var validation:
 # they are only needed by the anchor web surface, so leaving them unset must not break
