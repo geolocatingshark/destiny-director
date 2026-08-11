@@ -44,16 +44,15 @@ favour of the web form.
 import asyncio
 import dataclasses
 import datetime as dt
-import json
 import logging
 import re
 import typing as t
 from pathlib import Path
 
 import aiohttp.web
-import aiosqlite
 import hikari as h
 import lightbulb as lb
+from sqlalchemy import select
 
 from dd.hmessage import HMessage
 
@@ -78,7 +77,6 @@ from .. import (
     web,
 )
 from ..hybrid_post_core import (
-    _ROW_BATCH,
     DraftMeta,
     HybridPostSpec,
     WeaponRef,
@@ -91,10 +89,8 @@ from ..hybrid_post_core import (
     next_reset_ts,
     resolve_weapon,
 )
-from . import (
-    bungie_api as api,
-    portal_ops,
-)
+from . import portal_ops
+from .bungie_api import manifest_db
 
 logger = logging.getLogger(__name__)
 loader = lb.Loader()
@@ -1068,7 +1064,13 @@ def _clean_activity_name(name: str, category: str) -> str:
 
 
 async def _scan_activities() -> tuple[set[str], dict[str, set[str]], bool]:
-    """The strike + conquest pools, from this extension's own manifest connection."""
+    """The strike + conquest pools, from the manifest projection.
+
+    Two queries where this used to be two full-table walks of a downloaded sqlite. The
+    *classification* is unchanged and still lives here — the ingest carries only the
+    fields :func:`_classify_activity` reads, so which activity counts as a strike stays
+    a decision of the extension that renders it, not of the writer.
+    """
     # Only GM strikes need manifest autocomplete now; raids/dungeons/pantheon/crucible
     # are bounded Choice selectors (see the *_CHOICES constants).
     strikes: set[str] = set()
@@ -1076,38 +1078,51 @@ async def _scan_activities() -> tuple[set[str], dict[str, set[str]], bool]:
     # Customize" activities, keyed by tier so the autocomplete matches the picked tier.
     conquest_by_tier: dict[str, set[str]] = {tier: set() for tier in CONQUEST_TIERS}
     try:
-        path = await api._get_latest_manifest(schemas.BungieCredentials.api_key)
-        async with aiosqlite.connect(path) as con:
-            cur = await con.cursor()
+        version_id = await manifest_db.current_version_id()
+        if version_id is None:
+            return strikes, conquest_by_tier, False
 
+        async with schemas.db_session() as session:
             # Activity type names are the authoritative raid/dungeon/nightfall signal.
-            # Both scans read in ``fetchmany`` batches rather than one ``fetchall()``
-            # (same reason as iter_weapon_items: only the derived names outlive the
-            # loop, so batching is output-identical and never holds the whole table).
-            await cur.execute("SELECT json FROM DestinyActivityTypeDefinition")
-            activity_types: dict[int, str] = {}
-            while batch := await cur.fetchmany(_ROW_BATCH):
-                for (row,) in batch:
-                    defn = json.loads(row)
-                    activity_types[int(defn["hash"])] = (
-                        defn.get("displayProperties") or {}
-                    ).get("name", "")
+            activity_types: dict[int, str] = {
+                int(hash_): name
+                for hash_, name in (
+                    await session.execute(
+                        select(
+                            schemas.ManifestActivityType.hash,
+                            schemas.ManifestActivityType.name,
+                        ).where(schemas.ManifestActivityType.version_id == version_id)
+                    )
+                ).all()
+            }
+            rows = (
+                await session.execute(
+                    select(schemas.ManifestActivity).where(
+                        schemas.ManifestActivity.version_id == version_id
+                    )
+                )
+            ).scalars()
 
-            await cur.execute("SELECT json FROM DestinyActivityDefinition")
-            while batch := await cur.fetchmany(_ROW_BATCH):
-                for (row,) in batch:
-                    defn = json.loads(row)
-                    raw_name = (defn.get("displayProperties") or {}).get("name", "")
-                    # Conquests: keep only the "<Tier> Conquest: <Base>: Customize"
-                    # entries, bucketed by tier — independent of the strike cleaning.
-                    parsed = _parse_conquest_name(raw_name)
-                    if parsed:
-                        conquest_by_tier[parsed[0]].add(parsed[1])
-                    type_name = activity_types.get(defn.get("activityTypeHash"), "")
-                    if _classify_activity(defn, type_name) == "strike":
-                        cleaned = _clean_activity_name(raw_name, "strike")
-                        if cleaned:
-                            strikes.add(cleaned)
+        for row in rows:
+            raw_name = row.name or ""
+            # Conquests: keep only the "<Tier> Conquest: <Base>: Customize" entries,
+            # bucketed by tier — independent of the strike cleaning.
+            parsed = _parse_conquest_name(raw_name)
+            if parsed:
+                conquest_by_tier[parsed[0]].add(parsed[1])
+            type_name = activity_types.get(row.activity_type_hash, "")
+            # Rebuilt into the JSON shape _classify_activity reads, so that function is
+            # untouched and its (well-tested) rule ordering is not restated in SQL.
+            defn = {
+                "displayProperties": {"name": raw_name},
+                "activityModeTypes": row.mode_types or [],
+                "directActivityModeType": row.direct_mode_type,
+                "matchmaking": {"maxParty": row.max_party},
+            }
+            if _classify_activity(defn, type_name) == "strike":
+                cleaned = _clean_activity_name(raw_name, "strike")
+                if cleaned:
+                    strikes.add(cleaned)
     except Exception:
         logger.warning("weekly_reset: manifest index build failed", exc_info=True)
         return strikes, conquest_by_tier, False

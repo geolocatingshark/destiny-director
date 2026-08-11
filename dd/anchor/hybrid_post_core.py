@@ -44,8 +44,8 @@ import typing as t
 from pathlib import Path
 
 import aiohttp.web
-import aiosqlite
 import hikari as h
+from sqlalchemy import select
 
 from dd.hmessage import HMessage
 
@@ -55,6 +55,7 @@ from ..common.components import footer_button_specs, link_button_row
 from ..common.utils import fetch_emoji_dict
 from . import utils, web
 from .extensions import bungie_api as api
+from .extensions.bungie_api import manifest_db
 
 logger = logging.getLogger(__name__)
 
@@ -931,75 +932,93 @@ async def publish_draft(
 #: One weapon/armour row: (name, hash, itemTypeDisplayName, itemType, rarity).
 WeaponItem = tuple[str, int, str, int, str]
 
-#: Rows pulled per ``fetchmany`` when scanning a manifest table. Big enough that the
-#: round-trip overhead is noise, small enough that the raw JSON of a batch is a rounding
-#: error next to the table (see :func:`iter_weapon_items`).
-_ROW_BATCH = 200
+#: Rarities dropped from the pool: dummies, whites and greens are not rewards.
+_POOL_EXCLUDED_RARITIES = ("", "Common", "Basic")
 
 
-async def iter_weapon_items(cursor: t.Any) -> list[WeaponItem]:
-    """Read the manifest's named, non-dummy weapons/armour via ``cursor``, deduped.
+async def iter_weapon_items(version_id: int) -> list[WeaponItem]:
+    """The manifest's named, non-dummy weapons/armour for one version, deduped.
 
-    Runs the ``DestinyInventoryItemDefinition`` query on the caller-owned sqlite cursor
-    (so a producer can share one manifest connection across several reads) and returns
-    one row per (name, type), newest hash winning — the pool the reward autocomplete and
-    :func:`resolve_weapon` search. Whites/greens and redacted/dummy items are dropped.
+    One row per (name, type), newest hash winning — the pool the reward autocomplete and
+    :func:`resolve_weapon` search.
 
-    Rows are consumed in ``fetchmany`` batches, not one ``fetchall()``: the item table
-    is the manifest's largest and materialising all ~39k raw JSON strings at once cost
-    240 MB (+284 MB RSS) before a single one was even parsed. Only the deduped result
-    survives the loop, so batching is output-identical and drops the peak to ~6 MB.
+    This used to be a walk of the whole ``DestinyInventoryItemDefinition`` table from a
+    sqlite this process had downloaded, and it was expensive enough to have earned its
+    own tuning: materialising all ~39k raw JSON strings at once cost 240 MB (+284 MB
+    RSS) before one of them was parsed, so it read in ``fetchmany`` batches instead. The
+    filtering is now a WHERE clause over ~13k already-typed rows and returns only the
+    columns the tuple carries, so neither the batching nor the JSON decode is left.
     """
-    item_by_key: dict[tuple[str, str], WeaponItem] = {}
-    await cursor.execute("SELECT json FROM DestinyInventoryItemDefinition")
-    while batch := await cursor.fetchmany(_ROW_BATCH):
-        for (row,) in batch:
-            defn = json.loads(row)
-            item_type = defn.get("itemType")
-            if item_type not in (2, 3) or defn.get("redacted"):
-                continue
-            rarity = (defn.get("inventory") or {}).get("tierTypeName", "")
-            if rarity in ("", "Common", "Basic"):  # drop dummies/whites/greens
-                continue
-            name = (defn.get("displayProperties") or {}).get("name")
-            if not name:
-                continue
-            type_name = defn.get("itemTypeDisplayName", "")
-            hash_ = int(defn["hash"])
-            key = (name.lower(), type_name.lower())
-            existing = item_by_key.get(key)
-            if existing is None or hash_ > existing[1]:  # keep the newest hash
-                item_by_key[key] = (name, hash_, type_name, item_type, rarity)
+    async with schemas.db_session() as session:
+        rows = (
+            await session.execute(
+                select(
+                    schemas.ManifestItem.name,
+                    schemas.ManifestItem.hash,
+                    schemas.ManifestItem.item_type_display_name,
+                    schemas.ManifestItem.item_type,
+                    schemas.ManifestItem.tier_type_name,
+                )
+                .where(
+                    schemas.ManifestItem.version_id == version_id,
+                    schemas.ManifestItem.item_type.in_([2, 3]),
+                    schemas.ManifestItem.redacted.is_(False),
+                    schemas.ManifestItem.tier_type_name.not_in(_POOL_EXCLUDED_RARITIES),
+                    schemas.ManifestItem.name != "",
+                )
+                # Ascending, so a later row overwrites an earlier one below and the
+                # newest hash is what survives the dedupe — the same rule the walk
+                # applied with an explicit `hash_ > existing[1]` comparison.
+                .order_by(schemas.ManifestItem.hash)
+            )
+        ).all()
+
+    item_by_key: dict[tuple[str, str], WeaponItem] = {
+        (row.name.lower(), (row.item_type_display_name or "").lower()): (
+            row.name,
+            int(row.hash),
+            row.item_type_display_name or "",
+            int(row.item_type),
+            row.tier_type_name,
+        )
+        for row in rows
+    }
     return sorted(item_by_key.values(), key=lambda e: e[0].lower())
 
 
-#: Process-wide cache of the manifest weapon/armour pool + its build lock. Every
-#: producer's reward pickers search the SAME pool, so the ~4166-row
-#: DestinyInventoryItemDefinition scan + JSON decode runs once and is held in a single
-#: list, not one copy per producer.
+#: Process-wide cache of the manifest weapon/armour pool + its build lock, keyed by the
+#: manifest version it was built from. Every producer's reward pickers search the SAME
+#: pool, so the query runs once per version rather than once per producer — and keying
+#: on the version means an ingest invalidates it for free, where the old cache was
+#: keyed on nothing and held whatever the process happened to download at boot.
 _weapon_pool: list[WeaponItem] | None = None
+_weapon_pool_version: int | None = None
 _weapon_pool_lock = asyncio.Lock()
 
 
 async def get_weapon_pool() -> list[WeaponItem]:
-    """Build (once) and cache the manifest weapon/armour pool, shared process-wide.
+    """Build (once per manifest version) and cache the weapon/armour pool.
 
-    Opens its own short-lived manifest connection and runs :func:`iter_weapon_items`;
-    the result is cached so subsequent callers (every producer + its prewarm) reuse it
-    rather than re-scanning the item table. On any failure returns ``[]`` **without
-    caching**: the caller degrades to a manifest-less form and a later call retries, so
-    a transient manifest error doesn't permanently disable the reward pickers.
+    On any failure returns ``[]`` **without** caching: the caller degrades to a
+    manifest-less form and a later call retries, so a transient error doesn't
+    permanently disable the reward pickers. Before the first ingest there is no version
+    to read, which is that same empty, retryable state.
     """
-    global _weapon_pool
-    if _weapon_pool is not None:
+    global _weapon_pool, _weapon_pool_version
+    try:
+        version_id = await manifest_db.current_version_id()
+    except Exception:
+        logger.warning("manifest weapon-pool version lookup failed", exc_info=True)
+        return []
+    if version_id is None:
+        return []
+    if _weapon_pool is not None and _weapon_pool_version == version_id:
         return _weapon_pool
     async with _weapon_pool_lock:
-        if _weapon_pool is None:
+        if _weapon_pool is None or _weapon_pool_version != version_id:
             try:
-                path = await api._get_latest_manifest(schemas.BungieCredentials.api_key)
-                async with aiosqlite.connect(path) as con:
-                    cur = await con.cursor()
-                    _weapon_pool = await iter_weapon_items(cur)
+                _weapon_pool = await iter_weapon_items(version_id)
+                _weapon_pool_version = version_id
             except Exception:
                 logger.warning("manifest weapon-pool build failed", exc_info=True)
                 return []

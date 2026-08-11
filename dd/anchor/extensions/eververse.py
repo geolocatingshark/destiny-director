@@ -23,6 +23,7 @@ from . import (
     bungie_api as api,
     xur,
 )
+from .bungie_api import manifest_db
 
 loader = lb.Loader()
 
@@ -41,22 +42,21 @@ _ORNAMENT_TARGET_RE = re.compile(r"change the appearance of (.+?)\.")
 _ORNAMENT_TRAIT_IDS = frozenset({"item.ornament.weapon", "item.ornament.armor"})
 
 
-def _rotator_hashes(manifest_table: dict[str, t.Any], prefix: str) -> list[int]:
+async def _rotator_hashes(version_id: int, prefix: str) -> list[int]:
     """Discover daily rotator vendor hashes from the manifest.
 
     These are the vendors whose ``vendorIdentifier`` starts with ``prefix`` — e.g.
     ``EVERVERSE_BRIGHT_DUST_ROTATOR`` or ``EVERVERSE_SILVER_ROTATOR``
     (``..._EXOTIC_GHOSTS`` and friends).
 
-    The search runs in sqlite (``hashes_by_field_prefix``) rather than over
-    ``.values()``: the two scalars this needs per vendor used to cost a full parse of
-    ``DestinyVendorDefinition``, the fattest table in the manifest — ~385 MB RSS, and
-    twice over in :func:`eververse_message_constructor`, where both lookups are live at
-    once.
+    One indexed query returning two columns' worth of scalars. It is worth remembering
+    what this used to be: iterating ``DestinyVendorDefinition.values()`` parsed the
+    fattest table in the manifest — ~385 MB RSS, and twice over in
+    :func:`eververse_message_constructor` where both lookups are live at once — to read
+    one string per vendor. Pushing the predicate into sqlite fixed the parse; pushing it
+    into Postgres removes the table from this process entirely.
     """
-    return manifest_table["DestinyVendorDefinition"].hashes_by_field_prefix(
-        "vendorIdentifier", prefix
-    )
+    return await schemas.ManifestVendor.hashes_by_identifier_prefix(version_id, prefix)
 
 
 def _exotic_ornament_target_name(
@@ -192,10 +192,11 @@ async def _fetch_daily_rotator_offerings(
             for class_ in ("Hunter", "Titan", "Warlock")
         ]
 
-    manifest_table = await api._build_manifest_dict(
-        await api._get_latest_manifest(schemas.BungieCredentials.api_key)
-    )
-    rotator_hashes = _rotator_hashes(manifest_table, rotator_prefix)
+    # Pinned once for the whole post: this walks three characters x every active
+    # rotator, so re-resolving per vendor would let an ingest landing mid-fetch put two
+    # seasons' definitions into one message.
+    manifest_table = manifest_db.ManifestLookup(await manifest_db.require_version_id())
+    rotator_hashes = await _rotator_hashes(manifest_table.version_id, rotator_prefix)
 
     cost_match = currency.lower()
     items: dict[int, api.DestinyItem] = {}  # dedupe by item hash across classes
@@ -213,6 +214,7 @@ async def _fetch_daily_rotator_offerings(
                 # Rotator is not currently active; skip it.
                 continue
 
+            await manifest_table.preload_vendor_response(response)
             vendor = api.DestinyVendor.from_vendors_api_response(
                 response=response, manifest_table=manifest_table
             )

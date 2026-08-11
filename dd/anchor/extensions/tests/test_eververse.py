@@ -19,16 +19,13 @@ No DB / network / Discord — only the manifest-driven pure functions, exercised
 hand-built fixtures that mirror the live manifest shapes (verified against dev data).
 """
 
-import json
-import sqlite3
-
 import pytest
+import pytest_asyncio
 
 from dd.anchor.extensions.bungie_api import (
     EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX,
     EVERVERSE_SILVER_ROTATOR_PREFIX,
 )
-from dd.anchor.extensions.bungie_api.manifest import ManifestLookup
 from dd.anchor.extensions.bungie_api.models import DestinyItem
 from dd.anchor.extensions.eververse import (
     _eververse_line,
@@ -37,17 +34,19 @@ from dd.anchor.extensions.eververse import (
     _group_eververse_offerings,
     _rotator_hashes,
 )
+from dd.anchor.tests.manifest_projection import clear_projection, load_projection
 
 # Vendor rows as (id, vendorDefinition). ``_rotator_hashes`` used to scan
-# ``.values()`` in Python and now pushes the prefix test into sqlite, so the fixture is
-# a real manifest sqlite (the shape production actually hands it) and every case below
-# is asserted against the old ``.values()`` filter, kept verbatim as the reference
+# ``.values()`` in Python, then pushed the prefix test into sqlite, and now runs it in
+# Postgres — so the rows are ingested into the projection and every case below is
+# asserted against the original ``.values()`` filter, kept verbatim as the reference
 # implementation in ``_rotator_hashes_via_values``.
 #
 # The last four rows are the ones that separate a genuine ``str.startswith`` from the
-# obvious-looking ``LIKE 'EVERVERSE_BRIGHT_DUST_ROTATOR%'``: sqlite's LIKE is
-# ASCII-case-insensitive and reads ``_`` in the pattern as "any one character", and
-# these identifiers are nothing but underscores.
+# obvious-looking ``LIKE 'EVERVERSE_BRIGHT_DUST_ROTATOR%'``: LIKE is case-insensitive on
+# sqlite and reads ``_`` in the pattern as "any one character" on both backends, and
+# these identifiers are nothing but underscores. That is why the query compares a
+# ``substr`` rather than matching a pattern.
 _VENDOR_ROWS: list[tuple[int, dict]] = [
     (
         10,
@@ -79,60 +78,43 @@ _VENDOR_ROWS: list[tuple[int, dict]] = [
     (110, {"hash": 110, "vendorIdentifier": "EVERVERSE%ROTATOR"}),
 ]
 
-#: Ids of rows written as blobs rather than text — the manifest column is declared BLOB
-#: and real rows do come back that way, which bare ``json_extract`` rejects.
-_BLOB_ROW_IDS = frozenset({20, 60})
-#: Id of a row holding unparseable JSON: the ``.values()`` path skips it via
-#: ``json.loads``' ``except``, and the sqlite path must skip it too rather than
-#: aborting the whole query with "malformed JSON".
-_CORRUPT_ROW_ID = 120
 
-
-def _rotator_hashes_via_values(manifest_table, prefix: str) -> list[int]:
-    """The pre-fix implementation, kept as the equivalence reference."""
+def _rotator_hashes_via_values(prefix: str) -> list[int]:
+    """The original in-Python implementation, kept as the equivalence reference."""
     return [
-        vendor_def["hash"]
-        for vendor_def in manifest_table["DestinyVendorDefinition"].values()
-        if vendor_def.get("vendorIdentifier", "").startswith(prefix)
+        defn["hash"]
+        for _id, defn in _VENDOR_ROWS
+        if defn.get("vendorIdentifier", "").startswith(prefix)
     ]
 
 
-@pytest.fixture
-def vendor_manifest(tmp_path):
-    path = str(tmp_path / "world.content")
-    con = sqlite3.connect(path)
-    try:
-        con.execute(
-            "CREATE TABLE DestinyVendorDefinition (id INTEGER PRIMARY KEY, json)"
-        )
-        for id_, defn in _VENDOR_ROWS:
-            blob = json.dumps(defn)
-            con.execute(
-                "INSERT INTO DestinyVendorDefinition (id, json) VALUES (?, ?)",
-                (id_, blob.encode() if id_ in _BLOB_ROW_IDS else blob),
-            )
-        con.execute(
-            "INSERT INTO DestinyVendorDefinition (id, json) VALUES (?, ?)",
-            (_CORRUPT_ROW_ID, "{not json"),
-        )
-        con.commit()
-    finally:
-        con.close()
-    lookup = ManifestLookup(path)
-    yield lookup
-    lookup.close()
+@pytest_asyncio.fixture
+async def vendor_manifest(tmp_path):
+    version_id = await load_projection(
+        {"DestinyVendorDefinition": [defn for _id, defn in _VENDOR_ROWS]}, tmp_path
+    )
+    yield version_id
+    await clear_projection()
 
 
-def test_rotator_hashes_filters_by_bright_dust_prefix(vendor_manifest):
-    hashes = _rotator_hashes(vendor_manifest, EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX)
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_rotator_hashes_filters_by_bright_dust_prefix(vendor_manifest):
+    hashes = await _rotator_hashes(
+        vendor_manifest, EVERVERSE_BRIGHT_DUST_ROTATOR_PREFIX
+    )
     assert hashes == [10, 20, 70, 80]
 
 
-def test_rotator_hashes_filters_by_silver_prefix(vendor_manifest):
-    hashes = _rotator_hashes(vendor_manifest, EVERVERSE_SILVER_ROTATOR_PREFIX)
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_rotator_hashes_filters_by_silver_prefix(vendor_manifest):
+    hashes = await _rotator_hashes(vendor_manifest, EVERVERSE_SILVER_ROTATOR_PREFIX)
     assert hashes == [60]
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "prefix",
     [
@@ -143,17 +125,22 @@ def test_rotator_hashes_filters_by_silver_prefix(vendor_manifest):
         "SOMETHING_ELSE",
         "eververse",
         "EVERVERSE%",
+        "",
     ],
 )
-def test_rotator_hashes_matches_the_values_scan(vendor_manifest, prefix):
-    # The whole point of the sqlite pushdown: same hashes, same order, every prefix.
-    assert _rotator_hashes(vendor_manifest, prefix) == _rotator_hashes_via_values(
-        vendor_manifest, prefix
+async def test_rotator_hashes_matches_the_values_scan(vendor_manifest, prefix):
+    # The whole point of the pushdown, and it survives the move from sqlite to
+    # Postgres: same hashes, same order, every prefix — including the ones that
+    # separate a real startswith from a LIKE pattern.
+    assert await _rotator_hashes(vendor_manifest, prefix) == _rotator_hashes_via_values(
+        prefix
     )
 
 
-def test_rotator_hashes_empty_when_none_match(vendor_manifest):
-    assert _rotator_hashes(vendor_manifest, "NOTHING_STARTS_WITH_THIS") == []
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_rotator_hashes_empty_when_none_match(vendor_manifest):
+    assert await _rotator_hashes(vendor_manifest, "NOTHING_STARTS_WITH_THIS") == []
 
 
 def _item_manifest_with(entry: dict) -> dict:

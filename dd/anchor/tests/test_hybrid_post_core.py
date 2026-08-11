@@ -28,8 +28,10 @@ import typing as t
 import aiosqlite
 import hikari as h
 import pytest
+import pytest_asyncio
 
 from dd.anchor import hybrid_post_core as hpc
+from dd.anchor.tests.manifest_projection import clear_projection, load_projection
 
 
 def test_hybrid_post_spec_has_no_autopost_hooks() -> None:
@@ -283,6 +285,12 @@ def _weapon_pool_rows() -> list[dict]:
 
 @pytest.fixture
 def item_manifest(tmp_path):
+    """The fixture rows as a manifest sqlite — the pre-port reference's input.
+
+    Paired with ``item_projection``, which holds the same rows after an ingest, so a
+    test can run the old implementation against the file and the new one against the
+    database and compare.
+    """
     path = str(tmp_path / "world.content")
     con = sqlite3.connect(path)
     try:
@@ -299,19 +307,38 @@ def item_manifest(tmp_path):
     return path
 
 
+@pytest_asyncio.fixture
+async def item_projection(tmp_path):
+    version_id = await load_projection(
+        {"DestinyInventoryItemDefinition": _weapon_pool_rows()}, tmp_path
+    )
+    yield version_id
+    await clear_projection()
+
+
+@pytest.mark.integration
 @pytest.mark.asyncio
-async def test_iter_weapon_items_matches_the_fetchall_reference(item_manifest) -> None:
+async def test_iter_weapon_items_matches_the_sqlite_reference(
+    item_manifest, item_projection
+) -> None:
+    """The port must be output-identical to the manifest-sqlite walk it replaced.
+
+    The reference below IS the pre-port implementation, run against the same rows in
+    their original form. Equality is the whole assertion: every filter, the
+    case-insensitive dedupe, the newest-hash rule and the sort order survive the move
+    into SQL, or this fails.
+    """
     async with aiosqlite.connect(item_manifest) as con:
-        batched = await hpc.iter_weapon_items(await con.cursor())
         reference = await _iter_weapon_items_via_fetchall(await con.cursor())
-    assert batched == reference
-    assert batched  # a fixture that filtered everything out would prove nothing
+    from_db = await hpc.iter_weapon_items(item_projection)
+    assert from_db == reference
+    assert from_db  # a fixture that filtered everything out would prove nothing
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
-async def test_iter_weapon_items_filters_dedupes_and_sorts(item_manifest) -> None:
-    async with aiosqlite.connect(item_manifest) as con:
-        items = await hpc.iter_weapon_items(await con.cursor())
+async def test_iter_weapon_items_filters_dedupes_and_sorts(item_projection) -> None:
+    items = await hpc.iter_weapon_items(item_projection)
     names = [item[0] for item in items]
     assert not any(name.startswith("Dropped") for name in names)
     assert "" not in names
@@ -326,28 +353,42 @@ async def test_iter_weapon_items_filters_dedupes_and_sorts(item_manifest) -> Non
     assert names == sorted(names, key=str.lower)
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
-async def test_iter_weapon_items_batches_rather_than_fetching_everything() -> None:
-    """The fetchall() the fix removed must not come back."""
-    calls: list[str] = []
+async def test_weapon_pool_is_cached_per_manifest_version(tmp_path) -> None:
+    """The pool is rebuilt when the manifest moves, and not otherwise.
 
-    class _Cursor:
-        def __init__(self) -> None:
-            self._batches = [[(json.dumps(_item_defn(1, "Solo")),)], []]
+    The cache this replaces was keyed on nothing: a process held whatever it downloaded
+    at boot for its whole life. Keying on the version means an ingest invalidates it.
+    """
+    await load_projection(
+        {"DestinyInventoryItemDefinition": [_item_defn(1, "First")]}, tmp_path
+    )
+    assert [i[0] for i in await hpc.get_weapon_pool()] == ["First"]
 
-        async def execute(self, _sql: str) -> None:
-            calls.append("execute")
+    # Superseded, not wiped: exactly what an ingest does, and the only way the new
+    # version gets an id of its own.
+    await load_projection(
+        {"DestinyInventoryItemDefinition": [_item_defn(2, "Second")]},
+        tmp_path,
+        version="next",
+        replace=False,
+    )
+    assert [i[0] for i in await hpc.get_weapon_pool()] == ["Second"]
 
-        async def fetchmany(self, size: int) -> list:
-            calls.append(f"fetchmany({size})")
-            return self._batches.pop(0)
+    await clear_projection()
+    hpc._weapon_pool = None
+    hpc._weapon_pool_version = None
 
-        async def fetchall(self) -> list:
-            raise AssertionError("iter_weapon_items must not call fetchall()")
 
-    items = await hpc.iter_weapon_items(_Cursor())
-    assert [i[0] for i in items] == ["Solo"]
-    assert calls == ["execute", "fetchmany(200)", "fetchmany(200)"]
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_weapon_pool_is_empty_without_a_manifest() -> None:
+    """Before the first ingest the reward pickers degrade, they do not raise."""
+    await clear_projection()
+    hpc._weapon_pool = None
+    hpc._weapon_pool_version = None
+    assert await hpc.get_weapon_pool() == []
 
 
 # --- reconcile_missing_post -----------------------------------------------------------

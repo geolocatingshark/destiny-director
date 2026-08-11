@@ -48,6 +48,7 @@ from ...sector_accounting import xur as xur_support_data
 from .. import utils
 from ..autopost import Feed, register_feed
 from . import bungie_api as api
+from .bungie_api import manifest_db
 
 logger = logging.getLogger(__name__)
 
@@ -540,19 +541,33 @@ async def fetch_vendor_data(
             session, access_token, character_class
         )
 
-    manifest_table = await api._build_manifest_dict(
-        await api._get_latest_manifest(schemas.BungieCredentials.api_key)
-    )
+    # One manifest version pinned across every vendor in this post: Xûr is two vendor
+    # calls whose items land in a single message, so resolving the version per call
+    # would let an ingest landing between them mix two seasons into one post.
+    manifest_table = manifest_db.ManifestLookup(await manifest_db.require_version_id())
+
+    responses = [
+        await api.client.fetch_vendor(
+            access_token=access_token,
+            membership_type=destiny_membership.membership_type,
+            membership_id=destiny_membership.membership_id,
+            character_id=character_id,
+            vendor_hash=vendor_hash,
+        )
+        for vendor_hash in vendor_hashes
+    ]
+    # Fetch-then-parse rather than the `request_from_api` wrapper: the manifest rows a
+    # response needs are only knowable *from* that response, so the preload has to sit
+    # between the two halves.
+    for response in responses:
+        await manifest_table.preload_vendor_response(response)
+
     vendor: api.DestinyVendor = accumulate(
         [
-            await api.DestinyVendor.request_from_api(
-                destiny_membership=destiny_membership,
-                character_id=character_id,
-                access_token=access_token,
-                manifest_table=manifest_table,
-                vendor_hash=vendor_hash,
+            api.DestinyVendor.from_vendors_api_response(
+                response=response, manifest_table=manifest_table
             )
-            for vendor_hash in vendor_hashes
+            for response in responses
         ]
     )
 

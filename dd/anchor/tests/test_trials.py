@@ -277,16 +277,22 @@ def test_validate_flags_overlong_post() -> None:
 
 
 @pytest.fixture
-def stub_weapon_items():
-    # get_weapon_items() now delegates to the shared, process-wide hybrid_post_core
-    # cache; seed that so resolve_weapon sees a known pool.
-    saved = hpc._weapon_pool
-    hpc._weapon_pool = [
+def stub_weapon_items(monkeypatch):
+    # Stub the accessor rather than the cache behind it: the pool comes from the
+    # manifest projection now, and its cache is keyed on the current version — so
+    # seeding the list alone would be discarded the moment get_weapon_pool looked for
+    # a manifest and found none. What this test needs is only that resolve_weapon sees
+    # a known pool.
+    pool = [
         ("The Scholar", 123, "Scout Rifle", 3, "Legendary"),
         ("Exile's Curse", 456, "Fusion Rifle", 3, "Legendary"),
     ]
+
+    async def _pool() -> list:
+        return pool
+
+    monkeypatch.setattr(hpc, "get_weapon_pool", _pool)
     yield
-    hpc._weapon_pool = saved
 
 
 @pytest.mark.asyncio

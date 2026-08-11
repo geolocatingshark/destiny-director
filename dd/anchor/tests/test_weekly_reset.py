@@ -23,17 +23,17 @@ Components V2 builder.
 
 import datetime as dt
 import json
-import sqlite3
 import types
 import typing as t
 
 import aiohttp.web
-import aiosqlite
 import hikari as h
 import pytest
+import pytest_asyncio
 
 from dd.anchor import web
 from dd.anchor.extensions import weekly_reset as wr
+from dd.anchor.tests.manifest_projection import clear_projection, load_projection
 
 # The three real "Weekly Reset Overview" posts this feature was reverse-engineered from.
 # These are each post's "Resets:"-line value — the *next* Tuesday (when that week's
@@ -1287,8 +1287,13 @@ async def test_handle_delete_503_when_bot_unset(monkeypatch) -> None:
 # manifest-shaped fixture rather than assumed.
 
 
-def _activity_manifest(path: str, n_filler: int = 450) -> None:
-    """A manifest sqlite with more activity rows than one fetchmany batch (200)."""
+def _activity_definitions(n_filler: int = 450) -> dict[str, list[dict]]:
+    """Activity + activity-type definitions covering every classification branch.
+
+    Deliberately several hundred rows: the scan this replaced read in batches and the
+    interesting rows are sprinkled through rather than bunched at the front, so a scan
+    that quietly stops early still fails here.
+    """
     strike_type, raid_type = 1, 2
     activity_types = [
         {"hash": strike_type, "displayProperties": {"name": "Strike"}},
@@ -1328,77 +1333,64 @@ def _activity_manifest(path: str, n_filler: int = 450) -> None:
             "displayProperties": {"name": "Master Conquest: The Vault: Customize"},
         },
     )
-    con = sqlite3.connect(path)
-    try:
-        for table, rows in (
-            ("DestinyActivityTypeDefinition", activity_types),
-            ("DestinyActivityDefinition", activities),
-        ):
-            con.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY, json)")
-            con.executemany(
-                f"INSERT INTO {table} (id, json) VALUES (?, ?)",
-                [(i, json.dumps(row)) for i, row in enumerate(rows)],
-            )
-        con.commit()
-    finally:
-        con.close()
+    return {
+        "DestinyActivityTypeDefinition": activity_types,
+        "DestinyActivityDefinition": activities,
+    }
 
 
-@pytest.fixture
-def activity_manifest(tmp_path, monkeypatch):
-    path = str(tmp_path / "world.content")
-    _activity_manifest(path)
-
-    async def _fake_manifest(_api_key: object) -> str:
-        return path
+@pytest_asyncio.fixture
+async def activity_manifest(tmp_path, monkeypatch):
+    """The activity definitions, ingested into the projection the way production is."""
 
     async def _no_weapons() -> list:
         return []
 
-    monkeypatch.setattr(wr.api, "_get_latest_manifest", _fake_manifest)
     monkeypatch.setattr(wr, "get_weapon_pool", _no_weapons)
-    return path
+    version_id = await load_projection(_activity_definitions(), tmp_path)
+    yield version_id
+    await clear_projection()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
-async def test_build_indexes_scans_every_batch(activity_manifest) -> None:
+async def test_build_indexes_reads_every_row(activity_manifest) -> None:
     indexes = await wr._build_indexes()
 
-    # Both an early row and rows past the 200-row batch boundary are present, so the
-    # batching loop did not stop after its first fetchmany.
+    # Rows from across the several-hundred-row fixture, not just its head.
     assert indexes.activities["strike"] == ["The Corrupted", "Warden of Nothing"]
     assert indexes.conquests["Master"] == ["The Vault"]
-    # Activity-type names come from the *other* batched scan; without it neither strike
-    # would classify at all.
+    # Activity-type names come from the *other* query; without it neither strike would
+    # classify at all.
     assert indexes.activities["strike"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
-async def test_build_indexes_matches_a_fetchall_reference(activity_manifest) -> None:
-    """The pre-fix scans, replayed with fetchall(), must produce the same sets."""
+async def test_build_indexes_matches_the_pre_port_scan(activity_manifest) -> None:
+    """The port must be output-identical to the manifest walk it replaced.
+
+    The loop below IS the pre-port scan, run over the definitions in their original
+    Bungie-JSON form. Only the source of the rows differs, so any drift in the
+    classification, the conquest parsing or the sort order shows up as inequality.
+    """
+    definitions = _activity_definitions()
     strikes: set[str] = set()
     conquest_by_tier: dict[str, set[str]] = {t_: set() for t_ in wr.CONQUEST_TIERS}
-    async with aiosqlite.connect(activity_manifest) as con:
-        cur = await con.cursor()
-        await cur.execute("SELECT json FROM DestinyActivityTypeDefinition")
-        activity_types: dict[int, str] = {}
-        for (row,) in await cur.fetchall():
-            defn = json.loads(row)
-            activity_types[int(defn["hash"])] = (
-                defn.get("displayProperties") or {}
-            ).get("name", "")
-        await cur.execute("SELECT json FROM DestinyActivityDefinition")
-        for (row,) in await cur.fetchall():
-            defn = json.loads(row)
-            raw_name = (defn.get("displayProperties") or {}).get("name", "")
-            parsed = wr._parse_conquest_name(raw_name)
-            if parsed:
-                conquest_by_tier[parsed[0]].add(parsed[1])
-            type_name = activity_types.get(defn.get("activityTypeHash"), "")
-            if wr._classify_activity(defn, type_name) == "strike":
-                cleaned = wr._clean_activity_name(raw_name, "strike")
-                if cleaned:
-                    strikes.add(cleaned)
+    activity_types: dict[int, str] = {
+        int(defn["hash"]): (defn.get("displayProperties") or {}).get("name", "")
+        for defn in definitions["DestinyActivityTypeDefinition"]
+    }
+    for defn in definitions["DestinyActivityDefinition"]:
+        raw_name = (defn.get("displayProperties") or {}).get("name", "")
+        parsed = wr._parse_conquest_name(raw_name)
+        if parsed:
+            conquest_by_tier[parsed[0]].add(parsed[1])
+        type_name = activity_types.get(defn.get("activityTypeHash"), "")
+        if wr._classify_activity(defn, type_name) == "strike":
+            cleaned = wr._clean_activity_name(raw_name, "strike")
+            if cleaned:
+                strikes.add(cleaned)
 
     indexes = await wr._build_indexes()
     assert indexes.activities["strike"] == sorted(strikes)
