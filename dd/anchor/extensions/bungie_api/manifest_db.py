@@ -99,7 +99,9 @@ async def require_version_id() -> int:
 # a hydrated ``{"collectibleHash": None}`` would send every item down the collectible
 # path and fail resolving it.
 
-#: Table names the lookup answers for, mirroring ``constants.manifest_table_names``.
+#: Table names the lookup answers for. The manifest-side allowlist — which tables the
+#: ingest reads at all — is ``dd.manifest_ingest.project._PROJECTION``; this is the
+#: subset a vendor post is parsed against.
 _TABLES = (
     "DestinyInventoryItemDefinition",
     "DestinySandboxPerkDefinition",

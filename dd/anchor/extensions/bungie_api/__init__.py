@@ -1,21 +1,19 @@
 """Bungie.net API integration for the anchor bot.
 
-Handles the Destiny 2 manifest download/caching, OAuth token management, and the
-authenticated vendor/profile API calls used to build the Xûr and Eververse posts.
+OAuth token management and the authenticated vendor/profile API calls used to build the
+Xûr and Eververse posts. Manifest *data* no longer lives here at all — it is a typed
+projection in Postgres, written by ``dd.manifest_ingest`` and read through
+``.manifest_db`` / ``.item_index``.
 
 This package is the discovered lightbulb extension: it owns ``loader`` and the
 ``/bungie`` command group, and re-exports the public surface (models, OAuth helpers,
-manifest helpers, constants) so importers keep using
+constants) so importers keep using
 ``dd.anchor.extensions.bungie_api.<symbol>`` unchanged.
 """
 
-import asyncio
-
-import hikari as h
 import lightbulb as lb
 
 from dd.anchor import web
-from dd.common import schemas
 
 from . import client
 from .constants import (
@@ -30,7 +28,6 @@ from .constants import (
     XUR_VENDOR_HASH,
     likely_emoji_name,
 )
-from .manifest import _build_manifest_dict, _get_latest_manifest, prewarm_manifest
 from .models import (
     APIOffline,
     DestinyArmor,
@@ -65,9 +62,6 @@ __all__ = [
     "XUR_STRANGE_GEAR_VENDOR_HASH",
     "XUR_VENDOR_HASH",
     "likely_emoji_name",
-    "_build_manifest_dict",
-    "_get_latest_manifest",
-    "prewarm_manifest",
     "APIOffline",
     "APIOfflineException",
     "DestinyArmor",
@@ -100,31 +94,13 @@ loader = lb.Loader()
 # the web control panel (dd/anchor/extensions/bungie_account.py, `/bungie`). Login in
 # particular was a poor fit for Discord — it printed a URL and then blocked for up to 15
 # minutes polling for the token, where on the web the redirect back IS the completion
-# signal. The loader stays because load_extensions_strict requires one — and, now, for
-# the manifest prewarm below.
+# signal. The loader stays because load_extensions_strict requires one.
 
 
-# Strong references to the background prewarm task: the event loop keeps only a weak ref
-# to a bare create_task(), so without this it can be garbage-collected — and cancelled —
-# mid-download. Same trap, same fix, as rotation_editor's `_warm_tasks`.
-_prewarm_tasks: set["asyncio.Task[None]"] = set()
-
-
-@loader.listener(h.StartedEvent)
-async def _prewarm_manifest_on_start(_event: h.StartedEvent) -> None:
-    """Pull the manifest at boot so no request has to wear the download.
-
-    Here rather than in a producer because the manifest is not any one feature's: xur,
-    eververse, ada, portal_ops, the weekly-reset option pools and the item index all
-    resolve it. It *was* already being pulled at boot — as a side effect of
-    ``rotation_editor``'s item-index warm — which is exactly the problem: nothing said
-    so, and the guarantee every other consumer now leans on rested on which extension
-    happened to be loaded. That warm still runs and coalesces onto this one rather than
-    downloading twice.
-
-    Fire-and-forget: ``StartedEvent`` listeners run before the bot is fully up, and this
-    can take minutes on a cold volume.
-    """
-    task = asyncio.create_task(prewarm_manifest(schemas.BungieCredentials.api_key))
-    _prewarm_tasks.add(task)
-    task.add_done_callback(_prewarm_tasks.discard)
+# There is no manifest prewarm here any more, and there must not be one again.
+#
+# The manifest used to be downloaded and extracted inside this process — hundreds of MB
+# and a multi-minute extract — so a boot-time prewarm existed to keep the first request
+# from wearing that cost. The manifest now lives in Postgres, written by the out-of-band
+# `dd.manifest_ingest` cron, and every consumer reads it with indexed queries. There is
+# nothing to warm, nothing to coalesce concurrent resolves onto, and no cold window.

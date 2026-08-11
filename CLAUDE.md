@@ -1,10 +1,13 @@
 # Destiny Director — Project Rules
 
-Two Discord bots (`hikari-lightbulb` v3) sharing one codebase under `dd/`:
+Two Discord bots (`hikari-lightbulb` v3) plus a cron service, sharing one codebase
+under `dd/`:
 
 - `dd.beacon` — main bot
 - `dd.anchor` — secondary bot (larger than it sounds: web UI + Bungie API + CV2 posts)
 - `dd.common` — shared config, DB schemas, bot classes, helpers
+- `dd.manifest_ingest` — **not a bot.** The hourly Railway cron that ingests the Destiny
+  manifest into Postgres (see *The Destiny manifest* below)
 - `dd.hmessage`, `dd.sector_accounting` — shared domain code
 
 Python 3.13, fully async (hikari / aiohttp / aiosqlite / psycopg), SQLAlchemy 2.0,
@@ -28,6 +31,11 @@ DB layer, or building a message/embed, read it.** Quick orientation:
 - **`dd.anchor` is not just a "secondary bot"** — aiohttp web UI (`web.py`), Bungie
   OAuth/API client (`extensions/bungie_api/`), Components V2 post rendering
   (`cv2_*.py` — "CV2" is Discord Components V2, **not** OpenCV).
+- **The Destiny manifest is a Postgres projection, not a download.** `dd.manifest_ingest`
+  (hourly cron, out of process) writes `schemas.Manifest*`; anchor reads it through
+  `extensions/bungie_api/manifest_db.py` and `item_index.py`. **No bot downloads,
+  extracts, caches or prewarms the manifest** — that pipeline is deleted, and so is the
+  `manifest/` directory. Readers pin `ManifestVersion.current_id()` once per operation.
 - **Reuse, don't reinvent:** `db_session()` / `@ensure_session` for DB; `HMessage`
   (`dd.hmessage`) for messages; `dd/beacon/nav.py` for paged messages; `cfg.py` for env.
 - **Implicit namespace packages** — there is intentionally no `dd/__init__.py`,

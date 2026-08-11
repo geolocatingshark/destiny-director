@@ -1,35 +1,44 @@
 """Developer utility for looking up Destiny item ids by name.
 
-Not loaded by the bot. Resolves an item name to its inventory-item hashes using
-the downloaded Bungie manifest, for ad-hoc debugging.
+Not loaded by the bot. Resolves an item name to its inventory-item hashes from the
+manifest projection in the database (see ``dd.manifest_ingest``), for ad-hoc debugging.
 """
 
 import asyncio
-import typing as t
 from pathlib import Path
 from pprint import pprint
 
-from dd.anchor.extensions import bungie_api as b
+from sqlalchemy import select
+
+from dd.anchor.extensions.bungie_api.manifest_db import require_version_id
 from dd.common import schemas
 
 FILE_PATH = Path(__file__).parent.parent.parent / "getprofile.json"
 ITEM_NAME = "Ferropotent Robes"
 
 
-async def item_ids_from_name(item_name: str) -> list[str]:
-    manifest = await b._build_manifest_dict(
-        await b._get_latest_manifest(schemas.BungieCredentials.api_key)
-    )
-    inventory_items_dict: dict[str, t.Any] = manifest["DestinyInventoryItemDefinition"]
+async def item_ids_from_name(item_name: str) -> list[int]:
+    """Every inventory-item hash whose name matches ``item_name`` (case-insensitively).
 
-    item_ids: list[str] = []
-    for item_id, item_data in inventory_items_dict.items():
-        item_name_in_data: str = item_data.get("displayProperties", {}).get("name", "")
-        if item_name.lower().strip() == item_name_in_data.lower().strip():
-            print(f"Found Item ID: {item_id}, Name: {item_name_in_data}")
-            item_ids.append(item_id)
-
-    return item_ids
+    One indexed query on ``name_lower``. It used to be a walk of the whole item table
+    with a per-row ``.lower()`` comparison, which meant this debugging aid downloaded
+    the manifest.
+    """
+    version_id = await require_version_id()
+    async with schemas.db_session() as session:
+        hashes = list(
+            (
+                await session.execute(
+                    select(schemas.ManifestItem.hash).where(
+                        schemas.ManifestItem.version_id == version_id,
+                        schemas.ManifestItem.name_lower == item_name.lower().strip(),
+                    )
+                )
+            ).scalars()
+        )
+    for hash_ in hashes:
+        print(f"Found Item ID: {hash_}, Name: {item_name}")
+    return [int(h) for h in hashes]
 
 
 async def search_file(path: Path, item_name: str) -> dict[int, str]:
@@ -49,6 +58,4 @@ async def search_file(path: Path, item_name: str) -> dict[int, str]:
 
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    results = loop.run_until_complete(search_file(FILE_PATH, ITEM_NAME))
-    pprint(results)
+    pprint(asyncio.run(search_file(FILE_PATH, ITEM_NAME)))

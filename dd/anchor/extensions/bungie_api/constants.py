@@ -75,22 +75,6 @@ components = (
 )
 
 
-manifest_table_names = [
-    # "DestinyClassDefinition",
-    # "DestinyPlaceDefinition",
-    # "DestinyPlugSetDefinition",
-    "DestinySandboxPerkDefinition",
-    "DestinyStatDefinition",
-    # "DestinyStatGroupDefinition",
-    "DestinyEquipmentSlotDefinition",
-    "DestinyCollectibleDefinition",
-    "DestinyDestinationDefinition",
-    "DestinyInventoryItemDefinition",
-    "DestinyPresentationNodeDefinition",
-    "DestinyVendorDefinition",
-]
-
-
 DESTINY_ITEM_TYPE_WEAPON = 3
 DESTINY_ITEM_TYPE_ARMOR = 2
 

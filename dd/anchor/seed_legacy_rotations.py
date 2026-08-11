@@ -168,8 +168,8 @@ def main() -> None:
     parser.add_argument(
         "--links",
         action="store_true",
-        help="Also resolve weapon light.gg links from the manifest (needs the "
-        "Bungie API key; downloads the manifest on first run).",
+        help="Also resolve weapon light.gg links (needs an ingested manifest — "
+        "see dd.manifest_ingest).",
     )
     parser.add_argument(
         "--bake-files",

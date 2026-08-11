@@ -107,8 +107,9 @@ RUN uv sync --frozen ${UV_SYNC_GROUPS} ${PURE_PYTHON:+${NO_BINARY_PKGS}} --no-ed
 FROM ${BASE_IMAGE} AS final
 
 # jemalloc: LD_PRELOADed for every process below. glibc/musl malloc retain freed arenas
-# for this long-lived, bursty-allocation workload (the manifest parse; the gateway
-# cache), inflating resident RAM (Railway bills memory-over-time). jemalloc returns freed
+# for this long-lived, bursty-allocation workload (the gateway cache; post construction —
+# the manifest parse that used to be the worst of it now runs in the ingest, which exits),
+# inflating resident RAM (Railway bills memory-over-time). jemalloc returns freed
 # pages to the OS via a background decay thread — measured in prod, plain system malloc
 # left anchor's freed startup/post heap resident (~430MB) vs jemalloc's ~360MB.
 #   NOTE: Alpine ships jemalloc for x86_64 AND armhf (package `jemalloc`, in main). The
@@ -152,8 +153,10 @@ ENV TZ=Etc/UTC \
 # locked-account marker on some platforms, but Alpine's build authenticates a public key
 # against it happily — verified by flipping the field and logging in, rather than
 # pre-emptively "fixing" it.
-#   /app is owned by dd because anchor writes the downloaded Bungie manifest into
-#   ./manifest at runtime; its *contents* stay root-owned and read-only.
+#   /app is owned by dd so the runtime user can write into the working directory at
+#   all; its *contents* stay root-owned and read-only. (The reason it needed to be
+#   writable — anchor extracting the Bungie manifest into ./manifest — is gone: the
+#   manifest is ingested out of process into Postgres.)
 #   /home/dd/.ssh-host holds the runtime-generated sshd host keys — never baked, see
 #   supervisord.conf. `ssh-keygen -A -f <prefix>` appends etc/ssh/ to the prefix and does
 #   NOT create it (it fails, and still exits 0), so the directory has to exist here.

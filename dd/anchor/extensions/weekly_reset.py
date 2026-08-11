@@ -1319,17 +1319,15 @@ def _pair(raw: t.Any) -> tuple[str, str]:
 async def _build_options() -> dict[str, t.Any]:
     """Option pools shipped in the page bootstrap and filtered client-side.
 
-    **Waits for the manifest rather than rendering without it.** A bounded wait was
+    **Waits for the pools rather than rendering without them.** A bounded wait was
     tried, and traded the wrong thing away: it turned a slow page into a page with empty
     weapon / GM strike / Conquest pickers and a banner nobody has to read, on the one
-    form where those pools *are* the content. The reason the wait was there is now
-    handled upstream — the manifest is prewarmed at ``StartedEvent``
-    (``bungie_api.prewarm_manifest``) so it is on disk before anyone opens this, and
-    concurrent resolves are coalesced onto one, so two pages opened together do not
-    queue behind two downloads.
+    form where those pools *are* the content. What made the wait long in the first place
+    is gone — the pools were built by downloading and parsing the manifest in this
+    process, and are two indexed queries now.
 
-    ``ready`` survives for the case no amount of waiting fixes: the manifest could not
-    be read at all, so the pools are genuinely empty and the page says so.
+    ``ready`` survives for the case no amount of waiting fixes: nothing has been
+    ingested (or the read failed), so the pools are genuinely empty and it says so.
     """
     indexes = await get_indexes()
     return {

@@ -142,10 +142,10 @@ dmypy.json
 
 # Bungie api files
 world_sql_content*
-manifest.zip
-# The extracted manifest sqlite dir (downloaded at runtime, ~340M). Untracked and huge,
-# so keep it out of `railway up` build contexts and `git status`.
-manifest/
+# `manifest.zip` / `manifest/` used to live here: the bots downloaded and extracted the
+# Bungie manifest into the working directory. Nothing does that now — dd/manifest_ingest
+# extracts into a temp dir that goes away with the process — so there is nothing in the
+# repo root to ignore.
 
 # Local DB dumps (`make dump-prod-db` / `dump-dev-db`). Alembic revisions are Python,
 # so nothing under migrations/ is caught by this.

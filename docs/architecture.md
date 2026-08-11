@@ -121,12 +121,26 @@ came from. It now lives in Postgres as a typed projection:
   mid-operation flip then cannot mix two seasons inside one post, and no cache
   invalidation protocol is needed.
 
-Two consequences worth knowing before touching it:
+Reading it, in practice:
+
+- **`manifest_db.ManifestLookup`** for a vendor post. It hydrates projection rows back
+  into the manifest-JSON shape `models.py` already parses, so the call sites keep their
+  `manifest_table["Destiny…Definition"][hash]` form. Fill it with
+  `preload_vendor_response(response)` **before** parsing — the parsers are synchronous
+  and the database is not.
+- **`item_index`** for name search and light.gg links, **`schemas.Manifest*`** directly
+  for anything else (see `hybrid_post_core.iter_weapon_items` for the shape).
+
+Three consequences worth knowing before touching it:
 
 - Hashes are stored **unsigned**. The signed wrap was a storage artifact of Bungie's
   sqlite and does not exist here.
-- A missing hash is **`None`**, not an error — Bungie ships hotfixes mid-week and the
-  hourly cron bounds that window to an hour. Every consumer already degrades on it.
+- A missing hash is **`None`** (or a `KeyError` from the lookup, as the sqlite one gave),
+  not a crash — Bungie ships hotfixes mid-week and the hourly cron bounds that window to
+  an hour. Every consumer already degrades on it.
+- **Nothing in a bot downloads the manifest.** No prewarm, no on-disk cache, no
+  `manifest/` directory, no "not warm yet" state. If you find yourself wanting one, the
+  answer is a column on the projection and a migration.
 
 ## Building messages — `HMessage`
 
