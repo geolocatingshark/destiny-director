@@ -28,7 +28,7 @@ from sqlalchemy import delete
 
 from dd.anchor import web
 from dd.anchor.extensions import stats_page
-from dd.common import schemas
+from dd.common import schemas, settings
 
 pytestmark = pytest.mark.asyncio
 
@@ -46,9 +46,22 @@ def _clean_tables() -> t.Iterator[None]:
             await session.execute(delete(schemas.CommandUsage))
             await session.execute(delete(schemas.AutopostDailyStat))
             await session.execute(delete(schemas.ServerStatistics))
+            # AutoPostSettings too, since a test here can write a feed's channel row:
+            # the DB is session-scoped and shared with every other package, so a row
+            # left behind is a row the next file reads as configured. Matches
+            # test_autopost_settings.py's fixture, cache reset included — settings
+            # caches rows process-wide, so deleting without resetting just means the
+            # next test reads the deleted values until the TTL lapses.
+            await session.execute(delete(schemas.AutoPostSettings))
 
     asyncio.run(_clear())
+    settings.reset_cache_for_tests()
     yield
+    # Teardown as well as setup: the setup half protects this file's tests from each
+    # other, and this half protects every later file from a test that failed partway
+    # through and never reached its own cleanup.
+    asyncio.run(_clear())
+    settings.reset_cache_for_tests()
 
 
 def _as_request() -> aiohttp.web.Request:
@@ -135,8 +148,6 @@ async def test_a_retired_feed_still_gets_a_row_with_its_history() -> None:
     `current`, so a retired feed's year of data was indexed and then unreachable, and
     the all-feeds line stepped down on the retirement date with nothing to blame.
     """
-    from dd.common import settings
-
     today = dt.datetime.now(tz=dt.UTC).date()
     await schemas.AutoPostSettings.set_value("weekly_nightfall_channel", "77")
     await schemas.AutoPostSettings.set_value("lost_sector_channel", "42")
@@ -158,5 +169,3 @@ async def test_a_retired_feed_still_gets_a_row_with_its_history() -> None:
     # A live feed is unaffected and never mislabelled as retired.
     assert rows["lost_sector"]["retired"] is False
     assert rows["lost_sector"]["name"] == "Lost Sector"
-
-    settings.reset_cache_for_tests()
