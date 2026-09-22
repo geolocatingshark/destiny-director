@@ -526,6 +526,16 @@ def follow_control_command_maker(feed: str, autoposts_desc: str):
         autoposts_desc (str): The description for the autoposts command
     """
     catalog_entry = dd_feeds.FEEDS[feed]
+    if catalog_entry.retired:
+        # Retiring a feed is two edits — flag the catalog entry, delete this module —
+        # and this is the second one not done. Raising beats registering: the command
+        # would otherwise come back on the next deploy for a feed that cannot produce
+        # anything, and `load_extensions_strict` turns this into a named CRITICAL at
+        # boot rather than a mystery command in Discord.
+        raise ValueError(
+            f"{feed!r} is retired in dd.common.feeds, so it registers no /autopost "
+            "subcommand. Delete this extension module — retiring a feed means both."
+        )
     autoposts_name = catalog_entry.effective_command_name
     autoposts_friendly_name = catalog_entry.confirmation_name
 

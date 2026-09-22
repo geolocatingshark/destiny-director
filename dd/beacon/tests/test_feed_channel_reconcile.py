@@ -132,7 +132,7 @@ async def test_the_sweep_pages_once_per_dormant_feed(
         await utils.sweep_dormant_feeds()
 
     # One per catalog entry, naming the feed the way the settings page does.
-    assert len(_criticals(caplog)) == len(dd_feeds.FOLLOWABLES)
+    assert len(_criticals(caplog)) == len(dd_feeds.LIVE)
     assert any("Xûr" in r.getMessage() for r in _criticals(caplog))
 
 
@@ -183,7 +183,7 @@ async def test_the_sweep_notices_a_feed_leaving_and_re_entering_dormancy(
     with caplog.at_level(logging.CRITICAL):
         await utils.sweep_dormant_feeds()
 
-    assert len(_criticals(caplog)) == len(dd_feeds.FOLLOWABLES)
+    assert len(_criticals(caplog)) == len(dd_feeds.LIVE)
 
 
 # --- the registry --------------------------------------------------------------------
@@ -493,7 +493,7 @@ async def test_a_still_dormant_feed_is_paged_again_after_the_repage_interval(
             utils._dormant_feeds[slug] -= utils._DORMANT_REPAGE_INTERVAL + 1
         await utils.sweep_dormant_feeds()
 
-    assert len(_criticals(caplog)) == len(dd_feeds.FOLLOWABLES)
+    assert len(_criticals(caplog)) == len(dd_feeds.LIVE)
 
 
 async def test_free_games_stops_serving_a_post_from_a_channel_it_cannot_read(
@@ -542,3 +542,24 @@ async def test_free_games_pages_again_for_a_different_broken_channel(
         await free_games._on_channel_change(300)  # a different broken channel
 
     assert len(_criticals(caplog)) == 2
+
+
+async def test_a_retired_feed_registers_no_autopost_subcommand() -> None:
+    """Retiring is two edits, and this is what catches only doing one.
+
+    Flagging the entry stops the feed being produced, followed and configured, but the
+    `/autopost` subcommand is registered by hand at the bottom of the feed's own beacon
+    extension module. If that module survives the retirement, the command comes back on
+    the next deploy for a feed that can no longer produce anything — so the maker
+    refuses, and `load_extensions_strict` turns it into a named CRITICAL at boot rather
+    than a mystery command in Discord.
+    """
+    import pytest
+
+    from dd.beacon.extensions import autoposts
+
+    retired = [f for f in dd_feeds.RETIRED]
+    assert retired, "no retired feed in the catalog to exercise this with"
+
+    with pytest.raises(ValueError, match="retired"):
+        autoposts.follow_control_command_maker(retired[0].slug, "should never register")

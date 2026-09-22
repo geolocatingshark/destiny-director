@@ -194,7 +194,7 @@ def _followable_changes(
                 current=_render(rows.get(followable.channel_key), "value"),
                 skip="FOLLOWABLES is not set in the environment",
             )
-            for followable in dd_feeds.FOLLOWABLES
+            for followable in dd_feeds.LIVE
         ]
     try:
         blob = json.loads(raw)
@@ -204,7 +204,7 @@ def _followable_changes(
         raise SettingsImportError("FOLLOWABLES is not a JSON object")
 
     changes: list[Change] = []
-    for followable in dd_feeds.FOLLOWABLES:
+    for followable in dd_feeds.LIVE:
         if followable.slug not in blob:
             changes.append(
                 Change(
@@ -227,7 +227,13 @@ def _followable_changes(
             )
         )
 
-    for key in sorted(set(blob) - {f.slug for f in dd_feeds.FOLLOWABLES}):
+    # Two ways a blob key can have no live feed to fill, reported apart because they
+    # mean different things to whoever reads the report: a retired feed is one we still
+    # know about and chose not to carry forward, while an unknown key is a name nothing
+    # in the tree recognises — which is also what a *renamed* feed looks like from here,
+    # and the reason this never silently drops either.
+    retired = {f.slug for f in dd_feeds.RETIRED}
+    for key in sorted(set(blob) - {f.slug for f in dd_feeds.LIVE}):
         changes.append(
             Change(
                 slug=f"{key}_channel",
@@ -235,7 +241,11 @@ def _followable_changes(
                 column="value",
                 new=str(blob[key]),
                 current=None,
-                skip="not a feed in dd.common.feeds",
+                skip=(
+                    "a retired feed in dd.common.feeds"
+                    if key in retired
+                    else "not a feed in dd.common.feeds"
+                ),
             )
         )
     return changes

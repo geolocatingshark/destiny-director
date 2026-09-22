@@ -25,7 +25,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
-from dd.common import schemas, settings
+from dd.common import feeds, schemas, settings
 
 pytestmark = pytest.mark.asyncio
 
@@ -379,9 +379,9 @@ async def test_followable_channel_sync_is_zero_before_preload():
     assert settings.get_followable_channel_sync("xur") == 0
 
 
-async def test_get_followables_returns_every_slug():
+async def test_get_followables_returns_every_live_slug():
     followables = await settings.get_followables()
-    assert set(followables) == set(settings.FOLLOWABLE_SLUGS)
+    assert set(followables) == {f.slug for f in feeds.LIVE}
     assert set(followables.values()) == {0}
 
 
@@ -402,25 +402,25 @@ async def test_followable_name_falls_back_to_id():
 
 # --- retired followables -----------------------------------------------------------
 #
-# A feed that leaves `dd.common.feeds.FOLLOWABLES` keeps its `<slug>_channel` row on
-# purpose, so the DB stays the record of where it used to post. These pin that the
-# retired set is derived from those rows — no hand-written list of dead feeds — and,
-# just as importantly, that being retired never makes a feed look live.
+# Retirement is a flag on the catalog entry (`Followable.retired`), not the absence of
+# one. These pin the split that makes it work: the produce path enumerates LIVE and can
+# never see a retired feed, while anything resolving a slug to a name still can.
 
 
-async def test_a_row_with_no_catalog_entry_reads_as_retired():
+async def test_retired_feeds_are_the_catalogs_retired_entries():
     await schemas.AutoPostSettings.set_value("weekly_nightfall_channel", "77")
     await settings.preload()
 
-    assert await settings.get_retired_followables() == {"weekly_nightfall": 77}
-    assert settings.get_retired_followables_sync() == {"weekly_nightfall": 77}
+    expected = {f.slug: 77 for f in feeds.RETIRED}
+    assert await settings.get_retired_followables() == expected
+    assert settings.get_retired_followables_sync() == expected
 
 
-async def test_a_catalog_feed_is_never_retired():
+async def test_a_live_feed_is_never_retired():
     await schemas.AutoPostSettings.set_value("lost_sector_channel", "42")
     await settings.preload()
 
-    assert await settings.get_retired_followables() == {}
+    assert "lost_sector" not in await settings.get_retired_followables()
 
 
 async def test_retiring_does_not_put_a_feed_back_in_the_produce_path():
@@ -431,22 +431,32 @@ async def test_retiring_does_not_put_a_feed_back_in_the_produce_path():
     await settings.preload()
 
     assert "weekly_nightfall" not in await settings.get_followables()
-    assert await settings.get_followable_channel("weekly_nightfall") == 0
+    assert "weekly_nightfall" not in settings.get_followables_sync()
 
 
-async def test_non_followable_channel_rows_are_not_mistaken_for_feeds():
-    # `alerts_channel_id` is the trap: it contains "channel" but is not a `*_channel`
-    # row, and reading it as a retired feed would invent one out of an alert setting.
-    await schemas.AutoPostSettings.set_value("alerts_channel_id", "5")
-    await schemas.AutoPostSettings.set_value("xur_image_url", "https://e.com/x.png")
+async def test_a_retired_feeds_channel_still_resolves_by_slug():
+    # Asked for by name, a retired feed answers: the stats page and the mirror surfaces
+    # need its channel id to count followers and name historical runs. Only the
+    # enumeration excludes it, not the lookup.
+    await schemas.AutoPostSettings.set_value("weekly_nightfall_channel", "77")
     await settings.preload()
 
-    assert await settings.get_retired_followables() == {}
+    assert await settings.get_followable_channel("weekly_nightfall") == 77
+    assert settings.get_followable_channel_sync("weekly_nightfall") == 77
+
+
+async def test_a_slug_that_names_no_feed_is_still_dormant():
+    # The guard that used to matter most under the old inference rule, kept: a slug the
+    # catalog has never heard of resolves to 0 rather than inventing a feed.
+    await settings.preload()
+
+    assert await settings.get_followable_channel("prime") == 0
+    assert settings.get_followable_channel_sync("prime") == 0
 
 
 async def test_followable_name_resolves_a_retired_feeds_channel():
-    # Without this the mirror log and `/mirror source_details` print a bare snowflake
-    # for every historical run of a feed that has since been retired.
+    # What `/mirror-logs` and `/mirror source_details` rely on: both merge the retired
+    # map in explicitly, and this is the default path used by beacon's crosspost log.
     await schemas.AutoPostSettings.set_value("weekly_nightfall_channel", "77")
     await settings.preload()
 

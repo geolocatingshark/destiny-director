@@ -23,11 +23,12 @@ renamed Discord command would re-register and lose whatever muscle memory users 
 
 from dd.common import feeds
 
-# The eleven AutoPostSettings row names the catalog must produce, copied here as a
+# The twelve AutoPostSettings row names the catalog must produce, copied here as a
 # literal ON PURPOSE. The catalog derives them from `f"{slug}_channel"`; this is the
 # independent statement of what that derivation must produce. A change here is a data
-# migration, not a refactor — a retired feed's row (`weekly_nightfall_channel`) is left
-# in the deployed databases on purpose, it just stops being read.
+# migration, not a refactor. Retired feeds are INCLUDED: their rows still exist in every
+# deployed database, and keeping the catalog entry is what lets anything still name
+# them.
 _CHANNEL_KEYS = {
     "lost_sector": "lost_sector_channel",
     "xur": "xur_channel",
@@ -38,13 +39,15 @@ _CHANNEL_KEYS = {
     "twab": "twab_channel",
     "trials": "trials_channel",
     "weekly_reset": "weekly_reset_channel",
+    "weekly_nightfall": "weekly_nightfall_channel",
     "free_games": "free_games_channel",
     "emblems_and_cosmetics": "emblems_and_cosmetics_channel",
 }
 
-# The `/autopost <name>` subcommands as registered with Discord today. One does not
-# match its feed slug (`twab` → twid) and that is the whole reason `command_name`
-# exists.
+# The `/autopost <name>` subcommands as registered with Discord today — LIVE feeds
+# only, because a retired feed registers none (`follow_control_command_maker` refuses
+# one). One does not match its feed slug (`twab` → twid) and that is the whole reason
+# `command_name` exists.
 _COMMAND_NAMES = {
     "lost_sector": "lost_sector",
     "xur": "xur",
@@ -65,15 +68,15 @@ def test_channel_keys_match_the_rows_that_exist_in_the_database() -> None:
 
 
 def test_command_names_match_what_is_registered_with_discord() -> None:
-    assert {
-        f.slug: f.effective_command_name for f in feeds.FOLLOWABLES
-    } == _COMMAND_NAMES
+    assert {f.slug: f.effective_command_name for f in feeds.LIVE} == _COMMAND_NAMES
 
 
 def test_command_names_are_unique() -> None:
     # They become sibling subcommands of one `/autopost` group, so a collision would be
     # a registration error at boot rather than anything this catalog could catch later.
-    names = [f.effective_command_name for f in feeds.FOLLOWABLES]
+    # Across LIVE only: a retired feed registers nothing, so its name cannot collide —
+    # and keeping it reserved would stop a new feed ever reusing a retired command name.
+    names = [f.effective_command_name for f in feeds.LIVE]
     assert len(set(names)) == len(names)
 
 
@@ -106,3 +109,24 @@ def test_every_feed_has_display_copy() -> None:
     for feed in feeds.FOLLOWABLES:
         assert feed.display_name.strip()
         assert feed.desc.strip()
+
+
+# --- retirement ---------------------------------------------------------------------
+
+
+def test_live_and_retired_partition_the_catalog() -> None:
+    # The split is the whole mechanism: every consumer reads one side or the other, so
+    # an entry falling into neither (or both) would be invisible or double-counted.
+    assert set(feeds.LIVE) | set(feeds.RETIRED) == set(feeds.FOLLOWABLES)
+    assert not set(feeds.LIVE) & set(feeds.RETIRED)
+    assert all(not f.retired for f in feeds.LIVE)
+    assert all(f.retired for f in feeds.RETIRED)
+
+
+def test_feeds_lookup_covers_retired_slugs() -> None:
+    # The point of keeping the entry. A historical `AutopostDailyStat` row, a mirror run
+    # or a `<slug>_channel` setting can all name a retired feed, and resolving one must
+    # give a display name rather than raising.
+    for feed in feeds.RETIRED:
+        assert feeds.FEEDS[feed.slug] is feed
+        assert feeds.FEEDS[feed.slug].display_name.strip()

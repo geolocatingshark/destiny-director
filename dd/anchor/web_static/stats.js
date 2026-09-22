@@ -238,8 +238,12 @@ function renderAutoposts(current, autoposts) {
   const feeds = [...current].sort(
     (a, b) => b.follows + b.mirrors - (a.follows + a.mirrors),
   );
-  const allFollows = feeds.reduce((s, c) => s + c.follows, 0);
-  const allMirrors = feeds.reduce((s, c) => s + c.mirrors, 0);
+  // Retired feeds are listed but NOT summed: "All feeds" answers "how many channels
+  // get our posts", and a retired feed posts nothing. Its own row still shows the
+  // followers it kept, which is a different question and stays on its own line.
+  const live = feeds.filter((c) => !c.retired);
+  const allFollows = live.reduce((s, c) => s + c.follows, 0);
+  const allMirrors = live.reduce((s, c) => s + c.mirrors, 0);
   const tbody = _byId("currentTable").querySelector("tbody");
   tbody.replaceChildren(
     _feedRow("__all__", "All feeds", allFollows, allMirrors),

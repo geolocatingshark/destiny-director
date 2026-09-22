@@ -125,9 +125,11 @@ async def test_the_page_names_exactly_the_catalog_s_feed_channels() -> None:
     # still hand-written, so a "<slug>_channel" row added there rather than to the
     # catalog would render fine while sitting outside FOLLOWABLE_SLUGS, and therefore
     # outside _UNCLEARABLE_CHANNEL_SLUGS: clearable, which no feed channel may be.
+    # LIVE, not the whole catalog: a retired feed keeps its entry (and its DB row) but
+    # has no row on this page, which is most of what retiring one means here.
     channel_rows = {s.slug for s in aps._SETTINGS if s.kind == "channel"}
     assert channel_rows - {"alerts_channel_id"} == {
-        f.channel_key for f in dd_feeds.FOLLOWABLES
+        f.channel_key for f in dd_feeds.LIVE
     }
 
 
@@ -143,7 +145,7 @@ async def test_a_parent_row_always_precedes_its_subs() -> None:
     assert not aps._SETTINGS[0].sub
     # Per feed, too: a group whose first row were a sub would not go ungrouped, it
     # would land in the *previous* feed's box — which renders fine and reads wrong.
-    for feed in dd_feeds.FOLLOWABLES:
+    for feed in dd_feeds.LIVE:
         assert not aps._feed_rows(feed)[0].sub, feed.slug
 
 
@@ -151,7 +153,7 @@ async def test_only_cron_feeds_render_a_produce_toggle() -> None:
     # The toggle switches a schedule off, so only ANCHOR_CRON feeds have one. A form or
     # external feed growing a toggle would offer an operator a switch wired to nothing.
     toggles = {s.slug for s in aps._SETTINGS if s.kind == "toggle"}
-    for feed in dd_feeds.FOLLOWABLES:
+    for feed in dd_feeds.LIVE:
         assert (feed.slug in toggles) is feed.has_toggle, feed.slug
 
 
@@ -382,11 +384,9 @@ async def test_feed_sections_are_the_three_the_page_promises() -> None:
     # Every feed lands in exactly one section, and the catalog's order survives within
     # each — the page is read top to bottom and a reshuffle would be noticed as churn.
     listed = [f.slug for section in sections for f in section.feeds]
-    assert sorted(listed) == sorted(dd_feeds.FEEDS)
+    assert sorted(listed) == sorted(f.slug for f in dd_feeds.LIVE)
     for section in sections:
-        assert list(section.feeds) == [
-            f for f in dd_feeds.FOLLOWABLES if f in section.feeds
-        ]
+        assert list(section.feeds) == [f for f in dd_feeds.LIVE if f in section.feeds]
 
 
 async def test_written_by_you_is_exactly_the_feeds_with_a_registered_form() -> None:

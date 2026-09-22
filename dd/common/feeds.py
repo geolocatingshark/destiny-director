@@ -111,6 +111,15 @@ class Followable:
     #: canonical name would read oddly under a command of a different name. Deliberately
     #: bounded to the feed above — see the invariant in ``tests/test_feeds.py``.
     follow_confirmation_name: str | None = None
+    #: Retired: the feed no longer exists, and this entry is its headstone. Nothing
+    #: produces it, no command registers for it, it has no row on the feeds page — see
+    #: :data:`LIVE` for the set every one of those reads. It stays in the catalog
+    #: because retiring a feed does not delete its past: ``AutopostDailyStat`` rows,
+    #: ``MirroredChannel`` rows and a ``<slug>_channel`` setting all outlive it, and
+    #: every one of them is keyed by :attr:`slug`. A flag keeps the one thing that can
+    #: name them — this entry — while a deletion would throw it away and leave the rest
+    #: of the tree guessing from a leftover DB row.
+    retired: bool = False
 
     @property
     def channel_key(self) -> str:
@@ -144,32 +153,38 @@ class Followable:
 #: Anchor's page splits that second half again — see :class:`FeedKind` on why the fact
 #: that does it is not stored here. Descriptions are the feeds page's own copy.
 #:
-#: **Retiring a feed is two edits, not one.** Removing an entry withdraws only what is
-#: *generated* from this list: the feeds-page group and its channel row, the settings
-#: importer's coverage, the dormant-feed sweep, the stats page's "current" row, and the
-#: name ``/mirror source_details`` and ``/mirror-logs`` print for that source. It does
-#: NOT withdraw the ``/autopost`` subcommand or the navigator — those are registered by
-#: hand at the bottom of the feed's beacon extension module, which has to go in the
-#: same change. Leave the module and it raises ``KeyError`` at import on ``FEEDS[feed]``
-#: (``dd.beacon.extensions.autoposts``), which ``load_extensions_strict`` logs CRITICAL
-#: and skips, taking that whole extension with it. Anchor's ``/feed/<name>/…`` routes
-#: are not in scope either way: they resolve through
-#: ``dd.anchor.autopost.registered_feeds()``, a producer registry unrelated to this
-#: catalog. So un-retiring is re-adding the entry AND restoring the extension module
-#: from git history.
+#: **Retiring a feed sets :attr:`~Followable.retired`; it never deletes the entry.**
+#: Deletion was tried first and is the wrong seam: the slug outlives the feed in three
+#: stores, so throwing the entry away leaves nothing able to name them, and the tree
+#: ends up inferring "this used to be a feed" from a leftover ``<slug>_channel`` row —
+#: a guess that cannot tell a retirement from a rename, since a rename leaves the old
+#: row in place too. The flag is that fact stated instead of reconstructed.
+#:
+#: Read :data:`LIVE`, not this tuple, anywhere a feed is produced, followed, commanded
+#: or configured. Read this tuple (or :data:`FEEDS`) where a slug has to be resolved to
+#: a name — the stats page, the mirror log, ``/mirror source_details`` — because those
+#: are looking at history, and history contains retired feeds.
+#:
+#: Retiring is still two edits: flag the entry, and delete the feed's beacon extension
+#: module, which is where its ``/autopost`` subcommand and navigator are registered by
+#: hand. ``follow_control_command_maker`` refuses a retired slug rather than quietly
+#: registering a command for a feed that no longer exists, so forgetting the second
+#: edit fails loudly at import. Anchor's ``/feed/<name>/…`` routes are not in scope
+#: either way: they resolve through ``dd.anchor.autopost.registered_feeds()``, a
+#: producer registry unrelated to this catalog. Un-retiring is the same two edits back.
 #:
 #: **It unfollows nobody, on purpose.** The ``MirroredChannel`` rows are the follower
 #: list, and beacon's legacy fan-out gates on ``get_or_fetch_all_srcs()`` — raw channel
 #: ids this catalog knows nothing about — so they outlive a retirement and a feed can
 #: come back without every guild following again from zero. Nothing fans out meanwhile
-#: because the upstream channel is dormant.
+#: because the upstream channel is dormant, which is an assumption about someone else's
+#: Discord channel rather than anything this repo enforces.
 #:
 #: Accepted costs of keeping them: ``/autopost <name>`` was the only in-bot off switch
 #: for a legacy mirror (a non-legacy follower is a Discord channel-follow webhook, which
-#: its admin can still remove under Server Settings → Integrations); the two pages above
-#: print a bare channel id for the retired source; and ``reachability_sweep`` keeps
-#: probing the retained rows' destinations, so one whose destination goes bad is still
-#: auto-disabled. weekly_nightfall is the feed currently in that state.
+#: its admin can still remove under Server Settings → Integrations, and which nothing
+#: here probes or corrects); and ``reachability_sweep`` keeps probing the retained
+#: legacy rows' destinations, so one whose destination goes bad is still auto-disabled.
 FOLLOWABLES: tuple[Followable, ...] = (
     Followable(
         "lost_sector",
@@ -230,6 +245,15 @@ FOLLOWABLES: tuple[Followable, ...] = (
         "The Kyber channel this feed posts to.",
     ),
     Followable(
+        "weekly_nightfall",
+        FeedKind.UNSCHEDULED,
+        "Weekly Nightfall",
+        "The Kyber channel weekly nightfall posts followed from.",
+        command_name="nightfall",
+        follow_confirmation_name="Nightfall",
+        retired=True,
+    ),
+    Followable(
         "free_games",
         FeedKind.UNSCHEDULED,
         "Free Games",
@@ -243,5 +267,14 @@ FOLLOWABLES: tuple[Followable, ...] = (
     ),
 )
 
+#: The feeds that still exist. THE set for producing, following, commanding and
+#: configuring — anything that acts on a feed rather than reading about one.
+LIVE: tuple[Followable, ...] = tuple(f for f in FOLLOWABLES if not f.retired)
+
+#: The headstones. Display and history only; see :attr:`Followable.retired`.
+RETIRED: tuple[Followable, ...] = tuple(f for f in FOLLOWABLES if f.retired)
+
 #: :data:`FOLLOWABLES` keyed by slug, for the lookup every consumer actually wants.
+#: Deliberately covers retired feeds: this is the map a historical row is resolved
+#: through, and a ``KeyError`` on a slug the database still holds is not an answer.
 FEEDS: dict[str, Followable] = {f.slug: f for f in FOLLOWABLES}

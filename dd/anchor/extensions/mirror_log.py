@@ -88,7 +88,12 @@ async def _collect_runs() -> dict:
     # sync reader bought nothing here except skipping the TTL freshness check — a feed
     # whose channel was set (or changed) on the settings page would keep rendering as a
     # bare snowflake until some *unrelated* async getter happened to refresh the cache.
-    followables = await settings.get_followables()
+    # Retired feeds merged in: this list is HISTORY, and a run recorded before a feed
+    # was retired still names its channel. Without them every such row renders as the
+    # bare snowflake the capture deploy above exists to get rid of.
+    followables = (
+        await settings.get_followables() | await settings.get_retired_followables()
+    )
     for run in runs:
         # Resolve the source channel to its configured feed name (else None → the page
         # falls back to the id). followable_name returns the id itself when unknown.

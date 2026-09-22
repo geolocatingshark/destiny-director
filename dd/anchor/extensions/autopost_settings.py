@@ -376,7 +376,7 @@ def _feed_rows(feed: dd_feeds.Followable) -> tuple[_Setting, ...]:
 # cannot disagree with the catalog about which feeds exist or what they are called — the
 # job the old hand-sync test used to do by watching.
 _FEED_SETTINGS: tuple[_Setting, ...] = tuple(
-    itertools.chain.from_iterable(_feed_rows(f) for f in dd_feeds.FOLLOWABLES)
+    itertools.chain.from_iterable(_feed_rows(f) for f in dd_feeds.LIVE)
 )
 
 # Every row this module owns, across both pages. The two pages render disjoint halves of
@@ -807,7 +807,7 @@ def _feed_sections() -> tuple[_FeedSection, ...]:
     scheduled: list[dd_feeds.Followable] = []
     written: list[dd_feeds.Followable] = []
     elsewhere: list[dd_feeds.Followable] = []
-    for feed in dd_feeds.FOLLOWABLES:
+    for feed in dd_feeds.LIVE:
         if feed.has_toggle:
             scheduled.append(feed)
         elif feed.slug in written_by_hand:

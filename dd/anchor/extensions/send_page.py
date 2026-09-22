@@ -78,7 +78,7 @@ def _scheduled_feeds() -> tuple[dd_feeds.Followable, ...]:
     :func:`~dd.anchor.extensions.feed_actions.actions_html` — an absent row would read
     as a feed that does not exist, which is a different and wrong thing to say.
     """
-    return tuple(feed for feed in dd_feeds.FOLLOWABLES if feed.has_toggle)
+    return tuple(feed for feed in dd_feeds.LIVE if feed.has_toggle)
 
 
 #: The landing row's description: the six feeds this page offers, by name. Built from

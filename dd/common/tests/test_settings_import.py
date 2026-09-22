@@ -37,9 +37,9 @@ from dd.common import (
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
-#: The shape prod's environment actually has, including the four dead FOLLOWABLES keys
-#: (`prime`, `nwid`, `daily_reset`, `weekly_nightfall`) that nothing has read since
-#: those feeds retired.
+#: The shape prod's environment actually has, including four FOLLOWABLES keys with no
+#: live feed to fill: `prime`/`nwid`/`daily_reset`, which the catalog has never heard
+#: of, and `weekly_nightfall`, which it still names but as retired.
 _PROD_ENV = {
     "ALERTS_CHANNEL_ID": "1000000000000000000",
     "ALERT_MIN_LEVEL": "WARNING",
@@ -118,22 +118,27 @@ async def test_every_catalog_feed_gets_its_channel(_prod_env: None) -> None:
     # missing row and a 0 row read the same through the getter but not on the page,
     # where one shows "none configured" and the other shows the channel you picked.
     rows = await schemas.AutoPostSettings.get_all_rows()
-    assert {f.channel_key for f in dd_feeds.FOLLOWABLES} <= set(rows)
+    assert {f.channel_key for f in dd_feeds.LIVE} <= set(rows)
 
 
 async def test_retired_followables_are_reported_not_written(_prod_env: None) -> None:
-    # prime/nwid/daily_reset/weekly_nightfall are feeds that no longer exist. Dropping
-    # them silently and dropping a *renamed* feed's channel look identical in a log that
-    # says nothing, so they are surfaced as skipped rows naming themselves.
+    # Neither kind is written, and the two are reported apart. prime/nwid/daily_reset
+    # are names the catalog has never heard of — which is also what a *renamed* feed
+    # looks like from here, so saying nothing would make a rename indistinguishable from
+    # a drop. weekly_nightfall is different: the catalog still names it, as retired, and
+    # the report says so rather than calling it unknown.
     changes = await _import()
 
-    retired = {c.slug: c for c in changes if c.skip == "not a feed in dd.common.feeds"}
-    assert set(retired) == {
-        "prime_channel",
-        "nwid_channel",
-        "daily_reset_channel",
-        "weekly_nightfall_channel",
+    by_skip = {c.slug: c.skip for c in changes if c.skip}
+    assert {s for s in by_skip.values() if "feed in dd.common.feeds" in s} == {
+        "not a feed in dd.common.feeds",
+        "a retired feed in dd.common.feeds",
     }
+    assert by_skip["prime_channel"] == "not a feed in dd.common.feeds"
+    assert by_skip["nwid_channel"] == "not a feed in dd.common.feeds"
+    assert by_skip["daily_reset_channel"] == "not a feed in dd.common.feeds"
+    assert by_skip["weekly_nightfall_channel"] == "a retired feed in dd.common.feeds"
+
     rows = await schemas.AutoPostSettings.get_all_rows()
     assert not [
         name
@@ -385,7 +390,7 @@ async def test_an_absent_followables_names_every_feed_it_did_not_import(
     changes = await settings_import.collect(rows, overwrite=False)
 
     reported = {c.slug for c in changes if c.skip.startswith("FOLLOWABLES is not set")}
-    assert reported == {f.channel_key for f in dd_feeds.FOLLOWABLES}
+    assert reported == {f.channel_key for f in dd_feeds.LIVE}
     assert "FOLLOWABLES" in settings_import.format_report(changes, execute=True)
 
 

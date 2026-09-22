@@ -919,7 +919,16 @@ class MirrorSourceDetails(
         legacy_sources = await MirroredChannel.fetch_srcs(channel_id, legacy=True)
         new_style_sources = await MirroredChannel.fetch_srcs(channel_id, legacy=False)
 
-        sources = {val: key for key, val in (await settings.get_followables()).items()}
+        # Retired feeds included: a mirror that outlived its feed is exactly what this
+        # command is for, and naming it "Unknown Source" when the catalog still knows
+        # the slug would be a worse answer than the id it falls back to.
+        sources = {
+            val: key
+            for key, val in (
+                await settings.get_followables()
+                | await settings.get_retired_followables()
+            ).items()
+        }
 
         legacy_sources = [
             sources.get(legacy_source, f"Unknown Source: {legacy_source}")

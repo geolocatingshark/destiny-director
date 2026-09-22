@@ -146,7 +146,7 @@ async def test_a_retired_feed_still_gets_a_row_with_its_history() -> None:
     The history was never the missing part — `autoposts` is unfiltered and always
     carried it. What was missing is a row to click: the page builds its feed list from
     `current`, so a retired feed's year of data was indexed and then unreachable, and
-    the all-feeds line stepped down on the retirement date with nothing to blame.
+    the all-feeds line dropped on the retirement date with nothing to blame.
     """
     today = dt.datetime.now(tz=dt.UTC).date()
     await schemas.AutoPostSettings.set_value("weekly_nightfall_channel", "77")
@@ -164,7 +164,7 @@ async def test_a_retired_feed_still_gets_a_row_with_its_history() -> None:
 
     assert [today.isoformat(), "weekly_nightfall", "follow", 4] in payload["autoposts"]
     assert rows["weekly_nightfall"]["retired"] is True
-    # Named, not printed as a raw slug — there is no catalog entry left to name it.
+    # Named off its own catalog entry, which is what keeping the entry buys.
     assert rows["weekly_nightfall"]["name"] == "Weekly Nightfall"
     # A live feed is unaffected and never mislabelled as retired.
     assert rows["lost_sector"]["retired"] is False

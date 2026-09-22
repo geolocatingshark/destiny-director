@@ -550,7 +550,7 @@ async def sweep_dormant_feeds() -> None:
     )
 
     now = time.monotonic()
-    for followable in dd_feeds.FOLLOWABLES:
+    for followable in dd_feeds.LIVE:
         if await settings.get_followable_channel(followable.slug):
             if _dormant_feeds.pop(followable.slug, None) is not None:
                 logger.info("%s is no longer dormant", followable.display_name)

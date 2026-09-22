@@ -80,15 +80,13 @@ async def _collect_data() -> dict:
         populations = await schemas.ServerStatistics.fetch_server_populations(
             session=session
         )
-        # Live feeds first, then the retired ones. A retired feed has no catalog entry
-        # and never posts again, but it keeps its settings row and its followers (see
-        # `dd.common.feeds.FOLLOWABLES`), so its counts are real and its year of
-        # history is still in `autoposts`. Without a row here the page indexes that
-        # history and then offers no way to select it: the All-feeds line steps down on
-        # the retirement date with nothing to attribute the drop to.
-        retired = await settings.get_retired_followables()
+        # Every catalog feed, retired ones included. A retired feed still has its
+        # followers and its year of `autoposts` history; without a row here the page
+        # indexes that history and then offers no way to select it, so the all-feeds
+        # line drops on the retirement date with nothing to attribute it to.
         current: list[dict] = []
-        for feed, src_id in ((await settings.get_followables()) | retired).items():
+        for entry in dd_feeds.FOLLOWABLES:
+            src_id = await settings.get_followable_channel(entry.slug)
             follows = await schemas.MirroredChannel.count_dests(
                 src_id, legacy_only=False, session=session
             )
@@ -96,23 +94,15 @@ async def _collect_data() -> dict:
                 src_id, legacy_only=True, session=session
             )
             # `name` travels with the row so the page never has to turn a slug into
-            # words itself. A retired feed has no catalog entry to name it, so its slug
-            # is title-cased into something readable rather than printed raw.
-            entry = dd_feeds.FEEDS.get(feed)
-            is_retired = feed in retired
+            # words itself — including for a retired feed, whose entry is kept for
+            # exactly this.
             current.append(
                 {
-                    "feed": feed,
-                    "name": (
-                        entry.display_name
-                        if entry
-                        else feed.replace("_", " ").title()
-                        if is_retired
-                        else feed
-                    ),
+                    "feed": entry.slug,
+                    "name": entry.display_name,
                     "follows": follows,
                     "mirrors": mirrors,
-                    "retired": is_retired,
+                    "retired": entry.retired,
                 }
             )
 
@@ -121,7 +111,7 @@ async def _collect_data() -> dict:
         "commands": [[n, d.isoformat(), c] for n, d, c in commands],
         # ["YYYY-MM-DD", feed, kind, count]
         "autoposts": [[d.isoformat(), f, k, c] for d, f, k, c in autoposts],
-        # per-feed live counts: {feed, name, follows, mirrors}
+        # per-feed live counts: {feed, name, follows, mirrors, retired}
         "current": current,
         # [id, population] — id as a string (see docstring)
         "populations": [[str(sid), pop] for sid, pop in populations],
