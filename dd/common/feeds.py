@@ -144,20 +144,32 @@ class Followable:
 #: Anchor's page splits that second half again — see :class:`FeedKind` on why the fact
 #: that does it is not stored here. Descriptions are the feeds page's own copy.
 #:
-#: **Removing an entry retires the feed; it does not unfollow anyone, on purpose.**
-#: It withdraws the surfaces generated from this list — the ``/autopost`` subcommand,
-#: the navigator, the feeds-page rows, the ``/feed/<slug>/…`` routes — but leaves the
-#: ``MirroredChannel`` rows alone. Those rows ARE the follower list, and beacon's
-#: fan-out gates on ``MirroredChannel.get_or_fetch_all_srcs()`` — raw channel ids in a
-#: table this catalog knows nothing about — so they outlive a retirement. Un-retiring a
-#: feed is then re-adding its entry here, not asking every guild to follow again from
-#: zero. Nothing fans out meanwhile because the upstream channel is dormant: retiring
-#: the entry is how the feed goes quiet on our side, not the rows.
+#: **Retiring a feed is two edits, not one.** Removing an entry withdraws only what is
+#: *generated* from this list: the feeds-page group and its channel row, the settings
+#: importer's coverage, the dormant-feed sweep, the stats page's "current" row, and the
+#: name ``/mirror source_details`` and ``/mirror-logs`` print for that source. It does
+#: NOT withdraw the ``/autopost`` subcommand or the navigator — those are registered by
+#: hand at the bottom of the feed's beacon extension module, which has to go in the
+#: same change. Leave the module and it raises ``KeyError`` at import on ``FEEDS[feed]``
+#: (``dd.beacon.extensions.autoposts``), which ``load_extensions_strict`` logs CRITICAL
+#: and skips, taking that whole extension with it. Anchor's ``/feed/<name>/…`` routes
+#: are not in scope either way: they resolve through
+#: ``dd.anchor.autopost.registered_feeds()``, a producer registry unrelated to this
+#: catalog. So un-retiring is re-adding the entry AND restoring the extension module
+#: from git history.
 #:
-#: The costs of keeping them, both accepted: there is no per-guild off switch while the
-#: entry is gone (``/autopost <name>`` was it), and ``/mirror … details`` prints the
-#: retained sources as "Unknown Source: <id>", since that reverse lookup is this list.
-#: weekly_nightfall is the feed currently in that state.
+#: **It unfollows nobody, on purpose.** The ``MirroredChannel`` rows are the follower
+#: list, and beacon's legacy fan-out gates on ``get_or_fetch_all_srcs()`` — raw channel
+#: ids this catalog knows nothing about — so they outlive a retirement and a feed can
+#: come back without every guild following again from zero. Nothing fans out meanwhile
+#: because the upstream channel is dormant.
+#:
+#: Accepted costs of keeping them: ``/autopost <name>`` was the only in-bot off switch
+#: for a legacy mirror (a non-legacy follower is a Discord channel-follow webhook, which
+#: its admin can still remove under Server Settings → Integrations); the two pages above
+#: print a bare channel id for the retired source; and ``reachability_sweep`` keeps
+#: probing the retained rows' destinations, so one whose destination goes bad is still
+#: auto-disabled. weekly_nightfall is the feed currently in that state.
 FOLLOWABLES: tuple[Followable, ...] = (
     Followable(
         "lost_sector",

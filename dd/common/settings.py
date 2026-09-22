@@ -313,17 +313,20 @@ def get_embed_default_color_sync() -> h.Color:
 def get_embed_error_color_sync() -> h.Color:
     """Sync counterpart to :func:`get_embed_error_color`.
 
-    For the three error-embed builders in ``dd.beacon.extensions.autoposts``
+    Called only by the three error-embed builders in ``dd.beacon.extensions.autoposts``
     (``permission_error_embed``, ``insufficient_permissions_embed``,
-    ``autopost_error_embed``). They are pure sync functions with sync unit tests
-    (``dd/beacon/tests/test_autopost_perms.py`` calls them directly), so reading one
-    colour is not worth making them — and every handler that composes them — async.
+    ``autopost_error_embed``), which are plain sync functions so they can be built and
+    asserted on without an event loop — ``dd/beacon/tests/test_autopost_perms.py`` does
+    that for ``permission_error_embed``; the other two have no tests yet.
 
-    NOT the same rationale as :func:`get_embed_default_color_sync`, though this
-    docstring claimed so until the weekly nightfall feed was retired. ``nav.py``'s
-    sentinel (``NO_DATA_HERE_EMBED``) reads the *default* colour; the one
-    ``preprocess_messages`` override that reached for the *error* colour was
-    nightfall's, and it left with its feed.
+    That is a convenience, not a constraint. Every call site is already inside an
+    ``async def``, so making the builders async would add four ``await`` calls and
+    propagate nothing; if the sync testability stops earning its keep, this function
+    can go with them.
+
+    It is NOT the case, as two earlier versions of this docstring claimed, that
+    ``nav.py``'s sentinel needs it (``NO_DATA_HERE_EMBED`` reads the *default* colour)
+    or that async would ripple through the handlers.
     """
     return _parse_color(_get_value_sync("embed_error_color"))
 
