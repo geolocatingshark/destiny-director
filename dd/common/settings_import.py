@@ -15,7 +15,7 @@
 
 """Load the legacy env vars into the DB-backed settings, once, at cutover.
 
-The settings that used to be env vars — the twelve followable channels, the alerts
+The settings that used to be env vars — every followable's channel, the alerts
 channel and level, the two embed colours, the default URL, the bad-channel switch and
 the two image URLs — now live in ``auto_post_settings`` and are edited on anchor's
 Autopost Settings page. This copies the running deployment's values into those rows so

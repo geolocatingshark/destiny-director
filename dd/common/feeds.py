@@ -143,6 +143,15 @@ class Followable:
 #: (each a toggle group), then the five it does not (each a single channel row).
 #: Anchor's page splits that second half again — see :class:`FeedKind` on why the fact
 #: that does it is not stored here. Descriptions are the feeds page's own copy.
+#:
+#: **Removing an entry does not stop that feed mirroring.** It withdraws the surfaces
+#: that are generated from this list — the ``/autopost`` subcommand, the navigator, the
+#: feeds-page rows, the ``/feed/<slug>/…`` routes — but beacon's fan-out gates on
+#: ``MirroredChannel.get_or_fetch_all_srcs()``, raw channel ids in a table this catalog
+#: knows nothing about. So a guild that had followed the feed keeps receiving it, with
+#: the off switch now deleted, until somebody retires those rows by hand. That is the
+#: deliberate state weekly_nightfall was left in; ``/mirror … details`` prints its
+#: leftover sources as "Unknown Source: <id>", since the reverse lookup is this list.
 FOLLOWABLES: tuple[Followable, ...] = (
     Followable(
         "lost_sector",

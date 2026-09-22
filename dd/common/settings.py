@@ -313,11 +313,17 @@ def get_embed_default_color_sync() -> h.Color:
 def get_embed_error_color_sync() -> h.Color:
     """Sync counterpart to :func:`get_embed_error_color`.
 
-    Same rationale as :func:`get_embed_default_color_sync`: ``dd/beacon/nav.py`` and
-    its ``preprocess_messages`` overrides (twab, template) are a sync
-    pipeline (``NavPages`` compares its "no data" sentinel embed by equality, which
-    needs it built once at import time — see ``NO_DATA_HERE_EMBED`` — so the pipeline
-    around it stays sync rather than splitting one override async and the rest not).
+    For the three error-embed builders in ``dd.beacon.extensions.autoposts``
+    (``permission_error_embed``, ``insufficient_permissions_embed``,
+    ``autopost_error_embed``). They are pure sync functions with sync unit tests
+    (``dd/beacon/tests/test_autopost_perms.py`` calls them directly), so reading one
+    colour is not worth making them — and every handler that composes them — async.
+
+    NOT the same rationale as :func:`get_embed_default_color_sync`, though this
+    docstring claimed so until the weekly nightfall feed was retired. ``nav.py``'s
+    sentinel (``NO_DATA_HERE_EMBED``) reads the *default* colour; the one
+    ``preprocess_messages`` override that reached for the *error* colour was
+    nightfall's, and it left with its feed.
     """
     return _parse_color(_get_value_sync("embed_error_color"))
 
