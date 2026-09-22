@@ -144,14 +144,20 @@ class Followable:
 #: Anchor's page splits that second half again — see :class:`FeedKind` on why the fact
 #: that does it is not stored here. Descriptions are the feeds page's own copy.
 #:
-#: **Removing an entry does not stop that feed mirroring.** It withdraws the surfaces
-#: that are generated from this list — the ``/autopost`` subcommand, the navigator, the
-#: feeds-page rows, the ``/feed/<slug>/…`` routes — but beacon's fan-out gates on
-#: ``MirroredChannel.get_or_fetch_all_srcs()``, raw channel ids in a table this catalog
-#: knows nothing about. So a guild that had followed the feed keeps receiving it, with
-#: the off switch now deleted, until somebody retires those rows by hand. That is the
-#: deliberate state weekly_nightfall was left in; ``/mirror … details`` prints its
-#: leftover sources as "Unknown Source: <id>", since the reverse lookup is this list.
+#: **Removing an entry retires the feed; it does not unfollow anyone, on purpose.**
+#: It withdraws the surfaces generated from this list — the ``/autopost`` subcommand,
+#: the navigator, the feeds-page rows, the ``/feed/<slug>/…`` routes — but leaves the
+#: ``MirroredChannel`` rows alone. Those rows ARE the follower list, and beacon's
+#: fan-out gates on ``MirroredChannel.get_or_fetch_all_srcs()`` — raw channel ids in a
+#: table this catalog knows nothing about — so they outlive a retirement. Un-retiring a
+#: feed is then re-adding its entry here, not asking every guild to follow again from
+#: zero. Nothing fans out meanwhile because the upstream channel is dormant: retiring
+#: the entry is how the feed goes quiet on our side, not the rows.
+#:
+#: The costs of keeping them, both accepted: there is no per-guild off switch while the
+#: entry is gone (``/autopost <name>`` was it), and ``/mirror … details`` prints the
+#: retained sources as "Unknown Source: <id>", since that reverse lookup is this list.
+#: weekly_nightfall is the feed currently in that state.
 FOLLOWABLES: tuple[Followable, ...] = (
     Followable(
         "lost_sector",
