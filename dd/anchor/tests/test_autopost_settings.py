@@ -846,7 +846,7 @@ async def test_render_shows_the_saved_row_for_a_followable() -> None:
 async def test_every_control_has_an_accessible_name() -> None:
     # The visible name of a row lives in a sibling div.text, which no accessibility API
     # can connect to the control. Without an explicit name a screen reader hears
-    # "checkbox, checked" twelve times over.
+    # "checkbox, checked" eleven times over.
     html_out = await _render_both_pages()
 
     # Scoped to the settings form: the shared send dialog on /feeds names its one
@@ -860,7 +860,7 @@ async def test_every_control_has_an_accessible_name() -> None:
     unnamed = [c for c in controls if "aria-label=" not in c]
     assert unnamed == [], unnamed
 
-    # "Post to channel" is the label on twelve different rows, so the bare label is not
+    # "Post to channel" is the label on eleven different rows, so the bare label is not
     # a name — the card it belongs to has to be folded in.
     assert 'aria-label="Post to channel, Lost Sector"' in html_out
     assert 'aria-label="Post to channel, Xûr"' in html_out

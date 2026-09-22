@@ -23,10 +23,11 @@ renamed Discord command would re-register and lose whatever muscle memory users 
 
 from dd.common import feeds
 
-# The twelve AutoPostSettings row names as they exist in every deployed database, copied
-# here as a literal ON PURPOSE. The catalog derives them from `f"{slug}_channel"`; this
-# is the independent statement of what that derivation must produce. A change here is a
-# data migration, not a refactor.
+# The eleven AutoPostSettings row names the catalog must produce, copied here as a
+# literal ON PURPOSE. The catalog derives them from `f"{slug}_channel"`; this is the
+# independent statement of what that derivation must produce. A change here is a data
+# migration, not a refactor — a retired feed's row (`weekly_nightfall_channel`) is left
+# in the deployed databases on purpose, it just stops being read.
 _CHANNEL_KEYS = {
     "lost_sector": "lost_sector_channel",
     "xur": "xur_channel",
@@ -37,14 +38,13 @@ _CHANNEL_KEYS = {
     "twab": "twab_channel",
     "trials": "trials_channel",
     "weekly_reset": "weekly_reset_channel",
-    "weekly_nightfall": "weekly_nightfall_channel",
     "free_games": "free_games_channel",
     "emblems_and_cosmetics": "emblems_and_cosmetics_channel",
 }
 
-# The `/autopost <name>` subcommands as registered with Discord today. Two do not match
-# their feed slug (`twab` → twid, `weekly_nightfall` → nightfall) and that is the whole
-# reason `command_name` exists.
+# The `/autopost <name>` subcommands as registered with Discord today. One does not
+# match its feed slug (`twab` → twid) and that is the whole reason `command_name`
+# exists.
 _COMMAND_NAMES = {
     "lost_sector": "lost_sector",
     "xur": "xur",
@@ -55,7 +55,6 @@ _COMMAND_NAMES = {
     "twab": "twid",
     "trials": "trials",
     "weekly_reset": "weekly_reset",
-    "weekly_nightfall": "nightfall",
     "free_games": "free_games",
     "emblems_and_cosmetics": "emblems_and_cosmetics",
 }

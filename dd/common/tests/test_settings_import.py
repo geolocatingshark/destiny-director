@@ -37,8 +37,9 @@ from dd.common import (
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
-#: The shape prod's environment actually has, including the three dead FOLLOWABLES keys
-#: (`prime`, `nwid`, `daily_reset`) that nothing has read since those feeds retired.
+#: The shape prod's environment actually has, including the four dead FOLLOWABLES keys
+#: (`prime`, `nwid`, `daily_reset`, `weekly_nightfall`) that nothing has read since
+#: those feeds retired.
 _PROD_ENV = {
     "ALERTS_CHANNEL_ID": "1000000000000000000",
     "ALERT_MIN_LEVEL": "WARNING",
@@ -109,7 +110,6 @@ async def test_every_catalog_feed_gets_its_channel(_prod_env: None) -> None:
     await _import()
 
     assert await settings.get_followable_channel("xur") == 10
-    assert await settings.get_followable_channel("weekly_nightfall") == 13
     assert await settings.get_followable_channel("emblems_and_cosmetics") == 14
     # 0 is a legitimate configured value — portal_ops shipped dormant.
     assert await settings.get_followable_channel("portal_ops") == 0
@@ -122,15 +122,24 @@ async def test_every_catalog_feed_gets_its_channel(_prod_env: None) -> None:
 
 
 async def test_retired_followables_are_reported_not_written(_prod_env: None) -> None:
-    # prime/nwid/daily_reset are feeds that no longer exist. Dropping them silently and
-    # dropping a *renamed* feed's channel look identical in a log that says nothing, so
-    # they are surfaced as skipped rows naming themselves.
+    # prime/nwid/daily_reset/weekly_nightfall are feeds that no longer exist. Dropping
+    # them silently and dropping a *renamed* feed's channel look identical in a log that
+    # says nothing, so they are surfaced as skipped rows naming themselves.
     changes = await _import()
 
     retired = {c.slug: c for c in changes if c.skip == "not a feed in dd.common.feeds"}
-    assert set(retired) == {"prime_channel", "nwid_channel", "daily_reset_channel"}
+    assert set(retired) == {
+        "prime_channel",
+        "nwid_channel",
+        "daily_reset_channel",
+        "weekly_nightfall_channel",
+    }
     rows = await schemas.AutoPostSettings.get_all_rows()
-    assert not [name for name in rows if name.startswith(("prime", "nwid", "daily"))]
+    assert not [
+        name
+        for name in rows
+        if name.startswith(("prime", "nwid", "daily", "weekly_nightfall"))
+    ]
 
 
 async def test_a_feed_missing_from_the_env_is_reported(

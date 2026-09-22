@@ -475,7 +475,7 @@ class HybridPostSpec:
 # contribution order does not matter.
 #
 # What this registry answers, and why it is here rather than in the catalog: the feeds
-# page groups its twelve feeds three ways, and "written by you" — Trials and Weekly
+# page groups its eleven feeds three ways, and "written by you" — Trials and Weekly
 # Reset — is not a fact ``dd.common.feeds.FeedKind`` can supply. Both are
 # ``UNSCHEDULED``, alongside This Week At Bungie and Free Games, and what actually
 # separates them is that anchor has a form wired to them. That is anchor wiring,

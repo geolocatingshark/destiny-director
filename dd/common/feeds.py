@@ -20,11 +20,11 @@ reads back — paging it through a navigator command, repeating it, and mirrorin
 to follower guilds. This module is the single declaration of that set.
 
 **Why this is code and not a table.** Enumeration has to be *total in every process*:
-anchor's settings page must render all twelve feeds, and anchor has producer modules
+anchor's settings page must render all eleven feeds, and anchor has producer modules
 for only eight of them. An import-time registry (``dd.anchor.autopost.register_feed``)
 is the right answer for *wiring* — which producer coro builds which post — because
 wiring is naturally partial per process. It is the wrong answer for enumeration,
-because the four beacon-only feeds would simply be missing from the very process that
+because the three beacon-only feeds would simply be missing from the very process that
 needs the list. A static catalog is total by construction. It is also never refreshed:
 this set changes only when someone writes a new extension module and redeploys, which
 restarts the process and rebuilds it from scratch.
@@ -65,7 +65,7 @@ class FeedKind(enum.Enum):
     that difference — ``has_toggle`` collapsed both to False — so it was a fact with no
     consumer in the one module whose purpose is removing facts that drift.
 
-    Something branches on it now: anchor's feeds page groups its twelve feeds three
+    Something branches on it now: anchor's feeds page groups its eleven feeds three
     ways, and "written by you" is exactly the web-form pair. The member still does not
     come back, because the fact is not one this module can hold honestly. A feed is
     written by a human because **anchor has a form wired to it** — a ``HybridPostSpec``,
@@ -103,13 +103,13 @@ class Followable:
     #: One-line description for the feed's headline settings row (its toggle row when it
     #: has one, otherwise its channel row).
     desc: str
-    #: The ``/autopost`` subcommand, when it is not the slug. Only two feeds diverge,
-    #: and the values are load-bearing: changing one re-registers a Discord command
-    #: that users have muscle memory for.
+    #: The ``/autopost`` subcommand, when it is not the slug. Only one feed diverges,
+    #: and the value is load-bearing: changing it re-registers a Discord command that
+    #: users have muscle memory for.
     command_name: str | None = None
     #: What ``/autopost <command> ✓`` calls the feed in its confirmation, when the
     #: canonical name would read oddly under a command of a different name. Deliberately
-    #: bounded to the two feeds above — see the invariant in ``tests/test_feeds.py``.
+    #: bounded to the feed above — see the invariant in ``tests/test_feeds.py``.
     follow_confirmation_name: str | None = None
 
     @property
@@ -140,9 +140,9 @@ class Followable:
 
 
 #: Every followable, in feeds-page order: the six anchor produces on a schedule first
-#: (each a toggle group), then the six it does not (each a single channel row). Anchor's
-#: page splits that second half again — see :class:`FeedKind` on why the fact that does
-#: it is not stored here. Descriptions are the feeds page's own copy.
+#: (each a toggle group), then the five it does not (each a single channel row).
+#: Anchor's page splits that second half again — see :class:`FeedKind` on why the fact
+#: that does it is not stored here. Descriptions are the feeds page's own copy.
 FOLLOWABLES: tuple[Followable, ...] = (
     Followable(
         "lost_sector",
@@ -201,14 +201,6 @@ FOLLOWABLES: tuple[Followable, ...] = (
         FeedKind.UNSCHEDULED,
         "Weekly Reset",
         "The Kyber channel this feed posts to.",
-    ),
-    Followable(
-        "weekly_nightfall",
-        FeedKind.UNSCHEDULED,
-        "Weekly Nightfall",
-        "The Kyber channel weekly nightfall posts follow from.",
-        command_name="nightfall",
-        follow_confirmation_name="Nightfall",
     ),
     Followable(
         "free_games",

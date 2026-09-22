@@ -33,7 +33,7 @@ one save endpoint. They are the sole editor for two things that used to be separ
 **Why two pages and one endpoint.** The single page they replaced opened with eight
 rows about colours and alert levels and then asked the reader to scroll past them to
 reach any feed — two errands with nothing in common sharing one scroll. ``/feeds``
-carries the twelve feed groups, ``/settings`` the eight general rows, and the old
+carries the eleven feed groups, ``/settings`` the eight general rows, and the old
 ``/autopost_settings`` 301s to ``/feeds`` for whoever has it bookmarked. The **save**
 stays one route (:func:`_handle_save`) because the two pages' slug sets are disjoint and
 validation is per-slug (:data:`_VALIDATORS`): splitting it would duplicate the
@@ -332,7 +332,7 @@ def _feed_rows(feed: dd_feeds.Followable) -> tuple[_Setting, ...]:
       is really a peer.
 
     Ordering is a rule — toggle, sub-toggles, channel, image URL — rather than per-feed
-    data, which is what let the twelve groups be generated from the catalog at all.
+    data, which is what let the eleven groups be generated from the catalog at all.
     """
     subs, urls = _FEED_EXTRA_ROWS.get(feed.slug, ((), ()))
 
@@ -502,7 +502,7 @@ def _render_row(
     ``group_label`` is the card's name, and is supplied only for a feed card's SUB
     rows. Every control here is named by a sibling ``div.name`` that no accessibility
     API can see, so each carries an explicit ``aria-label`` — and "Post to channel" is
-    the label on twelve rows, so on a sub row the card's name is folded in to make
+    the label on eleven rows, so on a sub row the card's name is folded in to make
     it "Post to channel, Lost Sector". The first row of a feed card is the row that
     names the card, so it gets no suffix; a categorised card (Branding, Alerts) passes
     nothing, because its rows are peers under a header a screen reader already reads.
@@ -781,7 +781,7 @@ _SECTION_COPY: tuple[tuple[str, str], ...] = (
 
 
 def _feed_sections() -> tuple[_FeedSection, ...]:
-    """The twelve feeds, split three ways, in catalog order within each section.
+    """The eleven feeds, split three ways, in catalog order within each section.
 
     Two of the three splits come off the catalog: a feed with a produce toggle is one
     anchor runs on a schedule (``Followable.has_toggle``), and everything else is not.
@@ -879,7 +879,7 @@ def _render_feed_section(
 
 
 async def _render_feeds_html() -> str:
-    """Render ``/feeds``: the twelve feed groups, under three section headings."""
+    """Render ``/feeds``: the eleven feed groups, under three section headings."""
     rows = await schemas.AutoPostSettings.get_all_rows()
     sections = "".join(_render_feed_section(s, rows) for s in _feed_sections())
     shell = _FEEDS_HTML_PATH.read_text(encoding="utf-8").replace(

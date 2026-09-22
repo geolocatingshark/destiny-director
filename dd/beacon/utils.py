@@ -541,7 +541,7 @@ async def sweep_dormant_feeds() -> None:
     are running — the old version paged once at boot and then stood as the last word on
     a feed that might have been configured a minute later.
 
-    Costs nothing to run often: :data:`dd.common.settings` serves all twelve reads out
+    Costs nothing to run often: :data:`dd.common.settings` serves all eleven reads out
     of one cached snapshot, so this rides the reconciler's tick.
     """
     from dd.common import (

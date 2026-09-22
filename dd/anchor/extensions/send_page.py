@@ -21,12 +21,12 @@
 dialogs. This module contributes no endpoint of its own: it decides which feeds are
 listed, what each row says, and nothing else. The page exists because the landing row
 promised somewhere to go, and a row labelled "Send a scheduled post now" that opens a
-page of twelve toggles and eight colour pickers is a row that lied.
+page of eleven toggles and eight colour pickers is a row that lied.
 
 **Six rows, and no more.** The catalog's six
-:attr:`~dd.common.feeds.FeedKind.ANCHOR_CRON` feeds, in catalog order. The other six
+:attr:`~dd.common.feeds.FeedKind.ANCHOR_CRON` feeds, in catalog order. The other five
 are not sendable from here by construction — two are written on a form (their own pages
-publish them) and four are written by someone else entirely — so listing them would be
+publish them) and three are written by someone else entirely — so listing them would be
 listing rows whose buttons could only be dimmed forever.
 
 **No primary button on the page.** Six filled buttons is a page shouting at itself. The

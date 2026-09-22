@@ -158,13 +158,13 @@ neither.
 The catalog holds identity, not wiring. `channel_key` (`"<slug>_channel"`, the
 `auto_post_settings` row holding the feed's channel) and `has_toggle` are derived, and
 `FEEDS[slug]` is how both bots resolve a feed's name — the settings page generates its
-twelve groups from it, beacon's `/autopost` subcommands and navigators take their user-
+eleven groups from it, beacon's `/autopost` subcommands and navigators take their user-
 facing names from it, and anchor's CV2 overflow alerts do too. Nothing branches on an
 unknown slug: a slug that names no feed raises, at the point it is written.
 
 Cron schedules, producer coros and navigator wiring stay with their single consumer —
 holding the coros would force `dd.common` to import `dd.anchor`. Enumeration has to be
-total in every process (anchor renders all twelve feeds but has producers for eight), so
+total in every process (anchor renders all eleven feeds but has producers for eight), so
 it is a static catalog rather than an import-time registry.
 
 ## Paged messages — `dd/beacon/nav.py`

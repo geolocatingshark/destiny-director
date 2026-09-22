@@ -314,7 +314,7 @@ def get_embed_error_color_sync() -> h.Color:
     """Sync counterpart to :func:`get_embed_error_color`.
 
     Same rationale as :func:`get_embed_default_color_sync`: ``dd/beacon/nav.py`` and
-    its ``preprocess_messages`` overrides (twab, nightfall, template) are a sync
+    its ``preprocess_messages`` overrides (twab, template) are a sync
     pipeline (``NavPages`` compares its "no data" sentinel embed by equality, which
     needs it built once at import time — see ``NO_DATA_HERE_EMBED`` — so the pipeline
     around it stays sync rather than splitting one override async and the rest not).
