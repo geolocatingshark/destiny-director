@@ -446,6 +446,67 @@ def get_followables_sync() -> dict[str, int]:
     return {feed: get_followable_channel_sync(feed) for feed in FOLLOWABLE_SLUGS}
 
 
+#: The ``"_channel"`` row suffix, as :attr:`dd.common.feeds.Followable.channel_key`
+#: builds it. Only followables use it — the alert/log channels are ``*_channel_id`` and
+#: the banners are ``*_image_url`` — which is what makes the scan below safe.
+_CHANNEL_SUFFIX = "_channel"
+
+
+def _retired_from_rows(rows: t.Iterable[str]) -> list[str]:
+    """Slugs with a ``<slug>_channel`` row that the catalog no longer lists.
+
+    A retired feed keeps its settings row on purpose (see ``dd.common.feeds``'
+    :data:`~dd.common.feeds.FOLLOWABLES` note), so the DB goes on holding the one fact
+    the catalog dropped: where that feed used to post. Deriving the retired set from
+    those rows means no second hand-written list of dead feeds to drift — retiring the
+    next feed keeps its history readable for free.
+    """
+    live = set(FOLLOWABLE_SLUGS.values())
+    return sorted(
+        row.removesuffix(_CHANNEL_SUFFIX)
+        for row in rows
+        if row.endswith(_CHANNEL_SUFFIX) and row not in live
+    )
+
+
+async def get_retired_followables() -> dict[str, int]:
+    """Channel ids for feeds that have left the catalog, keyed by slug.
+
+    Display and history only: nothing produces, mirrors or follows a retired feed, and
+    it deliberately has no command or settings row on the page. This is what lets the
+    stats page keep charting its past reach and the mirror surfaces keep naming its
+    channel rather than printing a bare snowflake.
+    """
+    await _ensure_fresh()
+    return {
+        slug: get_followable_channel_sync_any(slug)
+        for slug in _retired_from_rows(_cache)
+    }
+
+
+def get_retired_followables_sync() -> dict[str, int]:
+    """Sync counterpart to :func:`get_retired_followables`.
+
+    For :func:`followable_name`, which is sync so it can be used from log lines.
+    """
+    return {
+        slug: get_followable_channel_sync_any(slug)
+        for slug in _retired_from_rows(_cache)
+    }
+
+
+def get_followable_channel_sync_any(slug: str) -> int:
+    """Like :func:`get_followable_channel_sync` but reads the row for ANY slug.
+
+    The catalog-membership check in the public getters is what makes an unknown feed
+    read as dormant, which is the right answer everywhere a feed is produced or
+    followed. Here it is the thing in the way: a retired feed's row still exists and
+    still holds its channel id.
+    """
+    _enabled, value = _raw(f"{slug}{_CHANNEL_SUFFIX}")
+    return int(value or 0)
+
+
 def followable_name(*, id: int, followables: dict[str, int] | None = None) -> str | int:
     """The configured feed slug for a followable channel id, or the id itself.
 
@@ -459,9 +520,16 @@ def followable_name(*, id: int, followables: dict[str, int] | None = None) -> st
     every followable's channel id — on every single lookup. An async caller should build
     it with the awaitable getter; passing it in is what keeps this helper itself sync
     and usable from log lines.
+
+    Retired feeds are resolved too, because this is a naming helper: its job is to turn
+    an id into something a reader recognises, and a channel that used to be a feed is
+    still that feed's channel in a year-old mirror run. A caller passing ``followables``
+    decides for itself — merge :func:`get_retired_followables` in when the rows it is
+    naming can be historical. Nothing here can make a retired feed *post*; the produce
+    and follow paths read :func:`get_followables`, which stays catalog-only.
     """
     if followables is None:
-        followables = get_followables_sync()
+        followables = get_followables_sync() | get_retired_followables_sync()
     return next(
         (feed for feed, channel_id in followables.items() if channel_id == id),
         id,

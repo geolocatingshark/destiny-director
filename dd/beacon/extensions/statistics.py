@@ -79,8 +79,14 @@ async def _snapshot_autopost_reach(followables: dict[str, int] | None = None) ->
     is an idempotent overwrite, so running this more than once a day — including at
     every boot — simply refreshes today's value rather than double-counting.
     """
+    # Retired feeds are snapshotted too. They keep their followers and stop posting, so
+    # the count is real and static — and leaving them out puts an unexplained step-down
+    # in the all-feeds reach line on the retirement date, with no row to attribute it
+    # to. Producing is what stops at retirement; counting who is still attached is not.
     followables = (
-        await settings.get_followables() if followables is None else followables
+        (await settings.get_followables() | await settings.get_retired_followables())
+        if followables is None
+        else followables
     )
     today = dt.datetime.now(tz=dt.UTC).date()
     for feed, src_id in followables.items():

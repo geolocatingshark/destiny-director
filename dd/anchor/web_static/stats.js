@@ -188,13 +188,23 @@ function reachSeriesFor(key) {
 // destination-channel rows. One server following a feed into two of its channels counts
 // twice, so calling this "servers" would overclaim. dest_server_id is on the table but
 // nullable, so a distinct-server count would undercount instead.
-function _feedRow(key, label, follows, mirrors) {
+function _feedRow(key, label, follows, mirrors, retired = false) {
   const tr = document.createElement("tr");
   tr.dataset.feed = key;
   tr.className = "row-select" + (key === STATE.selectedFeed ? " active" : "");
 
   const name = document.createElement("td");
   name.textContent = label;
+  // A retired feed's numbers are real but frozen — it keeps its followers and stops
+  // posting. Saying so on the row is what stops the flat sparkline reading as a bug.
+  if (retired) {
+    name.append(
+      Object.assign(document.createElement("span"), {
+        className: "tag-retired",
+        textContent: "retired",
+      }),
+    );
+  }
 
   const reach = document.createElement("td");
   reach.className = "num";
@@ -233,7 +243,9 @@ function renderAutoposts(current, autoposts) {
   const tbody = _byId("currentTable").querySelector("tbody");
   tbody.replaceChildren(
     _feedRow("__all__", "All feeds", allFollows, allMirrors),
-    ...feeds.map((c) => _feedRow(c.feed, c.name || c.feed, c.follows, c.mirrors)),
+    ...feeds.map((c) =>
+      _feedRow(c.feed, c.name || c.feed, c.follows, c.mirrors, c.retired),
+    ),
   );
   _byId("section-autoposts").classList.remove("hidden");
 }

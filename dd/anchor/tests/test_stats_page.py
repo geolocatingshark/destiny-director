@@ -124,3 +124,39 @@ async def test_card_is_registered() -> None:
     assert card is not None
     assert card.href == "/stats"
     assert card.group is web.CardGroup.CHECK
+
+
+@pytest.mark.integration
+async def test_a_retired_feed_still_gets_a_row_with_its_history() -> None:
+    """A feed off the catalog stays selectable, so its past reach is still readable.
+
+    The history was never the missing part — `autoposts` is unfiltered and always
+    carried it. What was missing is a row to click: the page builds its feed list from
+    `current`, so a retired feed's year of data was indexed and then unreachable, and
+    the all-feeds line stepped down on the retirement date with nothing to blame.
+    """
+    from dd.common import settings
+
+    today = dt.datetime.now(tz=dt.UTC).date()
+    await schemas.AutoPostSettings.set_value("weekly_nightfall_channel", "77")
+    await schemas.AutoPostSettings.set_value("lost_sector_channel", "42")
+    await settings.preload()
+    async with schemas.db_session() as session, session.begin():
+        session.add(
+            schemas.AutopostDailyStat(
+                date=today, feed="weekly_nightfall", kind="follow", count=4
+            )
+        )
+
+    payload = json.loads(_text(await stats_page._handle_data(_as_request())))
+    rows = {row["feed"]: row for row in payload["current"]}
+
+    assert [today.isoformat(), "weekly_nightfall", "follow", 4] in payload["autoposts"]
+    assert rows["weekly_nightfall"]["retired"] is True
+    # Named, not printed as a raw slug — there is no catalog entry left to name it.
+    assert rows["weekly_nightfall"]["name"] == "Weekly Nightfall"
+    # A live feed is unaffected and never mislabelled as retired.
+    assert rows["lost_sector"]["retired"] is False
+    assert rows["lost_sector"]["name"] == "Lost Sector"
+
+    settings.reset_cache_for_tests()

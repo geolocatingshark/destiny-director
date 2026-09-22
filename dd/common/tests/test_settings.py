@@ -398,3 +398,56 @@ async def test_followable_name_falls_back_to_id():
     await schemas.AutoPostSettings.set_value("lost_sector_channel", "42")
     await settings.preload()
     assert settings.followable_name(id=99) == 99
+
+
+# --- retired followables -----------------------------------------------------------
+#
+# A feed that leaves `dd.common.feeds.FOLLOWABLES` keeps its `<slug>_channel` row on
+# purpose, so the DB stays the record of where it used to post. These pin that the
+# retired set is derived from those rows — no hand-written list of dead feeds — and,
+# just as importantly, that being retired never makes a feed look live.
+
+
+async def test_a_row_with_no_catalog_entry_reads_as_retired():
+    await schemas.AutoPostSettings.set_value("weekly_nightfall_channel", "77")
+    await settings.preload()
+
+    assert await settings.get_retired_followables() == {"weekly_nightfall": 77}
+    assert settings.get_retired_followables_sync() == {"weekly_nightfall": 77}
+
+
+async def test_a_catalog_feed_is_never_retired():
+    await schemas.AutoPostSettings.set_value("lost_sector_channel", "42")
+    await settings.preload()
+
+    assert await settings.get_retired_followables() == {}
+
+
+async def test_retiring_does_not_put_a_feed_back_in_the_produce_path():
+    # The whole point of the split: `get_followables` is what producers, the dormant
+    # sweep and the settings page read, and a retired feed must stay absent from it or
+    # retirement would not have retired anything.
+    await schemas.AutoPostSettings.set_value("weekly_nightfall_channel", "77")
+    await settings.preload()
+
+    assert "weekly_nightfall" not in await settings.get_followables()
+    assert await settings.get_followable_channel("weekly_nightfall") == 0
+
+
+async def test_non_followable_channel_rows_are_not_mistaken_for_feeds():
+    # `alerts_channel_id` is the trap: it contains "channel" but is not a `*_channel`
+    # row, and reading it as a retired feed would invent one out of an alert setting.
+    await schemas.AutoPostSettings.set_value("alerts_channel_id", "5")
+    await schemas.AutoPostSettings.set_value("xur_image_url", "https://e.com/x.png")
+    await settings.preload()
+
+    assert await settings.get_retired_followables() == {}
+
+
+async def test_followable_name_resolves_a_retired_feeds_channel():
+    # Without this the mirror log and `/mirror source_details` print a bare snowflake
+    # for every historical run of a feed that has since been retired.
+    await schemas.AutoPostSettings.set_value("weekly_nightfall_channel", "77")
+    await settings.preload()
+
+    assert settings.followable_name(id=77) == "weekly_nightfall"

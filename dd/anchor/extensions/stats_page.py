@@ -80,8 +80,15 @@ async def _collect_data() -> dict:
         populations = await schemas.ServerStatistics.fetch_server_populations(
             session=session
         )
+        # Live feeds first, then the retired ones. A retired feed has no catalog entry
+        # and never posts again, but it keeps its settings row and its followers (see
+        # `dd.common.feeds.FOLLOWABLES`), so its counts are real and its year of
+        # history is still in `autoposts`. Without a row here the page indexes that
+        # history and then offers no way to select it: the All-feeds line steps down on
+        # the retirement date with nothing to attribute the drop to.
+        retired = await settings.get_retired_followables()
         current: list[dict] = []
-        for feed, src_id in (await settings.get_followables()).items():
+        for feed, src_id in ((await settings.get_followables()) | retired).items():
             follows = await schemas.MirroredChannel.count_dests(
                 src_id, legacy_only=False, session=session
             )
@@ -89,15 +96,23 @@ async def _collect_data() -> dict:
                 src_id, legacy_only=True, session=session
             )
             # `name` travels with the row so the page never has to turn a slug into
-            # words itself. A historical row can name a feed the catalog no longer
-            # has, so the slug is the fallback rather than an assumption.
+            # words itself. A retired feed has no catalog entry to name it, so its slug
+            # is title-cased into something readable rather than printed raw.
             entry = dd_feeds.FEEDS.get(feed)
+            is_retired = feed in retired
             current.append(
                 {
                     "feed": feed,
-                    "name": entry.display_name if entry else feed,
+                    "name": (
+                        entry.display_name
+                        if entry
+                        else feed.replace("_", " ").title()
+                        if is_retired
+                        else feed
+                    ),
                     "follows": follows,
                     "mirrors": mirrors,
+                    "retired": is_retired,
                 }
             )
 

@@ -47,6 +47,14 @@ table.data td.num, table.data th.num { text-align: right; font-variant-numeric: 
   font-size: .74rem; color: var(--text-muted); white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+/* A feed that has left the catalog: its counts are real but frozen, so the row needs to
+   say why its sparkline is flat. Muted, not alarming — nothing is wrong with it. */
+.tag-retired {
+  margin-left: .4rem; padding: .05rem .3rem; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--surface-3);
+  color: var(--text-muted); font-size: .68rem; text-transform: uppercase;
+  letter-spacing: .03em; vertical-align: middle;
+}
 table.data tbody tr:hover { background: var(--surface-3); }
 
 .search {
