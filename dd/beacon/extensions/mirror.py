@@ -922,11 +922,17 @@ class MirrorSourceDetails(
         # Retired feeds included: a mirror that outlived its feed is exactly what this
         # command is for, and naming it "Unknown Source" when the catalog still knows
         # the slug would be a worse answer than the id it falls back to.
+        #
+        # Retired FIRST, so that inverting the map lets a live feed overwrite a retired
+        # one sharing its channel id rather than the other way round. That is the
+        # precedence `settings.followable_name` already has (it scans live-first and
+        # takes the first match), and the mirror log resolves the same ids through it —
+        # inverting live-last would have the two surfaces name one channel differently.
         sources = {
             val: key
             for key, val in (
-                await settings.get_followables()
-                | await settings.get_retired_followables()
+                await settings.get_retired_followables()
+                | await settings.get_followables()
             ).items()
         }
 

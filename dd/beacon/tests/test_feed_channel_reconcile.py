@@ -554,12 +554,11 @@ async def test_a_retired_feed_registers_no_autopost_subcommand() -> None:
     refuses, and `load_extensions_strict` turns it into a named CRITICAL at boot rather
     than a mystery command in Discord.
     """
-    import pytest
-
     from dd.beacon.extensions import autoposts
 
-    retired = [f for f in dd_feeds.RETIRED]
-    assert retired, "no retired feed in the catalog to exercise this with"
+    assert dd_feeds.RETIRED, "no retired feed in the catalog to exercise this with"
 
     with pytest.raises(ValueError, match="retired"):
-        autoposts.follow_control_command_maker(retired[0].slug, "should never register")
+        autoposts.follow_control_command_maker(
+            dd_feeds.RETIRED[0].slug, "should never register"
+        )

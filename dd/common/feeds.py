@@ -103,13 +103,16 @@ class Followable:
     #: One-line description for the feed's headline settings row (its toggle row when it
     #: has one, otherwise its channel row).
     desc: str
-    #: The ``/autopost`` subcommand, when it is not the slug. Only one feed diverges,
-    #: and the value is load-bearing: changing it re-registers a Discord command that
-    #: users have muscle memory for.
+    #: The ``/autopost`` subcommand, when it is not the slug. Only one LIVE feed
+    #: diverges (``twab`` → ``twid``), and the value is load-bearing: changing it
+    #: re-registers a Discord command that users have muscle memory for. A retired entry
+    #: may also carry one — it is the record of what that feed's command WAS, and
+    #: nothing registers it (see :attr:`retired`).
     command_name: str | None = None
     #: What ``/autopost <command> ✓`` calls the feed in its confirmation, when the
     #: canonical name would read oddly under a command of a different name. Deliberately
-    #: bounded to the feed above — see the invariant in ``tests/test_feeds.py``.
+    #: bounded to entries that set :attr:`command_name` — see the invariant in
+    #: ``tests/test_feeds.py``.
     follow_confirmation_name: str | None = None
     #: Retired: the feed no longer exists, and this entry is its headstone. Nothing
     #: produces it, no command registers for it, it has no row on the feeds page — see

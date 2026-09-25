@@ -172,10 +172,11 @@ def _followable_changes(
 ) -> list[Change]:
     """One change per catalog feed, from the ``FOLLOWABLES`` JSON blob.
 
-    Keys in the blob that are not catalog feeds are *reported*, not dropped quietly:
+    Keys in the blob with no *live* feed to fill are *reported*, not dropped quietly:
     prod's blob still carries entries for feeds that no longer exist (``prime``,
     ``daily_reset``, ...) and the difference between "retired" and "renamed, and you
-    just lost its channel" is not one to leave to a silent skip.
+    just lost its channel" is not one to leave to a silent skip. A key the catalog still
+    names as retired is reported as that, rather than as unknown.
     """
     raw = os.environ.get("FOLLOWABLES", "").strip()
     if not raw:
@@ -232,15 +233,21 @@ def _followable_changes(
     # know about and chose not to carry forward, while an unknown key is a name nothing
     # in the tree recognises — which is also what a *renamed* feed looks like from here,
     # and the reason this never silently drops either.
+    #
+    # `current` is read from `rows` like every branch above rather than hardcoded None:
+    # a retired feed's `<slug>_channel` row is exactly what it still HAS (that is why
+    # the catalog keeps its entry), and printing "(no row)" against it would tell the
+    # operator the database holds nothing for a row it holds.
     retired = {f.slug for f in dd_feeds.RETIRED}
     for key in sorted(set(blob) - {f.slug for f in dd_feeds.LIVE}):
+        slug = f"{key}_channel"
         changes.append(
             Change(
-                slug=f"{key}_channel",
+                slug=slug,
                 source="FOLLOWABLES",
                 column="value",
                 new=str(blob[key]),
-                current=None,
+                current=_render(rows.get(slug), "value"),
                 skip=(
                     "a retired feed in dd.common.feeds"
                     if key in retired
