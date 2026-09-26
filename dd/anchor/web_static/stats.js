@@ -144,15 +144,35 @@ function selectCommand(key) {
 // Index the raw autopost snapshot rows into per-feed follow/mirror/reach daily series
 // plus an all-feeds total, computed once per load and reused by the focused chart, the
 // per-feed sparklines, and the trend arrows. Reach = followers + mirrors.
-function autopostIndex(autoposts) {
+//
+// `liveFeeds` is the set the TOTAL sums over — the feeds that still exist. Per-feed
+// series are still built for every slug in the data, because a retired feed's own row
+// needs its own history; it is only the "All feeds" line that excludes them, and for
+// the same reason its headline number does: that line answers "how many channels get
+// our posts", and a retired feed posts nothing. Summing everything ever snapshotted
+// would also put a permanent step-down in the series on each retirement date, read by
+// the trend arrow as a months-long decline while every live feed grew.
+//
+// Each past point then means "what today's live feeds reached back then", which is a
+// true statement about a stable set rather than a total over a set that changes shape
+// under it. Slugs absent from `liveFeeds` — retired, or historical rows for a feed the
+// catalog never had — are excluded for that reason, not because their data is wrong.
+function autopostIndex(autoposts, liveFeeds) {
+  // No live set at all means the payload arrived without `current` — which `load()`
+  // tolerates (`data.current || []`) and which leaves the feed table empty anyway.
+  // Counting everything there is the pre-existing behaviour and beats a blank chart
+  // over a year of data we do hold: better a total whose scope is degraded than a
+  // dashboard that silently shows nothing. An empty catalog is not a real state.
+  const countAll = !liveFeeds || liveFeeds.size === 0;
   const byFeedDays = new Map(); // feed -> Map(iso -> {follow, mirror})
-  const totalDays = new Map(); //  iso  -> {follow, mirror} (all feeds)
+  const totalDays = new Map(); //  iso  -> {follow, mirror} (live feeds only)
   for (const [iso, feed, kind, count] of autoposts) {
     if (!byFeedDays.has(feed)) byFeedDays.set(feed, new Map());
     const fm = byFeedDays.get(feed);
     const g = fm.get(iso) || { follow: 0, mirror: 0 };
     g[kind] = (g[kind] || 0) + count;
     fm.set(iso, g);
+    if (!countAll && !liveFeeds.has(feed)) continue;
     const tg = totalDays.get(iso) || { follow: 0, mirror: 0 };
     tg[kind] = (tg[kind] || 0) + count;
     totalDays.set(iso, tg);
@@ -233,15 +253,19 @@ function _feedRow(key, label, follows, mirrors, retired = false) {
 }
 
 function renderAutoposts(current, autoposts) {
-  STATE.autopostIndex = autopostIndex(autoposts);
+  // Retired feeds are listed but NOT summed, in the headline or in the series: "All
+  // feeds" answers "how many channels get our posts", and a retired feed posts
+  // nothing. Its own row still shows the followers it kept and charts its own history,
+  // which is a different question and stays on its own line.
+  const live = current.filter((c) => !c.retired);
+  STATE.autopostIndex = autopostIndex(
+    autoposts,
+    new Set(live.map((c) => c.feed)),
+  );
   // Order feeds by current total reach (followers + mirrors), busiest first.
   const feeds = [...current].sort(
     (a, b) => b.follows + b.mirrors - (a.follows + a.mirrors),
   );
-  // Retired feeds are listed but NOT summed: "All feeds" answers "how many channels
-  // get our posts", and a retired feed posts nothing. Its own row still shows the
-  // followers it kept, which is a different question and stays on its own line.
-  const live = feeds.filter((c) => !c.retired);
   const allFollows = live.reduce((s, c) => s + c.follows, 0);
   const allMirrors = live.reduce((s, c) => s + c.mirrors, 0);
   const tbody = _byId("currentTable").querySelector("tbody");
@@ -459,11 +483,22 @@ async function load() {
   }
 }
 
-document.addEventListener("DOMContentLoaded", load);
+// Browser wiring, guarded so the file is also require()-able from node:test — the same
+// dual-use shape cv2_model.js uses, and for the same reason: autopostIndex decides what
+// the "All feeds" line means, which is worth asserting without standing up a browser.
+// Everything above is pure or DOM-on-call; these two lines are the only import-time
+// side effects, so guarding them is all it takes.
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", load);
 
-// Charts size to their container width, so re-render (debounced) on resize.
-let _resizeTimer;
-window.addEventListener("resize", () => {
-  clearTimeout(_resizeTimer);
-  _resizeTimer = setTimeout(renderTimeCharts, 150);
-});
+  // Charts size to their container width, so re-render (debounced) on resize.
+  let _resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(renderTimeCharts, 150);
+  });
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { autopostIndex };
+}
