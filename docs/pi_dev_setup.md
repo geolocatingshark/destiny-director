@@ -8,9 +8,41 @@ Develop Destiny Director inside a long-lived Docker container on a Raspberry Pi 
 (uv + Node/Claude Code + Railway CLI + GitHub CLI + make); the repo is bind-mounted, so edits
 on the host clone and inside the container are the same files.
 
-Files: `Dockerfile.dev`, `docker-entrypoint.dev.sh`, `docker-compose.dev.yml`,
-`sshd_config.dev`. Git identity keys live in a gitignored `.dev-ssh/` dir that rides
-along with the clone.
+Files: `Dockerfile.dev`, `docker-child-init.dev.sh`, `docker-compose.dev.yml`,
+`ssh_config.dev`, `sshd_config.dev.d/`, `docker-login.dev.sh`. Git identity keys live in
+a gitignored `.dev-ssh/` dir
+that rides along with the clone.
+
+## The image is a thin child of a shared base
+
+Since **2026-08-24** `Dockerfile.dev` does not build a dev environment — it pulls one.
+Everything this container has in common with its three siblings on the same Pi
+(`infra-dev`, `or3-dev`, `ds-dev`) lives in one image, `gsrpi-dev-base`, whose source is
+`dev/Dockerfile.base` in the [infra](https://github.com/gsfernandes81/infra) repo and
+which is built by CI and published **publicly** to
+`ghcr.io/gsfernandes81/gsrpi-dev-base`. From there come python 3.13-slim, Node + Claude
+Code, `gh`, screen, **abduco**, fish, the ssh client and server, cloudflared, the `dev`
+user, the dotfiles, and the entrypoint that starts everything. What is left in this repo
+is the database clients, the Railway CLI, this project's venv, and the repo-specific
+files listed above.
+
+- **The tag is pinned** (`ARG BASE_TAG` at the top of `Dockerfile.dev`), never `latest`,
+  so a base rebuild cannot change this container until that line moves. Which base a
+  running container is on is a label: `docker inspect dd-dev --format '{{index
+  .Config.Labels "uk.gsrpi.base-tag"}}'`.
+- **No build order and no cross-repo checkout**: the `FROM` pulls. The infra repo is
+  needed on this host only for the offline fallback — `make base` there builds the same
+  image under the same name, and docker prefers a local image over a pull.
+- **What this image adds at start** is `docker-child-init.dev.sh`, run by the base's
+  entrypoint after it pulls the clone and before it starts sshd: the `.dev-ssh` git
+  identities, and `uv sync --frozen` to add the editable project to the pre-built venv.
+  It is non-fatal — a failed sync warns and the container still comes up, so you can ssh
+  in and look.
+- **Two files parameterise the base rather than fork it**: `ssh_config.dev` (the baked
+  half of `~/.ssh/config`, used when `.dev-ssh/ssh_config.fleet` is absent) and
+  `sshd_config.dev.d/10-authorized-keys.conf` (points sshd at the host account's
+  `authorized_keys`, as it has always been served here). The rest is `DEV_*` environment
+  in `docker-compose.dev.yml`.
 
 ## Prerequisites (assumed already done on the Pi)
 
@@ -32,22 +64,38 @@ ssh-keygen -t ed25519 -f .dev-ssh/id_ed25519_shark    -N ""   # -> geolocatingsh
 chmod 600 .dev-ssh/id_ed25519_personal .dev-ssh/id_ed25519_shark
 ```
 
-Create `.dev-ssh/config` (used as `~/.ssh/config` inside the container):
+Create `.dev-ssh/ssh_config.fleet`. The base image **prepends** it to the baked defaults
+to make `~/.ssh/config` at every start, before it pulls the clone — which is why it has
+that name and why nothing in this repo symlinks the file:
 
 ```
 Host github.com
   HostName github.com
   User git
-  IdentityFile /workspace/.dev-ssh/id_ed25519_personal
+  IdentityFile ~/.ssh/id_ed25519_personal
   IdentitiesOnly yes
   StrictHostKeyChecking accept-new
 Host github.com-shark
   HostName github.com
   User git
-  IdentityFile /workspace/.dev-ssh/id_ed25519_shark
+  IdentityFile ~/.ssh/id_ed25519_shark
   IdentitiesOnly yes
   StrictHostKeyChecking accept-new
 ```
+
+The `IdentityFile` paths are `~/.ssh/…` and not `/workspace/.dev-ssh/…`: the base copies
+every `.dev-ssh/id_*` into `~/.ssh` at mode 600 on each start, and a copy it owns cannot
+be refused for the bind mount's modes.
+
+> **Renaming from the old layout.** This file used to be `.dev-ssh/config`, symlinked
+> over `~/.ssh/config` by the entrypoint. If your clone still has that name, rename it —
+> `mv .dev-ssh/config .dev-ssh/ssh_config.fleet` — and switch the paths as above. Until
+> you do, `docker-child-init.dev.sh` copies it into place each start so nothing breaks,
+> says so loudly, and the start-up `git pull` has no identity to offer and reports itself
+> as offline whatever the truth is. The symlink is gone on purpose: the base rewrites
+> `~/.ssh/config` with a redirection at every start, and a redirection follows a symlink
+> — the second boot of a container would have truncated your `.dev-ssh/config` and filled
+> it with the baked defaults.
 
 Register each **public** key with its GitHub account (Settings → SSH keys):
 `cat .dev-ssh/id_ed25519_personal.pub` → gsfernandes81, `…_shark.pub` → geolocatingshark.
@@ -88,14 +136,38 @@ Host dd
   RemoteCommand docker exec -it dd-dev fish
 ```
 
-**uid note:** the container `dev` user is uid 1000, matching Raspberry Pi OS's default
-first user, so bind-mounted files (source + `.dev-ssh/` keys) line up. If your Pi user's
-`id -u` ≠ 1000, build with `--build-arg USER_UID=<n> USER_GID=<n>`.
+**uid note:** the container's `dev` user is built in the BASE image, not here — the
+published one bakes uid/gid **1001**, so bind-mounted files (source + `.dev-ssh/` keys)
+line up with a Pi account at that uid. `make dev-up` no longer passes `USER_UID`/
+`USER_GID`, because this image no longer creates the account. If your Pi user's uid
+differs, build the base locally instead: `cd ~/infra/dev && make base` reads its own
+clone's owner and tags the result under the same ghcr name, and the next `make dev-up`
+here picks it up without touching this repo. Changing the uid means the named volumes
+must be recreated under the new owner — `make dev-down-volumes`.
+
+### What else the base changed, and what this repo put back
+
+Three behaviours moved with the base image. Two are put back here because the conversion
+is meant to change what the image is *built from*, not what it does:
+
+- **`AllowTcpForwarding`** — the old `sshd_config.dev` had no such line, so OpenSSH's
+  default (yes) applied and `ssh -p 2222 -L 5432:dd-postgres:5432 dev@<pi>` worked. The
+  base turns forwarding off, correctly for itself. `sshd_config.dev.d/20-forwarding.conf`
+  turns it back on here.
+- **The `dev` account's login shell** — the base makes it fish; this image puts it back to
+  bash (`usermod` in `Dockerfile.dev`), because sshd runs the login shell from
+  `/etc/passwd`, so it is what every `ssh <pi> '<cmd>'` and every Zed remote bootstrap
+  command executes under, and this repo's tooling assumes a POSIX shell there. `docker
+  exec -it dd-dev fish` is unchanged.
+- **`ClientAliveInterval 30` / `ClientAliveCountMax 3`** — kept, not overridden. The base
+  drops a session after 90s of *unanswered probes*, which a live client answers; what it
+  actually removes is wedged sessions, and abduco (also new, from the base) is what makes
+  losing one free.
 
 ## First run inside the container (`/workspace`, user `dev`)
 
 ```sh
-# Git remotes + identity (keys are already wired into ~/.ssh by the entrypoint).
+# Git remotes + identity (keys are wired into ~/.ssh at start by child-init.sh).
 git remote set-url origin git@github.com:gsfernandes81/destiny-director.git
 git remote add shark git@github.com-shark:geolocatingshark/destiny-director.git
 git config user.name  "gsfernandes81"
@@ -119,38 +191,31 @@ claude auth login     # prints a URL — open on your laptop, paste the code bac
 claude auth status    # verify
 ```
 
-**Claude Remote Control starts automatically.** The entrypoint runs a supervisor
-(`docker-rc-supervisor.dev.sh`, baked in at `/home/dev/rc-supervisor.sh`) as the
-container's **foreground** process — so the Claude session is what `docker logs` shows —
-that launches `claude remote-control --spawn worktree` as soon as you're signed in (it
-polls auth every ~10s), so you can drive this container's sessions from
-[claude.ai/code](https://claude.ai/code) or the Claude mobile app with nothing to type.
-`--spawn worktree` gives each on-demand session its own git worktree, and
-`--no-create-session-in-dir` means an unused daemon sits at a true **0/32** (no phantom
-cwd session). sshd now runs in the background; the supervisor loops forever
-(re-launching the daemon on exit), so it's what keeps the container alive. Its output
-goes to `docker logs` verbatim (the live TUI, escape codes and all) and is *also*
-mirrored to `~/.local/share/remote-control.log` — but the file gets a cleaned view:
-escape sequences stripped, repeated TUI repaints collapsed to one copy (with a
-`(suppressed N repeated TUI line(s))` note so nothing looks quieter than it was), and
-the file rotated at `RC_LOG_MAX_BYTES` (default 5MiB) keeping one `.1` generation.
-Teeing the raw stream used to grow that file ~5MB/day of cursor-control noise.
+**There is no Claude Remote Control here as of 2026-08-25**, and the supervisor that ran
+it is deleted rather than defaulted off. Every dev container on this Pi is now reached the
+same way, which is the way this one already had a door for:
 
-*Why a supervisor and not just restart-on-crash:* Claude Code's remote-control server
-has a known class of upstream hangs where the **process stays alive but wedges** and
-stops accepting new sessions (anthropics/claude-code#51267, #40416, #37321). A
-restart-on-exit loop can't recover that, so the supervisor also **health-recycles** a
-wedged daemon — but only when it is free to: it restarts the daemon **only at a literal
-0/32 sessions**, never while a session is live (even an idle one), because killing a
-live session forces a painful remote recovery. Concretely: a freshly started daemon is
-left alone until it has served ≥1 session; once it has been used and then drops to 0
-sessions, it gets `RC_IDLE_RECYCLE_SECS` (default 300s) of continuous idle and is then
-recycled once. So you always return to a fresh, unwedged daemon after an idle gap, but
-an untouched one is never churned. Tunables (env): `RC_POLL_SECS`,
-`RC_IDLE_RECYCLE_SECS`, `RC_PERMISSION_MODE` (default keeps prompts on),
-`RC_LOG_MAX_BYTES`. A daemon that
-wedges *mid-session* is deliberately left until that session ends — end the stuck
-session from claude.ai/code (or `docker exec`) and the idle recycle takes it from there.
+```sh
+ssh -p 2222 dev@<pi-ip>          # or `docker exec -it dd-dev fish` from the host
+abduco -A claude claude          # attach the session named `claude`, create it if absent
+```
+
+`abduco` is what makes that survive a dropped link — it is a detach/attach and nothing
+else, no key handling of its own beyond Ctrl-\ , so the TUI underneath keeps every key it
+expects. `-A` means the same command both starts the work and comes back to it. Three
+arrangements for driving Claude across four containers was three things to remember; this
+is one, and it does not put a permission classifier in charge of a container holding a
+read-write deploy key and a Railway token.
+
+**An idle claude is stopped for you, and the conversation is not lost.** The base image
+runs `offload-idle-claude.sh`: a session that has been detached, silent and running
+nothing for 90 minutes is stopped, and `~/.local/share/claude-offload.log` records the
+exact `claude --resume` that brings it back. The number is not arbitrary — a claude can
+schedule its own wake-up and the runtime clamps that to an hour, so past that only a
+person is coming back for it. It refuses to touch an attached session, one with any
+non-claude process running under it (a Bash call, a build, a subagent), or one with no
+transcript to time by. Reason for it: one idle session's process tree measured **1,146 MB
+RSS**, and this Pi runs four of these next to Postgres.
 
 If Claude Code's Bash sandbox blocks writes to `~/.cache/uv` (breaks uv/ruff/ty/pytest),
 relax the sandbox in-container — the container is already an isolation boundary.

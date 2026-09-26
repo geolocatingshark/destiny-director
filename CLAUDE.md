@@ -215,8 +215,18 @@ DB layer, or building a message/embed, read it.** Quick orientation:
 - On the pyenv box `.python-version` pins 3.13; the repo-authoritative pin is
   `requires-python = "~=3.13.0"` in `pyproject.toml`.
 - The dev **container** is managed with `make dev-up` / `dev-down` (not bare
-  `docker compose up`) so its uid/gid matches the host bind mount — otherwise writes to
-  `/workspace` fail on non-1000-uid hosts (e.g. the Pi).
+  `docker compose up`), which sets `DEV_HOSTNAME` and keeps the compose file the single
+  place the container is described. Its image is a **thin child of `gsrpi-dev-base`**
+  (infra's `dev/Dockerfile.base`, pulled from ghcr) as of 2026-08-24: the `dev` user,
+  the toolchain and the entrypoint come from there, this repo adds the database clients,
+  the Railway CLI, its venv and `docker-child-init.dev.sh`. The uid the bind mount needs
+  is the BASE's now — see `docs/pi_dev_setup.md` § *The image is a thin child of a shared
+  base* before changing anything about the build.
+- **The container is driven over ssh, not by Remote Control.** As of 2026-08-25 the
+  remote-control supervisor is deleted fleet-wide: `ssh -p 2222 dev@<pi>` then `abduco -A
+  claude claude`, which holds the session across a dropped link. The base stops a claude
+  left idle for 90 minutes and logs the `claude --resume` that restores it — one idle
+  session's process tree was measured at 1,146 MB, and this Pi runs four containers.
 
 ## Project layout & config
 
