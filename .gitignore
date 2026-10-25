@@ -139,6 +139,8 @@ dmypy.json
 # Image files from the _download_linked_image function
 *.jpg
 *.png
+# ...but keep the screenshots filed with the Discord intent review
+!docs/message-content-intent-verification/screenshots/*.png
 
 # Bungie api files
 world_sql_content*
