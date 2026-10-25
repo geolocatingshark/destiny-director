@@ -42,7 +42,7 @@ answer and [`PRIVACY.md`](../../PRIVACY.md) together.
 | File | Shows |
 | --- | --- |
 | [`1-source-post-in-kybers-server.png`](screenshots/1-source-post-in-kybers-server.png) | The source: the weekly reset post, published by the companion bot DD v1 in the `#weekly-reset` announcement channel of Kyber's server. |
-| [`2-mirrored-copy-in-following-server.png`](screenshots/2-mirrored-copy-in-following-server.png) | The copy Destiny Director delivered a minute later to a following server (our test server's Weekly Reset thread). It is marked "(edited)" because the source edit carried over. |
+| [`2-mirrored-copy-in-following-server.png`](screenshots/2-mirrored-copy-in-following-server.png) | The copy Destiny Director delivered a minute later to a following server (our test server's Weekly Reset thread). |
 | [`3-autopost-enable-disable.png`](screenshots/3-autopost-enable-disable.png) | The opt-in and opt-out: `/autopost weekly_reset` with Disable, then Enable again (newest is at the bottom). |
 | [`4-on-demand-weekly-reset-command.png`](screenshots/4-on-demand-weekly-reset-command.png) | The on-demand command: `/weekly reset` replying with the latest post from the source channel, with week navigation. |
 

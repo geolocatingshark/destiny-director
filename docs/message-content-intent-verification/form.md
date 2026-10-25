@@ -108,9 +108,20 @@ building using this intent with as much detail as possible._
 _For each selected intent, we require you to provide a link to screenshots or video
 that demonstrates your desired use case working within a Discord server._
 
-> Still empty when the form was printed. The screenshots are in
-> [`screenshots/`](screenshots), described in the [README](README.md#screenshots):
-> https://github.com/geolocatingshark/destiny-director/tree/main/docs/message-content-intent-verification/screenshots
+> 1. The source post: DD v1, our companion bot, publishes the weekly reset in the
+>    #weekly-reset announcement channel of the Kyber's Corner server.
+>    https://github.com/geolocatingshark/destiny-director/blob/main/docs/message-content-intent-verification/screenshots/1-source-post-in-kybers-server.png
+> 2. The copy: Destiny Director reposts that announcement in a server that follows
+>    the feed.
+>    https://github.com/geolocatingshark/destiny-director/blob/main/docs/message-content-intent-verification/screenshots/2-mirrored-copy-in-following-server.png
+> 3. The opt-in and opt-out: a server admin turns the feed off and on with
+>    /autopost weekly_reset.
+>    https://github.com/geolocatingshark/destiny-director/blob/main/docs/message-content-intent-verification/screenshots/3-autopost-enable-disable.png
+> 4. On demand: /weekly reset replies with the latest post from the team's channel.
+>    https://github.com/geolocatingshark/destiny-director/blob/main/docs/message-content-intent-verification/screenshots/4-on-demand-weekly-reset-command.png
+
+(This box was still empty when the form was printed; the text above is for pasting
+in. The same screenshots are described in the [README](README.md#screenshots).)
 
 ## Acknowledgement
 
