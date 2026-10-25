@@ -6,12 +6,12 @@ By accessing our services or Discord "Bot", you are agreeing to be bound by our 
 
 You agree that you are 13 years of age and the minimum age of digital consent in your country. If you are between 13 (or the minimum age of digital consent, as applicable) and the age of majority in your jurisdiction, you agree that your legal guardian has reviewed and agrees to these terms.
 
-If you disagree with any of these terms, you are prohibited from accessing to our services. The materials contained in this bot are protected by copyright law.
+If you disagree with any of these terms, you are prohibited from accessing our services. The materials contained in this bot are protected by copyright law.
 
 If you have any question or if you would like to report a Terms of Service violation and for legal requests and inquiries, please email us at geolocatingshark@gmail.com.
 
 Privacy
-Our Privacy Policy describes how we handle the information and content you provide to us when you use our services. You understand that through your use of this bot you consent to our Privacy Policy.
+Our [Privacy Policy](PRIVACY.md) describes how we handle the information and content you provide to us when you use our services. You understand that through your use of this bot you consent to our Privacy Policy.
 
 For any privacy concerns, please contact us at geolocatingshark@gmail.com .
 
